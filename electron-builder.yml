@@ -1,0 +1,30 @@
+appId: ai.nohuman.desktop
+productName: NoHuman
+directories:
+  output: .build/electron-package
+  buildResources: .build/runtime-cache
+files:
+  - out/**
+  - package.json
+  - '!**/*.map'
+extraResources:
+  - from: node_modules/ws
+    to: service/node_modules/ws
+    filter: ['package.json', 'index.js', 'wrapper.mjs', 'lib/**', 'LICENSE']
+  - from: service
+    to: service
+    filter: ['**/*.ts']
+  - from: .build/runtime-cache/node/bin/node
+    to: bin/node
+  - from: .build/runtime-cache/node/LICENSE
+    to: Node-LICENSE.txt
+mac:
+  category: public.app-category.developer-tools
+  icon: .build/runtime-cache/NoHuman.icns
+  minimumSystemVersion: '14.0'
+  target: dir
+  identity: null
+  hardenedRuntime: false
+  gatekeeperAssess: false
+npmRebuild: false
+publish: null

@@ -1,0 +1,57 @@
+import { useEffect, useState, type ReactNode } from 'react';
+import { ArrowUpRight, CheckCheck, ChevronDown, ChevronRight, Columns3, Filter, Folder, Link2, List, Plus, Search, Terminal, X } from 'lucide-react';
+import type { Channel, WorkItem } from '../../shared/types';
+import type { FeatureProps } from './types';
+import { Button, Dropdown, DropdownItem, EmptyState, IconButton, Markdown, PropertyPanel, StatusIcon } from '../components/ui';
+import { formatDate, kindLabel, statusLabel } from '../components/format';
+import { featureNumber, featureProjectId, featureSourceIds, featureSourceLabel, nativeContinuationBlock } from './featureOwnership';
+import { ProjectRecords } from './ProjectRecords';
+import { ProjectReleases } from './ProjectWork';
+import './content.css';
+
+const statusOrder = ['open', 'investigating', 'blocked', 'verified', 'resolved'];
+interface ProjectPreferences { layout: 'list' | 'board'; status: string; channel: string }
+const defaults: ProjectPreferences = { layout: 'board', status: 'all', channel: 'all' };
+function readPreferences(id: string): ProjectPreferences {
+  try { const stored = JSON.parse(localStorage.getItem(`nohuman.project-view.${id}`) || '{}'); return { layout: stored.layout === 'list' ? 'list' : 'board', status: typeof stored.status === 'string' ? stored.status : 'all', channel: typeof stored.channel === 'string' ? stored.channel : 'all' }; } catch { return defaults; }
+}
+export function ProjectView(props: FeatureProps & { id: string }) {
+  const { id, snapshot, api, onMutate, onNavigate, onNewFeature, showInspector, busy } = props;
+  const project = snapshot.projects.find(project => project.id === id);
+  const channels = snapshot.channels.filter(channel => channel.projectId === id);
+  const allItems = snapshot.items.filter(item => featureProjectId(item, snapshot.channels) === id);
+  const [tab, setTab] = useState<'items' | 'records' | 'releases'>('items');
+  const [query, setQuery] = useState('');
+  const [preferences, setPreferences] = useState(() => readPreferences(id));
+  const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
+  useEffect(() => { setPreferences(readPreferences(id)); setQuery(''); setCollapsed(new Set()); setTab('items'); }, [id]);
+  const changePreferences = (patch: Partial<ProjectPreferences>) => setPreferences(previous => {
+    const next = { ...previous, ...patch }; try { localStorage.setItem(`nohuman.project-view.${id}`, JSON.stringify(next)); } catch { /* Keep this view preference for the current session. */ } return next;
+  });
+  const queryText = query.trim().toLocaleLowerCase();
+  const items = allItems.filter(item => (preferences.status === 'all' || item.status === preferences.status) && (preferences.channel === 'all' || (preferences.channel === 'manual' ? !item.channelId : featureSourceIds(item).includes(preferences.channel))) && (!queryText || `${featureNumber(item)} ${item.title} ${item.summary} ${item.evidence.join(' ')}`.toLocaleLowerCase().includes(queryText))).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+  const filtered = preferences.channel !== 'all' || preferences.status !== 'all' || !!query;
+  const clearFilters = () => { changePreferences({ status: 'all', channel: 'all' }); setQuery(''); };
+  const openItem = (item: WorkItem) => onNavigate({ kind: 'finding', id: item.id });
+  const nativeChannel = channels.find(channel => channel.runtime === project?.runtime) || channels[0];
+  const nativeCodex = !project?.isDemo && (project?.runtime || nativeChannel?.runtime) === 'codex';
+  const codexChannel = nativeCodex ? channels.find(channel => channel.runtime === 'codex') : undefined;
+  const nativeBlock = nativeContinuationBlock(snapshot, id);
+  if (!project) return <EmptyState title="项目不存在" description="项目可能已被移除，请在侧栏重新选择。" />;
+  return <div className="feature-layout"><main className="feature-main">
+    <div className="feature-toolbar project-feature-toolbar">
+      <div className="feature-tabs" role="tablist" aria-label="项目内容"><button role="tab" aria-selected={tab === 'items'} className={tab === 'items' ? 'active' : ''} onClick={() => setTab('items')}>功能看板 <span>{allItems.length}</span></button><button role="tab" aria-selected={tab === 'records'} className={tab === 'records' ? 'active' : ''} onClick={() => setTab('records')}>全部记录</button><button role="tab" aria-selected={tab === 'releases'} className={tab === 'releases' ? 'active' : ''} onClick={() => setTab('releases')}>上线确认 <span>{(snapshot.releases || []).filter(r => r.projectId === id && r.status === 'awaiting_approval').length || ''}</span></button></div>
+      <div className="feature-toolbar-spacer" />
+      {tab === 'items' && <><label className="feature-search"><Search size={14} /><input aria-label="搜索功能和证据" value={query} onChange={event => setQuery(event.target.value)} placeholder="搜索…" />{query && <button aria-label="清除搜索" onClick={() => setQuery('')}><X size={12} /></button>}</label>
+      <Dropdown trigger={<button type="button" className="button button-secondary"><Filter size={14} />{filtered ? '已筛选' : '筛选'}</button>}><div className="feature-menu-heading">状态</div>{['all', ...statusOrder].map(status => <DropdownItem key={status} selected={preferences.status === status} onSelect={() => changePreferences({ status })}>{status === 'all' ? '所有状态' : statusLabel(status)}</DropdownItem>)}<div className="feature-menu-heading">来源频道</div><DropdownItem selected={preferences.channel === 'all'} onSelect={() => changePreferences({ channel: 'all' })}>所有来源</DropdownItem><DropdownItem selected={preferences.channel === 'manual'} onSelect={() => changePreferences({ channel: 'manual' })}>手动创建</DropdownItem>{channels.map(channel => <DropdownItem key={channel.id} selected={preferences.channel === channel.id} onSelect={() => changePreferences({ channel: channel.id })}>{channel.name}</DropdownItem>)}{filtered && <DropdownItem onSelect={clearFilters}>清除筛选</DropdownItem>}</Dropdown>
+      <IconButton label={preferences.layout === 'list' ? '切换为看板' : '切换为列表'} onClick={() => changePreferences({ layout: preferences.layout === 'list' ? 'board' : 'list' })}>{preferences.layout === 'list' ? <Columns3 size={16} /> : <List size={16} />}</IconButton></>}
+      {nativeCodex ? <Button variant="ghost" aria-label="在 Codex App 中继续此项目" title={codexChannel ? '打开此项目的原生会话；尚未关联时打开 App 新建对话。' : '创建 Codex 频道后可打开原生对话。'} disabled={busy || !codexChannel} onClick={() => codexChannel && void onMutate(() => api.openNativeApp(codexChannel.id))}><ArrowUpRight size={14} /><span className="project-native-label">Codex App</span></Button> : <Button variant="ghost" aria-label="在原生 CLI 中继续" title={nativeBlock || '在原生 CLI 中继续此项目'} disabled={busy || !!nativeBlock || !nativeChannel} onClick={() => nativeChannel && void onMutate(() => api.openNativeSession(nativeChannel.id))}><Terminal size={14} /><span className="project-native-label">原生 CLI</span></Button>}
+      <Button disabled={busy} onClick={() => onNewFeature(id)}><Plus size={14} />新建功能</Button>
+    </div>
+    {tab === 'releases' ? <ProjectReleases {...props} key={id} projectId={id} /> : tab === 'records' ? <div className="feature-scroll"><ProjectRecords {...props} projectId={id} /></div> : !items.length ? <div className="feature-empty"><EmptyState icon={<CheckCheck />} title={filtered ? '没有符合条件的功能' : '还没有项目功能'} description={filtered ? '调整状态、来源频道或关键词，查看其他功能。' : 'Codex 会根据项目目标自动建立和跟踪功能，你可以进入频道指导它。'} action={<Button onClick={filtered ? clearFilters : () => onNewFeature(id)}>{filtered ? '清除筛选' : <><Plus size={14} />新建功能</>}</Button>} /></div> : preferences.layout === 'list' ? <div className="feature-scroll task-list">{statusOrder.filter(status => items.some(item => item.status === status)).map(status => <section className="task-group" key={status}><button className="task-group-heading" aria-expanded={!collapsed.has(status)} onClick={() => setCollapsed(previous => { const next = new Set(previous); if (next.has(status)) next.delete(status); else next.add(status); return next; })}>{collapsed.has(status) ? <ChevronRight size={12} /> : <ChevronDown size={12} />}<StatusIcon status={status} /><span>{statusLabel(status)}</span><span className="subtle">{items.filter(item => item.status === status).length}</span></button>{!collapsed.has(status) && items.filter(item => item.status === status).map(item => <FindingRow key={item.id} item={item} channels={channels} onClick={() => openItem(item)} />)}</section>)}</div> : <div className="feature-scroll board-scroll"><div className="finding-board">{statusOrder.filter(status => items.some(item => item.status === status)).map(status => <section className="board-column" key={status}><h3><StatusIcon status={status} />{statusLabel(status)} <span>{items.filter(item => item.status === status).length}</span></h3>{items.filter(item => item.status === status).map(item => <button className="board-card" key={item.id} onClick={() => openItem(item)}><span className="board-card-type">{kindLabel(item.kind)} <span>{featureNumber(item)}</span></span><strong>{item.title}</strong><span className="board-card-meta"><span className="feature-source-tag" title={`来源：${featureSourceLabel(item, channels)}`}>{item.channelId ? '# ' : ''}{featureSourceLabel(item, channels)}</span><span><Link2 size={12} />{item.evidence.length}</span></span></button>)}</section>)}</div></div>}
+  </main>{showInspector && <PropertyPanel><div className="property-project-icon"><Folder size={24} /></div><h2 className="property-title">{project.name}</h2>{project.isDemo && <span className="feature-demo-label">示例数据</span>}<section className="property-section"><h3>属性</h3><Property label="项目功能">{allItems.length} 个</Property><Property label="持续频道">{channels.length} 个</Property><Property label="正在运行">{channels.filter(channel => channel.status === 'running').length} 个</Property><Property label="创建时间">{formatDate(project.createdAt)}</Property></section><section className="property-section"><h3>项目目标</h3><div className="property-description"><Markdown>{project.goal}</Markdown></div></section><section className="property-section"><h3>资源</h3>{project.path ? <><p className="property-path">{project.path}</p><Button variant="ghost" disabled={busy} onClick={() => void onMutate(() => api.openProjectFolder(project.id))}><Folder size={14} />打开项目目录</Button></> : <p className="subtle">示例项目未关联目录</p>}</section></PropertyPanel>}</div>;
+}
+export function FindingRow({ item, channel, channels = channel ? [channel] : [], onClick }: { item: WorkItem; channel?: Channel; channels?: Channel[]; onClick: () => void }) {
+  return <button className="finding-row" onClick={onClick} title={item.title}><StatusIcon status={item.status} /><span className="finding-id">{featureNumber(item)}</span><span className="finding-row-title">{item.title}</span><span className="finding-kind">{kindLabel(item.kind)}</span><span className="finding-channel feature-source-tag" title={`来源：${featureSourceLabel(item, channels)}`}>{featureSourceLabel(item, channels)}</span><span className="finding-evidence"><Link2 size={12} />{item.evidence.length}</span></button>;
+}
+export function Property({ label, children }: { label: string; children: ReactNode }) { return <div className="feature-property"><span>{label}</span><div>{children}</div></div>; }

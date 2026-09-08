@@ -1,0 +1,15 @@
+.build/
+.swiftpm/
+dist/
+.DS_Store
+node_modules/
+out/
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+.test-data/
+artifacts/
+.env
+.env.*
+!.env.example
+*.log
