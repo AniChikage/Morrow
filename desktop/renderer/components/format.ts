@@ -1,4 +1,4 @@
-import { isLegacyRuntime, type LegacyRuntimeID } from '../../shared/types';
+import { isLegacyRuntime, type Channel, type LegacyRuntimeID, type UsageWindow } from '../../shared/types';
 export const statuses: Record<string, string> = {
   open: '待处理',
   investigating: '调查中',
@@ -39,4 +39,28 @@ export function formatDate(value: string) {
 }
 export function shortId(value: string) {
   return (value.startsWith('demo-') ? value.slice(-3) : value.slice(0, 6)).toUpperCase();
+}
+export const usageWindowLabels: Record<UsageWindow, string> = { '5h': '5 小时', weekly: '每周' };
+export const usageWindowLabel = (value: string) => usageWindowLabels[value as UsageWindow] || value;
+const clockFormatter = new Intl.DateTimeFormat('zh-CN', { hour: '2-digit', minute: '2-digit', hour12: false });
+const sameDay = (a: Date, b: Date) =>
+  a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate();
+/** Reset moments read relative to today ("今天 21:00", "明天 08:00"); other days fall back to the date. */
+export function formatResetTime(value?: string) {
+  const date = value ? new Date(value) : undefined;
+  if (!date || Number.isNaN(date.getTime())) return '重置时间未知';
+  const today = new Date();
+  const tomorrow = new Date(today);
+  tomorrow.setDate(today.getDate() + 1);
+  if (sameDay(date, today)) return `今天 ${clockFormatter.format(date)}`;
+  if (sameDay(date, tomorrow)) return `明天 ${clockFormatter.format(date)}`;
+  return formatDate(value!);
+}
+/** A channel held by the usage gate reads differently from one waiting on its own schedule. */
+export function channelStatusLabel(channel: Pick<Channel, 'status' | 'nextRunAt' | 'usageWait'>) {
+  if (channel.usageWait && channel.status === 'waiting') {
+    const at = formatResetTime(channel.usageWait.resetsAt || channel.nextRunAt);
+    return channel.usageWait.kind === 'unknown' ? `额度未知，等待重试 · ${at}` : `等待额度重置 · ${at}`;
+  }
+  return statusLabel(channel.status);
 }

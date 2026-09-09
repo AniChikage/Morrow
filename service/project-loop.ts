@@ -9,6 +9,7 @@ import { Store, now } from './store.ts';
 import { ProjectStrategy } from './project-strategy.ts';
 import { WorkVerification } from './work-verification.ts';
 import { ExecutionEvidence } from './execution-evidence.ts';
+import type { UsageMonitor } from './usage.ts';
 
 export type Scope = { id: string; projectId: string; channelId: string; runId: string; expiresAt: string };
 type Wait = {
@@ -84,6 +85,8 @@ export class ProjectWorkLoop {
   strategy: ProjectStrategy;
   verification: WorkVerification;
   executions: ExecutionEvidence;
+  /** Attached by the engine; the reviewer gate and `context.budget` read through it. */
+  usage?: UsageMonitor;
   constructor(store: Store, home: string) {
     this.store = store;
     this.home = home;
@@ -264,6 +267,7 @@ export class ProjectWorkLoop {
         briefRevision: project.briefRevision || 0,
       },
       channel: { id: channel.id, goal: channel.goal },
+      budget: this.usage?.budgetContext(project, channel),
       strategy: this.strategy.context(scope, item?.id),
       learningCoverage: {
         total: learningTotal,

@@ -31,6 +31,7 @@ import { featureNumber, featureProjectId, featureSourceIds, featureSourceLabel }
 import { ProjectRecords } from './ProjectRecords';
 import { ProjectReleases, ProjectThinking } from './ProjectWork';
 import { ProjectBrief } from './ProjectBrief';
+import { ProjectUsageSection } from './ProjectUsage';
 import './content.css';
 
 const statusOrder = ['open', 'investigating', 'blocked', 'verified', 'resolved'];
@@ -362,6 +363,11 @@ export function ProjectView(props: FeatureProps & { id: string }) {
               <Property label="已停止支持">{legacyChannels.length} 个旧频道，历史可读</Property>
             )}
             <Property label="正在运行">{channels.filter((channel) => channel.status === 'running').length} 个</Property>
+            {channels.some((channel) => channel.usageWait && channel.status === 'waiting') && (
+              <Property label="等待额度">
+                {channels.filter((channel) => channel.usageWait && channel.status === 'waiting').length} 个频道
+              </Property>
+            )}
             <Property label="创建时间">{formatDate(project.createdAt)}</Property>
           </section>
           <section className="property-section">
@@ -377,6 +383,13 @@ export function ProjectView(props: FeatureProps & { id: string }) {
               </span>
             </button>
           </section>
+          <ProjectUsageSection
+            api={api}
+            project={project}
+            busy={busy}
+            onMutate={onMutate}
+            readingAt={snapshot.usage?.reading?.at}
+          />
           <section className="property-section">
             <h3>资源</h3>
             {project.path ? (

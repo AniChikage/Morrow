@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
-import { cleanup, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { Dialogs } from './Dialogs';
 import { featureProps, item, TestProviders, timestamp } from '../features/testFixtures';
@@ -388,4 +388,35 @@ it('keeps a retired-runtime channel editable in name and direction only, without
     })
   );
   expect(context.current.api.channelAction).not.toHaveBeenCalled();
+});
+it('saves the usage reserve line and the unknown-usage stop from the settings dialog', async () => {
+  const user = userEvent.setup();
+  render(<Dialogs modal={{ kind: 'settings' }} onClose={() => {}} onNavigate={() => {}} />, { wrapper: TestProviders });
+  const form = within(await screen.findByRole('form', { name: '保留给自己的额度' }));
+  const window = form.getByRole('combobox', { name: '保留额度窗口' }) as HTMLSelectElement;
+  await waitFor(() => expect(window.disabled).toBe(false));
+  expect(context.current.api.getSettings).toHaveBeenCalledOnce();
+  expect((form.getByRole('button', { name: '清除保留额度' }) as HTMLButtonElement).disabled).toBe(true);
+  await user.selectOptions(window, 'weekly');
+  await user.type(form.getByRole('spinbutton', { name: '保留百分比' }), '20');
+  await user.click(form.getByRole('button', { name: '保存保留额度' }));
+  expect(context.current.api.updateSettings).toHaveBeenCalledWith({
+    usageReserve: { window: 'weekly', keepPercent: 20 },
+  });
+  expect(await form.findByText('已保存保留额度')).toBeTruthy();
+  await user.click(form.getByRole('checkbox', { name: '额度未知时也停止自动工作' }));
+  expect(context.current.api.updateSettings).toHaveBeenLastCalledWith({ stopWhenUsageUnknown: true });
+  await waitFor(() => expect((form.getByRole('checkbox') as HTMLInputElement).checked).toBe(true));
+  await user.click(form.getByRole('button', { name: '清除保留额度' }));
+  expect(context.current.api.updateSettings).toHaveBeenLastCalledWith({ usageReserve: null });
+  expect(await form.findByText('已清除保留额度')).toBeTruthy();
+  expect((form.getByRole('spinbutton', { name: '保留百分比' }) as HTMLInputElement).value).toBe('');
+  // The connection form above is untouched by the usage section.
+  expect(context.current.api.connect).not.toHaveBeenCalled();
+});
+it('hides the usage section when the bridge has no settings support', async () => {
+  delete context.current.api.getSettings;
+  render(<Dialogs modal={{ kind: 'settings' }} onClose={() => {}} onNavigate={() => {}} />, { wrapper: TestProviders });
+  expect(screen.getByRole('button', { name: '连接' })).toBeTruthy();
+  expect(screen.queryByRole('form', { name: '保留给自己的额度' })).toBeNull();
 });

@@ -3,11 +3,21 @@ import { useEffect, useId, useRef, useState, type ReactNode, type FormEvent } fr
 import * as Dialog from '@radix-ui/react-dialog';
 import { X, FolderOpen, Plus, Search, Hash, Folder, FileText, Laptop, Server, ArrowUpRight, Check } from 'lucide-react';
 import { Button, IconButton, StatusIcon } from './ui';
-import { kindLabel } from './format';
+import { kindLabel, usageWindowLabel } from './format';
 import { useWorkspace } from '../state/workspace';
 import { briefPlaceholder, briefTemplate } from '../features/ProjectBrief';
-import { isLegacyRuntime } from '../../shared/types';
-import type { Channel, ChannelPatch, ConnectionConfig, Route, WorkItem, ItemPatch } from '../../shared/types';
+import { isLegacyRuntime, usageWindows } from '../../shared/types';
+import type {
+  Channel,
+  ChannelPatch,
+  ConnectionConfig,
+  Route,
+  WorkItem,
+  ItemPatch,
+  Settings,
+  SettingsPatch,
+  UsageWindow,
+} from '../../shared/types';
 
 export type ModalState =
   | { kind: 'project' }
@@ -662,6 +672,124 @@ function SearchDialog({
     </Modal>
   );
 }
+/** The global usage line kept for the user's own Codex work, plus the opt-in stop when the reading is unknown. */
+function UsageReserveSettings() {
+  const { api, busy, mutate } = useWorkspace();
+  const [settings, setSettings] = useState<Settings>();
+  const [loadError, setLoadError] = useState('');
+  const [selectedWindow, setWindow] = useState<UsageWindow>('5h');
+  const [percent, setPercent] = useState('');
+  const [saved, setSaved] = useState('');
+  const apply = (value: Settings) => {
+    setSettings(value);
+    setWindow(value.usageReserve?.window || '5h');
+    setPercent(value.usageReserve ? String(value.usageReserve.keepPercent) : '');
+  };
+  useEffect(() => {
+    if (!api.getSettings) return;
+    let cancelled = false;
+    api.getSettings().then(
+      (value) => {
+        if (!cancelled) apply(value);
+      },
+      (failure) => {
+        if (!cancelled) setLoadError(failure instanceof Error ? failure.message : '额度设置加载失败');
+      }
+    );
+    return () => {
+      cancelled = true;
+    };
+  }, [api]);
+  if (!api.getSettings || !api.updateSettings) return null;
+  const update = async (patch: SettingsPatch, receipt: string) => {
+    setSaved('');
+    const ok = await mutate(async () => apply(await api.updateSettings!(patch)));
+    if (ok) setSaved(receipt);
+  };
+  async function save(event: FormEvent) {
+    event.preventDefault();
+    const value = Number(percent);
+    if (!Number.isInteger(value) || value < 1 || value > 99) {
+      setLoadError('保留比例需要是 1 到 99 之间的整数。');
+      return;
+    }
+    setLoadError('');
+    await update({ usageReserve: { window: selectedWindow, keepPercent: value } }, '已保存保留额度');
+  }
+  return (
+    <form className="settings-usage" onSubmit={save} aria-label="保留给自己的额度">
+      <div className="settings-section-title">保留给自己的额度</div>
+      <p className="form-note">
+        账户用量达到「100% − 保留」时，Morrow 停止发起新的自动轮次和独立复核，等待窗口重置；普通对话不受影响。
+      </p>
+      <div className="usage-form">
+        <select
+          aria-label="保留额度窗口"
+          value={selectedWindow}
+          disabled={busy || !settings}
+          onChange={(e) => setWindow(e.target.value as UsageWindow)}
+        >
+          {usageWindows.map((name) => (
+            <option key={name} value={name}>
+              {usageWindowLabel(name)}
+            </option>
+          ))}
+        </select>
+        <input
+          aria-label="保留百分比"
+          type="number"
+          min={1}
+          max={99}
+          step={1}
+          placeholder="保留 %"
+          value={percent}
+          disabled={busy || !settings}
+          onChange={(e) => setPercent(e.target.value)}
+        />
+        <Button
+          variant="primary"
+          type="submit"
+          aria-label="保存保留额度"
+          disabled={busy || !settings || !percent.trim()}
+        >
+          保存
+        </Button>
+        <Button
+          aria-label="清除保留额度"
+          disabled={busy || !settings?.usageReserve}
+          onClick={() => void update({ usageReserve: null }, '已清除保留额度')}
+        >
+          清除
+        </Button>
+      </div>
+      <label className="checkbox-field">
+        <input
+          type="checkbox"
+          checked={!!settings?.stopWhenUsageUnknown}
+          disabled={busy || !settings}
+          onChange={(e) =>
+            void update(
+              { stopWhenUsageUnknown: e.target.checked },
+              e.target.checked ? '额度未知时将停止自动工作' : '额度未知时继续自动工作'
+            )
+          }
+        />
+        额度未知时也停止自动工作
+      </label>
+      {loadError && (
+        <p role="alert" className="form-error">
+          {loadError}
+        </p>
+      )}
+      {saved && (
+        <p role="status" className="settings-saved">
+          <Check size={14} />
+          {saved}
+        </p>
+      )}
+    </form>
+  );
+}
 function SettingsDialog({ onClose }: { onClose: () => void }) {
   const { api, connection, busy, mutate, error, reset, setConnectionInfo, clearError } = useWorkspace();
   const [config, setConfig] = useState<ConnectionConfig>(
@@ -776,6 +904,7 @@ function SettingsDialog({ onClose }: { onClose: () => void }) {
           </Button>
         </div>
       </form>
+      <UsageReserveSettings />
       <div className="settings-about">
         <span>{productName}</span>
         <span>{version} · Electron / React</span>

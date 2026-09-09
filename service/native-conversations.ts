@@ -12,6 +12,7 @@ import type {
   NativeRequest,
   NativeMessageReceipt,
   NativeThreadSummary,
+  UsageReading,
 } from './protocol.ts';
 import { Store, now } from './store.ts';
 import type { Engine } from './engine.ts';
@@ -51,6 +52,8 @@ export interface NativeTransport {
   /** Version string the shared native backend reported when connected through it; empty otherwise. */
   readonly runtimeVersion?: string;
   createThread?(cwd: string): Promise<NativeSnapshot>;
+  /** Account rate-limit windows, when the backend can report them; resolves `undefined` on any failure. */
+  readUsage?(): Promise<UsageReading | undefined>;
   connect(): Promise<void>;
   status(): { connected: boolean; socketPath: string; lastError: string | null };
   threadStatus?(threadId: string): { ready: boolean; detail: string; lastSyncedAt?: string };
@@ -303,6 +306,7 @@ export class NativeConversations {
           preferredThreadIds: () => store.all<Binding>('native_bindings').map((row) => row.threadId),
           onConnected: (host) =>
             store.put('migrations', { id: 'native-host-affinity', launchId: host.launchId, connectedAt: now() }),
+          onUsage: (reading) => engine.usage.record(reading, 'poll'),
         })
       );
   }
@@ -474,6 +478,7 @@ export class NativeConversations {
       appInstalled,
       ...(appVersion ? { appVersion } : {}),
       ...(runtimeVersion ? { runtimeVersion } : {}),
+      usage: this.engine.usage.status(),
       detail,
       capabilities: {
         list: connected,
@@ -1386,13 +1391,20 @@ export class NativeConversations {
       mkdirSync(runDir, { recursive: true, mode: 0o700 });
       const prompt = this.engine.prompt(project, channel, run);
       this.store.put('runs', run);
+      this.engine.trackUsageBefore(run);
       this.engine.persistIO(run.id, 'prompt', prompt);
       this.scheduled.set(id, {
         run,
         revisions: new Map(this.store.projectItems(project.id).map((item) => [item.id, item.revision])),
         runDir,
       });
-      this.store.put('channels', { ...channel, status: 'running', lastRunAt: run.startedAt, nextRunAt: '' });
+      this.store.put('channels', {
+        ...channel,
+        status: 'running',
+        lastRunAt: run.startedAt,
+        nextRunAt: '',
+        usageWait: undefined,
+      });
       const receipt = await this.send(id, prompt, randomUUID(), 'schedule', run.id);
       const active = this.scheduled.get(id);
       if (active) {

@@ -7,7 +7,11 @@ import type {
   DesktopAPI,
   ItemPatch,
   ProjectPatch,
+  ProjectUsage,
+  Settings,
+  SettingsPatch,
   Snapshot,
+  UsageBudget,
   WorkItem,
   WorkspaceEvent,
 } from '../../shared/types';
@@ -103,6 +107,7 @@ export function snapshot(): Snapshot {
 }
 export function featureProps(patch: Partial<FeatureProps> = {}) {
   const state = snapshot();
+  const settings: Settings = { id: 'global', updatedAt: timestamp };
   const api = {
     getState: vi.fn(async () => state),
     getConnection: vi.fn(),
@@ -116,6 +121,20 @@ export function featureProps(patch: Partial<FeatureProps> = {}) {
       const project = state.projects.find((value) => value.id === id)!;
       return { ...project, goal: patch.goal ?? project.goal, brief: patch.brief, briefRevision: patch.revision + 1 };
     }),
+    getSettings: vi.fn(async () => structuredClone(settings)),
+    updateSettings: vi.fn(async (data: SettingsPatch) => {
+      if (data.usageReserve === null) delete settings.usageReserve;
+      else if (data.usageReserve) settings.usageReserve = data.usageReserve;
+      if (data.stopWhenUsageUnknown !== undefined) settings.stopWhenUsageUnknown = data.stopWhenUsageUnknown;
+      return structuredClone(settings);
+    }),
+    updateProjectUsageBudget: vi.fn(async (id: string, usageBudget: UsageBudget | null) => {
+      const project = state.projects.find((value) => value.id === id)!;
+      if (usageBudget) project.usageBudget = usageBudget;
+      else delete project.usageBudget;
+      return structuredClone(project);
+    }),
+    getProjectUsage: vi.fn(async (): Promise<ProjectUsage> => ({ stale: true, gate: { blocked: false } })),
     createChannel: vi.fn(),
     updateChannel: vi.fn(),
     channelAction: vi.fn(async () => ({ ok: true })),

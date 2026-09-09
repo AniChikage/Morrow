@@ -1,4 +1,12 @@
-import type { DesktopAPI, Snapshot, Channel, ConnectionInfo, WorkspaceEvent, RunOutputChunk } from '../../shared/types';
+import type {
+  DesktopAPI,
+  Snapshot,
+  Channel,
+  ConnectionInfo,
+  WorkspaceEvent,
+  RunOutputChunk,
+  Settings,
+} from '../../shared/types';
 const createdAt = '2026-09-06T14:47:00.000Z';
 const channels: Channel[] = [
   {
@@ -184,6 +192,10 @@ const connection: ConnectionInfo = {
   connected: true,
   name: '界面预览 · 示例',
 };
+// Preview limits live in memory only; there is no account reading, so the usage stays "unknown" here.
+const settings: Settings = { id: 'global', updatedAt: createdAt };
+snapshot.settings = settings;
+snapshot.usage = { stale: true };
 const clone = () => structuredClone(snapshot);
 const unavailable = async (): Promise<never> => {
   throw new Error('请在 Morrow 桌面应用中执行此操作。');
@@ -238,6 +250,37 @@ export function previewAPI(): DesktopAPI {
         after: { goal: project.goal, briefRevision: project.briefRevision },
       });
       return structuredClone(project);
+    },
+    getSettings: async () => structuredClone(settings),
+    updateSettings: async (data) => {
+      const before = structuredClone(settings);
+      if (data.usageReserve === null) delete settings.usageReserve;
+      else if (data.usageReserve) settings.usageReserve = data.usageReserve;
+      if (data.stopWhenUsageUnknown !== undefined) settings.stopWhenUsageUnknown = data.stopWhenUsageUnknown;
+      settings.updatedAt = new Date().toISOString();
+      audit('', '', '', '[预览] 更新了额度设置', 'settings.updated', { before, after: structuredClone(settings) });
+      return structuredClone(settings);
+    },
+    updateProjectUsageBudget: async (id, usageBudget) => {
+      const project = snapshot.projects.find((value) => value.id === id);
+      if (!project) throw new Error('项目不存在');
+      if (project.isDemo) throw new Error('示例项目不能设置额度上限。');
+      const before = { usageBudget: project.usageBudget ?? null };
+      if (usageBudget) project.usageBudget = usageBudget;
+      else delete project.usageBudget;
+      audit(id, '', '', '[预览] 更新了项目额度上限', 'project.updated', { before, after: { usageBudget } });
+      return structuredClone(project);
+    },
+    getProjectUsage: async (id) => {
+      const project = snapshot.projects.find((value) => value.id === id);
+      if (!project) throw new Error('项目不存在');
+      return {
+        stale: true,
+        budget: project.usageBudget,
+        reserve: settings.usageReserve,
+        ...(project.usageBudget ? { project: { usedPercent: 0, runs: 0, windowStart: createdAt } } : {}),
+        gate: { blocked: false },
+      };
     },
     createChannel: unavailable,
     updateChannel: async (id, data) => {

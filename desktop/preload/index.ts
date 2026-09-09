@@ -6,6 +6,11 @@ const api: DesktopAPI = {
   getProjectWork: (id, itemId) => ipcRenderer.invoke('morrow:get-project-work', id, itemId || ''),
   getProjectBrief: (id) => ipcRenderer.invoke('morrow:get-project-brief', id),
   updateProject: (id, data) => ipcRenderer.invoke('morrow:update-project', id, data),
+  getSettings: () => ipcRenderer.invoke('morrow:get-settings'),
+  updateSettings: (data) => ipcRenderer.invoke('morrow:update-settings', data),
+  updateProjectUsageBudget: (id, usageBudget) =>
+    ipcRenderer.invoke('morrow:update-project-usage-budget', id, usageBudget),
+  getProjectUsage: (id) => ipcRenderer.invoke('morrow:get-project-usage', id),
   reviewRelease: (id, hash, decision, feedback) =>
     ipcRenderer.invoke('morrow:review-release', id, hash, decision, feedback),
   reconcileRelease: (id) => ipcRenderer.invoke('morrow:reconcile-release', id),

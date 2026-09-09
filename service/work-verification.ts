@@ -521,6 +521,7 @@ file/agent 证据可能由执行者生成，只证明采集了该内容，不证
       .all<Verification>('loop_verifications')
       .filter((row) => row.status === 'queued')) {
       if (this.active.size >= 1) return;
+      if (row.retryAt && row.retryAt > now()) continue;
       const channel = this.loop.store.get<Channel>('channels', row.channelId),
         run = this.loop.store.get<Run>('runs', row.runId);
       if (!channel || (!this.loop.store.get<any>('controls', row.channelId)?.enabled && run?.status !== 'running'))
@@ -537,6 +538,34 @@ file/agent 证据可能由执行者生成，只证明采集了该内容，不证
       this.finish(id, 'unknown', '复核前源版本或目标已变化，请准备新材料');
       return;
     }
+    // The usage gate holds a queued review in place; it is re-attempted by the tick, never finished as unknown.
+    const gate = this.loop.usage?.gate(project);
+    if (gate?.blocked) {
+      if (gate.pending) {
+        this.update(id, { retryAt: gate.until });
+        return;
+      }
+      const changed = !row.usageWait || row.usageWait.kind !== gate.kind || row.usageWait.window !== gate.window;
+      this.update(id, {
+        // Bounded: re-check within a minute so a cleared limit takes effect, and at the reset at the latest.
+        retryAt: new Date(Math.min(Date.parse(gate.until), Date.now() + 60_000)).toISOString(),
+        usageWait: {
+          kind: gate.kind,
+          ...(gate.window ? { window: gate.window } : {}),
+          since: changed ? now() : row.usageWait!.since,
+        },
+      });
+      if (changed)
+        this.loop.audit(
+          row,
+          'verification.usage-wait',
+          `独立复核等待额度：${gate.message}`,
+          row.itemId,
+          { verificationId: id, kind: gate.kind },
+          'system'
+        );
+      return;
+    }
     if (!this.transport?.createThread) {
       this.finish(id, 'unknown', '原生后台暂不支持独立只读复核');
       return;
@@ -546,6 +575,8 @@ file/agent 证据可能由执行者生成，只证明采集了该内容，不证
       status: 'running',
       startedAt: now(),
       summary: '独立检查源文件、原始证据与反例',
+      retryAt: undefined,
+      usageWait: undefined,
     });
     const active = {
       timer: setTimeout(() => this.stop(id, '独立复核达到 5 分钟上限，结果保留未知'), row.timeoutSeconds * 1000),

@@ -47,6 +47,10 @@ export type Verification = {
   turnId?: string;
   model?: string;
   interruptPending?: boolean;
+  /** A queued review held by the usage gate is not re-attempted before this time. */
+  retryAt?: string;
+  /** Set while the usage gate holds this queued review; cleared when it starts. */
+  usageWait?: { kind: 'budget' | 'reserve' | 'unknown'; window?: string; since: string };
   prompt: string;
   bytes: number;
   commandCount: number;

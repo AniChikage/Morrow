@@ -4,6 +4,7 @@ import { ArrowUpRight, ChevronRight, Hash, Info, Monitor, RefreshCw, Server, Ter
 import type { ConnectionInfo, DesktopAPI, NativeConnectionStatus, Runtime } from '../../shared/types';
 import type { FeatureProps } from './types';
 import { Button, EmptyState } from '../components/ui';
+import { formatResetTime, usageWindowLabel } from '../components/format';
 import './content.css';
 import './runtimes.css';
 
@@ -109,6 +110,26 @@ function BridgeChecklist({
           {receipt}
         </p>
       )}
+      <p className="runtime-settings-account-usage" aria-label="账户用量">
+        <b>账户用量</b>
+        {native.usage?.reading && !native.usage.stale ? (
+          <span>
+            {native.usage.reading.windows
+              .map(
+                (entry) =>
+                  `${usageWindowLabel(entry.name)} 已用 ${entry.usedPercent}%，${entry.resetsAt ? `重置 ${formatResetTime(entry.resetsAt)}` : '重置时间未知'}`
+              )
+              .join('；')}
+          </span>
+        ) : (
+          <>
+            <span className="usage-unknown">额度未知</span>
+            <span>
+              {!native.connected ? '后台未连接' : native.usage?.reading ? '读数已过期' : '协议未返回账户用量'}
+            </span>
+          </>
+        )}
+      </p>
     </div>
   );
 }

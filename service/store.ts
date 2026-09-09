@@ -48,6 +48,8 @@ export class Store {
       'native_turns',
       'native_attachments',
       'project_brief_revisions',
+      'usage_samples',
+      'settings',
     ])
       this.db.exec(`CREATE TABLE IF NOT EXISTS ${table} (id TEXT PRIMARY KEY, data TEXT NOT NULL)`);
     this.db.exec(
@@ -75,6 +77,7 @@ export class Store {
       'loop_verification_events',
       'loop_finalizations',
       'project_brief_revisions',
+      'usage_samples',
     ])
       this.db.exec(`CREATE INDEX IF NOT EXISTS ${table}_project ON ${table}(json_extract(data,'$.projectId'))`);
   }
@@ -286,6 +289,8 @@ export class Store {
         'native_turns',
         'native_attachments',
         'project_brief_revisions',
+        'usage_samples',
+        'settings',
       ].includes(t)
     )
       throw new Error('Unknown table');

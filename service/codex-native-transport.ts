@@ -1,6 +1,7 @@
 import { CodexDesktopTransport, NativeDesktopError } from './codex-desktop-transport.ts';
 import { CodexSharedTransport } from './codex-shared-transport.ts';
 import type { NativeTransport, NativeSnapshot, NativeWorkOptions } from './native-conversations.ts';
+import type { UsageReading } from './protocol.ts';
 
 /** Keep the existing follower available while the App transitions to its shared host. */
 export class CodexNativeTransport implements NativeTransport {
@@ -99,6 +100,16 @@ export class CodexNativeTransport implements NativeTransport {
   }
   async subscribe(id: string, listener: (snapshot: NativeSnapshot) => void) {
     return this.subscribeChanges(id, (snapshot) => listener(snapshot));
+  }
+  /** Only the shared backend speaks the rate-limit method; the legacy desktop follower has no usage read. */
+  async readUsage(): Promise<UsageReading | undefined> {
+    try {
+      await this.connect();
+    } catch {
+      return undefined;
+    }
+    if (!this.backgroundReady) return undefined;
+    return this.shared.readUsage();
   }
   async createThread(cwd: string) {
     await this.connect();

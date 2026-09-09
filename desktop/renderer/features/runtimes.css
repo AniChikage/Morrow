@@ -281,6 +281,19 @@
   margin: 4px 0 0;
   color: var(--muted);
 }
+/* The account's rate-limit windows under the checklist; `.runtime-settings-usage` is the table's channel column. */
+.runtime-settings-account-usage {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 10px;
+  margin: 6px 0 0;
+  color: #50505a;
+}
+.runtime-settings-account-usage > b {
+  font-weight: 500;
+  color: var(--muted);
+}
 .runtime-settings-note {
   display: flex;
   align-items: flex-start;

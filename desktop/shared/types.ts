@@ -18,6 +18,77 @@ export type AnyRuntimeID = RuntimeID | LegacyRuntimeID;
 export const legacyRuntimes: readonly LegacyRuntimeID[] = ['claude', 'trae'];
 export const isLegacyRuntime = (value: string): value is LegacyRuntimeID =>
   (legacyRuntimes as readonly string[]).includes(value);
+/** Account rate-limit windows Codex reports: a rolling five-hour window and a weekly one. */
+export const usageWindows = ['5h', 'weekly'] as const;
+export type UsageWindow = (typeof usageWindows)[number];
+export interface UsageWindowReading {
+  name: UsageWindow;
+  usedPercent: number;
+  resetsAt?: string;
+  windowMinutes?: number;
+}
+export interface UsageReading {
+  at: string;
+  source: 'protocol' | 'native-tool';
+  windows: UsageWindowReading[];
+}
+/** Project-level cap on the usage Morrow attributes to this project's runs (an estimate: the account is shared). */
+export interface UsageBudget {
+  window: UsageWindow;
+  limitPercent: number;
+}
+/** Global line kept for the user's own work; compared against the exact account reading. */
+export interface UsageReserve {
+  window: UsageWindow;
+  keepPercent: number;
+}
+export interface Settings {
+  id: 'global';
+  usageReserve?: UsageReserve;
+  stopWhenUsageUnknown?: boolean;
+  updatedAt: string;
+}
+export interface SettingsPatch {
+  /** `null` clears the reserve line. */
+  usageReserve?: UsageReserve | null;
+  stopWhenUsageUnknown?: boolean;
+}
+export interface RunUsage {
+  before?: UsageReading;
+  after?: UsageReading;
+  delta?: Partial<Record<UsageWindow, number>>;
+  attribution: 'estimated';
+}
+/** Why a channel is waiting on usage rather than on its own schedule. */
+export interface UsageWait {
+  kind: 'budget' | 'reserve' | 'unknown';
+  window?: UsageWindow;
+  resetsAt?: string;
+  since: string;
+}
+/** The latest account reading; `stale` when older than ten minutes, past its reset, or absent. */
+export interface UsageStatus {
+  reading?: UsageReading;
+  stale: boolean;
+}
+export type UsageGate =
+  | { blocked: false }
+  | {
+      blocked: true;
+      kind: 'reserve' | 'budget' | 'unknown';
+      window?: UsageWindow;
+      resetsAt?: string;
+      until: string;
+      pending?: boolean;
+      message: string;
+    };
+/** `GET /api/projects/:id/usage`: the account reading, the limits that apply and this project's estimated share. */
+export interface ProjectUsage extends UsageStatus {
+  budget?: UsageBudget;
+  reserve?: UsageReserve;
+  project?: { usedPercent: number; runs: number; windowStart: string };
+  gate: UsageGate;
+}
 export interface Project {
   id: string;
   name: string;
@@ -27,6 +98,7 @@ export interface Project {
   brief?: string;
   /** Saved goal/brief version; 0 or absent until the user writes one. */
   briefRevision?: number;
+  usageBudget?: UsageBudget;
   createdAt: string;
   isDemo: boolean;
   runtime?: AnyRuntimeID;
@@ -58,6 +130,7 @@ export interface Channel {
   nextRunAt: string;
   lastRunAt: string;
   sessionId: string;
+  usageWait?: UsageWait;
 }
 export interface WorkItem {
   projectId?: string;
@@ -89,6 +162,7 @@ export interface Run {
   reportError?: string;
   exitCode?: number;
   signal?: string;
+  usage?: RunUsage;
   id: string;
   channelId: string;
   runtime: string;
@@ -138,6 +212,8 @@ export interface Snapshot {
   events: WorkspaceEvent[];
   runtimes: Runtime[];
   releases?: Release[];
+  settings?: Settings;
+  usage?: UsageStatus;
 }
 export const emptySnapshot: Snapshot = { projects: [], channels: [], items: [], runs: [], events: [], runtimes: [] };
 export interface ConnectionConfig {
@@ -252,6 +328,8 @@ export interface NativeConnectionStatus {
   runtimeVersion?: string;
   backgroundReady?: boolean;
   backgroundConfigured?: boolean;
+  /** Latest account usage reading known to the service, when any. */
+  usage?: UsageStatus;
   capabilities: { list: boolean; read: boolean; send: boolean; create: boolean; interrupt: boolean; respond: boolean };
 }
 export interface NativeThreadSummary {
@@ -322,6 +400,10 @@ export interface DesktopAPI {
   getProjectWork?(projectId: string, itemId?: string): Promise<ProjectLoop>;
   getProjectBrief?(projectId: string): Promise<ProjectBrief>;
   updateProject?(id: string, data: ProjectPatch): Promise<Project>;
+  getSettings?(): Promise<Settings>;
+  updateSettings?(data: SettingsPatch): Promise<Settings>;
+  updateProjectUsageBudget?(id: string, usageBudget: UsageBudget | null): Promise<Project>;
+  getProjectUsage?(id: string): Promise<ProjectUsage>;
   reviewRelease?(id: string, reviewHash: string, decision: 'approve' | 'reject', feedback: string): Promise<Release>;
   reconcileRelease?(id: string): Promise<Release>;
   getState(): Promise<Snapshot>;

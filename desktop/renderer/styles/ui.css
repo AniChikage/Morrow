@@ -506,6 +506,28 @@
   font-size: 12px;
   color: var(--muted);
 }
+.settings-usage {
+  margin-top: 22px;
+  padding-top: 18px;
+  border-top: 1px solid var(--line);
+}
+.settings-usage .usage-form {
+  margin: 12px 0 10px;
+}
+.settings-usage .usage-form input {
+  width: 80px;
+}
+.checkbox-field {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  margin: 0 0 12px;
+}
+.checkbox-field input {
+  width: auto;
+  margin: 0;
+}
 .search-dialog {
   width: 620px;
   padding: 22px;

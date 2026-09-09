@@ -35,6 +35,8 @@ import { discoverRuntimes } from './runtimes.ts';
 import { NativeConversations } from './native-conversations.ts';
 import type { NativeTransport } from './native-conversations.ts';
 import { importNativeImages, readNativeImage } from './native-media.ts';
+import { usageBudgetInput, usageReserveInput, usageWindowLabels } from './usage.ts';
+import type { Verification } from './verification-types.ts';
 function model(value: unknown) {
   const text = string(value, 'model', 120, true);
   if (text && !/^[A-Za-z0-9][A-Za-z0-9._:/-]*$/.test(text)) throw new APIError(400, 'model 格式无效');
@@ -165,7 +167,18 @@ export async function startServer(options: { home?: string; port?: number; nativ
   const native = new NativeConversations(store, engine, options.nativeTransport);
   engine.native = native;
   engine.loop.verification.connect(native.transport, (value) => engine.redact(value));
+  engine.usage.connect(native.transport);
   engine.recover();
+  /** A raised or cleared limit lets waiting channels and held reviews re-check the gate on the next tick. */
+  const releaseUsageWaits = (projectIds?: string[]) => {
+    const soon = new Date(Date.now() + 5000).toISOString();
+    for (const c of store.all<Channel>('channels'))
+      if (c.usageWait && (!projectIds || projectIds.includes(c.projectId)) && engine.control(c.id).enabled)
+        store.put('channels', { ...c, nextRunAt: soon });
+    for (const row of store.all<Verification>('loop_verifications'))
+      if (row.status === 'queued' && row.retryAt && (!projectIds || projectIds.includes(row.projectId)))
+        store.put('loop_verifications', { ...row, retryAt: undefined });
+  };
   engine.runtimes = await discoverRuntimes();
   const respond = (res: ServerResponse, status: number, data: any) => {
     res.writeHead(status, {
@@ -195,11 +208,35 @@ export async function startServer(options: { home?: string; port?: number; nativ
       if (supplied.length !== expected.length || !timingSafeEqual(supplied, expected))
         throw new APIError(401, '需要本机访问令牌');
       if (req.method === 'GET' && path === '/api/state') {
-        respond(res, 200, store.snapshot(engine.runtimes));
+        respond(res, 200, {
+          ...store.snapshot(engine.runtimes),
+          settings: engine.usage.settings(),
+          usage: engine.usage.status(),
+        });
         return;
       }
       if (req.method === 'GET' && path === '/api/native/status') {
         respond(res, 200, await native.status());
+        return;
+      }
+      if (req.method === 'GET' && path === '/api/settings') {
+        respond(res, 200, engine.usage.ensureSettings());
+        return;
+      }
+      const usageMatch = path.match(/^\/api\/projects\/([^/]+)\/usage$/);
+      if (req.method === 'GET' && usageMatch) {
+        const project = store.get<Project>('projects', usageMatch[1]);
+        if (!project) throw new APIError(404, '项目不存在');
+        const status = engine.usage.status();
+        const budget = project.usageBudget;
+        respond(res, 200, {
+          reading: status.reading,
+          stale: status.stale,
+          budget,
+          reserve: engine.usage.settings().usageReserve,
+          project: budget ? engine.usage.projectUsage(project.id, budget.window, status.reading) : undefined,
+          gate: engine.usage.gate(project),
+        });
         return;
       }
       const loopMatch = path.match(/^\/api\/projects\/([^/]+)\/work$/);
@@ -247,6 +284,59 @@ export async function startServer(options: { home?: string; port?: number; nativ
         return;
       }
       const data = await body(req);
+      if (req.method === 'PATCH' && path === '/api/settings') {
+        keys(data, ['usageReserve', 'stopWhenUsageUnknown']);
+        if (data.usageReserve === undefined && data.stopWhenUsageUnknown === undefined)
+          throw new APIError(400, '请提供 usageReserve 或 stopWhenUsageUnknown');
+        if (data.stopWhenUsageUnknown !== undefined && typeof data.stopWhenUsageUnknown !== 'boolean')
+          throw new APIError(400, 'stopWhenUsageUnknown 必须为布尔值');
+        const usageReserve = data.usageReserve === undefined ? undefined : usageReserveInput(data.usageReserve);
+        const before = engine.usage.ensureSettings();
+        const updated = store.transaction(() => {
+          const next = engine.usage.saveSettings({ usageReserve, stopWhenUsageUnknown: data.stopWhenUsageUnknown });
+          engine.audit({
+            projectId: '',
+            actor: 'human',
+            action: 'settings.updated',
+            text: next.usageReserve
+              ? `已设置保留给自己的额度：${usageWindowLabels[next.usageReserve.window]}窗口保留 ${next.usageReserve.keepPercent}%${next.stopWhenUsageUnknown ? '；额度未知时也停止自动工作' : ''}。`
+              : `已清除保留额度${next.stopWhenUsageUnknown ? '；额度未知时停止自动工作' : ''}。`,
+            before,
+            after: next,
+          });
+          releaseUsageWaits();
+          return next;
+        });
+        respond(res, 200, updated);
+        return;
+      }
+      const usageBudgetMatch = path.match(/^\/api\/projects\/([^/]+)\/usage-budget$/);
+      if (req.method === 'PATCH' && usageBudgetMatch) {
+        keys(data, ['usageBudget']);
+        if (!Object.hasOwn(data, 'usageBudget')) throw new APIError(400, '请提供 usageBudget');
+        const project = store.get<Project>('projects', usageBudgetMatch[1]);
+        if (!project) throw new APIError(404, '项目不存在');
+        if (project.isDemo) throw new APIError(409, '示例项目不能设置额度上限');
+        const usageBudget = usageBudgetInput(data.usageBudget);
+        const { usageBudget: previous, ...rest } = project;
+        const updated: Project = { ...rest, ...(usageBudget ? { usageBudget } : {}) };
+        store.transaction(() => {
+          store.put('projects', updated);
+          engine.audit({
+            projectId: project.id,
+            actor: 'human',
+            action: 'project.updated',
+            text: usageBudget
+              ? `已设置项目「${project.name}」的额度上限：${usageWindowLabels[usageBudget.window]}窗口 ${usageBudget.limitPercent}%（归因估算）。`
+              : `已清除项目「${project.name}」的额度上限。`,
+            before: { usageBudget: previous ?? null },
+            after: { usageBudget },
+          });
+          releaseUsageWaits([project.id]);
+        });
+        respond(res, 200, updated);
+        return;
+      }
       const reviewMatch = path.match(/^\/api\/releases\/([^/]+)\/(review|reconcile)$/);
       if (req.method === 'POST' && reviewMatch) {
         if (reviewMatch[2] === 'reconcile') {
@@ -718,6 +808,7 @@ export async function startServer(options: { home?: string; port?: number; nativ
   engine.loop.baseURL = `http://127.0.0.1:${(server.address() as any).port}`;
   engine.startScheduler();
   void native.start();
+  engine.usage.start();
   let closing = false;
   const close = async () => {
     if (closing) return;

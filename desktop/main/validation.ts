@@ -11,7 +11,11 @@ import type {
   NativeMessageInput,
   NativeHistoryQuery,
   ProjectPatch,
+  SettingsPatch,
+  UsageBudget,
+  UsageReserve,
 } from '../shared/types';
+import { usageWindows } from '../shared/types';
 
 const runtimes = ['codex'] as const;
 export const itemStatuses = ['open', 'investigating', 'verified', 'resolved', 'blocked'];
@@ -74,6 +78,28 @@ export function projectPatch(value: unknown): ProjectPatch {
   if (data.goal !== undefined) result.goal = text(data.goal, '项目目标', 20000);
   if (data.brief !== undefined) result.brief = text(data.brief, '项目说明', briefLimit, true);
   if (result.goal === undefined && result.brief === undefined) throw new Error('请至少修改项目目标或项目说明。');
+  return result;
+}
+/** A project's usage cap: `null` clears it; a percent of the chosen account window otherwise. */
+export function usageBudgetInput(value: unknown): UsageBudget | null {
+  if (value === null) return null;
+  const data = record(value, ['window', 'limitPercent']);
+  return { window: choice(data.window, usageWindows), limitPercent: integer(data.limitPercent, 1, 100) };
+}
+export function usageReserveInput(value: unknown): UsageReserve | null {
+  if (value === null) return null;
+  const data = record(value, ['window', 'keepPercent']);
+  return { window: choice(data.window, usageWindows), keepPercent: integer(data.keepPercent, 1, 99) };
+}
+export function settingsPatch(value: unknown): SettingsPatch {
+  const data = record(value, ['usageReserve', 'stopWhenUsageUnknown']);
+  const result: SettingsPatch = {};
+  if (data.usageReserve !== undefined) result.usageReserve = usageReserveInput(data.usageReserve);
+  if (data.stopWhenUsageUnknown !== undefined) {
+    if (typeof data.stopWhenUsageUnknown !== 'boolean') throw new Error('额度未知时的处理必须是开或关。');
+    result.stopWhenUsageUnknown = data.stopWhenUsageUnknown;
+  }
+  if (!Object.keys(result).length) throw new Error('请至少修改一项额度设置。');
   return result;
 }
 const channelKeys = ['name', 'goal', 'runtime', 'model', 'intervalMinutes', 'maxRunsPerDay', 'permission'];

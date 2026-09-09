@@ -16,7 +16,7 @@ import { isLegacyRuntime } from '../../shared/types';
 import type { NativeConversation, WorkspaceEvent } from '../../shared/types';
 import type { FeatureProps } from './types';
 import { Button, EmptyState, Markdown, PropertyPanel, StatusLabel } from '../components/ui';
-import { formatDate, runtimeLabel } from '../components/format';
+import { channelStatusLabel, formatDate, runtimeLabel } from '../components/format';
 import { Property } from './ProjectView';
 import { nativeContinuationBlock } from './featureOwnership';
 import { EventLog } from './EventLog';
@@ -189,12 +189,14 @@ export function ChannelView(props: FeatureProps & { id: string }) {
                     ? '等你指导'
                     : paused
                       ? '已暂停'
-                      : channel.nextRunAt
-                        ? '已安排下一步'
-                        : '等待继续'}
+                      : channel.usageWait && channel.status === 'waiting'
+                        ? channelStatusLabel(channel)
+                        : channel.nextRunAt
+                          ? '已安排下一步'
+                          : '等待继续'}
               </span>
             ) : (
-              <StatusLabel status={channel.status} />
+              <StatusLabel status={channel.status} label={channelStatusLabel(channel)} />
             )}
             {demo && <span className="feature-demo-label">示例数据</span>}
           </div>
@@ -377,7 +379,7 @@ export function ChannelView(props: FeatureProps & { id: string }) {
               </button>
             </h3>
             <Property label="状态">
-              <StatusLabel status={channel.status} />
+              <StatusLabel status={channel.status} label={channelStatusLabel(channel)} />
             </Property>
             <Property label="引擎">{runtimeLabel(channel.runtime)}</Property>
             <Property label="模型">

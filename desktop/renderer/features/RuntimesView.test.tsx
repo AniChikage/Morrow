@@ -4,6 +4,7 @@ import { cleanup, render, screen, waitFor, within } from '@testing-library/react
 import userEvent from '@testing-library/user-event';
 import { RuntimesView } from './RuntimesView';
 import { featureProps, snapshot } from './testFixtures';
+import { formatResetTime } from '../components/format';
 import type { ConnectionInfo, NativeConnectionStatus, Runtime } from '../../shared/types';
 
 afterEach(cleanup);
@@ -264,4 +265,35 @@ test('host overview uses the real connection label and does not infer remote ava
   expect(screen.getByRole('heading', { name: '远程 · dev-box' })).toBeTruthy();
   expect(screen.getByText('未连接')).toBeTruthy();
   expect(screen.getByText('1 个运行时 · 1 个已检测到')).toBeTruthy();
+});
+
+test('the checklist ends with the account usage per window, or a red unknown with the reason', async () => {
+  const resetsAt = new Date(Date.now() + 3600_000).toISOString();
+  const reading = {
+    at: new Date().toISOString(),
+    source: 'protocol' as const,
+    windows: [
+      { name: '5h' as const, usedPercent: 42, resetsAt },
+      { name: 'weekly' as const, usedPercent: 10 },
+    ],
+  };
+  const cases: Array<[Partial<NativeConnectionStatus>, string[]]> = [
+    [
+      { connected: true, backgroundConfigured: true, backgroundReady: true, usage: { reading, stale: false } },
+      [`5 小时 已用 42%，重置 ${formatResetTime(resetsAt)}`, '每周 已用 10%，重置时间未知'],
+    ],
+    [{ connected: false }, ['额度未知', '后台未连接']],
+    [{ connected: true, usage: { stale: true } }, ['额度未知', '协议未返回账户用量']],
+    [{ connected: true, usage: { reading, stale: true } }, ['额度未知', '读数已过期']],
+  ];
+  for (const [patch, expected] of cases) {
+    const { props, api } = runtimeProps();
+    api.getNativeStatus.mockResolvedValue(status(patch));
+    const view = render(<RuntimesView {...props} />);
+    await checklist();
+    const line = screen.getByLabelText('账户用量');
+    for (const text of expected) expect(line.textContent).toContain(text);
+    expect(!!line.querySelector('.usage-unknown')).toBe(expected.includes('额度未知'));
+    view.unmount();
+  }
 });

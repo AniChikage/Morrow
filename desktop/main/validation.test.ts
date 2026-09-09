@@ -13,6 +13,8 @@ import {
   projectPatch,
   runOutputInput,
   runsInput,
+  settingsPatch,
+  usageBudgetInput,
 } from './validation.ts';
 
 test('IPC IDs cannot inject routes or query parameters', () => {
@@ -259,4 +261,39 @@ test('run history and output queries are bounded and cannot read arbitrary files
     { offset: 9999999 },
   ])
     assert.throws(() => runOutputInput(value));
+});
+test('usage limits accept only the known windows and whole percents, and null clears them', () => {
+  assert.deepEqual(usageBudgetInput({ window: '5h', limitPercent: 30 }), { window: '5h', limitPercent: 30 });
+  assert.deepEqual(usageBudgetInput({ window: 'weekly', limitPercent: 100 }), { window: 'weekly', limitPercent: 100 });
+  assert.equal(usageBudgetInput(null), null);
+  for (const value of [
+    undefined,
+    'none',
+    {},
+    { window: 'daily', limitPercent: 30 },
+    { window: '5h', limitPercent: 0 },
+    { window: '5h', limitPercent: 101 },
+    { window: '5h', limitPercent: 12.5 },
+    { window: '5h', limitPercent: '30' },
+    { window: '5h', limitPercent: 30, keepPercent: 10 },
+  ])
+    assert.throws(() => usageBudgetInput(value));
+  assert.deepEqual(settingsPatch({ usageReserve: { window: '5h', keepPercent: 10 } }), {
+    usageReserve: { window: '5h', keepPercent: 10 },
+  });
+  assert.deepEqual(settingsPatch({ usageReserve: null, stopWhenUsageUnknown: true }), {
+    usageReserve: null,
+    stopWhenUsageUnknown: true,
+  });
+  assert.deepEqual(settingsPatch({ stopWhenUsageUnknown: false }), { stopWhenUsageUnknown: false });
+  for (const value of [
+    {},
+    { stopWhenUsageUnknown: 'yes' },
+    { usageReserve: { window: '5h', keepPercent: 0 } },
+    { usageReserve: { window: '5h', keepPercent: 100 } },
+    { usageReserve: { window: 'weekly' } },
+    { usageReserve: { window: '5h', keepPercent: 10, limitPercent: 20 } },
+    { token: 'must-not-be-accepted' },
+  ])
+    assert.throws(() => settingsPatch(value));
 });

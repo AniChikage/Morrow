@@ -24,6 +24,8 @@ import {
   itemStatuses,
   projectInput,
   projectPatch,
+  settingsPatch,
+  usageBudgetInput,
   text,
   itemInput,
   itemPatch,
@@ -243,6 +245,12 @@ function registerIPC(): void {
   handle('update-project', 2, (projectId, value) =>
     service.request(`projects/${id(projectId)}`, 'PATCH', projectPatch(value))
   );
+  handle('get-settings', 0, () => service.request('settings'));
+  handle('update-settings', 1, (value) => service.request('settings', 'PATCH', settingsPatch(value)));
+  handle('update-project-usage-budget', 2, (projectId, value) =>
+    service.request(`projects/${id(projectId)}/usage-budget`, 'PATCH', { usageBudget: usageBudgetInput(value) })
+  );
+  handle('get-project-usage', 1, (projectId) => service.request(`projects/${id(projectId)}/usage`));
   handle('review-release', 4, (releaseId, hash, decision, feedback) =>
     service.request(`releases/${id(releaseId)}/review`, 'POST', {
       reviewHash: text(hash, '版本校验', 64),

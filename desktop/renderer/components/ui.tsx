@@ -92,11 +92,11 @@ export function StatusIcon({ status }: { status: string }) {
           : CircleDashed;
   return <Icon aria-hidden="true" size={15} strokeWidth={1.7} className={`status-icon status-${status}`} />;
 }
-export function StatusLabel({ status }: { status: string }) {
+export function StatusLabel({ status, label }: { status: string; label?: string }) {
   return (
     <span className="status-label">
       <StatusIcon status={status} />
-      {statusLabel(status)}
+      {label ?? statusLabel(status)}
     </span>
   );
 }

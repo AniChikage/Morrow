@@ -1,5 +1,7 @@
 import { autonomousPrompt, parseWorkDecision, projectBriefBlock } from './channel-work.ts';
 import { ProjectWorkLoop } from './project-loop.ts';
+import { UsageMonitor, nextUtcDay, usageDelta } from './usage.ts';
+import type { UsageGate } from './usage.ts';
 import { spawn, execFileSync } from 'node:child_process';
 import type { ChildProcessWithoutNullStreams } from 'node:child_process';
 import { appendFileSync, mkdirSync, readFileSync, writeFileSync, statSync } from 'node:fs';
@@ -43,11 +45,17 @@ export class Engine {
   closed = false;
   token: string;
   loop: ProjectWorkLoop;
+  /** Account usage readings and the reserve/budget gate; the transport is attached by the server. */
+  usage: UsageMonitor;
+  /** Before-samples still in flight per run, so the after-sample can wait for its counterpart. */
+  usageBefore = new Map<string, Promise<void>>();
   constructor(store: Store, home: string, token: string) {
     this.store = store;
     this.home = home;
     this.token = token;
     this.loop = new ProjectWorkLoop(store, home);
+    this.usage = new UsageMonitor(store);
+    this.loop.usage = this.usage;
   }
   control(id: string): Control {
     return (
@@ -214,10 +222,66 @@ export class Engine {
     return this.store.runCount(id, day);
   }
   nextBudget() {
-    const d = new Date();
-    d.setUTCDate(d.getUTCDate() + 1);
-    d.setUTCHours(0, 0, 1, 0);
-    return d.toISOString();
+    return nextUtcDay();
+  }
+  /** Parks a scheduled channel on the usage gate; one system event per distinct wait, none for a pending read. */
+  waitForUsage(channel: Channel, gate: Extract<UsageGate, { blocked: true }>) {
+    if (gate.pending) {
+      this.store.put('channels', { ...channel, status: 'waiting', nextRunAt: gate.until });
+      return;
+    }
+    const previous = channel.usageWait;
+    const changed = !previous || previous.kind !== gate.kind || previous.window !== gate.window;
+    this.store.put('channels', {
+      ...channel,
+      status: 'waiting',
+      nextRunAt: gate.until,
+      usageWait: {
+        kind: gate.kind,
+        ...(gate.window ? { window: gate.window } : {}),
+        ...(gate.resetsAt ? { resetsAt: gate.resetsAt } : {}),
+        since: changed ? now() : previous!.since,
+      },
+    });
+    if (changed) this.event(channel.id, '', 'system', `${gate.message}。`);
+  }
+  /** Reads the account usage as a run starts; the reading lands on the run row when it arrives, never blocking the start. */
+  trackUsageBefore(run: Run) {
+    const scope = { projectId: run.projectId, channelId: run.channelId, runId: run.id };
+    const task = this.usage
+      .sample('before', scope)
+      .then((before) => {
+        if (!before) return;
+        const current = this.store.get<Run>('runs', run.id);
+        if (!current) return;
+        const usage = { ...current.usage, before, attribution: 'estimated' as const };
+        // The in-memory row is written again later by the run's owner; keep it carrying the sample.
+        run.usage = usage;
+        this.store.put('runs', { ...current, usage });
+      })
+      .catch(() => {})
+      .finally(() => this.usageBefore.delete(run.id));
+    this.usageBefore.set(run.id, task);
+  }
+  /** Reads the account usage after a run and stores the per-window difference as this run's estimated share. */
+  trackUsageAfter(run: Run) {
+    const scope = { projectId: run.projectId, channelId: run.channelId, runId: run.id };
+    void (async () => {
+      await this.usageBefore.get(run.id);
+      const after = await this.usage.sample('after', scope);
+      if (!after) return;
+      const current = this.store.get<Run>('runs', run.id);
+      if (!current) return;
+      const before = current.usage?.before;
+      const usage = {
+        ...current.usage,
+        after,
+        ...(before ? { delta: usageDelta(before, after) } : {}),
+        attribution: 'estimated' as const,
+      };
+      run.usage = usage;
+      this.store.put('runs', { ...current, usage });
+    })().catch(() => {});
   }
   activations = new Map<string, Promise<void>>();
   activationVersions = new Map<string, number>();
@@ -315,6 +379,14 @@ export class Engine {
       this.event(id, '', 'system', '已达到每日预算，将在下一个 UTC 日恢复。');
       return;
     }
+    // Usage gate: the account reserve line (exact) and this project's attributed budget (estimate).
+    const gate = this.usage.gate(project);
+    if (gate.blocked) {
+      if (!scheduled)
+        throw gate.pending ? new APIError(409, '额度读数尚未就绪，几秒后重试') : new APIError(429, gate.message);
+      this.waitForUsage(channel, gate);
+      return;
+    }
     try {
       if (!statSync(project.path).isDirectory()) throw new Error();
     } catch {
@@ -352,6 +424,7 @@ export class Engine {
     if (Buffer.byteLength(prompt) > 1024 * 1024)
       throw new APIError(400, '项目看板与备注上下文超过 1 MiB，无法安全启动本轮；请整理过长的事项内容后重试');
     this.store.put('runs', run);
+    this.trackUsageBefore(run);
     this.persistIO(run.id, 'prompt', prompt, join(runDir, 'prompt.txt'));
     const itemRevisions = new Map(this.store.projectItems(project.id).map((item) => [item.id, item.revision]));
     this.store.put('channels', {
@@ -359,6 +432,7 @@ export class Engine {
       status: 'running',
       lastRunAt: run.startedAt,
       nextRunAt: '',
+      usageWait: undefined,
     });
     this.event(
       id,
@@ -534,7 +608,14 @@ export class Engine {
     const items = this.store.projectItems(project.id);
     if (channel.runtime === 'codex' && this.native?.binding(channel.id))
       return (
-        autonomousPrompt(project, channel, items, channel.work, resultSchema) + (run ? this.loop.prepare(run) : '')
+        autonomousPrompt(
+          project,
+          channel,
+          items,
+          channel.work,
+          resultSchema,
+          this.usage.budgetContext(project, channel)
+        ) + (run ? this.loop.prepare(run) : '')
       );
     const notes = this.store.messages(channel.id);
     const knowledge = this.store.contextKnowledge(project.id, channel.id);
@@ -651,6 +732,7 @@ export class Engine {
         text: `${run.executionOwner === 'codex-app' ? '原生任务轮次' : 'CLI'}正常结束。${run.reportError}`,
       });
     });
+    this.trackUsageAfter(run);
   }
   finishSuccess(run: Run, original: Channel, result: AgentResult, runDir: string, itemRevisions?: Map<string, number>) {
     for (const item of result.items)
@@ -753,6 +835,7 @@ export class Engine {
       this.event(run.channelId, run.id, 'result', result.summary);
       if (needsHuman) this.event(run.channelId, run.id, 'system', '此轮需要人工输入，频道已停止自动调度。');
     });
+    this.trackUsageAfter(run);
   }
   finishFailure(run: Run, status: string, summary: string) {
     this.store.put('runs', {
@@ -770,6 +853,7 @@ export class Engine {
     });
     this.setControl(run.channelId, { enabled: false });
     this.event(run.channelId, run.id, status === 'interrupted' ? 'system' : 'error', summary);
+    this.trackUsageAfter(run);
   }
   interrupt(id: string, reason: string) {
     const a = this.active.get(id);
@@ -789,6 +873,7 @@ export class Engine {
   async close() {
     this.closed = true;
     if (this.timer) clearInterval(this.timer);
+    this.usage.close();
     const active = [...this.active.values()];
     for (const a of active) this.interrupt(a.channelId, '服务已关闭，执行中断');
     await Promise.all(active.map((a) => a.done));

@@ -443,6 +443,35 @@
   overflow-wrap: anywhere;
   margin: 0 0 9px;
 }
+/* 额度 rows: plain lines under the inspector heading, red only for an unknown reading. */
+.usage-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 8px;
+  margin: 0 0 8px;
+  font-size: 12px;
+  line-height: 1.6;
+  color: #55565e;
+  overflow-wrap: anywhere;
+}
+.usage-unknown {
+  color: var(--danger);
+  font-weight: 500;
+}
+.usage-form {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 6px 0 8px;
+}
+.usage-form select {
+  flex: 0 1 auto;
+  min-width: 0;
+}
+.usage-form input {
+  width: 68px;
+  min-width: 0;
+}
 .property-link,
 .property-status-button {
   font: inherit;

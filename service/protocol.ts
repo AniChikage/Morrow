@@ -18,6 +18,40 @@ export type LegacyRuntimeID = (typeof legacyEngines)[number];
 export type AnyRuntimeID = RuntimeID | LegacyRuntimeID;
 export const isLegacyRuntime = (value: string): value is LegacyRuntimeID =>
   (legacyEngines as readonly string[]).includes(value);
+/** Account rate-limit windows Codex reports: a rolling five-hour window and a weekly one. */
+export const usageWindows = ['5h', 'weekly'] as const;
+export type UsageWindow = (typeof usageWindows)[number];
+export type UsageWindowReading = { name: UsageWindow; usedPercent: number; resetsAt?: string; windowMinutes?: number };
+/** One account reading. `protocol` readings come straight from the shared backend; `native-tool` is reserved for a later fallback. */
+export type UsageReading = { at: string; source: 'protocol' | 'native-tool'; windows: UsageWindowReading[] };
+export type UsageSample = UsageReading & {
+  id: string;
+  phase: 'before' | 'after' | 'poll';
+  projectId?: string;
+  channelId?: string;
+  runId?: string;
+};
+/** Project-level cap on the usage Morrow attributes to this project's runs; an estimate, since the account is shared. */
+export type UsageBudget = { window: UsageWindow; limitPercent: number };
+/** Global line kept for the user's own work; compared against the exact account reading. */
+export type UsageReserve = { window: UsageWindow; keepPercent: number };
+export type Settings = { id: 'global'; usageReserve?: UsageReserve; stopWhenUsageUnknown?: boolean; updatedAt: string };
+/** Usage attributed to one run: the account readings around it and their per-window difference. */
+export type RunUsage = {
+  before?: UsageReading;
+  after?: UsageReading;
+  delta?: Partial<Record<UsageWindow, number>>;
+  attribution: 'estimated';
+};
+/** Why a channel is waiting on usage rather than on its own schedule. */
+export type UsageWait = {
+  kind: 'budget' | 'reserve' | 'unknown';
+  window?: UsageWindow;
+  resetsAt?: string;
+  since: string;
+};
+/** The latest account reading as the UI sees it; `stale` when older than the freshness window or past its reset. */
+export type UsageStatus = { reading?: UsageReading; stale: boolean };
 export type Project = {
   id: string;
   name: string;
@@ -27,6 +61,7 @@ export type Project = {
   brief?: string;
   /** Counts saved goal/brief versions; missing on rows written before the brief existed and treated as 0. */
   briefRevision?: number;
+  usageBudget?: UsageBudget;
   createdAt: string;
   isDemo: boolean;
   runtime: AnyRuntimeID;
@@ -58,6 +93,7 @@ export type Channel = {
   nextRunAt: string;
   lastRunAt: string;
   sessionId: string;
+  usageWait?: UsageWait;
 };
 export type WorkItem = {
   id: string;
@@ -94,6 +130,7 @@ export type Run = {
   reportError: string;
   exitCode?: number;
   signal?: string;
+  usage?: RunUsage;
   status: string;
   startedAt: string;
   finishedAt: string;
@@ -112,6 +149,8 @@ export type NativeConnectionStatus = {
   runtimeVersion?: string;
   backgroundReady?: boolean;
   backgroundConfigured?: boolean;
+  /** Latest account usage reading known to the service, when any. */
+  usage?: UsageStatus;
   capabilities: { list: boolean; read: boolean; send: boolean; create: boolean; interrupt: boolean; respond: boolean };
 };
 export type NativeThreadSummary = {

@@ -8,8 +8,9 @@ import { Store } from '../service/store.ts';
 import { NativeConversations } from '../service/native-conversations.ts';
 import type { Engine } from '../service/engine.ts';
 import { WebSocketServer } from 'ws';
-import { CodexSharedTransport } from '../service/codex-shared-transport.ts';
+import { CodexSharedTransport, parseUsageReading, usageReadMethod } from '../service/codex-shared-transport.ts';
 import { sharedRuntimeArgs } from '../service/codex-app-host-bridge.ts';
+import type { UsageReading } from '../service/protocol.ts';
 
 const id = 'shared-thread-fixture',
   turnId = 'shared-turn-fixture';
@@ -27,6 +28,9 @@ async function fixture(
     bufferedDelta?: boolean;
     codexHome?: string;
     loadedThreads?: string[];
+    /** How the fake host answers the rate-limit read: camelCase, snake_case, or as an unknown method. */
+    usage?: 'camel' | 'snake' | 'missing';
+    onUsage?: (reading: UsageReading) => void;
   } = {}
 ) {
   const dir = mkdtempSync('/tmp/morrow-shared-');
@@ -102,6 +106,23 @@ async function fixture(
           return respond({ turnId: 'new-turn' });
         case 'turn/interrupt':
           return respond({});
+        case usageReadMethod:
+          if (options.usage === 'snake')
+            return respond({
+              rate_limits: {
+                primary: { used_percent: 42.5, window_duration_mins: 300, resets_at: 1_800_000_000 },
+                secondary: { used_percent: 12, window_duration_mins: 10080, resets_at: '2026-09-15T00:00:00Z' },
+              },
+            });
+          if (options.usage === 'camel')
+            return respond({
+              rateLimits: {
+                primary: { usedPercent: 42.5, windowDurationMins: 300, resetsAt: 1_800_000_000_000 },
+                secondary: { usedPercent: 12, windowDurationMins: 10080, resetsAt: '2026-09-15T00:00:00.000Z' },
+              },
+            });
+          socket.send(JSON.stringify({ id: message.id, error: { code: -32601, message: 'Method not found' } }));
+          return;
       }
     });
   });
@@ -120,6 +141,7 @@ async function fixture(
       startedAt: new Date().toISOString(),
     },
     timeoutMs: 1000,
+    ...(options.onUsage ? { onUsage: options.onUsage } : {}),
   });
   return {
     dir,
@@ -407,4 +429,64 @@ test('native task discovery follows the service home after a rename', async () =
     store.close();
     await f.close();
   }
+});
+
+test('account rate limits map to usage readings in either casing, read as unknown when unsupported, and arrive as notifications', async () => {
+  const expected = [
+    { name: '5h', usedPercent: 42.5, resetsAt: '2027-01-15T08:00:00.000Z', windowMinutes: 300 },
+    { name: 'weekly', usedPercent: 12, resetsAt: '2026-09-15T00:00:00.000Z', windowMinutes: 10080 },
+  ];
+  for (const usage of ['camel', 'snake'] as const) {
+    const f = await fixture({ usage });
+    try {
+      const reading = await f.client.readUsage();
+      assert.equal(reading?.source, 'protocol');
+      assert(reading && Date.now() - Date.parse(reading.at) < 5000);
+      assert.deepEqual(reading?.windows, expected);
+      assert.equal(f.messages.filter((m) => m.method === usageReadMethod).length, 1);
+    } finally {
+      await f.close();
+    }
+  }
+  const missing = await fixture({ usage: 'missing' });
+  try {
+    assert.equal(await missing.client.readUsage(), undefined);
+    assert.equal(missing.client.status().connected, true);
+  } finally {
+    await missing.close();
+  }
+  const received: UsageReading[] = [];
+  const f = await fixture({ usage: 'camel', onUsage: (reading) => received.push(reading) });
+  try {
+    await f.client.connect();
+    f.event('account/rateLimits/updated', { rateLimits: { primary: { usedPercent: 130, resetsAt: 1_800_000_000 } } });
+    await until(() => received.length === 1);
+    assert.deepEqual(received[0].windows, [{ name: '5h', usedPercent: 100, resetsAt: '2027-01-15T08:00:00.000Z' }]);
+    f.event('account/rateLimits/updated', { rateLimits: {} });
+    f.event('account/rateLimits/updated', { rate_limits: { primary: { used_percent: 'n/a' } } });
+    await new Promise((done) => setTimeout(done, 50));
+    assert.equal(received.length, 1);
+  } finally {
+    await f.close();
+  }
+  // Defensive mapping: a window duration decides the name, duplicates keep the first, garbage is skipped.
+  assert.deepEqual(
+    parseUsageReading(
+      {
+        rateLimits: {
+          primary: { usedPercent: -3, windowDurationMins: 10080 },
+          secondary: { usedPercent: 7, windowDurationMins: 10080 },
+        },
+      },
+      '2026-09-09T00:00:00.000Z'
+    ),
+    {
+      at: '2026-09-09T00:00:00.000Z',
+      source: 'protocol',
+      windows: [{ name: 'weekly', usedPercent: 0, windowMinutes: 10080 }],
+    }
+  );
+  assert.equal(parseUsageReading({ rateLimits: { primary: { resetsAt: 5 } } }), undefined);
+  assert.equal(parseUsageReading('rate limited'), undefined);
+  assert.equal(parseUsageReading(null), undefined);
 });

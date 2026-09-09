@@ -58,6 +58,7 @@ MORROW_HOME="$HOME/.local/share/morrow" npm start
 | `runs`、`run_io` 与报告 | 运行归属、输入、流式输出、最终回答和报告状态。 |
 | `native_*` | 原生任务绑定、快照、消息、轮次、增量日志、请求、发送回执和附件记录。 |
 | `loop_*` | 认识、行动选择、预期、证据、测量、复盘、观测、等待、验证与发布。 |
+| `settings`、`usage_samples` | 全局设置（保留给自己的额度、额度未知时是否停止）与账户用量读数；运行记录里的 `usage` 保存本轮前后读数之差。 |
 
 所有表位于 `workspace.sqlite`。`runs/`、`native-images/` 和 `releases/` 保存相关私有文件。原生任务的权威历史由 Codex 管理，Morrow 的 SQLite 保存已同步的镜像和编排记录，不把自己的记录当成另一套原生会话。
 
@@ -96,6 +97,8 @@ MORROW_HOME="$HOME/.local/share/morrow" npm start
 
 同一项目目录的责任轮次串行执行，并等待已绑定原生任务空闲。每日上限按 UTC 日界计算，已启动的失败/中断轮次也计数；普通对话和外部 App 轮次不消耗编排预算。配置范围为每天 1–100 轮、复查间隔 1–1440 分钟。
 
+每日上限之后还有额度门禁：全局的「保留给自己的额度」按共享后台读到的精确账户用量判断，项目的「额度上限」按 Morrow 归因到该项目的轮次估算判断。达到任一条时，新的自动轮次和独立复核不再发起（频道 `waiting`，`nextRunAt` 取窗口重置时间或下一个 UTC 日，写一条系统事件，不计入运行次数；排队中的复核保留 `queued` 并按 `retryAt` 重试），手动运行返回 429。读数不可用时默认放行，设置 `stopWhenUsageUnknown` 后阻断并每 10 分钟重试；进行中的轮次不打断，普通对话不受影响。读数与限制通过 `context.budget` 和自动轮次提示词提供给 Codex。
+
 有界 CLI 子进程路径只在 `MORROW_TEST_MODE=1` 下作为测试夹具通道可达：单轮超时 15 分钟，stdout/stderr 合计上限 20 MiB，组装提示上限 1 MiB；这些子进程限制不套用到共享 Codex App 轮次。暂停原生自动工作只中断属于该责任轮次的精确 turn ID。
 
 反馈监测支持 HTTP(S) GET JSON、JSON Pointer 和 `changed/equals/gte/lte` 条件。新反馈、质量变化、采集故障和复查期限可唤醒启用的频道；重复相同状态不反复触发。与发布关联的观测在确认发布后开始采集。当前不包含文件变化触发器。
@@ -126,13 +129,16 @@ MORROW_HOME="$HOME/.local/share/morrow" npm start
 
 | 路由 | 用途 |
 | --- | --- |
-| `GET /api/native/status` | 实际连接状态、后台就绪与支持能力。 |
+| `GET /api/native/status` | 实际连接状态、后台就绪、支持能力与最近账户用量读数。 |
 | `/api/channels/:id/native/threads`、`bind`、`create` | 项目任务目录、明确绑定、创建原生任务。 |
 | `/api/channels/:id/native/conversation`、`messages` | 分页原生历史、提交/追加消息与幂等回执。 |
 | `/api/channels/:id/native/interrupt`、`respond` | 精确停止轮次、回答待处理原生请求。 |
 | `GET /api/projects/:id/work` | 项目工作记录，可通过 `itemId` 限定事项。 |
 | `GET /api/projects/:id/brief` | 项目目标与用户写下的项目说明及其版本；`/api/state` 只带版本号不带正文。 |
 | `PATCH /api/projects/:id` | `{goal?, brief?, revision}` 修改目标或项目说明，版本不符返回 409；每次保存写入版本记录与审计，并要求进行中的判断重新评估。 |
+| `GET /api/settings`、`PATCH /api/settings` | 全局设置：`{usageReserve?: {window:'5h'\|'weekly', keepPercent:1–99} \| null, stopWhenUsageUnknown?: boolean}`；首次读取时创建默认行，改动写审计。 |
+| `PATCH /api/projects/:id/usage-budget` | `{usageBudget: {window, limitPercent:1–100} \| null}` 设置或清除项目额度上限（归因估算）；示例项目返回 409。 |
+| `GET /api/projects/:id/usage` | 最近账户读数与是否过期、适用的保留线与项目上限、本项目在窗口内的估算用量，以及当前门禁判断。 |
 | `POST /api/agent` | 运行范围内的 AI 工作操作。 |
 | `POST /api/releases/:id/review` | 桌面人工发布决定，工作凭据不能调用。 |
 
