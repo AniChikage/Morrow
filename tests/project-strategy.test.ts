@@ -11,7 +11,7 @@ import { fileURLToPath } from 'node:url';
 process.env.MORROW_TEST_MODE='1';
 const future=()=>new Date(Date.now()+3600000).toISOString();
 async function setup(){
-  const root=mkdtempSync(join(tmpdir(),'nh-strategy-'));const home=join(root,'home'),path=join(root,'project');mkdirSync(path);
+  const root=mkdtempSync(join(tmpdir(),'morrow-strategy-'));const home=join(root,'home'),path=join(root,'project');mkdirSync(path);
   const s=await startServer({home,port:0});const token=readFileSync(join(home,'token'),'utf8');
   const api=async(method:string,url:string,input?:unknown,status=200,auth=token)=>{const res=await fetch(`http://127.0.0.1:${s.port}${url}`,{method,headers:{Authorization:`Bearer ${auth}`,'Content-Type':'application/json'},...(input===undefined?{}:{body:JSON.stringify(input)})});const value=await res.json();assert.equal(res.status,status,JSON.stringify(value));return value;};
   const project=await api('POST','/api/projects',{name:'目标接管验收',path,goal:'让目标用户成功完成首次使用'},201);const channel=s.store.all<any>('channels')[0];

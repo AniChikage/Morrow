@@ -7,7 +7,7 @@ import { join } from 'node:path';
 import { sourceVersion } from '../service/source-version.ts';
 
 test('asset-rich projects hash complete large files with bounded buffers and detect tail changes',()=>{
-  const root=mkdtempSync(join(tmpdir(),'nh-source-assets-'));
+  const root=mkdtempSync(join(tmpdir(),'morrow-source-assets-'));
   try {
     const path=join(root,'video.mp4'),fd=openSync(path,'w');ftruncateSync(fd,65*1024*1024);closeSync(fd);
     const before=sourceVersion(root);assert.equal(before.bytes,65*1024*1024);assert.equal(before.scheme,'source-v2');
@@ -19,7 +19,7 @@ test('asset-rich projects hash complete large files with bounded buffers and det
 });
 
 test('nested dependency links and package caches stay outside Git source seals while application links still fail',()=>{
-  const root=mkdtempSync(join(tmpdir(),'nh-source-deps-'));
+  const root=mkdtempSync(join(tmpdir(),'morrow-source-deps-'));
   const git=(...args:string[])=>execFileSync('git',['-c','core.hooksPath=/dev/null','-c','commit.gpgsign=false','-C',root,...args],{stdio:'ignore'});
   try {
     git('init');git('config','user.email','acceptance@localhost');git('config','user.name','Morrow test');

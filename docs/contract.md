@@ -153,7 +153,7 @@ Both desktop generations default to the same data directory, preserving workspac
 
 ## Build entry points and verification scope
 
-`npm ci` installs locked dependencies; `npm run dev` launches Electron with the real bridge; `npm run dev:ui` launches a browser preview. `npm run build` writes out/main, out/preload and out/renderer. `scripts/build-app.sh` delegates to `scripts/build-electron.sh` and builds dist/Morrow.app (appId ai.morrow.desktop, version 0.3.0). Install/DMG scripts consume that artifact. Official Node 24 is bundled after SHA-256 verification. Ad-hoc signing is local; Developer ID signing and notarization remain separate distribution work.
+`npm ci` installs locked dependencies; `npm run dev` launches Electron with the real bridge; `npm run dev:ui` launches a browser preview. `npm run build` writes out/main, out/preload and out/renderer. `scripts/build-app.sh` delegates to `scripts/build-electron.sh` and builds dist/Morrow.app (appId ai.morrow.desktop, version from package.json). Install/DMG scripts consume that artifact. Official Node 24 is bundled after SHA-256 verification. Ad-hoc signing is local; Developer ID signing and notarization remain separate distribution work.
 
 Legacy `Sources/Morrow` and Package.swift remain independently buildable; `scripts/build-swiftui.sh` writes dist/Morrow-SwiftUI.app. Legacy clients ignore additive fields but do not acquire the new project-board and full-records UI.
 

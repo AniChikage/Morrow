@@ -27,7 +27,7 @@ if [ ! -x "$MORROW_CACHE/node/bin/node" ]; then
   mv "$MORROW_NODE_TEMP" "$MORROW_CACHE/node"
   trap - EXIT
 fi
-swift "$MORROW_ROOT/scripts/make-icon.swift" "$MORROW_CACHE/AppIcon.iconset"
+swift "$MORROW_ROOT/scripts/make-icon.swift" "$MORROW_ROOT/assets/brand/morrow-icon.png" "$MORROW_CACHE/AppIcon.iconset"
 iconutil -c icns "$MORROW_CACHE/AppIcon.iconset" -o "$MORROW_CACHE/Morrow.icns"
 npm run build
 CSC_IDENTITY_AUTO_DISCOVERY=false npx --no-install electron-builder --config electron-builder.yml --mac --dir --"$MORROW_ELECTRON_ARCH" --publish never

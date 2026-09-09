@@ -13,3 +13,5 @@ When designing autonomy, memory, feedback or skill mechanisms, also read `docs/C
 - Persist operational records and full bounded run I/O in SQLite, with native session/run/channel/project references. Renderer localStorage is for view preferences only. Preserve old data with additive, idempotent migrations.
 - Test meaningful service/UI flows with isolated databases and fake CLIs. Use CUA for rendered/native UI verification. Do not run user projects or restart a working daemon merely to test a UI change.
 - `npm run typecheck`, `npm test`, `npm run test:ui`, `npm run build:app` validate and package the default Electron app. SwiftUI is a legacy fallback, not the current product.
+
+- Product name: **Morrow** (`morrow`, `MORROW_*`, `ai.morrow.desktop`). New user-facing text, APIs and build artifacts use this name. Preserve deliberate NoHuman compatibility readers, immutable evidence hashes and historical records; a rename must not detach native tasks, reset budgets or discard existing data.

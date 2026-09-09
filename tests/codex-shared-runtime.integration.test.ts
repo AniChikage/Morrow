@@ -11,7 +11,7 @@ const binary=process.env.MORROW_TEST_CODEX_BINARY;
 async function until(check:()=>boolean){for(let count=0;count<400;count++){if(check())return;await new Promise(done=>setTimeout(done,25));}assert.fail('shared runtime timed out');}
 
 test('App launch bridge and Morrow share cold tasks, active steering, external replies and runtime recovery', {skip:!binary,timeout:60_000}, async()=>{
-  const directory=mkdtempSync('/tmp/nh-native-'),workspace=join(directory,'project');mkdirSync(workspace);
+  const directory=mkdtempSync('/tmp/morrow-native-'),workspace=join(directory,'project');mkdirSync(workspace);
   let modelCalls=0;
   const model=createServer(async(request,response)=>{
     for await(const chunk of request){}

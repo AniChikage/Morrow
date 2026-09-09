@@ -35,7 +35,7 @@ export interface NativeTransport {
   respond(threadId:string,requestId:string|number,kind:'command'|'file'|'permissions'|'userInput'|'mcp',response:unknown):Promise<unknown>;
   close():void;
 }
-type Binding = {id:string;projectId:string;threadId:string;cwd:string;createdAt:string;lastSyncedAt?:string;syncError?:string;createdByMorrow?:boolean};
+type Binding = {id:string;projectId:string;threadId:string;cwd:string;createdAt:string;lastSyncedAt?:string;syncError?:string;createdByMorrow?:boolean;createdByNoHuman?:boolean};
 type StoredThread = NativeSnapshot & {id:string;summary:NativeThreadSummary;hash:string;projectionVersion?:number};
 type StoredItem = NativeItem & {threadId:string;ordinal:number;present:boolean};
 type Outbox = NativeMessageReceipt & {id:string;channelId:string;projectId:string;threadId:string;text:string;textHash?:string;attachmentIds?:string[];createdAt:string;source:'chat'|'schedule';runId?:string};
@@ -103,7 +103,7 @@ export class NativeConversations {
   closed=false;
   store:Store;
   engine:Engine;
-  constructor(store:Store,engine:Engine,transport?:NativeTransport) { this.store=store;this.engine=engine;this.transport=transport || new CodexNativeTransport(undefined,new CodexSharedTransport({preferredLaunchId:()=>store.get<any>('migrations','native-host-affinity')?.launchId,preferredThreadIds:()=>store.all<Binding>('native_bindings').map(row=>row.threadId),onConnected:host=>store.put('migrations',{id:'native-host-affinity',launchId:host.launchId,connectedAt:now()})})); }
+  constructor(store:Store,engine:Engine,transport?:NativeTransport) { this.store=store;this.engine=engine;this.transport=transport || new CodexNativeTransport(undefined,new CodexSharedTransport({directory:join(engine.home,'codex-bridge'),preferredLaunchId:()=>store.get<any>('migrations','native-host-affinity')?.launchId,preferredThreadIds:()=>store.all<Binding>('native_bindings').map(row=>row.threadId),onConnected:host=>store.put('migrations',{id:'native-host-affinity',launchId:host.launchId,connectedAt:now()})})); }
   safe<T>(value:T):T {
     if(typeof value==='string')return this.engine.redact(value) as T;
     if(!value||typeof value!=='object')return value;
@@ -155,7 +155,7 @@ export class NativeConversations {
   restoreBackground() { const result=restoreCodexBridge(this.engine.home);this.store.transaction(()=>{this.store.put('migrations',{id:'codex-background-bridge',enabled:false,restoredAt:now()});this.engine.audit({projectId:'',actor:'human',action:'native.background-restored',text:'已恢复 Codex App 原始启动设置，当前会话未中断。'});});return result; }
   async start() {
     for(const entry of this.store.all<Outbox>('native_outbox').filter(entry=>entry.state==='pending'))this.store.put('native_outbox',{...entry,state:'unknown',error:'服务重新连接，正在核对原生任务；不会自动重发。'});
-    for(const run of this.store.all<Run>('runs').filter(run=>run.status==='running'&&run.executionOwner==='codex-app'&&run.source==='morrow-schedule'))this.scheduled.set(run.channelId,{run,revisions:new Map(Object.entries(run.nativeItemRevisions || {})),runDir:join(this.engine.home,'runs',run.id)});
+    for(const run of this.store.all<Run>('runs').filter(run=>run.status==='running'&&run.executionOwner==='codex-app'&&['morrow-schedule','nohuman-schedule'].includes(run.source||'')))this.scheduled.set(run.channelId,{run,revisions:new Map(Object.entries(run.nativeItemRevisions || {})),runDir:join(this.engine.home,'runs',run.id)});
     for(const binding of this.store.all<Binding>('native_bindings')) {try{this.recoverCheckpoint(binding.threadId);}catch(error){this.recordError(binding.threadId,error);}void this.attach(binding.threadId).catch(error=>this.recordError(binding.threadId,error));}
   }
   recordError(threadId:string,error:unknown) { if(this.closed)return;for(const binding of this.store.all<Binding>('native_bindings').filter(row=>row.threadId===threadId))this.store.put('native_bindings',{...binding,syncError:errorText(error)}); }
@@ -216,7 +216,7 @@ export class NativeConversations {
   }
   async list(id:string) { const {project}=this.channel(id);const status=await this.status();if(!status.connected)return {status,threads:[]};const threads=(await this.transport.listThreads(project.path)).filter(thread=>sameFolder(thread.cwd,project.path)).map(thread=>({id:thread.id,title:thread.title,cwd:thread.cwd,status:'idle',...(thread.model?{model:thread.model}:{}),...(thread.updatedAt?{updatedAt:typeof thread.updatedAt==='number'?new Date(thread.updatedAt<1e12?thread.updatedAt*1000:thread.updatedAt).toISOString():thread.updatedAt}:{})}));return {status,threads}; }
   canRecreateEmpty(binding:Binding):boolean {
-    if(!binding.createdByMorrow||!this.transport.backgroundReady||!/no rollout found|missing source rollout/i.test(binding.syncError||''))return false;
+    if(!(binding.createdByMorrow||binding.createdByNoHuman)||!this.transport.backgroundReady||!/no rollout found|missing source rollout/i.test(binding.syncError||''))return false;
     this.flushPending(binding.threadId);
     const stored=this.cachedThread(binding.threadId);
     return !!stored&&!nativeTurns(stored.state).length&&!stored.state.requests?.length&&
@@ -295,7 +295,7 @@ export class NativeConversations {
       const request=outbox.find(row=>row.turnId===turnId || turn.params?.clientUserMessageId===row.requestId || turn.items?.some((item:any)=>itemMatchesRequest(item,row.requestId)));
       const runId=request?.runId || previous?.runId || `${key.slice(0,8)}-${key.slice(8,12)}-${key.slice(12,16)}-${key.slice(16,20)}-${key.slice(20,32)}`;
       const existing=this.store.get<Run>('runs',runId);
-      const ownerScheduled=existing?.source==='morrow-schedule';
+      const ownerScheduled=['morrow-schedule','nohuman-schedule'].includes(existing?.source||'');
       const startedAt=typeof turn.turnStartedAtMs==='number'&&Number.isFinite(turn.turnStartedAtMs)?new Date(turn.turnStartedAtMs).toISOString():existing?.startedAt||'';
       const finishedAt=ended&&typeof turn.turnStartedAtMs==='number'&&typeof turn.durationMs==='number'?new Date(turn.turnStartedAtMs+turn.durationMs).toISOString():existing?.finishedAt||'';
       const final=finalText(turn);const promptItemIds:string[]=[...(previous?.promptItemIds || [])];

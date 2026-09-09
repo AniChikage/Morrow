@@ -27,7 +27,7 @@ cp "$ROOT/.build/release/Morrow" "$APP/Contents/MacOS/Morrow"
 cp -R "$ROOT/service/." "$APP/Contents/Resources/service/"
 cp "$CACHE/node/bin/node" "$APP/Contents/Resources/bin/node"
 cp "$CACHE/node/LICENSE" "$APP/Contents/Resources/Node-LICENSE.txt"
-swift "$ROOT/scripts/make-icon.swift" "$CACHE/AppIcon.iconset"
+swift "$ROOT/scripts/make-icon.swift" "$ROOT/assets/brand/morrow-icon.png" "$CACHE/AppIcon.iconset"
 iconutil -c icns "$CACHE/AppIcon.iconset" -o "$APP/Contents/Resources/AppIcon.icns"
 
 cat > "$APP/Contents/Info.plist" <<'PLIST'

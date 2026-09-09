@@ -2,6 +2,7 @@
   font-family: 'Inter Variable', Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif;
   color: #252528; background: #f4f4f6; font-size:14px; font-synthesis:none; text-rendering:optimizeLegibility; -webkit-font-smoothing:antialiased;
   --shell:#f4f4f6; --canvas:#fcfcfc; --surface:#fff; --hover:#f0f0f2; --selected:#eaeaee; --line:#e8e8eb; --line-soft:#f0f0f2; --text:#252528; --muted:#6b6b73; --faint:#92929a;
+  --nav-text:#4b4b54; --nav-muted:#6b6b73; --nav-icon:#767680;
   --accent:#6356d9; --success:#547d61; --danger:#b04a3c; --warning:#ad7c27;
   --font-mono:'Geist Mono Variable', ui-monospace, SFMono-Regular, Menlo, monospace;
   --radius:6px; --sidebar-width:236px;

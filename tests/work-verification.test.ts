@@ -11,7 +11,7 @@ import { FakeReviewer } from './fake-reviewer.ts';
 process.env.MORROW_TEST_MODE='1';
 const future=()=>new Date(Date.now()+3600000).toISOString();
 async function fixture(){
-  const root=mkdtempSync(join(tmpdir(),'nh-v09-')),path=join(root,'project'),home=join(root,'home');mkdirSync(path);writeFileSync(join(path,'source.js'),'export const value=1;\n');
+  const root=mkdtempSync(join(tmpdir(),'morrow-v09-')),path=join(root,'project'),home=join(root,'home');mkdirSync(path);writeFileSync(join(path,'source.js'),'export const value=1;\n');
   const native=new FakeReviewer(),s=await startServer({home,port:0,nativeTransport:native}),token=readFileSync(join(home,'token'),'utf8');
   const request=async(route:string,input:unknown,auth=token,status=200)=>{const r=await fetch(`http://127.0.0.1:${s.port}${route}`,{method:'POST',headers:{Authorization:`Bearer ${auth}`,'Content-Type':'application/json'},body:JSON.stringify(input)});const data=await r.json();assert.equal(r.status,status,JSON.stringify(data));return data;};
   const project=await request('/api/projects',{name:'独立复核夹具',path,goal:'保留完整结果且可复现'},token,201),channel=s.store.all<any>('channels')[0];
@@ -97,7 +97,7 @@ test('daily budget and project scope apply to reviewer jobs and execution reads'
   }finally{await f.cleanup();}
 });
 test('source seals cover untracked edits, preserve unchanged content and reject symlink targets',async()=>{
-  const root=mkdtempSync(join(tmpdir(),'nh-source-'));try{
+  const root=mkdtempSync(join(tmpdir(),'morrow-source-'));try{
     writeFileSync(join(root,'source.js'),'one');const a=sourceVersion(root);assert.equal(sourceVersion(root).digest,a.digest);writeFileSync(join(root,'other.js'),'two');assert.notEqual(sourceVersion(root).digest,a.digest);symlinkSync('/etc/hosts',join(root,'linked'));assert.throws(()=>sourceVersion(root),/链接/);
   }finally{rmSync(root,{recursive:true,force:true});}
 });

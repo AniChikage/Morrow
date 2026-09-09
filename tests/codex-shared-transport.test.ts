@@ -1,8 +1,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
-import { mkdtempSync, chmodSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, chmodSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { homedir } from 'node:os';
+import { Store } from '../service/store.ts';
+import { NativeConversations } from '../service/native-conversations.ts';
+import type { Engine } from '../service/engine.ts';
 import { WebSocketServer } from 'ws';
 import { CodexSharedTransport } from '../service/codex-shared-transport.ts';
 import { sharedRuntimeArgs } from '../service/codex-app-host-bridge.ts';
@@ -10,7 +14,7 @@ import { sharedRuntimeArgs } from '../service/codex-app-host-bridge.ts';
 const id='shared-thread-fixture',turnId='shared-turn-fixture';
 const until=async(check:()=>boolean)=>{for(let i=0;i<100;i++){if(check())return;await new Promise(done=>setTimeout(done,10));}assert.fail('native update timed out');};
 async function fixture(options:{loseSend?:boolean; rejectSend?:boolean; bufferedDelta?:boolean; codexHome?:string; loadedThreads?:string[]}={}){
-  const dir=mkdtempSync('/tmp/nh-shared-');chmodSync(dir,0o700);const path=join(dir,'host.sock');
+  const dir=mkdtempSync('/tmp/morrow-shared-');chmodSync(dir,0o700);const path=join(dir,'host.sock');
   const codexHome=options.codexHome||dir;
   const server=createServer();const wss=new WebSocketServer({server});let peer:any;const messages:any[]=[];
   const oldTurn={id:turnId,status:'completed',itemsView:'full',items:[{id:'old-reply',type:'agentMessage',text:'original'}]};
@@ -51,7 +55,7 @@ test('App host bridge preserves native model, plugin, and permission overrides',
   for(const invalid of [['-c','app-server'],['-c','name=app-server','exec','hello'],['--unknown','app-server'],[...global,'app-server','proxy'],[...global,'app-server','--listen','ws://other']])assert.equal(sharedRuntimeArgs(invalid,'/socket'),null);
 });
 test('multiple backends are resolved by loaded bound tasks and a persisted native launch, without resuming candidates',async()=>{
-  const directory=mkdtempSync('/tmp/nh-hosts-');chmodSync(directory,0o700);
+  const directory=mkdtempSync('/tmp/morrow-hosts-');chmodSync(directory,0o700);
   const owner=await fixture({codexHome:directory}),other=await fixture({codexHome:directory,loadedThreads:[]});
   let pin:string|undefined;let client:CodexSharedTransport|undefined;
   try{
@@ -102,4 +106,24 @@ test('a lost native send reply remains unknown and is never resent',async()=>{
 });
 test('native rejections remain definitive and creating a task does not start a turn',async()=>{
   const f=await fixture({rejectSend:true});try{const snapshot=await f.client.createThread(f.dir);assert.equal(snapshot.threadId,id);assert.equal(f.messages.some(message=>message.method==='turn/start'),false);await assert.rejects(()=>f.client.sendMessage(id,'once','stable'),(error:any)=>error.outcomeUnknown===false);}finally{await f.close();}
+});
+
+// A renamed installation may retain its old state directory or use MORROW_HOME.
+// Discover through the production constructor, then recover an actual task from
+// the isolated socket; selecting a default directory would miss this receipt.
+test('native task discovery follows the service home after a rename',async()=>{
+  const f=await fixture({codexHome:process.env.CODEX_HOME||join(homedir(),'.codex')});
+  const home=join(f.dir,'NoHuman'),directory=join(home,'codex-bridge');mkdirSync(directory,{recursive:true,mode:0o700});
+  writeFileSync(join(directory,`host-${process.pid}.json`),JSON.stringify(f.client.options.host),{mode:0o600});
+  const store=new Store(join(home,'workspace.sqlite'));
+  const native=new NativeConversations(store,{home} as Engine);
+  try{
+    const snapshot=await native.transport.readThread(id);
+    assert.equal(native.transport.backgroundReady,true);
+    assert.equal(snapshot.threadId,id);
+    assert.equal(snapshot.state.turns[0].items[0].text,'original');
+    assert.equal(store.get<any>('migrations','native-host-affinity')?.launchId,'fixture-launch');
+    assert.equal(f.messages.filter(message=>message.method==='thread/resume').length,1);
+    assert.equal(f.messages.some(message=>message.method==='thread/start'||message.method==='turn/start'),false);
+  }finally{native.close();store.close();await f.close();}
 });

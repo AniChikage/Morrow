@@ -10,7 +10,7 @@ import { FakeReviewer } from './fake-reviewer.ts';
 process.env.MORROW_TEST_MODE='1';
 const future=()=>new Date(Date.now()+3600000).toISOString();
 async function fixture(){
-  const root=mkdtempSync(join(tmpdir(),'nh-evaluation-')),home=join(root,'home'),path=join(root,'project');mkdirSync(path);
+  const root=mkdtempSync(join(tmpdir(),'morrow-evaluation-')),home=join(root,'home'),path=join(root,'project');mkdirSync(path);
   const s=await startServer({home,port:0}),token=readFileSync(join(home,'token'),'utf8');
   const request=async(method:string,route:string,input:unknown,auth=token,status=200)=>{const res=await fetch(`http://127.0.0.1:${s.port}${route}`,{method,headers:{Authorization:`Bearer ${auth}`,'Content-Type':'application/json'},body:JSON.stringify(input)});const data=await res.json();assert.equal(res.status,status,JSON.stringify(data));return data;};
   const project=await request('POST','/api/projects',{name:'反馈核对隔离夹具',path,goal:'提高交付完成率，同时保持交付内容完整'},token,201),channel=s.store.all<any>('channels')[0];

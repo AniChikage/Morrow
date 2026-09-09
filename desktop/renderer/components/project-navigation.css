@@ -1,19 +1,19 @@
 .nav-project + .nav-project { margin-top: 5px; }
-.nav-project-row { display: flex; align-items: center; height: 34px; border-radius: 6px; color: #64646d; }
+.nav-project-row { display: flex; align-items: center; height: 34px; border-radius: 6px; color: var(--nav-text); }
 .nav-project-row:hover { background: #eaeaef; }
 .nav-project-row.current-project { color: var(--text); }
 .project-destination { display: flex; align-items: center; gap: 8px; min-width: 0; flex: 1; height: 34px; padding: 0 0 0 10px; font-size: 13px; text-align: left; }
-.project-destination > svg { flex-shrink: 0; stroke-width: 1.6; color: #85858d; }
+.project-destination > svg { flex-shrink: 0; stroke-width: 1.6; color: var(--nav-icon); }
 .project-destination > span:first-of-type { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .nav-project-row.current-project .project-destination { font-weight: 500; }
-.project-channel-count { margin-left: auto; color: #96969f; font-size: 11px; }
+.project-channel-count { margin-left: auto; color: var(--nav-muted); font-size: 11px; }
 .project-add-channel { width: 26px; height: 26px; margin: 0 3px; flex-shrink: 0; display: flex; align-items: center; justify-content: center; border-radius: 4px; color: #8b8b95; opacity: .35; }
 .nav-project-row:hover .project-add-channel, .nav-project-row:focus-within .project-add-channel { opacity: 1; }
 .project-add-channel:hover { background: #dedee6; color: var(--text); }
 .nav-project-content { margin-left: 22px; padding-left: 3px; }
 .nav-project-content[hidden] { display: none; }
 .nav-project-channels { margin-top: 4px; padding-top: 4px; border-top: 1px solid #e2e2e8; }
-.nav-channel-heading { padding: 3px 8px; color: #94949c; font-size: 10px; line-height: 16px; }
+.nav-channel-heading { padding: 3px 8px; color: var(--nav-muted); font-size: 10px; line-height: 16px; }
 .nav-item.nav-channel, .nav-item.nav-board { height: 31px; gap: 8px; padding: 0 8px; font-size: 12px; }
 .nav-item.nav-channel > svg, .nav-item.nav-board > svg { width: 13px; height: 13px; }
-.nav-item.nav-channel-empty { color: #91919a; }
+.nav-item.nav-channel-empty { color: var(--nav-muted); }

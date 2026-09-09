@@ -42,10 +42,11 @@ test('an explicitly selected native scope inherits App permissions and attaches 
   const context=JSON.parse(readFileSync(join(s.home,'runs',run.id,'agent-context.json'),'utf8'));const response=await fetch(context.url,{method:'POST',headers:{Authorization:`Bearer ${context.token}`,'Content-Type':'application/json'},body:JSON.stringify({operation:'context',input:{}})});assert.equal(response.status,200);assert.equal((await response.json()).project.id,s.project.id);
   completeWork(s,nextWork('wait',60));assert.equal(s.store.get<any>('runs',run.id).status,'completed');const expired=await fetch(context.url,{method:'POST',headers:{Authorization:`Bearer ${context.token}`,'Content-Type':'application/json'},body:JSON.stringify({operation:'context',input:{}})});assert.equal(expired.status,409);
 }finally{await s.cleanup();}});
-test('an explicitly recreated empty task retains its audit; uncertain sends and existing history never permit replacement',async()=>{const s=await setup();try{
+for(const legacy of [false,true]) test(`an explicitly recreated ${legacy?'legacy':'current'} empty task retains its audit; uncertain sends never permit replacement`,async()=>{const s=await setup();try{
   let created=0;const originalRead=s.transport.readThread.bind(s.transport);let missing='';
   Object.assign(s.transport,{backgroundReady:true,readThread:async(id:string)=>{if(id===missing)throw new Error('no rollout found for thread id '+id);return originalRead(id);},createThread:async()=>{created++;s.transport.threadId=randomUUID();s.transport.snapshot={...s.transport.snapshot,threadId:s.transport.threadId,state:{turns:[],requests:[],cwd:s.project.path}};return originalRead(s.transport.threadId);}});
   const first=await s.api('POST',`/api/channels/${s.channel.id}/native/create`,{});missing=first.threadId;
+  if(legacy){const {createdByMorrow,...binding}=s.store.get<any>('native_bindings',s.channel.id);s.store.put('native_bindings',{...binding,createdByNoHuman:true});}
   let view=await s.api('GET',`/api/channels/${s.channel.id}/native/conversation`);assert.equal(view.canRecreateEmpty,true);assert.equal(created,1);
   const replacement=await s.api('POST',`/api/channels/${s.channel.id}/native/create`,{});assert.notEqual(replacement.threadId,first.threadId);assert.equal(created,2);assert(s.store.all<any>('events').some(event=>event.action==='native.empty-recreated'&&event.changes?.before?.threadId===first.threadId));
   missing=replacement.threadId;s.store.put('native_outbox',{id:'uncertain',threadId:missing,state:'unknown'});
@@ -162,3 +163,24 @@ test('unflushed native deltas recover from the durable journal before App reconn
   // Simulate process death before its projection timer, leaving the committed delta.
   for(const timer of s.native.pendingTimers.values())clearTimeout(timer);s.native.pendingTimers.clear();s.native.pendingSnapshots.clear();s.native.closed=true;s.transport.connected=false;recovered=new NativeConversations(s.store,s.engine,s.transport);recovered.recoverCheckpoint(initial.threadId);const view=await recovered.conversation(s.channel.id,{});assert.equal(view.status.connected,false);assert.equal(view.items[0].text,'durable after crash');assert.equal(s.store.get<any>('native_threads',initial.threadId).revision,latest.revision);assert.equal(s.transport.interruptions.length,0);
 }finally{recovered?.close();await s.cleanup();}});
+
+test('renamed service recovers a legacy responsibility run without resending or resetting its budget',async()=>{
+  const s=await setup();let restarted:Awaited<ReturnType<typeof startServer>>|undefined;
+  try{
+    await s.native.bind(s.channel.id,s.transport.threadId);await s.engine.action(s.channel.id,'run');
+    const run=s.store.all<any>('runs').find(row=>row.source==='morrow-schedule');
+    assert.equal(run.status,'running');s.store.put('runs',{...run,source:'nohuman-schedule'});
+    await s.close();assert.equal(s.transport.interruptions.length,0);s.transport.connected=true;
+    restarted=await startServer({home:s.home,port:0,nativeTransport:s.transport});
+    await restarted.native.conversation(s.channel.id,{});
+    assert.equal(restarted.native.scheduled.get(s.channel.id)?.run.id,run.id);
+    assert.equal(restarted.engine.budgetCount(s.channel.id),1);
+    completeWork(s,nextWork('wait',60));
+    const recovered=restarted.store.get<any>('runs',run.id);
+    assert.equal(recovered.status,'completed');assert.equal(recovered.source,'nohuman-schedule');
+    assert.equal(recovered.sessionId,s.transport.threadId);assert.equal(recovered.nativeTurnId,run.nativeTurnId);
+    assert.equal(restarted.store.all('runs').length,1);assert.equal(s.transport.sent.length,1);
+    assert.equal(restarted.engine.budgetCount(s.channel.id),1);assert.equal(restarted.native.scheduled.size,0);
+    assert.match(restarted.store.runText(run.id,'final'),/完成实际验证/);
+  }finally{await restarted?.close();await s.cleanup();}
+});

@@ -4,7 +4,7 @@
   "version": "0.9.4",
   "private": true,
   "type": "module",
-  "description": "A local-first desktop workspace for continuously working AI channels.",
+  "description": "A local-first Mac app that lets Codex take continuing responsibility for project goals.",
   "main": "out/main/index.js",
   "engines": {
     "node": ">=24.0.0"

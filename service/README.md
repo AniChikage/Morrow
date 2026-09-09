@@ -1,130 +1,154 @@
-# Morrow execution service
+# Morrow 执行服务
 
-## Goal-driven work and release review (0.6.0)
+Node.js 24+ 服务，为桌面应用提供项目状态、原生任务同步、持续工作、反馈与发布确认。状态和有界运行 I/O 保存在 SQLite；原生运行时负责登录、模型配置、工具与实际执行。
 
-Scheduled native Codex turns receive a private `agent-cli.ts --context …` entry point. The CLI executes inside the same native task and calls `/api/agent` using a run-scoped credential; it cannot call desktop review endpoints. Credentials expire and new writes require a currently running, matching project/channel/run. The desktop token is never included in the prompt. Use `--operation context` for the current project state and operation contracts. Mutations require `--request-id`; retries use the same ID and JSON. `--input -` reads JSON from stdin, so work records do not require writing temporary files in a read-only workspace.
+产品介绍和安装见 [仓库 README](../README.md)。完整的 AI 工作操作与字段约束见 [项目工作协议](../docs/PROJECT-WORK-CONTRACT.md)。本文说明服务的部署方式与运行边界。
 
-The agent can maintain the shared feature board, capture evidence, revise outcome/hypothesis/experiment records, create JSON feedback watches and persist a wait. All records reference their project, channel, native run and, where applicable, feature. Captured evidence also updates that feature's evidence list. Optimistic revisions protect concurrent changes. HTTP observations are distinguishable from agent-reported claims; file capture preserves actual bytes and their digest. A captured log is evidence to review, not independent proof of every conclusion an agent draws from it.
+## 启动与配置
 
-Feedback watches currently support HTTP(S) GET JSON, JSON Pointer selection and `changed`, `equals`, `gte` or `lte` conditions. `changed` takes a baseline before triggering. Watch deadlines, fetch failures and matching feedback can wake the relevant enabled channels; cross-channel subscriptions share the same project evidence. Unchanged failures do not repeatedly wake work. Paused channels are not automatically re-enabled. A watch linked to a release begins reading after that release is confirmed as published. No arbitrary user project is started by migration or installation.
-
-`release.propose` copies a prepared project file (maximum 8 MiB) into private storage and seals the review content and artifact with SHA256. It requires linked features, concrete changes, expected benefit, check evidence, impact, rollback and an observation plan. This first release adapter uses a project-provided HTTP endpoint; larger deployments can use a small immutable deployment manifest as the artifact. The endpoint must implement the following contract and have its own appropriate deployment authorization. Provider-specific deployment integrations and authenticated analytics connectors are not bundled yet.
-
-* POST the configured URL with `Idempotency-Key: <releaseId>` and JSON `{releaseId, reviewHash, artifact:{name, sha256, bytes, base64}}`.
-* Return `{releaseId, artifactSha256, status:"published", url?}` only after publishing that exact artifact; an explicit unsuccessful deployment can return `status:"failed"`.
-* GET the configured status URL with a `releaseId` query parameter returns the same receipt. Responses are limited to 512 KiB. Redirects are not followed.
-
-The App's `POST /api/releases/:id/review` requires the displayed review hash and human decision. It is inaccessible to the scoped agent credential. Approval dispatches the sealed artifact; subsequent edits to the source file do not change it. A timeout or lost receipt becomes `unknown` and is reconciled using GET, never by repeating the deployment POST. New content requires a new proposal. HTTP success alone does not mark the release published: release ID, artifact digest and deployment status must match. This gate covers the Morrow release interface; native tools and credentials remain subject to the Codex App's own permissions.
-
-`GET /api/projects/:id/work` returns the project records, optionally scoped with `itemId`. The shared board's “上线确认” tab presents reviewable releases; each feature shows its attempts, evidence, deployment state and feedback. Existing records and automatic-work permissions are preserved. An explicit Codex-only `native` scope can inherit the App's actual sandbox; selecting it does not modify the native task's permissions or create another session.
-
-The automated suite and native UI acceptance use isolated databases, fake native transport and a local deployment/feedback receiver. They prove the state and execution mechanisms; they do not establish autonomous real-model performance or real business benefits. Real project acceptance requires a working native bridge plus that project's actual deployment and observation endpoints.
-
-The daemon uses Node.js 24 or later and built-in SQLite. Codex connects to the existing local macOS App; Claude Code and Trae use their installed CLI runtimes. The service has no npm dependencies. Start it with `node service/server.ts`; `npm test` uses isolated databases, fake CLIs and simulated desktop IPC, without contacting a model provider.
-
-## Local operation
-
-The HTTP server binds exclusively to `127.0.0.1`. Defaults:
-
-| Setting | Default |
-| --- | --- |
-| `MORROW_HOME` | `~/Library/Application Support/Morrow` |
-| `MORROW_PORT` | `43821` |
-
-The state directory is mode `0700`. A randomly generated `token` file is mode `0600`; clients send its contents using `Authorization: Bearer …`. `/health` is public and returns only service identity. All `/api/` routes require authentication, reject browser Origin headers, and accept JSON requests up to 1 MB. API snapshots never contain the access token. Do not put the token in a URL or command-line argument.
-
-The directory contains `workspace.sqlite`, SQLite WAL files, `daemon.lock`, `token`, CLI artifacts under `runs/<run-id>/`, and selected-image copies under `native-images/`. Codex App conversation history and native records are authoritative in SQLite; they do not require a CLI artifact directory. These files contain private project context. Use SQLite's online backup facility for a running database, or stop the service before copying its files. There is no automatic history pruning.
-
-Stop the daemon with SIGTERM or SIGINT. It stops scheduling and terminates only CLI process groups that it owns. A second daemon using the same data directory is rejected. After a crash, unfinished owned CLI runs are marked interrupted and their channels are paused; an orphan is killed only if its command still identifies the recorded run. Shared Codex App work continues when Morrow stops. On restart, Morrow reconnects to the App, reconciles native state, and distinguishes its scheduled turns from ordinary chat and externally started App turns. An uncertain submission is never automatically repeated.
-
-## Linux and remote hosts
-
-For the supported remote CLI adapters, install Node.js 24+ and authenticate the desired CLI on the remote host. Copy the complete `service/` directory; the TypeScript files import one another. No install or transpilation step is needed. Codex App conversation synchronization currently requires the same local Mac and user session; an SSH daemon does not connect back to the Mac's App or fall back to an independent Codex CLI.
+从仓库根目录执行：
 
 ```bash
-mkdir -p "$HOME/.local/share/morrow"
-MORROW_HOME="$HOME/.local/share/morrow" node service/server.ts
+npm ci
+MORROW_HOME="$HOME/.local/share/morrow" MORROW_PORT=43821 npm start
 ```
 
-For persistent operation, run that command using your existing user service manager with the same environment and a PATH containing the authenticated CLI installations. Runtime discovery also checks `~/.local/bin`, `/usr/local/bin`, `/opt/homebrew/bin`, and `/usr/bin`. The Trae adapter searches `traex` then `traecli`; the graphical `trae` executable is not used.
+服务直接运行 TypeScript，不需要单独编译。SQLite 使用 Node 内置模块；原生共享连接依赖 `ws`，因此仅复制 `service/` 目录不能完成部署。
 
-Use an SSH local port forward to connect remotely. For example, forward local port 43822 to remote `127.0.0.1:43821`; authenticate the local client with the remote host's private token. Do not expose the daemon port publicly or copy provider credentials to the Mac. SSH and host authentication remain the responsibility of the connection layer; the daemon itself is a loopback HTTP service.
-
-## Execution and permission boundaries
-
-Projects use canonical existing directory paths. New projects create two paused channels with a read-only automatic-work scope, using the selected project runtime (Codex by default). A project owns one shared feature board; channel IDs record discovery provenance and ongoing responsibility. Creating a project or binding a task does not start model work. A user must send a message, start a round or enable scheduling. Explicit demo projects cannot run.
-
-- **Codex App:** `codex-desktop-transport.ts` follows the existing App owner through its private local IPC protocol. It does not launch `codex exec`, a separate App Server, or a replacement owner. Normal chat inherits the task's actual model, tools, permissions and approval settings, and sends the original text and native image inputs without a scheduler wrapper. Input during a running turn uses the App's native steering path. Before a scheduled or manual responsibility round, Morrow checks that the current native sandbox is no broader than the channel's saved read-only/workspace-write scope. If the scope cannot be verified, or the App is disconnected or busy, Morrow refuses or postpones orchestration instead of widening permissions. Bound task IDs survive channel model and scope edits; these edits do not rewrite App settings.
-- **Trae:** `exec --json` uses a read-only or workspace-write sandbox, `approval_policy="never"`, network access disabled for sandboxed workspace commands, and no dangerous bypass flags. The adapter does not set `--ignore-user-config`, `--ignore-rules` or `--output-schema`, retaining native provider/model configuration and project instructions. An explicitly selected Morrow model overrides the Trae default. Native configuration may initialize integrations, including MCP servers; the bounded-work prompt forbids using MCP, connectors, browser control, or remote tools. Runtime detection checks installation and command options, not login or quota. Authentication, quota and execution errors are recorded. Resumed CLI sessions receive the same permission overrides.
-- **Claude Code:** `--safe-mode --restricted` keeps native authentication while disabling customizations. Strict empty MCP configuration and an explicit tool list constrain read-only runs to `Read,Grep,Glob`. Workspace editing adds only `Edit,Write` with `acceptEdits`; Bash and code execution are unavailable. Permission prompts are denied rather than bypassed. Consequently Claude cannot run a test command in this MVP; it should report verification limits honestly.
-
-Responsibility rounds receive the project goal, channel objective, whole-project board, recent human notes and run summaries. Codex submits this bounded-work prompt to the bound App task; normal Codex chat does not receive it. The other adapters start or resume one noninteractive CLI round, and their human-note endpoint remains next-round context rather than live stdin. This is interval orchestration, not a filesystem watcher. Knowledge retains source, timestamp, origin channel/run and confirmation state; confirmed entries can be shared across sibling channels. Changing runtime/model/permission on an unbound legacy CLI channel clears its resume ID while keeping persisted context. A bound Codex channel retains its original App task; switching it to another runtime requires a separate channel.
-
-Native Markdown output is retained. An optional fenced `morrow-report` JSON block can synchronize the project board; legacy JSON-only responses are still accepted. Reports must pass `protocol.ts` validation; verified/resolved agent findings need evidence and existing IDs must belong to the same project. Cross-channel updates preserve the first source channel and add the participating channel. Per-item revisions protect edits made after a run began: conflicting suggestions remain in the report and do not overwrite the current item.
-
-Execution status and report status are independent. A successful responsibility round with a missing/invalid report remains completed, retains its original answer, changes no board items and continues at the configured interval when enabled. A failed native turn, terminal CLI failure or interruption retains failure semantics. Recoverable intermediate CLI diagnostics do not override terminal success. `needsHuman` in a valid report stops continuation. Normal Codex chat and externally started App turns are recorded without automatically interpreting their replies as board updates. Only final native assistant answers are treated as final run output; commentary stays in the conversation history.
-
-Morrow serializes its responsibility rounds per project directory and waits for already-bound App tasks to become idle. A conflicting manual round returns HTTP 409. Independent App tasks remain owned by the App. Daily budgets count started Morrow orchestration attempts, including failures and interruptions, per UTC calendar day; normal Codex chat and external App turns do not consume that budget. Limits are 1–100 rounds/day and 1–1440 minutes between checks. An agent may suggest a longer interval but cannot shorten the configured minimum.
-
-The owned CLI adapters have a 15-minute timeout, a 20 MiB combined stdout/stderr ceiling and a 1 MiB assembled-prompt limit. Those process limits are not applied to shared Codex App turns. Human-needed reports, definitive execution failures and unknown submissions stop automatic continuation. Pausing a CLI channel cancels its pending schedule and owned process group, including lingering tool subprocesses. Pausing an owned Codex responsibility round sends an interrupt for its exact native turn ID; it never kills the App or another App task.
-
-A bounded-work prompt requires reviewable work and prohibits autonomous publication, deployment, external messages and destructive actions; this is not an independent OS policy engine and does not constrain every integration initialized by native configuration. Codex chat and native approval requests follow the App's own permission system. Morrow forwards supported approvals and structured questions using the exact pending native request ID; unsupported requests must be handled in the App. Morrow does not add its own file rollback, deployment permissions, token metering or dollar budget. Round quotas are the orchestration budget control.
-
-## Test-only configuration
-
-`MORROW_TEST_MODE=1` enables fake runtime executable paths via `MORROW_TEST_CODEX_PATH`, `MORROW_TEST_CLAUDE_PATH`, and `MORROW_TEST_TRAE_PATH`, plus `MORROW_TEST_TIMEOUT_MS` for fast CLI timeout testing. Unbound fake Codex CLI execution remains available only for these adapter regressions; ordinary installations require App binding. Native tests inject a fake desktop transport or use an isolated IPC server and temporary native catalog. Tests cover thread scope, native patches, complete/partial history, exact text, steering-message reconciliation, duplicate delivery, unknown outcomes, permissions, images, ownership-aware restart and report handling. They do not launch user projects or restart a user's App or daemon.
-
-## Codex App conversation protocol
-
-The transport attaches to the currently installed App's private local owner/follower IPC. It validates local socket ownership, performs the protocol handshake, subscribes to versioned snapshots and patches, and never takes ownership of the task. This is not a public compatibility promise: an unsupported protocol version or invalid revision sequence disables sending until synchronization can be restored. Global socket availability and individual thread readiness are separate; cached history remains readable during a disconnect without claiming the thread is connected.
-
-Only explicitly bound tasks are mirrored. The read-only task catalog is filtered to the project's canonical directory. A listed task that is not currently open in the App may be bound with a synchronization error; opening it in the App activates its owner. The shared interface does not expose task creation. The desktop opens the App's project composer, the user starts the native task there, and then selects it for binding. Morrow does not pretend an independent CLI session is the same task.
-
-Authenticated routes:
-
-| Route | Behavior |
+| 配置 | 默认或用途 |
 | --- | --- |
-| `GET /api/native/status` | App connection state and currently supported capabilities |
-| `GET /api/channels/:id/native/threads` | Catalog entries in this channel's project directory |
-| `POST /api/channels/:id/native/bind {threadId}` | Persist an exact task binding; return its current conversation or synchronization error |
-| `GET /api/channels/:id/native/conversation?before=<item-id>&limit=80` | Current native messages, tools, pending requests, thread readiness and paged history; limit 1–200 |
-| `POST /api/channels/:id/native/messages {text,requestId,attachments?}` | Submit original input or steer the running turn; persist a pending/accepted/unknown/failed receipt |
-| `POST /api/channels/:id/native/interrupt {turnId}` | Stop only the matching active native turn |
-| `POST /api/channels/:id/native/respond {requestId,response}` | Answer the exact still-pending native approval or question |
-| `GET /api/channels/:id/native/open` | Return project path and optional bound thread ID for the desktop's App deep link |
-| `POST /api/channels/:id/native/create {}` | Return an explicit unsupported response; creation happens in the App composer |
-| `POST /api/channels/:id/native/images {paths}` | Import images selected through the native desktop file picker |
-| `GET /api/channels/:id/native/images/:itemId/:index` | Read an image referenced by the current bound native message |
+| `MORROW_HOME` | 数据目录。未设置时，新安装使用 `~/Library/Application Support/Morrow`；该目录不存在且旧 `NoHuman` 目录存在时沿用旧目录。 |
+| `MORROW_PORT` | `43821`，仅监听 `127.0.0.1`。 |
+| `CODEX_HOME` | 原生 Codex 的配置目录，默认 `~/.codex`；由原生运行时管理。 |
+| `MORROW_NODE` | Electron 开发模式下可选的 Node 可执行文件路径。 |
+| `MORROW_APP` | 登录启动脚本使用的已安装 App 路径。 |
 
-Message request IDs are idempotency keys. Reusing one with changed text or attachment IDs is rejected. Lost acknowledgements remain unknown and are reconciled against native client/server message IDs; the service does not blindly retry. Native steering placeholders render as user messages and are merged with their canonical server messages without duplicate text. Protocol markers remain available in raw records without becoming extra chat bubbles.
+旧 `NOHUMAN_HOME`、`NOHUMAN_PORT`、`NOHUMAN_NODE`、`NOHUMAN_APP` 保留兼容；同时设置时，新变量优先。原生桥接从实际数据目录下的 `codex-bridge/` 发现后台，明确指定或沿用旧目录时不会另找一个空的新目录。
 
-Supported image imports are PNG, JPEG, WebP and GIF: at most five images, 10 MiB each and 20 MiB per import batch. Opaque attachment IDs are scoped to a channel and resolve to immutable private file copies with verified hashes. The App receives its native image input and manages model consumption. Native hosted images that cannot be retrieved through a supported local/data reference remain explicit App-only content.
+Electron 优先连接已经运行的服务，只在本机端口未运行服务时启动打包的 daemon。关闭界面不会停止该 daemon；安装或 UI 升级不会自动重启它。可选登录启动：
 
-SQLite `native_bindings`, `native_threads`, `native_items`, `native_turns`, `native_events`, `native_requests`, `native_outbox` and `native_attachments` retain task associations, full raw state, message projections, canonical turns, changed-record journals, pending requests, submission receipts and images. Duplicate revisions do not rewrite the journal; partial App history does not erase previously mirrored older messages. Projection versions allow an upgraded parser to rebuild existing records from the same native snapshot. Normal chat and external turns also appear in `runs` with `executionOwner: codex-app`, native turn IDs and `source: morrow-chat|native-app`; scheduled turns use `source: morrow-schedule`. Missing original timestamps are left unknown rather than invented.
+```bash
+bash scripts/login-service.sh install
+# 撤销启动项，保留数据
+bash scripts/login-service.sh uninstall
+```
 
-## Structured events and history
+### 远程主机
 
-CLI tool events optionally include `detail: {type, tool?, input?, output?, status?, sequence?, toolCallId?}`. `type` is `tool_use` or `tool_result`; Trae and historical Codex CLI command execution use `tool: "shell"`, file changes use `apply_patch`, and Claude tool names are retained. `toolCallId` links starts/results within a run. Multiple Claude tool blocks are retained as separate events (up to 40 per provider message). `sequence` is the durable event ordinal within its channel/run, including earlier plain events; it is assigned by the service, not accepted from provider output. Existing `text` is retained and legacy events remain readable without `detail`. Current Codex App conversation items use their separate full native representation described above.
+在远端安装 Node 24+ 和需要使用的 CLI，并在远端完成 CLI 登录。部署完整仓库及生产依赖：
 
-Details are bounded to six nested levels, 40 entries per collection and a shared 6,000-character content budget. Sensitive credential fields and the daemon bearer are redacted before persistence. This is additional display metadata; tool metadata does not change execution permissions.
+```bash
+git clone https://github.com/AniChikage/Morrow.git
+cd Morrow
+npm ci --omit=dev
+MORROW_HOME="$HOME/.local/share/morrow" npm start
+```
 
-`GET /api/events?channelId=<id>&runId=<id>&before=<event-id>&limit=50` returns `{events, hasMore, cursor?}`. Provide `projectId` or `channelId`; if both are given they must agree. Optional `itemId` and `runId` further scope history. Omit `before` to get the latest events; use `after=<event-id>` instead for incremental reads. `before` and `after` are exclusive. `limit` defaults to 50 and accepts 1–200. All pages are returned oldest first in persistent write order, including events with identical timestamps.
+使用现有用户服务管理器保持进程常驻，并保留 CLI 所在的 `PATH`。Mac 的设置页配置 SSH 主机、远端数据目录和服务端口；SSH 需支持非交互登录并已完成主机确认。桌面通过本机隧道连接，不需要公开服务端口。
 
-For default/history pages, `cursor` is the oldest returned ID for the next `before` request. For `after` pages it is the newest returned ID for the next incremental request. Empty pages omit `cursor`. An initial incremental client should remember the last event ID of its initial page. Unknown or out-of-scope projects, channels, items, runs and cursors return 404; malformed, duplicate or unsupported parameters return 400. Authentication is identical to the other API routes. Desktop renderers should call through the main-process IPC proxy, preserving the daemon's browser Origin restriction.
+远程项目使用远端的绝对路径，数据与执行保留在远端。Codex App 同步只支持本机同用户会话；远端服务不会回连 Mac App，也不会退回另一条 Codex CLI 会话。Claude/Trae 可使用远端 CLI 适配器，具体主机仍需联调。
 
+## 认证、数据与恢复
 
-## Project board and durable records
+数据目录权限为 `0700`。`token` 文件为 `0600`，客户端通过 `Authorization: Bearer …` 认证。`/health` 仅公开服务身份；所有 `/api/` 路由需要认证并拒绝浏览器 Origin，请求 JSON 上限为 1 MiB。Renderer 不获取 token，快照也不返回 token。
 
-`POST /api/projects` accepts optional `runtime: codex|claude|trae`. Existing canonical folders return 409 without duplicating the project. `POST /api/projects/:id/items` accepts `{title,summary?,kind?,status?,evidence?,nextStep?,channelId?}`; kind defaults to `feature`, status to `open`, and omitted source channel becomes `""`. `PATCH /api/items/:id` accepts those editable content fields plus optional `revision`; the original `{status}` call remains supported. Project/first-source IDs cannot be edited. A stale supplied revision returns 409.
+| 记录 | 存储内容 |
+| --- | --- |
+| 项目、频道、事项与事件 | 目标、设置、稳定事项编号、来源频道、版本和变更审计。 |
+| `runs`、`run_io` 与报告 | 运行归属、输入、流式输出、最终回答和报告状态。 |
+| `native_*` | 原生任务绑定、快照、消息、轮次、增量日志、请求、发送回执和附件记录。 |
+| `loop_*` | 认识、行动选择、预期、证据、测量、复盘、观测、等待、验证与发布。 |
 
-Items additionally store `projectId`, a stable project-local `number`, `sourceChannelIds`, `lastRunId`, and `revision`. Existing item IDs and first-source channel IDs are preserved by idempotent boot migration. Migration adds project ownership from each original channel; it does not merge items or invent historical run permissions/models that were not recorded.
+所有表位于 `workspace.sqlite`。`runs/`、`native-images/` 和 `releases/` 保存相关私有文件。原生任务的权威历史由 Codex 管理，Morrow 的 SQLite 保存已同步的镜像和编排记录，不把自己的记录当成另一套原生会话。
 
-Project/channel creation, channel configuration, accepted actions, messages, item changes/conflicts, and native handoff intents are persisted as events. Optional `projectId`, `itemId`, `actor` (`human|agent|system`), `action`, and `changes:{before?,after?}` associate audit entries with real records. Item mutations and their before/after audits commit together. Older plain events remain available without invented audit fields.
+迁移保持已有 ID 和历史，支持旧运行来源、协议标记与任务创建记录。历史证据摘要不因品牌改名重新计算。当前没有自动裁剪历史的策略；备份应使用 SQLite 在线备份，或停止服务后复制完整数据目录及相关文件。
 
-`GET /api/runs?projectId=<id>&channelId=<id>&before=<id>&limit=50` returns `{runs,hasMore,cursor?}`; filters are optional, `before/after` are exclusive, and limits are 1–200. Ordering/cursor behavior matches event history. `GET /api/runs/:id` returns `{run,prompt,finalOutput,report?}`, including old runs beyond the snapshot's latest 500. New runs persist project/runtime/model/permission/trigger, exact resumed session ID, native exit/signal and separate `reportStatus`/`reportError`.
+同一目录只允许一个 daemon，通过 `daemon.lock` 防止重复实例。SIGTERM/SIGINT 会停止服务调度并清理其拥有的 CLI 进程；不会杀死共享 Codex App。崩溃后，未结束的自有 CLI 轮次标记中断并暂停频道；共享任务则按原生状态恢复。发送回执不明确时先核对结果，不盲目重发。
 
-CLI inputs and raw stdout/stderr chunks are mirrored in private SQLite `run_io` before the corresponding file copies. Unfinished output lines are persisted immediately. Final output and valid reports are mirrored too; file-export failure does not turn a durable successful run into failure. The CLI adapter's 20 MiB combined stdout/stderr ceiling applies only to these owned processes. Daemon bearer redaction handles CLI cross-chunk boundaries. Existing private run artifacts are mirrored once on migration within a 24 MiB per-run import bound. Codex App activity is persisted in the native tables during execution; associated runs also retain original user input, complete native turn data and final assistant output in `run_io`, with full raw records separate from display summaries.
+## 原生运行时
 
-`GET /api/runs/:id/output?after=<chunk-id>&limit=50` returns `{chunks,hasMore,cursor?}` with chronological `{id,runId,stream,text,createdAt,sequence}` chunks. Streams are `prompt|stdout|stderr|final|report`; limits are 1–100 and cursor IDs must belong to that run. All routes require the same bearer authentication. Snapshots do not contain bulk raw I/O.
+### Codex App
 
-`POST /api/channels/:id/native-handoff {}` is the legacy CLI terminal handoff. It requires a real project, available CLI, and every project channel paused/blocked/idle with scheduling disabled and no active execution. It records intent and returns `{projectPath,runtime,executable,sessionId}` without claiming a terminal opened. Session IDs survive pause/recovery; changing runtime/model/permission on those unbound CLI channels starts a separate session while retaining prior records. Bound Codex App channels use `/native/open` instead and do not detach their task on model or automatic-scope edits. Work performed after a Claude/Trae terminal handoff is owned by that CLI and is not mirrored live; this limitation does not apply to an already-bound Codex App conversation.
+`codex-app-host-bridge.ts` 保留 App 的启动参数和配置，将其启动的原生后台通过私有 Unix WebSocket 提供给同用户客户端。Morrow 连接这个后台，不另起一个 `codex exec` 或替代后台。
+
+首次在桌面配置后台连接后，需要在当前任务结束时重开一次 Codex App。生效后，Morrow 可以创建或冷恢复原生任务，无需用户逐条打开 App 页面。切换前的 owner/follower IPC 作为受限兼容路径，依赖 App 已加载的任务，不支持新的自动工作能力。
+
+- 每个频道明确绑定一个本项目目录下的原生任务，只同步已绑定任务。
+- 普通对话传递原始文字、图片和请求 ID；运行中通过原生 steering 追加指导。
+- 自动轮次使用同一任务，核对频道范围后应用相应沙箱和原生自动审查。模型与登录仍由原生任务管理。
+- 审批与结构化问答使用原生待处理请求 ID；不支持的内容明确交由 App 处理。
+- 支持 PNG/JPEG/WebP/GIF：单张最多 10 MiB，每批最多 5 张、20 MiB。附件使用按频道隔离的私有副本与摘要校验。
+- 断线时历史仍可读；同一请求 ID 的内容不能改变。丢失确认后保留未知回执，并按原生消息 ID 核对。
+
+连接依赖 Codex App 的私有协议，不能承诺任意未来版本兼容。后台存在与某条任务就绪是不同状态；多后台归属不明确时不会猜测目标。
+
+### Claude Code 与 Trae
+
+Claude 使用受限非交互调用：只读提供 `Read/Grep/Glob`，编辑增加 `Edit/Write`；当前不开放 Bash 或 MCP，因此不能在该适配器中执行测试命令，也不完整继承 Claude 自定义插件能力。
+
+Trae 使用 `traex exec --json` / `exec resume`，保留原生 provider、规则和默认模型，显式约束所选沙箱与审批设置。发现顺序为 `traex`、`traecli`，不使用图形应用的 `trae` 可执行文件。
+
+这两个适配器的人工备注是下一轮上下文，不是实时 App 对话。CLI 安装检测不等于登录或额度验证；实际失败与原始输出会落库。
+
+## 持续工作与反馈
+
+接入现有文件夹后，新项目准备一个暂停的「自主推进」频道，默认允许工作区编辑、每日最多 32 轮。接入、绑定和保存配置本身不启动模型工作。示例项目不能执行。
+
+自动轮次获得项目目标、方向、共享看板、已有认识、相关经验和人工指导。Codex 通过运行范围内的工作接口维护项目；下一步可选择继续、等待或提问。用户手动暂停优先于反馈唤醒。
+
+同一项目目录的责任轮次串行执行，并等待已绑定原生任务空闲。每日上限按 UTC 日界计算，已启动的失败/中断轮次也计数；普通对话和外部 App 轮次不消耗编排预算。配置范围为每天 1–100 轮、复查间隔 1–1440 分钟。
+
+自有 CLI 单轮超时 15 分钟，stdout/stderr 合计上限 20 MiB，组装提示上限 1 MiB；这些子进程限制不直接套用到共享 Codex App 轮次。暂停原生自动工作只中断属于该责任轮次的精确 turn ID。
+
+反馈监测支持 HTTP(S) GET JSON、JSON Pointer 和 `changed/equals/gte/lte` 条件。新反馈、质量变化、采集故障和复查期限可唤醒启用的频道；重复相同状态不反复触发。与发布关联的观测在确认发布后开始采集。当前不包含文件变化触发器。
+
+可选测量计划保存指标口径、目标关系、代理局限、基线、样本/完整性等字段规则及数据时间。新观测必须满足来源、窗口与质量要求，数据不足保留未知。规则核对和独立模型复核都不等同于线上业务因果证明。
+
+执行状态与看板报告状态分开。可选 `morrow-report` 必须通过协议校验；旧 `nohuman-report` 仍能读取。缺少报告不会凭空创建事项，普通聊天也不会自动被解释为看板结论。Agent 提交的完成状态还受当前验证要求约束。
+
+## 工作接口与发布确认
+
+自动 Codex 轮次获得 `agent-cli.ts --context …` 入口，使用短期、限定项目/频道/运行的凭据调用 `/api/agent`。该凭据不能访问桌面人工审阅接口；桌面 token 不写入提示。使用 `--operation context` 获取当前状态与操作契约；写操作必须携带 `--request-id`，重试保持相同 ID 和内容，`--input -` 支持从 stdin 读取 JSON。
+
+`release.propose` 要求关联事项、具体改动、预期收益、检查证据、影响、回退和观察计划，并封存项目内的产物文件及审阅摘要。当前产物上限为 8 MiB，大型发布可以提交不可变的部署清单。
+
+项目需提供以下 HTTP 适配接口及必要的发布授权：
+
+| 请求 | 约定 |
+| --- | --- |
+| POST 发布 URL | Header `Idempotency-Key: <releaseId>`；JSON 为 `{releaseId, reviewHash, artifact:{name, sha256, bytes, base64}}`。 |
+| GET 状态 URL | 带 `releaseId` 查询参数，只查询该次发布。 |
+| 回执 | `{releaseId, artifactSha256, status:"published", url?}`；只有确实发布匹配产物后才能返回 `published`，明确失败可返回 `failed`。 |
+
+桌面人工审阅提交当前 `reviewHash` 与决定。确认后只发送封存产物，源文件后来修改不会更换被批准的内容。发布超时或回执不明时标记 `unknown`，通过 GET 核对，不自动重复 POST；ID、摘要和发布状态必须一致。响应上限为 512 KiB，不跟随重定向。
+
+发布门禁约束 Morrow 的发布接口。原生工具、网络和外部凭据受各原生运行时权限约束；提示中的行为要求不能等同于独立的系统权限隔离。
+
+### 桌面 API 导航
+
+| 路由 | 用途 |
+| --- | --- |
+| `GET /api/native/status` | 实际连接状态、后台就绪与支持能力。 |
+| `/api/channels/:id/native/threads`、`bind`、`create` | 项目任务目录、明确绑定、创建原生任务。 |
+| `/api/channels/:id/native/conversation`、`messages` | 分页原生历史、提交/追加消息与幂等回执。 |
+| `/api/channels/:id/native/interrupt`、`respond` | 精确停止轮次、回答待处理原生请求。 |
+| `GET /api/projects/:id/work` | 项目工作记录，可通过 `itemId` 限定事项。 |
+| `POST /api/agent` | 运行范围内的 AI 工作操作。 |
+| `POST /api/releases/:id/review` | 桌面人工发布决定，工作凭据不能调用。 |
+
+请求方法、参数校验和其余路由以 [server.ts](server.ts) 为准；领域字段与操作规则见 [项目工作协议](../docs/PROJECT-WORK-CONTRACT.md)。
+
+## 验证
+
+在仓库根目录运行：
+
+```bash
+npm run typecheck
+npm test
+npm run test:ui
+npm run build:app
+```
+
+默认服务测试使用隔离数据库、假 CLI、模拟 IPC/共享后台及本地反馈与发布端，不运行用户项目或调用模型服务。测试开关为 `MORROW_TEST_MODE=1`，可通过 `MORROW_TEST_CODEX_PATH`、`MORROW_TEST_CLAUDE_PATH`、`MORROW_TEST_TRAE_PATH` 注入夹具，`MORROW_TEST_TIMEOUT_MS` 缩短超时。
+
+可选真实 Codex 二进制测试使用独立原生目录和本地模型夹具，入口见 [codex-shared-runtime.integration.test.ts](../tests/codex-shared-runtime.integration.test.ts)。它验证原生协议链路，不代表真实模型的自主决策能力或线上收益。原生窗口交互、实际远端主机和真实项目反馈需要分别验收。
