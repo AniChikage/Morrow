@@ -980,3 +980,36 @@ test('renamed service recovers a legacy responsibility run without resending or 
     await s.cleanup();
   }
 });
+test('native status reports App installation and backend versions without probing this Mac in test mode', async () => {
+  const s = await setup();
+  try {
+    const initial = await s.api('GET', '/api/native/status');
+    assert.equal(initial.connected, true);
+    assert.equal(initial.appInstalled, false);
+    assert.equal('appVersion' in initial, false);
+    assert.equal('runtimeVersion' in initial, false);
+    Object.assign(s.transport, { backgroundReady: true, runtimeVersion: 'codex-app-server/1.2.3' });
+    const ready = await s.api('GET', '/api/native/status');
+    assert.equal(ready.backgroundReady, true);
+    assert.equal(ready.runtimeVersion, 'codex-app-server/1.2.3');
+    // A version seen earlier is not reported once the backend is gone.
+    s.transport.connected = false;
+    const offline = await s.api('GET', '/api/native/status');
+    assert.equal(offline.connected, false);
+    assert.equal('runtimeVersion' in offline, false);
+  } finally {
+    await s.cleanup();
+  }
+});
+test('the test hook fakes an installed App with a bundle version', async () => {
+  process.env.MORROW_TEST_CODEX_APP_VERSION = '9.9.9-fixture';
+  const s = await setup();
+  try {
+    const status = await s.api('GET', '/api/native/status');
+    assert.equal(status.appInstalled, true);
+    assert.equal(status.appVersion, '9.9.9-fixture');
+  } finally {
+    delete process.env.MORROW_TEST_CODEX_APP_VERSION;
+    await s.cleanup();
+  }
+});

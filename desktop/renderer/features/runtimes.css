@@ -239,6 +239,48 @@
   text-decoration: underline;
   text-underline-offset: 3px;
 }
+.runtime-settings-checklist {
+  padding: 8px 18px 10px 52px;
+  border-top: 1px solid var(--line-soft);
+  font-size: 12px;
+  line-height: 19px;
+}
+.runtime-settings-checklist ol {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.runtime-settings-checklist li {
+  flex-wrap: wrap;
+  white-space: normal;
+}
+.runtime-settings-checklist code {
+  font: 11px/19px var(--font-mono);
+  color: #63636d;
+}
+.runtime-settings-next {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 10px;
+  margin: 8px 0 0;
+  color: #50505a;
+}
+.runtime-settings-next > b {
+  font-weight: 500;
+  color: var(--muted);
+}
+.runtime-settings-next .button {
+  min-height: 24px;
+  font-size: 11px;
+}
+.runtime-settings-receipt {
+  margin: 4px 0 0;
+  color: var(--muted);
+}
 .runtime-settings-note {
   display: flex;
   align-items: flex-start;
@@ -272,7 +314,8 @@
   .runtime-settings-name {
     gap: 8px;
   }
-  .runtime-settings-details {
+  .runtime-settings-details,
+  .runtime-settings-checklist {
     padding-left: 48px;
   }
 }
@@ -295,6 +338,9 @@
   }
   .runtime-settings-details {
     padding: 14px 16px;
+  }
+  .runtime-settings-checklist {
+    padding: 8px 16px 10px;
   }
   .runtime-settings-details dl {
     grid-template-columns: 66px minmax(0, 1fr);

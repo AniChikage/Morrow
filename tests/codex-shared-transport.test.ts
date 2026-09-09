@@ -393,6 +393,7 @@ test('native task discovery follows the service home after a rename', async () =
   try {
     const snapshot = await native.transport.readThread(id);
     assert.equal(native.transport.backgroundReady, true);
+    assert.equal(native.transport.runtimeVersion, 'fixture/1');
     assert.equal(snapshot.threadId, id);
     assert.equal(snapshot.state.turns[0].items[0].text, 'original');
     assert.equal(store.get<any>('migrations', 'native-host-affinity')?.launchId, 'fixture-launch');

@@ -8,7 +8,7 @@ Morrow 只支持 Codex。登录、模型、工具、权限与历史都由 Codex 
 | --- | --- | --- |
 | **Codex** | 接入 Codex App 启动的同一个原生后台 | 本机任务创建与恢复、双向消息、运行中指导、工具记录、受支持的审批/提问/图片；自动工作复用同一任务。 |
 
-运行时页优先识别 Codex App 自带的命令行运行时（`/Applications/ChatGPT.app/Contents/Resources/codex`），其次才查找 PATH 中的安装；这个 CLI 只用于显示版本，实际工作总是在共享的 App 任务里进行。
+运行时页优先识别 Codex App 自带的命令行运行时（`/Applications/ChatGPT.app/Contents/Resources/codex`），其次才查找 PATH 中的安装；这个 CLI 只用于显示版本，实际工作总是在共享的 App 任务里进行。Codex App 一行下方按顺序显示四步清单：Codex App 已安装（附 App 版本）→ App 原生后台运行中 → 后台桥接已配置 → 桥接已生效（附原生后台报告的版本），并只给出一个下一步；后台连接在这里启用或撤销，通过 SSH 连接远程服务时需在运行 Codex App 的那台 Mac 上设置。
 
 Codex 共享连接目前使用本机私有协议，兼容性取决于 App 版本。桥接未生效时，旧 IPC 仅能操作 App 已加载的任务；协议不兼容或发送结果不明确时，界面会显示实际状态并保留历史，不自动重复发送。Morrow 不会把另起的 `codex exec` 当成同一原生任务。
 

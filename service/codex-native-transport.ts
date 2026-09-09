@@ -22,6 +22,10 @@ export class CodexNativeTransport implements NativeTransport {
   get backgroundReady() {
     return this.current === this.shared && this.shared.status().connected;
   }
+  /** Only the shared backend reports its version; the legacy desktop follower has no handshake. */
+  get runtimeVersion() {
+    return this.backgroundReady ? this.shared.runtimeVersion : '';
+  }
   async connect() {
     if (this.disposed) throw new NativeDesktopError('原生连接已关闭。');
     if (this.connecting) return this.connecting;

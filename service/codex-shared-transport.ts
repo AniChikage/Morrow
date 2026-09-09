@@ -112,6 +112,8 @@ export class CodexSharedTransport {
   socket: WebSocket | null = null;
   host: SharedHost | null = null;
   initialized = false;
+  /** User agent the native backend reported in its initialize handshake; empty until connected. */
+  runtimeVersion = '';
   disposed = false;
   error: string | null = null;
   connecting: Promise<void> | null = null;
@@ -233,6 +235,7 @@ export class CodexSharedTransport {
     socket.on('close', () => {
       if (this.socket !== socket) return;
       this.initialized = false;
+      this.runtimeVersion = '';
       this.socket = null;
       this.snapshots.clear();
       for (const pending of this.pending.values()) {
@@ -260,6 +263,7 @@ export class CodexSharedTransport {
         throw new NativeDesktopError('原生后台工作目录不匹配。', 'wrong_host');
       socket.send(JSON.stringify({ method: 'initialized' }));
       this.initialized = true;
+      this.runtimeVersion = typeof result.userAgent === 'string' ? result.userAgent.trim().slice(0, 200) : '';
       this.error = null;
       this.options.onConnected?.(this.host);
     } catch (error) {

@@ -228,7 +228,12 @@ export interface NativeConnectionStatus {
   available: boolean;
   connected: boolean;
   detail: string;
+  /** The Codex App bundle is present on the machine running the service. */
+  appInstalled?: boolean;
+  /** Version of the installed Codex App bundle, when it can be read. */
   appVersion?: string;
+  /** Version the shared native backend reported in its handshake; known only once the bridge is in effect. */
+  runtimeVersion?: string;
   backgroundReady?: boolean;
   backgroundConfigured?: boolean;
   capabilities: { list: boolean; read: boolean; send: boolean; create: boolean; interrupt: boolean; respond: boolean };

@@ -39,10 +39,19 @@ export function runtimePath(id: RuntimeID): string {
   }
   return '';
 }
+/**
+ * Whether the Codex App bundle is present on this Mac. Test mode never probes the machine; setting
+ * MORROW_TEST_CODEX_APP_VERSION fakes an installed App with that version.
+ */
+export function codexAppInstalled(): boolean {
+  if (process.env.MORROW_TEST_MODE === '1') return !!process.env.MORROW_TEST_CODEX_APP_VERSION;
+  return existsSync(codexAppBundle);
+}
 /** Version of the installed Codex App bundle, read from its Info.plist without launching anything. */
 export async function codexAppVersion(): Promise<string> {
+  if (process.env.MORROW_TEST_MODE === '1') return (process.env.MORROW_TEST_CODEX_APP_VERSION || '').slice(0, 100);
   const plist = join(codexAppBundle, 'Contents/Info.plist');
-  if (process.platform !== 'darwin' || process.env.MORROW_TEST_MODE === '1' || !existsSync(plist)) return '';
+  if (process.platform !== 'darwin' || !existsSync(plist)) return '';
   try {
     const { stdout } = await execute('/usr/bin/plutil', ['-convert', 'json', '-o', '-', plist], {
       timeout: 5000,

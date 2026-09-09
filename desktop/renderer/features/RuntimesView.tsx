@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
+import type { ReactNode } from 'react';
 import { ArrowUpRight, ChevronRight, Hash, Info, Monitor, RefreshCw, Server, Terminal } from 'lucide-react';
-import type { ConnectionInfo, NativeConnectionStatus, Runtime } from '../../shared/types';
+import type { ConnectionInfo, DesktopAPI, NativeConnectionStatus, Runtime } from '../../shared/types';
 import type { FeatureProps } from './types';
 import { Button, EmptyState } from '../components/ui';
 import './content.css';
@@ -18,6 +19,99 @@ function detection(runtime: Runtime) {
   if (runtime.available) return { label: '已检测到', className: 'detected' };
   return runtime.path ? { label: '需检查', className: 'attention' } : { label: '未检测到', className: '' };
 }
+/** The four facts that must hold, in order, before Morrow can create and resume App tasks by itself. */
+function bridgeSteps(native: NativeConnectionStatus) {
+  // A live connection proves the App exists even when an older service does not report appInstalled.
+  const installed = !!native.appInstalled || native.connected;
+  return [
+    { label: 'Codex App 已安装', done: installed, version: native.appVersion },
+    { label: 'App 原生后台运行中', done: native.connected },
+    { label: '后台桥接已配置', done: !!native.backgroundConfigured },
+    { label: '桥接已生效', done: !!native.backgroundReady, version: native.runtimeVersion },
+  ];
+}
+function BridgeChecklist({
+  native,
+  remote,
+  api,
+  busy,
+  onMutate,
+  onRefresh,
+}: {
+  native: NativeConnectionStatus;
+  remote: boolean;
+  api: DesktopAPI;
+  busy: boolean;
+  onMutate: FeatureProps['onMutate'];
+  onRefresh: () => Promise<void>;
+}) {
+  const [receipt, setReceipt] = useState('');
+  const steps = bridgeSteps(native);
+  const pending = steps.findIndex((step) => !step.done);
+  const run = (action: () => Promise<{ detail: string }>) =>
+    void onMutate(async () => {
+      const result = await action();
+      setReceipt(result.detail);
+      await onRefresh();
+    });
+  const remoteNote = <span>后台桥接在运行 Codex App 的那台 Mac 上设置或撤销。</span>;
+  const restore =
+    !remote && api.restoreNativeBackground ? (
+      <Button variant="ghost" disabled={busy} onClick={() => run(() => api.restoreNativeBackground!())}>
+        撤销设置
+      </Button>
+    ) : null;
+  let next: ReactNode;
+  if (pending === 0) next = <span>安装并登录 Codex App</span>;
+  else if (pending === 1) next = <span>打开 Codex App</span>;
+  else if (pending === 2)
+    next = remote ? (
+      remoteNote
+    ) : (
+      <Button disabled={busy || !api.setupNativeBackground} onClick={() => run(() => api.setupNativeBackground!())}>
+        启用后台连接
+      </Button>
+    );
+  else if (pending === 3)
+    next = (
+      <>
+        <span>后台连接已设置，请在当前任务结束后重新打开一次 Codex App</span>
+        {remote ? remoteNote : restore}
+      </>
+    );
+  else
+    next = (
+      <>
+        <span>已就绪</span>
+        {remote ? remoteNote : restore}
+      </>
+    );
+  return (
+    <div className="runtime-settings-checklist">
+      <ol aria-label="Codex App 连接清单">
+        {steps.map((step, index) => (
+          <li
+            key={step.label}
+            className={`runtime-settings-detection ${step.done ? 'detected' : index === pending ? 'attention' : ''}`}
+          >
+            <span className="runtime-settings-dot" />
+            <span>{step.label}</span>
+            {step.version && <code title={step.version}>{step.version}</code>}
+          </li>
+        ))}
+      </ol>
+      <p className="runtime-settings-next">
+        <b>下一步</b>
+        {next}
+      </p>
+      {receipt && (
+        <p className="runtime-settings-receipt" role="status">
+          {receipt}
+        </p>
+      )}
+    </div>
+  );
+}
 
 export function RuntimesView({
   snapshot,
@@ -29,10 +123,12 @@ export function RuntimesView({
 }: FeatureProps & { connection?: ConnectionInfo | null }) {
   const [expanded, setExpanded] = useState<string | null>(null);
   const [native, setNative] = useState<NativeConnectionStatus>();
+  const [nativeUnreachable, setNativeUnreachable] = useState(false);
   const refreshNative = useCallback(async () => {
     if (typeof api.getNativeStatus !== 'function') return;
     try {
       setNative(await api.getNativeStatus());
+      setNativeUnreachable(false);
     } catch {
       setNative({
         available: false,
@@ -40,6 +136,7 @@ export function RuntimesView({
         detail: '暂时无法连接 Codex App。',
         capabilities: { list: false, read: false, send: false, create: false, interrupt: false, respond: false },
       });
+      setNativeUnreachable(true);
     }
   }, [api]);
   useEffect(() => {
@@ -47,7 +144,8 @@ export function RuntimesView({
   }, [refreshNative, connection?.config.mode, connection?.config.host]);
   const availableCount = snapshot.runtimes.filter((runtime) => runtime.available).length;
   const runningCount = snapshot.channels.filter((channel) => channel.status === 'running').length;
-  const HostIcon = connection?.config.mode === 'ssh' ? Server : Monitor;
+  const remote = connection?.config.mode === 'ssh';
+  const HostIcon = remote ? Server : Monitor;
   return (
     <main className="feature-main runtime-settings">
       <div className="feature-toolbar">
@@ -153,6 +251,16 @@ export function RuntimesView({
                       </code>
                       <ChevronRight size={13} className="runtime-settings-chevron" />
                     </button>
+                    {appRuntime && !nativeUnreachable && (
+                      <BridgeChecklist
+                        native={native}
+                        remote={remote}
+                        api={api}
+                        busy={busy}
+                        onMutate={onMutate}
+                        onRefresh={refreshNative}
+                      />
+                    )}
                     {isExpanded && (
                       <div
                         className="runtime-settings-details"
@@ -165,6 +273,14 @@ export function RuntimesView({
                             <>
                               <dt>App 连接</dt>
                               <dd>{native.detail}</dd>
+                              {native.runtimeVersion && (
+                                <>
+                                  <dt>后台版本</dt>
+                                  <dd>
+                                    <code>{native.runtimeVersion}</code>
+                                  </dd>
+                                </>
+                              )}
                               <dt>对话执行</dt>
                               <dd>
                                 绑定 Codex App 的同一条会话，直接同步消息、回复和运行活动。账号、模型、工具和权限由 App
@@ -174,6 +290,14 @@ export function RuntimesView({
                           )}
                           <dt>CLI 路径</dt>
                           <dd>{runtime.path ? <code>{runtime.path}</code> : '执行主机的命令路径中尚未找到此 CLI。'}</dd>
+                          {appRuntime && runtime.version && (
+                            <>
+                              <dt>CLI 版本</dt>
+                              <dd>
+                                <code>{runtime.version}</code>
+                              </dd>
+                            </>
+                          )}
                           <dt>检测结果</dt>
                           <dd>{runtime.detail || '尚无详细检测结果。'}</dd>
                           {!appRuntime && (

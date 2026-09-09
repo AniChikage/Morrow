@@ -20,6 +20,7 @@ import { applyDesktopPatches } from './codex-desktop-transport.ts';
 import { CodexNativeTransport } from './codex-native-transport.ts';
 import { CodexSharedTransport } from './codex-shared-transport.ts';
 import { configureCodexBridge, restoreCodexBridge } from './codex-bridge-setup.ts';
+import { codexAppInstalled, codexAppVersion } from './runtimes.ts';
 import { resolveNativeAttachments } from './native-media.ts';
 
 export type NativeSnapshot = {
@@ -47,6 +48,8 @@ type NativeChange =
   | { type: 'snapshot'; revision: number; conversationState: Record<string, any> };
 export interface NativeTransport {
   readonly backgroundReady?: boolean;
+  /** Version string the shared native backend reported when connected through it; empty otherwise. */
+  readonly runtimeVersion?: string;
   createThread?(cwd: string): Promise<NativeSnapshot>;
   connect(): Promise<void>;
   status(): { connected: boolean; socketPath: string; lastError: string | null };
@@ -283,6 +286,7 @@ export class NativeConversations {
   checkpointAt = new Map<string, number>();
   dirtyThreads = new Set<string>();
   dirtyTurns = new Set<string>();
+  appVersion: { value: Promise<string>; at: number } | null = null;
   closed = false;
   store: Store;
   engine: Engine;
@@ -433,6 +437,12 @@ export class NativeConversations {
     if (!binding) throw new APIError(409, '请先绑定 Codex App 中同一项目的任务');
     return binding;
   }
+  /** The App bundle version is read with plutil; the UI polls status, so keep it for a minute. */
+  cachedAppVersion() {
+    const at = Date.now();
+    if (!this.appVersion || at - this.appVersion.at > 60_000) this.appVersion = { value: codexAppVersion(), at };
+    return this.appVersion.value;
+  }
   async status(): Promise<NativeConnectionStatus> {
     let connectionError = '';
     try {
@@ -444,6 +454,9 @@ export class NativeConversations {
       connected = value.connected && !connectionError;
     const backgroundReady = connected && !!this.transport.backgroundReady;
     const backgroundConfigured = this.store.get<any>('migrations', 'codex-background-bridge')?.enabled === true;
+    const appInstalled = codexAppInstalled();
+    const appVersion = await this.cachedAppVersion();
+    const runtimeVersion = (connected && this.transport.runtimeVersion) || '';
     const detail =
       connectionError ||
       (!connected
@@ -458,6 +471,9 @@ export class NativeConversations {
       connected,
       backgroundReady,
       backgroundConfigured,
+      appInstalled,
+      ...(appVersion ? { appVersion } : {}),
+      ...(runtimeVersion ? { runtimeVersion } : {}),
       detail,
       capabilities: {
         list: connected,
