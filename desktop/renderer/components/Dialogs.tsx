@@ -475,7 +475,7 @@ function ChannelDialog({
           </Field>
           <Field
             title="执行权限"
-            hint="默认沿用 Codex App 的权限设置（默认为完整访问）；需要收紧时改为只读或工作区写入。"
+            hint="默认沿用 Codex App 的权限设置（以 App 中当前的设置为准；单人使用时建议在 App 里选择完整访问）；需要收紧时改为只读或工作区写入。"
           >
             <select
               value={permission}

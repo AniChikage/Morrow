@@ -271,6 +271,29 @@ test('channels from retired runtimes stay readable but never execute again', asy
     assert.equal(s.store.get<any>('channels', legacy.id).status, 'paused');
     assert.equal(s.store.all('runs').length, 0);
     assert.equal(notices().length, 1);
+    // The API keeps a deliberate migration path the desktop never sends: converting
+    // the retired channel into a Codex channel in place. History must survive it.
+    const preserved = s.store.all<any>('events').filter((e) => e.channelId === legacy.id);
+    assert.ok(preserved.length >= 1);
+    const converted = await s.api('PATCH', `/api/channels/${legacy.id}`, { runtime: 'codex' });
+    assert.equal(converted.runtime, 'codex');
+    assert.equal(converted.sessionId, '');
+    const stored = s.store.get<any>('channels', legacy.id);
+    assert.equal(stored.runtime, 'codex');
+    assert.equal(stored.sessionId, '');
+    assert.equal(stored.goal, '历史职责');
+    const remaining = s.store.all<any>('events').filter((e) => e.channelId === legacy.id);
+    for (const event of preserved) assert.ok(remaining.some((e) => e.id === event.id && e.text === event.text));
+    assert.ok(remaining.some((e) => e.kind === 'system' && e.text.includes('运行时已切换为 codex')));
+    // The converted channel executes again: the run request is accepted instead of the 停止支持 409.
+    // Under MORROW_TEST_MODE the fixture CLI really runs, so let that run settle before pausing.
+    await s.api('POST', `/api/channels/${legacy.id}/action`, { action: 'run' });
+    const run = await until(() =>
+      s.store.all<any>('runs').find((r) => r.channelId === legacy.id && r.status !== 'running')
+    );
+    assert.equal(run.runtime, 'codex');
+    await s.api('POST', `/api/channels/${legacy.id}/action`, { action: 'pause' });
+    assert.equal(s.store.get<any>('channels', legacy.id).status, 'paused');
   } finally {
     await s.cleanup();
   }
