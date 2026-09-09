@@ -20,11 +20,17 @@ function useDefaultWorkspace(scope: string | null, defaultRoute: Route) {
   return navigation;
 }
 beforeEach(() => localStorage.clear());
-afterEach(() => { cleanup(); vi.restoreAllMocks(); });
+afterEach(() => {
+  cleanup();
+  vi.restoreAllMocks();
+});
 
 describe('workspace navigation sessions', () => {
   it('restores a legacy NoHuman tab session and writes future changes under Morrow', () => {
-    const value = JSON.stringify({ tabs: [{ id: 'legacy-tab', history: [channel('legacy-channel')], index: 0 }], active: 'legacy-tab' });
+    const value = JSON.stringify({
+      tabs: [{ id: 'legacy-tab', history: [channel('legacy-channel')], index: 0 }],
+      active: 'legacy-tab',
+    });
     localStorage.setItem('nh:tabs:local', value);
     const view = renderHook(() => useNavigation('local'));
     expect(view.result.current.route).toEqual(channel('legacy-channel'));
@@ -60,19 +66,22 @@ describe('workspace navigation sessions', () => {
     const writes = vi.spyOn(Storage.prototype, 'setItem');
     const observed: { scope: string | null; hydrated: boolean; route?: Route }[] = [];
     const defaultRoute = project('remote-default');
-    const view = renderHook(({ scope }: { scope: string | null }) => {
-      const navigation = useDefaultWorkspace(scope, defaultRoute);
-      observed.push({ scope, hydrated: navigation.hydrated, route: navigation.route });
-      return navigation;
-    }, { initialProps: { scope: null as string | null } });
+    const view = renderHook(
+      ({ scope }: { scope: string | null }) => {
+        const navigation = useDefaultWorkspace(scope, defaultRoute);
+        observed.push({ scope, hydrated: navigation.hydrated, route: navigation.route });
+        return navigation;
+      },
+      { initialProps: { scope: null as string | null } }
+    );
     expect(view.result.current.hydrated).toBe(false);
     expect(view.result.current.route).toBeUndefined();
     act(() => view.result.current.navigate(project('too-early')));
     expect(writes).not.toHaveBeenCalled();
     view.rerender({ scope: 'ssh:work:43821' });
     expect(view.result.current.route).toEqual(channel('remote-channel'));
-    expect(observed.some(state => state.route?.kind === 'project' && state.route.id === 'local-project')).toBe(false);
-    expect(observed.find(state => state.scope === 'ssh:work:43821')?.hydrated).toBe(false);
+    expect(observed.some((state) => state.route?.kind === 'project' && state.route.id === 'local-project')).toBe(false);
+    expect(observed.find((state) => state.scope === 'ssh:work:43821')?.hydrated).toBe(false);
     expect(localStorage.getItem('morrow:tabs:local')).toBe(local);
     expect(localStorage.getItem('morrow:tabs:ssh:work:43821')).toBe(remote);
     expect(writes).not.toHaveBeenCalled();
@@ -85,7 +94,10 @@ describe('workspace navigation sessions', () => {
     expect(view.result.current.tabs).toHaveLength(1);
     expect(view.result.current.route).toEqual(defaultRoute);
     expect(writes).toHaveBeenCalledTimes(1);
-    act(() => { view.result.current.openDefault(project('another-project')); view.result.current.openDefault(defaultRoute); });
+    act(() => {
+      view.result.current.openDefault(project('another-project'));
+      view.result.current.openDefault(defaultRoute);
+    });
     expect(view.result.current.tabs).toHaveLength(1);
     expect(view.result.current.route).toEqual(defaultRoute);
     expect(writes).toHaveBeenCalledTimes(1);
@@ -127,12 +139,18 @@ describe('workspace navigation sessions', () => {
     const oldNavigate = view.result.current.navigate;
     const oldClose = view.result.current.close;
     view.rerender({ scope: 'ssh:work:43821' });
-    act(() => { oldNavigate(channel('local-late-response')); oldClose('local-tab'); });
+    act(() => {
+      oldNavigate(channel('local-late-response'));
+      oldClose('local-tab');
+    });
     expect(view.result.current.route).toEqual(project('remote-project'));
     act(() => view.result.current.navigate(channel('remote-work'), true));
     expect(view.result.current.tabs).toHaveLength(2);
     const remote = JSON.parse(localStorage.getItem('morrow:tabs:ssh:work:43821')!);
-    expect(remote.tabs.flatMap((tab: { history: Route[] }) => tab.history)).toEqual([project('remote-project'), channel('remote-work')]);
+    expect(remote.tabs.flatMap((tab: { history: Route[] }) => tab.history)).toEqual([
+      project('remote-project'),
+      channel('remote-work'),
+    ]);
     expect(localStorage.getItem('morrow:tabs:local')).toBe(originalLocal);
     view.rerender({ scope: 'local' });
     expect(view.result.current.route).toEqual(project('local-project'));
@@ -143,11 +161,17 @@ describe('workspace navigation sessions', () => {
   });
 
   it('recovers corrupt saved navigation without crashing or exposing an invalid route', () => {
-    localStorage.setItem('morrow:tabs:local', JSON.stringify({ tabs: [{ id: 'broken', history: [{ kind: 'finding' }], index: 9 }], active: 'broken' }));
+    localStorage.setItem(
+      'morrow:tabs:local',
+      JSON.stringify({ tabs: [{ id: 'broken', history: [{ kind: 'finding' }], index: 9 }], active: 'broken' })
+    );
     const view = renderHook(() => useDefaultWorkspace('local', project('recovered')));
     expect(view.result.current.route).toEqual(project('recovered'));
     expect(view.result.current.tabs).toHaveLength(1);
-    act(() => { view.result.current.activate('missing-tab'); view.result.current.close('missing-tab'); });
+    act(() => {
+      view.result.current.activate('missing-tab');
+      view.result.current.close('missing-tab');
+    });
     expect(view.result.current.route).toEqual(project('recovered'));
   });
 });

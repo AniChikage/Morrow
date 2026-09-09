@@ -17,7 +17,10 @@ beforeEach(() => {
   if (!HTMLElement.prototype.releasePointerCapture) HTMLElement.prototype.releasePointerCapture = () => {};
   if (!HTMLElement.prototype.scrollIntoView) HTMLElement.prototype.scrollIntoView = () => {};
 });
-afterEach(() => { cleanup(); vi.restoreAllMocks(); });
+afterEach(() => {
+  cleanup();
+  vi.restoreAllMocks();
+});
 
 describe('project discovery workflow', () => {
   it('searches evidence within the selected project, combines status and channel filters, and opens the complete finding route', async () => {
@@ -68,7 +71,9 @@ describe('full finding view', () => {
     expect(main.getByRole('heading', { name: '复现观察' })).toBeTruthy();
     expect(main.getByText('两条重复记录').tagName).toBe('STRONG');
     expect(main.getByText('日志包含唯一证据关键词：request-17。')).toBeTruthy();
-    expect(main.getByRole('link', { name: '官方错误码' }).getAttribute('href')).toBe('https://example.com/import/errors');
+    expect(main.getByRole('link', { name: '官方错误码' }).getAttribute('href')).toBe(
+      'https://example.com/import/errors'
+    );
     expect(main.getByText('验证幂等键，并补充失败后的恢复测试。')).toBeTruthy();
     const properties = within(screen.getByRole('complementary'));
     expect(properties.queryByText('日志包含唯一证据关键词：request-17。')).toBeNull();
@@ -80,7 +85,12 @@ describe('full finding view', () => {
 
   it('does not create remote image requests or executable HTML from finding content', async () => {
     const state = snapshot();
-    state.items = [item({ summary: '![外部图片](https://tracking.invalid/pixel.png)\n\n<script>window.compromised = true</script>\n\n正常发现正文' })];
+    state.items = [
+      item({
+        summary:
+          '![外部图片](https://tracking.invalid/pixel.png)\n\n<script>window.compromised = true</script>\n\n正常发现正文',
+      }),
+    ];
     const { props } = featureProps({ snapshot: state });
     const { container } = render(<FindingView {...props} id="finding-import" />, { wrapper: TestProviders });
     expect(screen.getByText('正常发现正文')).toBeTruthy();
@@ -107,7 +117,8 @@ describe('channel control and history', () => {
 
   it('dispatches run, resume and pause to the selected real channel without overlapping a running task', async () => {
     const user = userEvent.setup();
-    const state = snapshot(); state.projects[0].isDemo = false;
+    const state = snapshot();
+    state.projects[0].isDemo = false;
     state.channels[0].runtime = 'claude';
     const { props, api } = featureProps({ snapshot: state });
     const view = render(<ChannelView {...props} id="channel-system" />, { wrapper: TestProviders });
@@ -115,7 +126,12 @@ describe('channel control and history', () => {
     expect(api.channelAction).toHaveBeenLastCalledWith('channel-system', 'run');
     await user.click(screen.getByRole('button', { name: '开启持续运行' }));
     expect(api.channelAction).toHaveBeenLastCalledWith('channel-system', 'resume');
-    const runningState = { ...state, channels: state.channels.map(channel => channel.id === 'channel-system' ? { ...channel, status: 'running' } : channel) };
+    const runningState = {
+      ...state,
+      channels: state.channels.map((channel) =>
+        channel.id === 'channel-system' ? { ...channel, status: 'running' } : channel
+      ),
+    };
     view.rerender(<ChannelView {...props} snapshot={runningState} id="channel-system" />);
     expect((screen.getByRole('button', { name: '运行一次' }) as HTMLButtonElement).disabled).toBe(true);
     await user.click(screen.getByRole('button', { name: '暂停频道' }));
@@ -141,25 +157,47 @@ describe('channel control and history', () => {
     const state = snapshot();
     state.events = [event('event-four', '第四条记录', 4), event('event-three', '第三条记录', 3)];
     const { props, api } = featureProps({ snapshot: state });
-    vi.mocked(props.api.getEvents).mockResolvedValueOnce({ events: state.events, hasMore: true, cursor: 'event-three' });
-    api.getEvents.mockResolvedValueOnce({ events: [event('event-two', '第二条记录', 2), event('event-one', '第一条记录', 1), event('event-three', '过期的第三条记录', 3)], hasMore: false });
+    vi.mocked(props.api.getEvents).mockResolvedValueOnce({
+      events: state.events,
+      hasMore: true,
+      cursor: 'event-three',
+    });
+    api.getEvents.mockResolvedValueOnce({
+      events: [
+        event('event-two', '第二条记录', 2),
+        event('event-one', '第一条记录', 1),
+        event('event-three', '过期的第三条记录', 3),
+      ],
+      hasMore: false,
+    });
     render(<ChannelView {...props} id="channel-system" />, { wrapper: TestProviders });
     await userEvent.setup().click(await screen.findByRole('button', { name: '加载更早记录' }));
     await screen.findByText('第一条记录');
     expect(api.getEvents).toHaveBeenNthCalledWith(1, { channelId: 'channel-system', limit: 60 });
     expect(api.getEvents).toHaveBeenCalledWith({ channelId: 'channel-system', before: 'event-three', limit: 60 });
-    const renderedMessages = screen.getAllByRole('article').map(article => article.textContent || '');
-    expect(renderedMessages.map(text => ['第一条记录', '第二条记录', '第三条记录', '第四条记录'].find(value => text.includes(value)))).toEqual(['第一条记录', '第二条记录', '第三条记录', '第四条记录']);
+    const renderedMessages = screen.getAllByRole('article').map((article) => article.textContent || '');
+    expect(
+      renderedMessages.map((text) =>
+        ['第一条记录', '第二条记录', '第三条记录', '第四条记录'].find((value) => text.includes(value))
+      )
+    ).toEqual(['第一条记录', '第二条记录', '第三条记录', '第四条记录']);
     expect(screen.queryByText('过期的第三条记录')).toBeNull();
     expect(screen.getAllByText('第三条记录')).toHaveLength(1);
     expect(screen.queryByRole('button', { name: '加载更早记录' })).toBeNull();
   });
 
   it('keeps current events visible when older-history loading fails', async () => {
-    const state = snapshot(); state.events = [event('current-event', '已经存在的运行结果')];
+    const state = snapshot();
+    state.events = [event('current-event', '已经存在的运行结果')];
     const { props, api } = featureProps({ snapshot: state });
-    vi.mocked(props.api.getEvents).mockResolvedValueOnce({ events: state.events, hasMore: true, cursor: 'current-event' });
-    api.getEvents.mockRejectedValueOnce(new Error('远程历史接口暂不可用')).mockResolvedValueOnce({ events: [event('recovered-old', '重试恢复的历史记录')], hasMore: false });
+    vi.mocked(props.api.getEvents).mockResolvedValueOnce({
+      events: state.events,
+      hasMore: true,
+      cursor: 'current-event',
+    });
+    api.getEvents
+      .mockRejectedValueOnce(new Error('远程历史接口暂不可用'))
+      .mockResolvedValueOnce({ events: [event('recovered-old', '重试恢复的历史记录')], hasMore: false });
     render(<ChannelView {...props} id="channel-system" />, { wrapper: TestProviders });
     await userEvent.setup().click(await screen.findByRole('button', { name: '加载更早记录' }));
     expect((await screen.findByRole('alert')).textContent).toContain('远程历史接口暂不可用');
@@ -171,11 +209,24 @@ describe('channel control and history', () => {
   });
 
   it('does not leak an in-flight history page into another channel and leaves that channel usable', async () => {
-    const state = snapshot(); state.events = [event('system-current', '系统频道当前记录'), event('growth-current', '运营频道当前记录', 1, { channelId: 'channel-growth' })];
+    const state = snapshot();
+    state.events = [
+      event('system-current', '系统频道当前记录'),
+      event('growth-current', '运营频道当前记录', 1, { channelId: 'channel-growth' }),
+    ];
     const { props, api } = featureProps({ snapshot: state });
     let resolvePage!: (page: EventsPage) => void;
-    api.getEvents.mockImplementationOnce(() => new Promise(resolve => { resolvePage = resolve; }));
-    vi.mocked(props.api.getEvents).mockResolvedValueOnce({ events: [event('growth-current', '运营频道当前记录', 1, { channelId: 'channel-growth' })], hasMore: true, cursor: 'growth-current' });
+    api.getEvents.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          resolvePage = resolve;
+        })
+    );
+    vi.mocked(props.api.getEvents).mockResolvedValueOnce({
+      events: [event('growth-current', '运营频道当前记录', 1, { channelId: 'channel-growth' })],
+      hasMore: true,
+      cursor: 'growth-current',
+    });
     const view = render(<ChannelView {...props} id="channel-system" />, { wrapper: TestProviders });
     view.rerender(<ChannelView {...props} id="channel-growth" />);
     await act(async () => resolvePage({ events: [event('old-system', '迟到的系统频道记录')], hasMore: false }));
@@ -198,7 +249,9 @@ describe('channel control and history', () => {
 
   it('offers a retry after the first history request fails even with an empty snapshot', async () => {
     const { props, api } = featureProps();
-    api.getEvents.mockRejectedValueOnce(new Error('持久化历史读取失败')).mockResolvedValueOnce({ events: [event('recovered', '恢复读取的历史')], hasMore: false });
+    api.getEvents
+      .mockRejectedValueOnce(new Error('持久化历史读取失败'))
+      .mockResolvedValueOnce({ events: [event('recovered', '恢复读取的历史')], hasMore: false });
     render(<ChannelView {...props} id="channel-system" />, { wrapper: TestProviders });
     expect((await screen.findByRole('alert')).textContent).toContain('持久化历史读取失败');
     expect(screen.queryByText('频道还没有动态')).toBeNull();
@@ -211,14 +264,22 @@ describe('channel control and history', () => {
   it('rejects a previous generation even after switching away and back to the same channel', async () => {
     const { props, api } = featureProps();
     let resolveFirst!: (page: EventsPage) => void;
-    api.getEvents.mockImplementationOnce(() => new Promise(resolve => { resolveFirst = resolve; }))
+    api.getEvents
+      .mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            resolveFirst = resolve;
+          })
+      )
       .mockResolvedValueOnce({ events: [], hasMore: false })
       .mockResolvedValueOnce({ events: [event('fresh-generation', '重新进入后的最新记录')], hasMore: false });
     const view = render(<ChannelView {...props} id="channel-system" />, { wrapper: TestProviders });
     view.rerender(<ChannelView {...props} id="channel-growth" />);
     view.rerender(<ChannelView {...props} id="channel-system" />);
     await screen.findByText('重新进入后的最新记录');
-    await act(async () => resolveFirst({ events: [event('stale-generation', '上一代迟到记录')], hasMore: true, cursor: 'stale-generation' }));
+    await act(async () =>
+      resolveFirst({ events: [event('stale-generation', '上一代迟到记录')], hasMore: true, cursor: 'stale-generation' })
+    );
     expect(screen.queryByText('上一代迟到记录')).toBeNull();
     expect(screen.getByText('重新进入后的最新记录')).toBeTruthy();
     expect(screen.queryByRole('button', { name: '加载更早记录' })).toBeNull();
@@ -226,55 +287,84 @@ describe('channel control and history', () => {
 });
 
 describe('database history controls the loaded range', () => {
-  it.each(['channel', 'project'] as const)('%s history only overlays loaded IDs and new live records, so older pages make visible progress', async scope => {
-    const state = snapshot();
-    const pageSize = scope === 'channel' ? 60 : 50;
-    // All records deliberately have identical timestamps: IDs, not timestamps, define the boundary.
-    state.events = Array.from({ length: 125 }, (_, index) => event(`history-${index}`, `记录内容 ${index}`, 1, { projectId: 'project-atlas' }));
-    const firstPage = state.events.slice(-pageSize);
-    const nextPage = state.events.slice(-pageSize * 2, -pageSize);
-    const { props } = featureProps({ snapshot: state });
-    vi.mocked(props.api.getEvents)
-      .mockResolvedValueOnce({ events: firstPage, hasMore: true, cursor: firstPage[0].id })
-      .mockResolvedValueOnce({ events: nextPage, hasMore: true, cursor: nextPage[0].id });
-    const draw = (nextSnapshot = state) => scope === 'channel'
-      ? <ChannelView {...props} snapshot={nextSnapshot} id="channel-system" />
-      : <ProjectRecords {...props} snapshot={nextSnapshot} projectId="project-atlas" />;
-    const view = render(draw(), { wrapper: TestProviders });
-    await screen.findByRole('button', { name: '加载更早记录' });
-    expect(screen.getAllByRole('article')).toHaveLength(pageSize);
-    expect(screen.queryByText('记录内容 0')).toBeNull();
-    expect(screen.queryByText(nextPage[0].text)).toBeNull();
-    const updated = { ...state, events: state.events.map(record => record.id === firstPage[0].id ? { ...record, text: '已加载记录的实时更新' } : record) };
-    updated.events.push(event('live-new-id', '同时间戳的实时新增记录', 1, { projectId: 'project-atlas' }));
-    view.rerender(draw(updated));
-    expect(screen.getByText('已加载记录的实时更新')).toBeTruthy();
-    expect(screen.getByText('同时间戳的实时新增记录')).toBeTruthy();
-    expect(screen.getAllByRole('article')).toHaveLength(pageSize + 1);
-    expect(screen.queryByText('记录内容 0')).toBeNull();
-    await userEvent.setup().click(screen.getByRole('button', { name: '加载更早记录' }));
-    await screen.findByText(nextPage[0].text);
-    expect(screen.getAllByRole('article')).toHaveLength(pageSize * 2 + 1);
-    expect(props.api.getEvents).toHaveBeenLastCalledWith({ ...(scope === 'channel' ? { channelId: 'channel-system' } : { projectId: 'project-atlas' }), before: firstPage[0].id, limit: pageSize });
-    expect(screen.queryByText('记录内容 0')).toBeNull();
-    expect(screen.getByText('已加载记录的实时更新')).toBeTruthy();
-  });
+  it.each(['channel', 'project'] as const)(
+    '%s history only overlays loaded IDs and new live records, so older pages make visible progress',
+    async (scope) => {
+      const state = snapshot();
+      const pageSize = scope === 'channel' ? 60 : 50;
+      // All records deliberately have identical timestamps: IDs, not timestamps, define the boundary.
+      state.events = Array.from({ length: 125 }, (_, index) =>
+        event(`history-${index}`, `记录内容 ${index}`, 1, { projectId: 'project-atlas' })
+      );
+      const firstPage = state.events.slice(-pageSize);
+      const nextPage = state.events.slice(-pageSize * 2, -pageSize);
+      const { props } = featureProps({ snapshot: state });
+      vi.mocked(props.api.getEvents)
+        .mockResolvedValueOnce({ events: firstPage, hasMore: true, cursor: firstPage[0].id })
+        .mockResolvedValueOnce({ events: nextPage, hasMore: true, cursor: nextPage[0].id });
+      const draw = (nextSnapshot = state) =>
+        scope === 'channel' ? (
+          <ChannelView {...props} snapshot={nextSnapshot} id="channel-system" />
+        ) : (
+          <ProjectRecords {...props} snapshot={nextSnapshot} projectId="project-atlas" />
+        );
+      const view = render(draw(), { wrapper: TestProviders });
+      await screen.findByRole('button', { name: '加载更早记录' });
+      expect(screen.getAllByRole('article')).toHaveLength(pageSize);
+      expect(screen.queryByText('记录内容 0')).toBeNull();
+      expect(screen.queryByText(nextPage[0].text)).toBeNull();
+      const updated = {
+        ...state,
+        events: state.events.map((record) =>
+          record.id === firstPage[0].id ? { ...record, text: '已加载记录的实时更新' } : record
+        ),
+      };
+      updated.events.push(event('live-new-id', '同时间戳的实时新增记录', 1, { projectId: 'project-atlas' }));
+      view.rerender(draw(updated));
+      expect(screen.getByText('已加载记录的实时更新')).toBeTruthy();
+      expect(screen.getByText('同时间戳的实时新增记录')).toBeTruthy();
+      expect(screen.getAllByRole('article')).toHaveLength(pageSize + 1);
+      expect(screen.queryByText('记录内容 0')).toBeNull();
+      await userEvent.setup().click(screen.getByRole('button', { name: '加载更早记录' }));
+      await screen.findByText(nextPage[0].text);
+      expect(screen.getAllByRole('article')).toHaveLength(pageSize * 2 + 1);
+      expect(props.api.getEvents).toHaveBeenLastCalledWith({
+        ...(scope === 'channel' ? { channelId: 'channel-system' } : { projectId: 'project-atlas' }),
+        before: firstPage[0].id,
+        limit: pageSize,
+      });
+      expect(screen.queryByText('记录内容 0')).toBeNull();
+      expect(screen.getByText('已加载记录的实时更新')).toBeTruthy();
+    }
+  );
 
-  it.each(['channel', 'project'] as const)('%s history retains snapshot fallback after first-page failure, then adopts the successful page on retry', async scope => {
-    const state = snapshot();
-    const old = event('fallback-old', '首屏失败时保留的旧记录', 1, { projectId: 'project-atlas' });
-    const recent = event('fallback-recent', '数据库首屏记录', 2, { projectId: 'project-atlas' });
-    state.events = [old, recent];
-    const { props, api } = featureProps({ snapshot: state });
-    api.getEvents.mockRejectedValueOnce(new Error('数据库暂不可用')).mockResolvedValueOnce({ events: [recent], hasMore: true });
-    render(scope === 'channel' ? <ChannelView {...props} id="channel-system" /> : <ProjectRecords {...props} projectId="project-atlas" />, { wrapper: TestProviders });
-    await screen.findByRole('alert');
-    expect(screen.getByText(old.text)).toBeTruthy();
-    expect(screen.getByText(recent.text)).toBeTruthy();
-    await userEvent.setup().click(screen.getByRole('button', { name: '重试' }));
-    await waitFor(() => expect(screen.queryByRole('alert')).toBeNull());
-    expect(screen.queryByText(old.text)).toBeNull();
-    expect(screen.getByText(recent.text)).toBeTruthy();
-    expect(screen.getByRole('button', { name: '加载更早记录' })).toBeTruthy();
-  });
+  it.each(['channel', 'project'] as const)(
+    '%s history retains snapshot fallback after first-page failure, then adopts the successful page on retry',
+    async (scope) => {
+      const state = snapshot();
+      const old = event('fallback-old', '首屏失败时保留的旧记录', 1, { projectId: 'project-atlas' });
+      const recent = event('fallback-recent', '数据库首屏记录', 2, { projectId: 'project-atlas' });
+      state.events = [old, recent];
+      const { props, api } = featureProps({ snapshot: state });
+      api.getEvents
+        .mockRejectedValueOnce(new Error('数据库暂不可用'))
+        .mockResolvedValueOnce({ events: [recent], hasMore: true });
+      render(
+        scope === 'channel' ? (
+          <ChannelView {...props} id="channel-system" />
+        ) : (
+          <ProjectRecords {...props} projectId="project-atlas" />
+        ),
+        { wrapper: TestProviders }
+      );
+      await screen.findByRole('alert');
+      expect(screen.getByText(old.text)).toBeTruthy();
+      expect(screen.getByText(recent.text)).toBeTruthy();
+      await userEvent.setup().click(screen.getByRole('button', { name: '重试' }));
+      await waitFor(() => expect(screen.queryByRole('alert')).toBeNull());
+      expect(screen.queryByText(old.text)).toBeNull();
+      expect(screen.getByText(recent.text)).toBeTruthy();
+      expect(screen.getByRole('button', { name: '加载更早记录' })).toBeTruthy();
+    }
+  );
 });

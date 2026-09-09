@@ -7,7 +7,15 @@ import { featureProps, snapshot } from './testFixtures';
 import type { NativeConnectionStatus, Runtime } from '../../shared/types';
 
 afterEach(cleanup);
-const installed: Runtime = { id: 'codex', name: 'Codex', available: true, path: '/opt/homebrew/bin/codex', version: 'codex-cli 0.100.0', detail: 'CLI 已安装，尚未验证登录和配额。', canWrite: true };
+const installed: Runtime = {
+  id: 'codex',
+  name: 'Codex',
+  available: true,
+  path: '/opt/homebrew/bin/codex',
+  version: 'codex-cli 0.100.0',
+  detail: 'CLI 已安装，尚未验证登录和配额。',
+  canWrite: true,
+};
 function runtimeProps(runtimes: Runtime[] = [installed]) {
   const state = snapshot();
   state.runtimes = runtimes;
@@ -35,7 +43,13 @@ test('CLI detection stays separate from authentication and details are progressi
 
 test('Codex reports the live App connection separately from its unused terminal executable', async () => {
   const { props, api } = runtimeProps();
-  const status: NativeConnectionStatus = { available: true, connected: true, detail: '原生会话连接已建立', appVersion: '1.0-test', capabilities: { list: true, read: true, send: true, create: false, interrupt: true, respond: true } };
+  const status: NativeConnectionStatus = {
+    available: true,
+    connected: true,
+    detail: '原生会话连接已建立',
+    appVersion: '1.0-test',
+    capabilities: { list: true, read: true, send: true, create: false, interrupt: true, respond: true },
+  };
   api.getNativeStatus.mockResolvedValue(status);
   render(<RuntimesView {...props} />);
   await userEvent.setup().click(await screen.findByRole('button', { name: 'Codex，App 已连接，查看详情' }));
@@ -89,7 +103,16 @@ test('an empty snapshot remains an empty detection state without invented runtim
 
 test('host overview uses the real connection label and does not infer remote availability from CLI detection', () => {
   const { props } = runtimeProps();
-  render(<RuntimesView {...props} connection={{ name: '远程 · dev-box', connected: false, config: { mode: 'ssh', host: 'dev-box', port: 43821, directory: '~/.local/share/morrow' } }} />);
+  render(
+    <RuntimesView
+      {...props}
+      connection={{
+        name: '远程 · dev-box',
+        connected: false,
+        config: { mode: 'ssh', host: 'dev-box', port: 43821, directory: '~/.local/share/morrow' },
+      }}
+    />
+  );
   expect(screen.getByRole('heading', { name: '远程 · dev-box' })).toBeTruthy();
   expect(screen.getByText('未连接')).toBeTruthy();
   expect(screen.getByText('1 个运行时 · 1 个已检测到')).toBeTruthy();

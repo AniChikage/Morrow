@@ -14,14 +14,29 @@ beforeEach(() => {
   if (!HTMLElement.prototype.releasePointerCapture) HTMLElement.prototype.releasePointerCapture = () => {};
   if (!HTMLElement.prototype.scrollIntoView) HTMLElement.prototype.scrollIntoView = () => {};
 });
-afterEach(() => { cleanup(); vi.restoreAllMocks(); });
+afterEach(() => {
+  cleanup();
+  vi.restoreAllMocks();
+});
 
 describe('one project-owned feature board', () => {
   it('combines manual features and legacy channel contributions without crossing project ownership', async () => {
     const user = userEvent.setup();
     const state = snapshot();
-    state.items.push(item({ id: 'manual', projectId: 'project-atlas', number: 7, channelId: '', sourceChannelIds: [], title: '人工创建的功能', kind: 'feature' }));
-    state.items.push(item({ id: 'other-owner', projectId: 'project-other', channelId: 'channel-system', title: '明确属于其他项目' }));
+    state.items.push(
+      item({
+        id: 'manual',
+        projectId: 'project-atlas',
+        number: 7,
+        channelId: '',
+        sourceChannelIds: [],
+        title: '人工创建的功能',
+        kind: 'feature',
+      })
+    );
+    state.items.push(
+      item({ id: 'other-owner', projectId: 'project-other', channelId: 'channel-system', title: '明确属于其他项目' })
+    );
     const { props } = featureProps({ snapshot: state });
     render(<ProjectView {...props} id="project-atlas" />, { wrapper: TestProviders });
     expect(screen.getByRole('tab', { name: '功能看板 4' })).toBeTruthy();
@@ -54,7 +69,24 @@ describe('one project-owned feature board', () => {
     const user = userEvent.setup();
     const state = snapshot();
     const { props, api } = featureProps({ snapshot: state });
-    api.getEvents.mockResolvedValueOnce({ events: [event('human-create', '你创建了项目功能。', 1, { projectId: 'project-atlas', itemId: 'finding-import', channelId: '', runId: '', kind: 'system', actor: 'human', action: 'item.created' }), event('growth-note', '运营频道验证了激活路径。', 2, { projectId: 'project-atlas', channelId: 'channel-growth' })], hasMore: false });
+    api.getEvents.mockResolvedValueOnce({
+      events: [
+        event('human-create', '你创建了项目功能。', 1, {
+          projectId: 'project-atlas',
+          itemId: 'finding-import',
+          channelId: '',
+          runId: '',
+          kind: 'system',
+          actor: 'human',
+          action: 'item.created',
+        }),
+        event('growth-note', '运营频道验证了激活路径。', 2, {
+          projectId: 'project-atlas',
+          channelId: 'channel-growth',
+        }),
+      ],
+      hasMore: false,
+    });
     render(<ProjectView {...props} id="project-atlas" />, { wrapper: TestProviders });
     await user.click(screen.getByRole('tab', { name: '全部记录' }));
     await screen.findByText('你创建了项目功能。');
@@ -69,10 +101,31 @@ describe('manual feature details and audit', () => {
   it('resolves the project without a source channel, opens editing, sends revision-aware status changes and loads durable audit', async () => {
     const user = userEvent.setup();
     const state = snapshot();
-    const manual = item({ id: 'manual', projectId: 'project-atlas', channelId: '', number: 8, revision: 3, title: '手工功能', kind: 'feature' });
+    const manual = item({
+      id: 'manual',
+      projectId: 'project-atlas',
+      channelId: '',
+      number: 8,
+      revision: 3,
+      title: '手工功能',
+      kind: 'feature',
+    });
     state.items = [manual];
     const { props, api } = featureProps({ snapshot: state });
-    api.getEvents.mockResolvedValueOnce({ events: [event('manual-edit', '修改了功能标题。', 1, { projectId: 'project-atlas', itemId: 'manual', channelId: '', kind: 'system', actor: 'human', action: 'item.updated', changes: { before: { title: '旧标题' }, after: { title: '手工功能' } } })], hasMore: false });
+    api.getEvents.mockResolvedValueOnce({
+      events: [
+        event('manual-edit', '修改了功能标题。', 1, {
+          projectId: 'project-atlas',
+          itemId: 'manual',
+          channelId: '',
+          kind: 'system',
+          actor: 'human',
+          action: 'item.updated',
+          changes: { before: { title: '旧标题' }, after: { title: '手工功能' } },
+        }),
+      ],
+      hasMore: false,
+    });
     render(<FindingView {...props} id="manual" />, { wrapper: TestProviders });
     expect(within(screen.getByRole('main')).getByRole('heading', { level: 1, name: '手工功能' })).toBeTruthy();
     const properties = within(screen.getByRole('complementary'));
@@ -93,7 +146,15 @@ describe('manual feature details and audit', () => {
 
   it('keeps local audit visible and exposes retry if an older remote service cannot load audit', async () => {
     const state = snapshot();
-    state.events = [event('existing-audit', '已经持久化的本地修改。', 1, { projectId: 'project-atlas', itemId: 'finding-import', action: 'item.updated', actor: 'human', kind: 'system' })];
+    state.events = [
+      event('existing-audit', '已经持久化的本地修改。', 1, {
+        projectId: 'project-atlas',
+        itemId: 'finding-import',
+        action: 'item.updated',
+        actor: 'human',
+        kind: 'system',
+      }),
+    ];
     const { props, api } = featureProps({ snapshot: state });
     api.getEvents.mockRejectedValueOnce(new Error('审计服务暂不可用'));
     render(<FindingView {...props} id="finding-import" />, { wrapper: TestProviders });
@@ -105,10 +166,24 @@ describe('manual feature details and audit', () => {
 
 describe('channels are execution sources, not separate boards', () => {
   it('opens real Codex projects in the native App, including while a shared native turn is running', async () => {
-    const state = snapshot(); state.projects[0].isDemo = false; state.projects[0].runtime = 'codex';
+    const state = snapshot();
+    state.projects[0].isDemo = false;
+    state.projects[0].runtime = 'codex';
     state.channels[0].status = 'running';
     state.channels[0].nextRunAt = '2026-09-08T12:00:00Z';
-    state.runs = [{ id: 'native-active', channelId: 'channel-system', runtime: 'codex', status: 'running', startedAt: timestamp, finishedAt: '', summary: '', sessionId: 'native-thread', executionOwner: 'codex-app' }];
+    state.runs = [
+      {
+        id: 'native-active',
+        channelId: 'channel-system',
+        runtime: 'codex',
+        status: 'running',
+        startedAt: timestamp,
+        finishedAt: '',
+        summary: '',
+        sessionId: 'native-thread',
+        executionOwner: 'codex-app',
+      },
+    ];
     const { props, api } = featureProps({ snapshot: state });
     render(<ProjectView {...props} id="project-atlas" />, { wrapper: TestProviders });
     expect(screen.queryByRole('button', { name: '在原生 CLI 中继续' })).toBeNull();
@@ -121,14 +196,23 @@ describe('channels are execution sources, not separate boards', () => {
   });
 
   it('uses the App entry for legacy Codex projects without a stored default runtime and never falls back to another CLI', async () => {
-    const state = snapshot(); state.projects[0].isDemo = false;
+    const state = snapshot();
+    state.projects[0].isDemo = false;
     const { props, api } = featureProps({ snapshot: state });
     const view = render(<ProjectView {...props} id="project-atlas" />, { wrapper: TestProviders });
     await userEvent.setup().click(screen.getByRole('button', { name: '在 Codex App 中继续此项目' }));
     expect(api.openNativeApp).toHaveBeenCalledWith('channel-system');
-    const noCodex = { ...state, projects: state.projects.map(project => project.id === 'project-atlas' ? { ...project, runtime: 'codex' as const } : project), channels: state.channels.filter(channel => channel.id !== 'channel-system') };
+    const noCodex = {
+      ...state,
+      projects: state.projects.map((project) =>
+        project.id === 'project-atlas' ? { ...project, runtime: 'codex' as const } : project
+      ),
+      channels: state.channels.filter((channel) => channel.id !== 'channel-system'),
+    };
     view.rerender(<ProjectView {...props} snapshot={noCodex} id="project-atlas" />);
-    expect((screen.getByRole('button', { name: '在 Codex App 中继续此项目' }) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByRole('button', { name: '在 Codex App 中继续此项目' }) as HTMLButtonElement).disabled).toBe(
+      true
+    );
     expect(screen.queryByRole('button', { name: '在原生 CLI 中继续' })).toBeNull();
     expect(api.openNativeSession).not.toHaveBeenCalled();
   });
@@ -144,21 +228,40 @@ describe('channels are execution sources, not separate boards', () => {
   });
 
   it('opens the project runtime’s exact channel in the native CLI only when the whole project is inactive', async () => {
-    const state = snapshot(); state.projects[0].isDemo = false; state.projects[0].runtime = 'claude';
+    const state = snapshot();
+    state.projects[0].isDemo = false;
+    state.projects[0].runtime = 'claude';
     const { props, api } = featureProps({ snapshot: state });
     const view = render(<ProjectView {...props} id="project-atlas" />, { wrapper: TestProviders });
     await userEvent.setup().click(screen.getByRole('button', { name: '在原生 CLI 中继续' }));
     expect(api.openNativeSession).toHaveBeenCalledWith('channel-growth');
-    const scheduled = { ...state, channels: state.channels.map(channel => channel.id === 'channel-system' ? { ...channel, status: 'idle', nextRunAt: '2026-09-08T12:00:00Z' } : channel) };
+    const scheduled = {
+      ...state,
+      channels: state.channels.map((channel) =>
+        channel.id === 'channel-system' ? { ...channel, status: 'idle', nextRunAt: '2026-09-08T12:00:00Z' } : channel
+      ),
+    };
     view.rerender(<ProjectView {...props} snapshot={scheduled} id="project-atlas" />);
     expect((screen.getByRole('button', { name: '在原生 CLI 中继续' }) as HTMLButtonElement).disabled).toBe(true);
     expect(api.openNativeSession).toHaveBeenCalledTimes(1);
   });
 
   it('does not open a native CLI while a sibling channel’s run is still active', () => {
-    const state = snapshot(); state.projects[0].isDemo = false;
+    const state = snapshot();
+    state.projects[0].isDemo = false;
     state.channels[0].runtime = 'claude';
-    state.runs = [{ id: 'active-run', channelId: 'channel-growth', runtime: 'claude', status: 'running', startedAt: timestamp, finishedAt: '', summary: '', sessionId: '' }];
+    state.runs = [
+      {
+        id: 'active-run',
+        channelId: 'channel-growth',
+        runtime: 'claude',
+        status: 'running',
+        startedAt: timestamp,
+        finishedAt: '',
+        summary: '',
+        sessionId: '',
+      },
+    ];
     const { props, api } = featureProps({ snapshot: state });
     render(<ChannelView {...props} id="channel-system" />, { wrapper: TestProviders });
     expect((screen.getByRole('button', { name: '在原生 CLI 中继续' }) as HTMLButtonElement).disabled).toBe(true);
