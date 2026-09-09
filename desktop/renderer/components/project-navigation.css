@@ -43,6 +43,20 @@
   color: var(--nav-muted);
   font-size: 11px;
 }
+/* Pending Codex questions: the channel row's warning icon plus a count, shown whether the project is expanded or collapsed. */
+.project-pending-count {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  flex-shrink: 0;
+  margin-left: 4px;
+  font-size: 11px;
+  line-height: 14px;
+}
+.project-pending-count > svg {
+  width: 12px;
+  height: 12px;
+}
 .project-add-channel {
   width: 26px;
   height: 26px;

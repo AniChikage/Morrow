@@ -1596,6 +1596,111 @@
   color: var(--muted);
   white-space: nowrap;
 }
+/* Codex question (needs_input): the question as a bordered document card with its answer box; no shadow. */
+.channel-question {
+  flex-shrink: 0;
+  margin: 14px 24px 12px;
+  padding: 14px 18px 16px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface);
+}
+.channel-question-label {
+  display: block;
+  margin-bottom: 8px;
+  font-size: 11px;
+  color: var(--muted);
+}
+.channel-question-body .markdown {
+  font-size: 13px;
+  line-height: 1.7;
+  max-height: 240px;
+  overflow: auto;
+}
+.channel-question-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+  font-size: 12px;
+  color: var(--muted);
+}
+.channel-question-meta .button {
+  height: 24px;
+  padding: 0 6px;
+  font-size: 12px;
+}
+.channel-question-answer {
+  margin-top: 12px;
+}
+/* Two class selectors so this outranks `.form-field textarea` (ui.css) and the bare `textarea` reset (tokens.css). */
+.channel-question .channel-question-input {
+  display: block;
+  width: 100%;
+  min-height: 96px;
+  max-height: 280px;
+  resize: vertical;
+  font-size: 13px;
+  line-height: 1.7;
+}
+.channel-question .feature-inline-error {
+  margin: 8px 0 0;
+}
+.channel-question-note {
+  margin: 8px 0 0;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--muted);
+}
+.channel-question-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-top: 8px;
+}
+.channel-question-hint {
+  font-size: 11px;
+  color: var(--muted);
+}
+.channel-question-answered {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 12px 0 0;
+  font-size: 12px;
+  color: var(--success);
+}
+/* 待回答 rows in the project inspector: channel name, one-line excerpt, ghost 回答; no cards. */
+.pending-question {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 1px 8px;
+  margin: 0 0 12px;
+  font-size: 12px;
+  line-height: 1.6;
+}
+.pending-question-channel {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text);
+}
+.pending-question-excerpt {
+  grid-column: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--muted);
+}
+.pending-question .button {
+  grid-column: 2;
+  grid-row: 1 / span 2;
+  height: 24px;
+  padding: 0 6px;
+  font-size: 12px;
+}
 .native-conversation-compact .native-conversation-bar {
   min-height: 30px;
 }

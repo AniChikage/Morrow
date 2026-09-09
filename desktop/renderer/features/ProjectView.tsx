@@ -32,6 +32,7 @@ import { ProjectRecords } from './ProjectRecords';
 import { ProjectReleases, ProjectThinking } from './ProjectWork';
 import { ProjectBrief } from './ProjectBrief';
 import { ProjectUsageSection } from './ProjectUsage';
+import { questionExcerpt } from './ChannelQuestion';
 import './content.css';
 
 const statusOrder = ['open', 'investigating', 'blocked', 'verified', 'resolved'];
@@ -104,6 +105,7 @@ export function ProjectView(props: FeatureProps & { id: string }) {
   // Only a Codex channel can continue in the App; channels from retired runtimes stay readable but never execute.
   const codexChannel = channels.find((channel) => channel.runtime === 'codex');
   const legacyChannels = channels.filter((channel) => isLegacyRuntime(channel.runtime));
+  const pendingQuestions = channels.filter((channel) => channel.work?.awaitingReply);
   if (!project) return <EmptyState title="项目不存在" description="项目可能已被移除，请在侧栏重新选择。" />;
   return (
     <div className="feature-layout">
@@ -355,6 +357,26 @@ export function ProjectView(props: FeatureProps & { id: string }) {
           </div>
           <h2 className="property-title">{project.name}</h2>
           {project.isDemo && <span className="feature-demo-label">示例数据</span>}
+          {pendingQuestions.length > 0 && (
+            <section className="property-section" aria-label="待回答">
+              <h3>待回答</h3>
+              {pendingQuestions.map((channel) => (
+                <div className="pending-question" key={channel.id}>
+                  <span className="pending-question-channel">{channel.name}</span>
+                  <span className="pending-question-excerpt" title={channel.work?.nextStep}>
+                    {questionExcerpt(channel.work?.nextStep || '')}
+                  </span>
+                  <Button
+                    variant="ghost"
+                    aria-label={`回答 ${channel.name} 的问题`}
+                    onClick={() => onNavigate({ kind: 'channel', id: channel.id })}
+                  >
+                    回答
+                  </Button>
+                </div>
+              ))}
+            </section>
+          )}
           <section className="property-section">
             <h3>属性</h3>
             <Property label="项目功能">{allItems.length} 个</Property>

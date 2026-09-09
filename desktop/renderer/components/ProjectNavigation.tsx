@@ -63,6 +63,7 @@ export function ProjectNavigation({
         const children = byProject.get(project.id) || [];
         const expanded = !collapsed[project.id];
         const groupId = `project-content-${project.id}`;
+        const pending = children.filter((channel) => channel.work?.awaitingReply).length;
         return (
           <section className="nav-project" aria-label={`${project.name} 项目`} key={project.id}>
             <div className={`nav-project-row ${activeProjectId === project.id ? 'current-project' : ''}`}>
@@ -79,6 +80,17 @@ export function ProjectNavigation({
                 {project.isDemo && <span className="nav-demo">示例</span>}
                 {!expanded && children.length > 0 && <span className="project-channel-count">{children.length}</span>}
               </button>
+              {pending > 0 && (
+                <span
+                  className="project-pending-count"
+                  role="img"
+                  aria-label={`${pending} 个问题待回答`}
+                  title={`${pending} 个问题待回答`}
+                >
+                  <AlertCircle className="warning" />
+                  {pending}
+                </span>
+              )}
               <button
                 className="project-add-channel"
                 aria-label={`在 ${project.name} 新建频道`}

@@ -22,6 +22,7 @@ import { nativeContinuationBlock } from './featureOwnership';
 import { EventLog } from './EventLog';
 import { RunHistory } from './RunsView';
 import { NativeConversationView, nativeConversationReady } from './NativeConversationView';
+import { ChannelQuestion } from './ChannelQuestion';
 import './content.css';
 
 export function ChannelView(props: FeatureProps & { id: string }) {
@@ -44,6 +45,12 @@ export function ChannelView(props: FeatureProps & { id: string }) {
   const snapshotBaseline = useRef(new Set<string>());
   const historyGeneration = useRef(0);
   const historyBusy = useRef(false);
+  // Whether a Codex question was already waiting when this channel was opened. Only then does the
+  // answer box take focus; a question that arrives while the user is typing elsewhere never steals it.
+  const entryQuestion = useRef<{ id: string; present: boolean } | null>(null);
+  const entry =
+    entryQuestion.current?.id === id ? entryQuestion.current : { id, present: !!channel?.work?.awaitingReply };
+  entryQuestion.current = entry;
   const events = useMemo(() => {
     const loadedIds = new Set(older.map((event) => event.id));
     const live = snapshot.events.filter(
@@ -262,12 +269,38 @@ export function ChannelView(props: FeatureProps & { id: string }) {
             </Button>
           </div>
         )}
-        {nativeCodex && channel.work && (
-          <div className="channel-next-step">
-            <span>{channel.work.awaitingReply ? '需要你指导' : '下一步'}</span>
-            <p>{channel.work.nextStep}</p>
-            {!paused && channel.nextRunAt && <time>{formatDate(channel.nextRunAt)}</time>}
-          </div>
+        {channel.work?.awaitingReply ? (
+          <ChannelQuestion
+            // One card per asking run, so a later question starts fresh; the key must not repeat the sibling's `id` key.
+            key={`question:${channel.work.runId}`}
+            channelId={id}
+            work={channel.work}
+            api={api}
+            busy={busy}
+            readOnly={legacy}
+            unavailable={
+              demo
+                ? '示例频道不能回答'
+                : !nativeConversationReady(nativeConversation)
+                  ? '原生对话尚未就绪，暂时不能回答'
+                  : !nativeConversation?.status.capabilities.send
+                    ? '当前不能发送到原生对话'
+                    : nativeBusy
+                      ? 'Codex 正在回应，请稍候'
+                      : ''
+            }
+            autoFocus={entry.present}
+            onShowConversation={() => setTab(nativeCodex ? 'conversation' : 'activity')}
+          />
+        ) : (
+          nativeCodex &&
+          channel.work && (
+            <div className="channel-next-step">
+              <span>下一步</span>
+              <p>{channel.work.nextStep}</p>
+              {!paused && channel.nextRunAt && <time>{formatDate(channel.nextRunAt)}</time>}
+            </div>
+          )
         )}
         {demo && <div className="channel-demo-note">示例频道用于浏览流程，不会执行任务。</div>}
         {legacy && (

@@ -16,13 +16,24 @@ const channels: Channel[] = [
     goal: '持续提升 Atlas 的可靠性与产品体验。',
     runtime: 'codex',
     model: '',
-    status: 'paused',
+    status: 'blocked',
     intervalMinutes: 60,
     maxRunsPerDay: 8,
     permission: 'read-only',
     nextRunAt: '',
-    lastRunAt: '',
+    lastRunAt: '2026-09-06T14:49:00.000Z',
     sessionId: '',
+    // A Morrow-level needs_input question: the channel card, the project 待回答 list and the sidebar count read it.
+    work: {
+      state: 'needs_input',
+      focus: '空状态的导入入口',
+      reason: '两条示例证据分别指向 CSV 导入和工单集成，优先级需要你确认。',
+      nextStep:
+        '[示例提问] 空状态的「导入反馈」入口应该先接 **CSV 文件导入**，还是先接现有的工单集成？\n\n如果两者都要，我先验证哪一条路径？',
+      runId: 'demo-run-001',
+      updatedAt: '2026-09-06T14:49:00.000Z',
+      awaitingReply: true,
+    },
   },
   {
     id: 'demo-growth',
