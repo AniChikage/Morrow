@@ -10,9 +10,20 @@ import WebSocket from 'ws';
 
 /** Installed as CODEX_CLI_PATH. The App still supplies every runtime option. */
 export function sharedRuntimeArgs(args: string[], socket: string): string[] | null {
-  if (args[0] !== 'app-server' || args.slice(1).some(arg => ['daemon', 'proxy', 'generate-ts', 'generate-json-schema', '--help', '-h'].includes(arg))) return null;
-  const result = ['app-server'];
-  for (let index = 1; index < args.length; index++) {
+  // The App may place global configuration before its subcommand. Preserve it
+  // verbatim; a config value containing "app-server" is not the subcommand.
+  let commandIndex=0;
+  while(commandIndex<args.length&&args[commandIndex]!=='app-server'){
+    const arg=args[commandIndex];
+    if(['-c','--config','--enable','--disable'].includes(arg)){
+      if(!args[commandIndex+1])return null;
+      commandIndex+=2;
+    }else if(/^(?:--config|--enable|--disable)=.+/.test(arg)||/^-c.+?=.+/.test(arg)||arg==='--strict-config')commandIndex++;
+    else return null;
+  }
+  if (args[commandIndex] !== 'app-server' || args.slice(commandIndex+1).some(arg => ['daemon', 'proxy', 'generate-ts', 'generate-json-schema', '--help', '-h'].includes(arg))) return null;
+  const result = args.slice(0,commandIndex+1);
+  for (let index = commandIndex+1; index < args.length; index++) {
     const arg = args[index];
     if (arg === '--stdio') continue;
     if (arg === '--listen') { if (args[++index] !== 'stdio://') return null; continue; }
@@ -23,12 +34,12 @@ export function sharedRuntimeArgs(args: string[], socket: string): string[] | nu
 }
 
 export async function runAppHostBridge(args = process.argv.slice(2)): Promise<void> {
-  const executable = process.env.NOHUMAN_CODEX_BINARY;
-  if (!executable || resolve(executable) === resolve(process.argv[1])) throw new Error('NoHuman Codex bridge has no native executable.');
-  const directory = process.env.NOHUMAN_CODEX_BRIDGE_HOME || join(homedir(), 'Library/Application Support/NoHuman/codex-bridge');
+  const executable = process.env.MORROW_CODEX_BINARY || process.env.NOHUMAN_CODEX_BINARY;
+  if (!executable || resolve(executable) === resolve(process.argv[1])) throw new Error('Morrow Codex bridge has no native executable.');
+  const directory = process.env.MORROW_CODEX_BRIDGE_HOME || process.env.NOHUMAN_CODEX_BRIDGE_HOME || join(homedir(), 'Library/Application Support/Morrow/codex-bridge');
   const launchId = randomUUID();
   // Unix socket paths have a small OS limit. The private directory is kept short.
-  const socketDirectory = process.env.NOHUMAN_CODEX_SOCKET_DIRECTORY || join(homedir(), '.nohuman-codex');
+  const socketDirectory = process.env.MORROW_CODEX_SOCKET_DIRECTORY || process.env.NOHUMAN_CODEX_SOCKET_DIRECTORY || join(homedir(), '.morrow-codex');
   const socketPath = join(socketDirectory, `${process.pid}.sock`);
   const runtimeArgs = sharedRuntimeArgs(args, socketPath);
   if (!runtimeArgs) {
@@ -59,7 +70,7 @@ export async function runAppHostBridge(args = process.argv.slice(2)): Promise<vo
   });
   input.on('close', cleanup);
   process.once('SIGTERM', cleanup); process.once('SIGINT', cleanup);
-  child.once('error', error => { process.stderr.write(`NoHuman native host failed: ${error.message}\n`); process.exitCode = 1; cleanup(); });
+  child.once('error', error => { process.stderr.write(`Morrow native host failed: ${error.message}\n`); process.exitCode = 1; cleanup(); });
   child.once('exit', code => { process.exitCode = code ?? (stopped ? 0 : 1); cleanup(); });
   try {
     for (let count = 0; count < 300 && !stopped && !existsSync(socketPath); count++) await new Promise(done => setTimeout(done, 50));
@@ -84,7 +95,7 @@ export async function runAppHostBridge(args = process.argv.slice(2)): Promise<vo
       if (!process.stdout.write(`${line}\n`)) socket?.pause();
     });
     process.stdout.on('drain', () => socket?.resume());
-    socket.once('error', error => { process.stderr.write(`NoHuman native connection failed: ${error.message}\n`); process.exitCode = 1; cleanup(); });
+    socket.once('error', error => { process.stderr.write(`Morrow native connection failed: ${error.message}\n`); process.exitCode = 1; cleanup(); });
     socket.once('close', cleanup);
     await new Promise<void>((done, reject) => { socket!.once('open', done); socket!.once('error', reject); });
     for (const line of queued) socket.send(line);

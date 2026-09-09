@@ -19,7 +19,7 @@ const demoReply='[示例输出] 已完成检查。空状态需要明确的导入
 const demoChunks:RunOutputChunk[]=[{id:'demo-chunk-1',runId:demoRun.id,stream:'prompt',text:demoPrompt,createdAt,sequence:1},{id:'demo-chunk-2',runId:demoRun.id,stream:'stdout',text:'[示例原始输出] 正在检查反馈看板…\n',createdAt,sequence:2},{id:'demo-chunk-3',runId:demoRun.id,stream:'final',text:demoReply,createdAt,sequence:3}];
 const connection: ConnectionInfo = {config:{mode:'local',host:'',port:43821,directory:''},connected:true,name:'界面预览 · 示例'};
 const clone=()=>structuredClone(snapshot);
-const unavailable=async():Promise<never>=>{throw new Error('请在 NoHuman 桌面应用中执行此操作。');};
+const unavailable=async():Promise<never>=>{throw new Error('请在 Morrow 桌面应用中执行此操作。');};
 function audit(projectId:string,channelId:string,itemId:string,text:string,action:string,changes?:WorkspaceEvent['changes']){
  const event:WorkspaceEvent={id:crypto.randomUUID(),projectId,channelId,itemId,runId:'',kind:'system',actor:'human',action,text,createdAt:new Date().toISOString(),...(changes?{changes}:{})};snapshot.events.push(event);return structuredClone(event);
 }
@@ -27,7 +27,7 @@ export function previewAPI():DesktopAPI {const api:DesktopAPI={
  getState:async()=>clone(),getConnection:async()=>connection,connect:unavailable,createProject:unavailable,createChannel:unavailable,
  updateChannel:async(id,data)=>{const channel=snapshot.channels.find(value=>value.id===id);if(!channel)throw new Error('频道不存在');const before=structuredClone(channel);Object.assign(channel,data);audit(channel.projectId,id,'','[预览] 更新了频道设置','channel.updated',{before,after:channel});return structuredClone(channel);},
  channelAction:unavailable,
- getNativeStatus:async()=>({available:false,connected:false,detail:'界面预览；原生对话需要在 NoHuman 桌面应用中连接。',capabilities:{list:false,read:false,send:false,create:false,interrupt:false,respond:false}}),
+ getNativeStatus:async()=>({available:false,connected:false,detail:'界面预览；原生对话需要在 Morrow 桌面应用中连接。',capabilities:{list:false,read:false,send:false,create:false,interrupt:false,respond:false}}),
  listNativeThreads:async()=>({status:await api.getNativeStatus(),threads:[]}),
  getNativeConversation:async channelId=>({channelId,status:await api.getNativeStatus(),items:[],requests:[],hasMore:false}),
  bindNativeThread:unavailable,createNativeThread:unavailable,sendNativeMessage:unavailable,interruptNativeTurn:unavailable,respondNativeRequest:unavailable,openNativeApp:unavailable,

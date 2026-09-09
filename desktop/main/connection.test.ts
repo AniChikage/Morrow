@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { ServiceConnection } from './connection';
 import { emptySnapshot, type Channel, type Snapshot, type WorkspaceEvent } from '../shared/types';
 
-vi.mock('electron', () => ({ app: { isPackaged: false, getAppPath: () => '/unused-nohuman-test-app' } }));
+vi.mock('electron', () => ({ app: { isPackaged: false, getAppPath: () => '/unused-morrow-test-app' } }));
 
 let directory = '';
 let service: ServiceConnection;
@@ -16,13 +16,13 @@ const json = (value: unknown, status = 200) => new Response(JSON.stringify(value
 const event = (id: string, channelId = 'channel-1', runId = 'run-1'): WorkspaceEvent => ({ id, channelId, runId, kind: 'output', text: id, createdAt: '2026-09-07T12:00:00.000Z' });
 
 beforeEach(async () => {
-  directory = await mkdtemp(join(tmpdir(), 'nohuman-desktop-test-'));
-  vi.stubEnv('NOHUMAN_HOME', directory);
-  vi.stubEnv('NOHUMAN_PORT', '43821');
+  directory = await mkdtemp(join(tmpdir(), 'morrow-desktop-test-'));
+  vi.stubEnv('MORROW_HOME', directory);
+  vi.stubEnv('MORROW_PORT', '43821');
   await writeFile(join(directory, 'token'), token, { mode: 0o600 });
   await writeFile(join(directory, 'desktop-connection.json'), JSON.stringify({ mode: 'local', host: '', port: 43821, directory }));
   snapshot = structuredClone(emptySnapshot);
-  reply = url => url.endsWith('/health') ? json({ ok: true, service: 'nohuman' }) : json(snapshot);
+  reply = url => url.endsWith('/health') ? json({ ok: true, service: 'morrow' }) : json(snapshot);
   vi.stubGlobal('fetch', vi.fn((input: string | URL | Request, init?: RequestInit) => reply(String(input), init)));
   service = new ServiceConnection();
   await service.initialize(); // A live health response prevents any process start.
@@ -31,6 +31,13 @@ afterEach(async () => {
   vi.unstubAllGlobals();
   vi.unstubAllEnvs();
   await rm(directory, { recursive: true, force: true });
+});
+
+test('a running legacy NoHuman service remains usable after the Morrow rename', async () => {
+  reply = url => url.endsWith('/health') ? json({ ok: true, service: 'nohuman' }) : json(snapshot);
+  const legacyService = new ServiceConnection();
+  await expect(legacyService.initialize()).resolves.toBeUndefined();
+  expect(await legacyService.getInfo()).toMatchObject({ connected: true });
 });
 
 test('old daemon pagination preserves insertion order and does not skip equal timestamps', async () => {

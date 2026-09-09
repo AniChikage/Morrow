@@ -1,14 +1,14 @@
 import SwiftUI
 
 extension Color {
-    static let nhAccent = Color(red: 0.39, green: 0.34, blue: 0.88)
-    static let nhInk = Color(red: 0.14, green: 0.14, blue: 0.15)
-    static let nhSecondary = Color(red: 0.49, green: 0.49, blue: 0.51)
-    static let nhSidebar = Color(red: 0.9608, green: 0.9647, blue: 0.9686)
-    static let nhCanvas = Color(red: 0.9882, green: 0.9882, blue: 0.9882)
-    static let nhLine = Color(red: 0.919, green: 0.923, blue: 0.927)
-    static let nhGreen = Color(red: 0.23, green: 0.54, blue: 0.43)
-    static let nhOrange = Color(red: 0.69, green: 0.45, blue: 0.21)
+    static let morrowAccent = Color(red: 0.39, green: 0.34, blue: 0.88)
+    static let morrowInk = Color(red: 0.14, green: 0.14, blue: 0.15)
+    static let morrowSecondary = Color(red: 0.49, green: 0.49, blue: 0.51)
+    static let morrowSidebar = Color(red: 0.9608, green: 0.9647, blue: 0.9686)
+    static let morrowCanvas = Color(red: 0.9882, green: 0.9882, blue: 0.9882)
+    static let morrowLine = Color(red: 0.919, green: 0.923, blue: 0.927)
+    static let morrowGreen = Color(red: 0.23, green: 0.54, blue: 0.43)
+    static let morrowOrange = Color(red: 0.69, green: 0.45, blue: 0.21)
 }
 
 struct NHButton: View {
@@ -22,10 +22,10 @@ struct NHButton: View {
                 if let symbol { Image(systemName: symbol).font(.system(size: 12)) }
                 Text(title).font(.system(size: 12, weight: .medium))
             }
-            .foregroundStyle(primary ? .white : Color.nhInk)
+            .foregroundStyle(primary ? .white : Color.morrowInk)
             .padding(.horizontal, 9).frame(height: 28)
-            .background(primary ? Color.nhInk : Color.nhCanvas, in: RoundedRectangle(cornerRadius: 6))
-            .overlay(RoundedRectangle(cornerRadius: 6).stroke(primary ? Color.clear : Color.nhLine, lineWidth: 1))
+            .background(primary ? Color.morrowInk : Color.morrowCanvas, in: RoundedRectangle(cornerRadius: 6))
+            .overlay(RoundedRectangle(cornerRadius: 6).stroke(primary ? Color.clear : Color.morrowLine, lineWidth: 1))
         }.buttonStyle(.plain).fixedSize()
     }
 }
@@ -37,30 +37,30 @@ struct StatusBadge: View {
             Circle().fill(tint).frame(width: 5, height: 5)
             Text(statusTitle(status)).font(.system(size: 12))
         }
-        .foregroundStyle(Color.nhSecondary)
+        .foregroundStyle(Color.morrowSecondary)
     }
     var tint: Color {
         switch status {
-        case "running", "investigating": return .nhAccent
-        case "completed", "verified", "resolved", "idle": return .nhGreen
-        case "failed", "error", "blocked": return .nhOrange
-        default: return .nhSecondary
+        case "running", "investigating": return .morrowAccent
+        case "completed", "verified", "resolved", "idle": return .morrowGreen
+        case "failed", "error", "blocked": return .morrowOrange
+        default: return .morrowSecondary
         }
     }
 }
 
 struct DemoBadge: View {
     var body: some View {
-        Text("示例").font(.system(size: 11)).foregroundStyle(Color.nhSecondary)
+        Text("示例").font(.system(size: 11)).foregroundStyle(Color.morrowSecondary)
             .padding(.horizontal, 5).padding(.vertical, 2)
-            .overlay(RoundedRectangle(cornerRadius: 4).stroke(Color.nhLine, lineWidth: 1))
+            .overlay(RoundedRectangle(cornerRadius: 4).stroke(Color.morrowLine, lineWidth: 1))
     }
 }
 
 struct SectionEyebrow: View {
     let text: String
     var body: some View {
-        Text(text).font(.system(size: 12, weight: .medium)).foregroundStyle(Color.nhInk)
+        Text(text).font(.system(size: 12, weight: .medium)).foregroundStyle(Color.morrowInk)
     }
 }
 
@@ -70,10 +70,10 @@ struct EmptyPanel: View {
     var detail: String
     var body: some View {
         VStack(spacing: 11) {
-            Image(systemName: symbol).font(.system(size: 29, weight: .regular)).foregroundStyle(Color.nhSecondary)
+            Image(systemName: symbol).font(.system(size: 29, weight: .regular)).foregroundStyle(Color.morrowSecondary)
                 .frame(height: 42)
-            Text(title).font(.system(size: 14, weight: .medium)).foregroundStyle(Color.nhSecondary)
-            Text(detail).font(.system(size: 13)).foregroundStyle(Color.nhSecondary).multilineTextAlignment(.center).lineSpacing(3).frame(maxWidth: 360)
+            Text(title).font(.system(size: 14, weight: .medium)).foregroundStyle(Color.morrowSecondary)
+            Text(detail).font(.system(size: 13)).foregroundStyle(Color.morrowSecondary).multilineTextAlignment(.center).lineSpacing(3).frame(maxWidth: 360)
         }.frame(maxWidth: .infinity).padding(.vertical, 44)
     }
 }
@@ -120,7 +120,7 @@ struct SmallIconButton: View {
     var help: String
     var action: () -> Void
     var body: some View {
-        Button(action: action) { Image(systemName: symbol).font(.system(size: 13)).foregroundStyle(Color.nhSecondary).frame(width: 28, height: 28).contentShape(Rectangle()) }
+        Button(action: action) { Image(systemName: symbol).font(.system(size: 13)).foregroundStyle(Color.morrowSecondary).frame(width: 28, height: 28).contentShape(Rectangle()) }
             .buttonStyle(.plain).help(help).accessibilityLabel(help)
     }
 }

@@ -34,13 +34,13 @@
 
 基线比较使用同一组具有误导性的“成功”输入：旧版只检查证据存在的协议可接受，新协议拒绝实际字段不支持的结论。这证明此校验规则的作用；没有做相同模型预算下的多项目自主性对照实验，不能据此断言整体效率或真实收益已提高。
 
-日志：`/tmp/nohuman-v080-tests.log`、`/tmp/nohuman-v080-ui-tests.log`、`/tmp/nohuman-v080-build-final.log`。
+日志：`/tmp/morrow-v080-tests.log`、`/tmp/morrow-v080-ui-tests.log`、`/tmp/morrow-v080-build-final.log`。
 
 ## 真实原生 Codex 验收
 
 使用独立临时目录、SQLite 和服务创建陌生的 ParcelNotes 交接导出原型。输入为初始源码、基础测试、明确标注为模拟的反馈、可用资源和边界；目标是「让交接人员可靠地交付完整信息，减少导出后回头找原文核对的工作」。没有指明应修复的代码或规定策略。
 
-实际模型：`gpt-5.6-sol`。原生任务：`01a0804d-e8ba-7da3-a58a-3b411928c85f`；NoHuman 运行：`8f903b01-1fca-46aa-a01e-811318f20e31`。一次调度完成后暂停隔离频道。
+实际模型：`gpt-5.6-sol`。原生任务：`01a0804d-e8ba-7da3-a58a-3b411928c85f`；Morrow 运行：`8f903b01-1fca-46aa-a01e-811318f20e31`。一次调度完成后暂停隔离频道。
 
 实际观察：
 
@@ -56,14 +56,14 @@
 
 运行中出现过一次接口连接失败和一次 feature 版本冲突，模型重试读取后自行恢复。最终运行状态为 `completed`；旧版文本看板报告为 `missing`，实际 feature 更新来自工作接口，不将缺少旧报告误计为运行失败。没有宣称完成上线或真实业务收益验证。
 
-原始运行、决策、认识、工作接口调用和证据保存于 `/tmp/nohuman-v080-acceptance`；独立重跑结果为 `independent-tests.tap`。脚本为 `/tmp/nohuman-evaluation-live.ts`。最后补充的未创建路径解析和无效对象采样去重在自动测试及最终安装包中验证，没有为此重启原生验收轮次。
+原始运行、决策、认识、工作接口调用和证据保存于 `/tmp/morrow-v080-acceptance`；独立重跑结果为 `independent-tests.tap`。脚本为 `/tmp/morrow-evaluation-live.ts`。最后补充的未创建路径解析和无效对象采样去重在自动测试及最终安装包中验证，没有为此重启原生验收轮次。
 
 ## 原生界面与安装
 
-CUA 在真实隔离项目中检查「当前判断」→「此前尝试与复盘」→「预期与实际」及原始证据展开。明确显示 Codex 定性解读、观察窗口、来源、反证与不能牺牲的约束；保持灰白紧凑布局和窄属性栏，检查时无白屏、遮挡或框架错误覆盖。截图：`/tmp/nohuman-v080-evaluation-ui.png`。隔离渲染启动日志为空；未获得完整浏览器 DevTools 控制台，不能据此声称完整控制台检查通过。
+CUA 在真实隔离项目中检查「当前判断」→「此前尝试与复盘」→「预期与实际」及原始证据展开。明确显示 Codex 定性解读、观察窗口、来源、反证与不能牺牲的约束；保持灰白紧凑布局和窄属性栏，检查时无白屏、遮挡或框架错误覆盖。截图：`/tmp/morrow-v080-evaluation-ui.png`。隔离渲染启动日志为空；未获得完整浏览器 DevTools 控制台，不能据此声称完整控制台检查通过。
 
-安装路径：`/Users/bytedance/Applications/NoHuman.app`，版本 `0.8.0`。安装前确认没有启用频道或 NoHuman 调度运行，使用 SQLite backup 保存 `/tmp/nohuman-before-v080.sqlite`；安装脚本另保留旧 App。只重启 NoHuman 应用和服务，Codex 共享后台及其拥有的原生任务保持运行。
+安装路径：`/Users/bytedance/Applications/Morrow.app`，版本 `0.8.0`。安装前确认没有启用频道或 Morrow 调度运行，使用 SQLite backup 保存 `/tmp/morrow-before-v080.sqlite`；安装脚本另保留旧 App。只重启 Morrow 应用和服务，Codex 共享后台及其拥有的原生任务保持运行。
 
-安装后通过 CUA 确认原工作区、频道对话和项目看板恢复；数据库比对保留 3 个项目、7 个频道、原生任务 ID、目标、权限、预算和暂停状态。启用频道仍为 0，`quick_check=ok`。安装服务源码及渲染包与最终构建一致，签名验证通过，原生连接 `connected=true`、`backgroundReady=true`。检查详情：`/tmp/nohuman-v080-install-checks.json`。
+安装后通过 CUA 确认原工作区、频道对话和项目看板恢复；数据库比对保留 3 个项目、7 个频道、原生任务 ID、目标、权限、预算和暂停状态。启用频道仍为 0，`quick_check=ok`。安装服务源码及渲染包与最终构建一致，签名验证通过，原生连接 `connected=true`、`backgroundReady=true`。检查详情：`/tmp/morrow-v080-install-checks.json`。
 
 此机制限制的是复盘接口接受什么记录。观测数据的业务真实性、定性解释、观察条件可比性和指标是否充分仍需要检验；已保存的文件快照也不保证其内容未被执行者在采集前写入。本轮没有引入独立数据真实性或因果验证系统。

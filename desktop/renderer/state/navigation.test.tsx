@@ -9,7 +9,7 @@ const project = (id: string): Route => ({ kind: 'project', id });
 const channel = (id: string): Route => ({ kind: 'channel', id });
 function saveSession(scope: string, route: Route, id = 'restored-tab') {
   const value = JSON.stringify({ tabs: [{ id, history: [route], index: 0 }], active: id });
-  localStorage.setItem('nh:tabs:' + scope, value);
+  localStorage.setItem('morrow:tabs:' + scope, value);
   return value;
 }
 function useDefaultWorkspace(scope: string | null, defaultRoute: Route) {
@@ -23,6 +23,15 @@ beforeEach(() => localStorage.clear());
 afterEach(() => { cleanup(); vi.restoreAllMocks(); });
 
 describe('workspace navigation sessions', () => {
+  it('restores a legacy NoHuman tab session and writes future changes under Morrow', () => {
+    const value = JSON.stringify({ tabs: [{ id: 'legacy-tab', history: [channel('legacy-channel')], index: 0 }], active: 'legacy-tab' });
+    localStorage.setItem('nh:tabs:local', value);
+    const view = renderHook(() => useNavigation('local'));
+    expect(view.result.current.route).toEqual(channel('legacy-channel'));
+    act(() => view.result.current.navigate(project('morrow-project'), true));
+    expect(JSON.parse(localStorage.getItem('morrow:tabs:local')!).tabs).toHaveLength(2);
+  });
+
   it('restores a saved tab before considering the default and keeps closing the final tab intentional after restart', () => {
     saveSession('local', channel('saved-channel'));
     const defaultRoute = project('default-project');
@@ -34,7 +43,7 @@ describe('workspace navigation sessions', () => {
     expect(first.result.current.tabs).toHaveLength(0);
     expect(first.result.current.route).toBeUndefined();
     expect(first.result.current.needsDefault).toBe(false);
-    expect(JSON.parse(localStorage.getItem('nh:tabs:local')!)).toEqual({ tabs: [], active: '' });
+    expect(JSON.parse(localStorage.getItem('morrow:tabs:local')!)).toEqual({ tabs: [], active: '' });
     first.unmount();
     const restarted = renderHook(() => useDefaultWorkspace('local', defaultRoute));
     expect(restarted.result.current.hydrated).toBe(true);
@@ -64,8 +73,8 @@ describe('workspace navigation sessions', () => {
     expect(view.result.current.route).toEqual(channel('remote-channel'));
     expect(observed.some(state => state.route?.kind === 'project' && state.route.id === 'local-project')).toBe(false);
     expect(observed.find(state => state.scope === 'ssh:work:43821')?.hydrated).toBe(false);
-    expect(localStorage.getItem('nh:tabs:local')).toBe(local);
-    expect(localStorage.getItem('nh:tabs:ssh:work:43821')).toBe(remote);
+    expect(localStorage.getItem('morrow:tabs:local')).toBe(local);
+    expect(localStorage.getItem('morrow:tabs:ssh:work:43821')).toBe(remote);
     expect(writes).not.toHaveBeenCalled();
   });
 
@@ -122,9 +131,9 @@ describe('workspace navigation sessions', () => {
     expect(view.result.current.route).toEqual(project('remote-project'));
     act(() => view.result.current.navigate(channel('remote-work'), true));
     expect(view.result.current.tabs).toHaveLength(2);
-    const remote = JSON.parse(localStorage.getItem('nh:tabs:ssh:work:43821')!);
+    const remote = JSON.parse(localStorage.getItem('morrow:tabs:ssh:work:43821')!);
     expect(remote.tabs.flatMap((tab: { history: Route[] }) => tab.history)).toEqual([project('remote-project'), channel('remote-work')]);
-    expect(localStorage.getItem('nh:tabs:local')).toBe(originalLocal);
+    expect(localStorage.getItem('morrow:tabs:local')).toBe(originalLocal);
     view.rerender({ scope: 'local' });
     expect(view.result.current.route).toEqual(project('local-project'));
     expect(view.result.current.tabs).toHaveLength(1);
@@ -134,7 +143,7 @@ describe('workspace navigation sessions', () => {
   });
 
   it('recovers corrupt saved navigation without crashing or exposing an invalid route', () => {
-    localStorage.setItem('nh:tabs:local', JSON.stringify({ tabs: [{ id: 'broken', history: [{ kind: 'finding' }], index: 9 }], active: 'broken' }));
+    localStorage.setItem('morrow:tabs:local', JSON.stringify({ tabs: [{ id: 'broken', history: [{ kind: 'finding' }], index: 9 }], active: 'broken' }));
     const view = renderHook(() => useDefaultWorkspace('local', project('recovered')));
     expect(view.result.current.route).toEqual(project('recovered'));
     expect(view.result.current.tabs).toHaveLength(1);

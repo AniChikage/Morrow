@@ -3,7 +3,7 @@ import SwiftUI
 struct ConnectionSettingsView: View {
     @EnvironmentObject var store: AppStore
     @State private var host = UserDefaults.standard.string(forKey: "remoteHost") ?? ""
-    @State private var directory = UserDefaults.standard.string(forKey: "remoteDirectory") ?? "~/.local/share/nohuman"
+    @State private var directory = UserDefaults.standard.string(forKey: "remoteDirectory") ?? "~/.local/share/morrow"
     @State private var servicePort = UserDefaults.standard.integer(forKey: "remotePort") == 0 ? 43821 : UserDefaults.standard.integer(forKey: "remotePort")
 
     var body: some View {
@@ -24,7 +24,7 @@ struct ConnectionSettingsView: View {
             GroupBox {
                 VStack(alignment: .leading, spacing: 12) {
                     Label("远程主机 · SSH", systemImage: "server.rack").font(.headline)
-                    Text("连接已运行的 NoHuman 服务。使用已有 SSH 登录配置；远程任务在 Mac 合盖后继续。")
+                    Text("连接已运行的 Morrow 服务。使用已有 SSH 登录配置；远程任务在 Mac 合盖后继续。")
                         .font(.caption).foregroundStyle(.secondary)
                     TextField("SSH 主机别名或 user@host", text: $host)
                         .textFieldStyle(.roundedBorder).accessibilityLabel("SSH 主机")

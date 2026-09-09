@@ -22,6 +22,28 @@ function evaluatedDecision():DecisionView {
   };
 }
 describe('AI work and release review',()=>{
+  it('shows actionable measurement gaps, frozen baseline and scope inside the existing expectation document',async()=>{
+    const f=fixture(),d=evaluatedDecision();d.status='active';d.review=undefined;
+    d.expectations![0].measurement={metric:'完成交付用户 / 全部开始用户',goalRelation:'衡量实际完成交付的比例',limitation:'该代理指标尚不能证明付费或因果收益',comparison:'delta',baseline:{evidenceId:'evidence-one'},freshness:{pointer:'/generatedAt',maxAgeSeconds:300},checks:[{label:'足够样本',pointer:'/sampleSize',operator:'gte',expected:100}]};
+    d.observations=[{expectationId:'integrity',status:'needs_repair',verdict:'unknown',baselineEvidenceId:'evidence-one',baselineValue:0.5,observedValue:0.875,comparedValue:0.375,issues:['足够样本：不符合原约定'],checks:[{label:'足够样本',status:'failed',observedValue:2}]}];
+    f.data.strategy={understanding:[],decisions:[d],counts:{understanding:0,decisions:1}};
+    render(<TestProviders><ProjectThinking api={f.api} projectId="project-atlas" onNavigate={f.props.onNavigate}/></TestProviders>);
+    expect(await screen.findByText(/观测待修复/)).not.toBeNull();
+    const user=userEvent.setup();await user.click(screen.getByText('预期与实际'));
+    expect(screen.getByText(/最新值：0.875 · 差值：0.375/)).not.toBeNull();expect(screen.getByText('足够样本：不符合原约定')).not.toBeNull();
+    expect(screen.getByText(/不能证明付费或因果收益/)).not.toBeNull();expect(screen.queryByText('已满足原观测条件')).toBeNull();
+    expect(screen.queryByRole('button',{name:/保存|配置观测|确认/})).toBeNull();
+    await user.click(screen.getByText('测试日志'));expect(screen.getByText(/文件采集证明当时保存的内容/)).not.toBeNull();
+  });
+  it('shows a missing baseline without inventing a value or retroactively changing a historical assessment',async()=>{
+    const f=fixture(),d=evaluatedDecision();
+    d.expectations![0].measurement={metric:'交付成功率',goalRelation:'观察交付效果',limitation:'仅限本次样本',comparison:'delta',baseline:{unavailable:'采集链路尚未建立'},freshness:{pointer:'/generatedAt',maxAgeSeconds:300},checks:[{label:'采集完整',pointer:'/complete',operator:'equals',expected:true}]};
+    d.review!.assessment!.results[0].observation={expectationId:'integrity',status:'needs_repair',verdict:'unknown',issues:['缺少比较基线'],checks:[]};
+    f.data.strategy={understanding:[],decisions:[d],counts:{understanding:0,decisions:1}};
+    render(<TestProviders><FeatureWork api={f.api} projectId="project-atlas" itemId="finding-import"/></TestProviders>);
+    await userEvent.setup().click(await screen.findByText('预期与实际'));
+    expect(screen.getByText(/尚未取得 · 采集链路尚未建立/)).not.toBeNull();expect(screen.queryByText(/原基线：0/)).toBeNull();expect(screen.getByText('缺少比较基线')).not.toBeNull();
+  });
   it('keeps independent findings and stale source status visible without certifying business impact',async()=>{
     const f=fixture();f.data.verifications=[{id:'verify-one',projectId:'project-atlas',channelId:'channel-system',runId:'run-one',itemId:'finding-import',evidenceIds:['evidence-one'],subjectHash:'subject',version:{digest:'frozen-source-hash',head:'commit',files:6,bytes:1000,coverage:'git-tracked-and-unignored'},status:'failed',summary:'发现真实输入格式的边界问题',findings:[{severity:'blocking',message:'169 小时的数据被错误计入 7 天'}],checks:[{expectationId:'feature',verdict:'not_met',reason:'原始时间格式的反例没有通过'}],limitations:['尚未验证业务收益'],createdAt:timestamp,finishedAt:timestamp,threadId:'independent-native-task',bytes:1200,commandCount:2,timeoutSeconds:300,current:true}];
     const view=render(<TestProviders><FeatureWork api={f.api} projectId="project-atlas" itemId="finding-import"/></TestProviders>);

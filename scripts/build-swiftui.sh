@@ -3,7 +3,7 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 # Legacy SwiftUI build; keep it separate from the canonical Electron application.
-APP="$ROOT/dist/NoHuman-SwiftUI.app"
+APP="$ROOT/dist/Morrow-SwiftUI.app"
 CACHE="$ROOT/.build/runtime-cache"
 ARCH="$(uname -m)"
 if [ "$ARCH" = "arm64" ]; then NODE_ARCH=arm64; else NODE_ARCH=x64; fi
@@ -23,7 +23,7 @@ fi
 
 cd "$ROOT"
 swift build -c release
-cp "$ROOT/.build/release/NoHuman" "$APP/Contents/MacOS/NoHuman"
+cp "$ROOT/.build/release/Morrow" "$APP/Contents/MacOS/Morrow"
 cp -R "$ROOT/service/." "$APP/Contents/Resources/service/"
 cp "$CACHE/node/bin/node" "$APP/Contents/Resources/bin/node"
 cp "$CACHE/node/LICENSE" "$APP/Contents/Resources/Node-LICENSE.txt"
@@ -34,10 +34,10 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
-  <key>CFBundleName</key><string>NoHuman</string>
-  <key>CFBundleDisplayName</key><string>NoHuman</string>
-  <key>CFBundleIdentifier</key><string>ai.nohuman.desktop</string>
-  <key>CFBundleExecutable</key><string>NoHuman</string>
+  <key>CFBundleName</key><string>Morrow</string>
+  <key>CFBundleDisplayName</key><string>Morrow</string>
+  <key>CFBundleIdentifier</key><string>ai.morrow.desktop</string>
+  <key>CFBundleExecutable</key><string>Morrow</string>
   <key>CFBundlePackageType</key><string>APPL</string>
   <key>CFBundleVersion</key><string>1</string>
   <key>CFBundleShortVersionString</key><string>0.1.0</string>

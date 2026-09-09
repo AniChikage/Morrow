@@ -65,7 +65,7 @@ export class CodexSharedTransport {
   }
   private async selectHost():Promise<SharedHost|null>{
     if(this.options.host)return this.options.host;
-    const hosts=findSharedHosts(this.options.directory||join(homedir(),'Library/Application Support/NoHuman/codex-bridge'),this.options.codexHome||process.env.CODEX_HOME||join(homedir(),'.codex'));
+    const hosts=findSharedHosts(this.options.directory||join(homedir(),'Library/Application Support/Morrow/codex-bridge'),this.options.codexHome||process.env.CODEX_HOME||join(homedir(),'.codex'));
     const preferred=hosts.find(host=>host.launchId===this.options.preferredLaunchId?.());if(preferred)return preferred;
     if(hosts.length<2)return hosts[0]||null;
     const known=new Set(this.options.preferredThreadIds?.()||[]);
@@ -101,7 +101,7 @@ export class CodexSharedTransport {
     });
     try {
       await new Promise<void>((done, reject) => { socket.once('open', done); socket.once('error', reject); });
-      const result = await this.request('initialize', { clientInfo: { name: 'nohuman', title: 'NoHuman', version: '0.4.3' }, capabilities: { experimentalApi: true } });
+      const result = await this.request('initialize', { clientInfo: { name: 'morrow', title: 'Morrow', version: '0.4.3' }, capabilities: { experimentalApi: true } });
       if (!samePath(result.codexHome, this.host.codexHome)) throw new NativeDesktopError('原生后台工作目录不匹配。', 'wrong_host');
       socket.send(JSON.stringify({ method: 'initialized' })); this.initialized = true; this.error = null;this.options.onConnected?.(this.host);
     } catch (error) { socket.terminate(); throw error; }

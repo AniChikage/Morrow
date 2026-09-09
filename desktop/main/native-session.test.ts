@@ -13,7 +13,7 @@ let temporary = '';
 let target: NativeSessionTarget;
 
 beforeEach(async () => {
-  temporary = await mkdtemp(join(tmpdir(), 'nohuman-native-session-'));
+  temporary = await mkdtemp(join(tmpdir(), 'morrow-native-session-'));
   mocked.userData = join(temporary, 'user data');
   mocked.openPath.mockReset().mockResolvedValue('');
   const projectPath = join(temporary, "project 'quoted' $(touch UNSAFE_PROJECT) `touch UNSAFE_BACKTICK`");

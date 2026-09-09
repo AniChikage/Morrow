@@ -8,7 +8,7 @@ import { importNativeImages, readNativeImage, resolveNativeAttachments } from '.
 
 const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jTfoAAAAASUVORK5CYII=', 'base64');
 function fixture(t: any) {
-  const home = mkdtempSync(join(tmpdir(), 'nohuman-media-')), store = new Store(join(home, 'workspace.sqlite'));
+  const home = mkdtempSync(join(tmpdir(), 'morrow-media-')), store = new Store(join(home, 'workspace.sqlite'));
   t.after(() => { store.db.close(); rmSync(home, { recursive: true, force: true }); });
   store.put('projects', { id: 'project', isDemo: false });
   for (const id of ['channel', 'other']) store.put('channels', { id, projectId: 'project', runtime: 'codex' });

@@ -28,7 +28,7 @@ describe('native App conversation', () => {
     vi.mocked(props.api.getNativeConversation).mockResolvedValueOnce(unbound).mockResolvedValue(conversation({status:unbound.status}));
     render(<NativeConversationView channelId="channel-system" api={props.api}/>,{wrapper:TestProviders});
     await userEvent.setup().click(await screen.findByRole('button',{name:'新建原生对话'}));
-    const input=await screen.findByRole('textbox',{name:'发送到 Codex App 原生对话'});fireEvent.change(input,{target:{value:'直接在 NoHuman 继续'}});fireEvent.keyDown(input,{key:'Enter',metaKey:true});
+    const input=await screen.findByRole('textbox',{name:'发送到 Codex App 原生对话'});fireEvent.change(input,{target:{value:'直接在 Morrow 继续'}});fireEvent.keyDown(input,{key:'Enter',metaKey:true});
     await waitFor(()=>expect(api.sendNativeMessage).toHaveBeenCalled());expect(api.openNativeApp).not.toHaveBeenCalled();expect(api.sendMessage).not.toHaveBeenCalled();
   });
   it('offers one-time background setup and keeps the current task in place',async()=>{
@@ -360,7 +360,7 @@ describe('native App conversation', () => {
   });
   it('keeps confirmed work context and next-step protocol out of the normal conversation prose',async()=>{
     const schedule={...message('scheduled','full context from project','user'),autonomousContext:true};
-    const reply=message('reply','已验证登录错误提示。\n```nohuman-next\n{"state":"continue"}\n```');
+    const reply=message('reply','已验证登录错误提示。\n```morrow-next\n{"state":"continue"}\n```');
     const {props}=setup(conversation({items:[schedule,reply]}));
     render(<NativeConversationView channelId="channel-system" api={props.api} autonomous compact/>,{wrapper:TestProviders});
     await screen.findByText('已验证登录错误提示。');expect(screen.queryByText('full context from project')).toBeNull();expect(screen.queryByText('{"state":"continue"}')).toBeNull();

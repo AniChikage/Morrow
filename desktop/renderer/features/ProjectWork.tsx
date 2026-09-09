@@ -47,12 +47,23 @@ const adjustmentLabels={continue:'继续当前方向',observe:'继续观察',mea
 function ExpectationReview({row,data}:{row:DecisionView;data:ProjectLoop}){
   const assessment=row.review?.assessment;
   if(!row.expectations?.length)return null;
-  return <details className="work-record"><summary>预期与实际 <span className="subtle">{row.expectations.length} 项</span></summary><div className="work-record-body">
-    {row.expectations.map(expected=>{const result=assessment?.results.find(r=>r.expectationId===expected.id);return <div className="strategy-option" key={expected.id}>
+  const needsRepair=row.observations?.some(o=>o.status==='needs_repair');
+  return <details className="work-record"><summary>预期与实际 <span className="subtle">{row.expectations.length} 项{needsRepair?' · 观测待修复':''}</span></summary><div className="work-record-body">
+    {row.expectations.map(expected=>{const result=assessment?.results.find(r=>r.expectationId===expected.id),plan=expected.measurement,observation=result?.observation||row.observations?.find(o=>o.expectationId===expected.id);return <div className="strategy-option" key={expected.id}>
       <strong>{expected.kind==='guardrail'?'不能牺牲的条件':'希望取得的结果'} · {expected.claim}</strong>
       <p>{result?verdictLabels[result.verdict]:'等待核对'}{result?` · ${result.checkedBy==='rule'?'规则核对':'Codex 根据证据解读'}`:''}</p>
       <p><b>适用条件：</b>{expected.scope}</p><p><b>验证办法：</b>{expected.verification}</p>
-      {expected.rule&&<p><b>预先约定：</b>{expected.rule.pointer||'整个值'} {expected.rule.operator==='gte'?'≥':expected.rule.operator==='lte'?'≤':'='} {String(expected.rule.expected)}{result?.observedValue!==undefined?` · 采集值：${result.observedValue===null?'字段缺失或类型不符':String(result.observedValue)}`:''}</p>}
+      {expected.rule&&<p><b>预先约定：</b>{plan?.comparison==='delta'?'相对原基线的差值 · ':''}{expected.rule.pointer||'整个值'} {expected.rule.operator==='gte'?'≥':expected.rule.operator==='lte'?'≤':'='} {String(expected.rule.expected)}{result?.observedValue!==undefined?` · 采集值：${result.observedValue===null?'字段缺失或类型不符':String(result.observedValue)}`:''}</p>}
+      {plan&&<div className="measurement-detail">
+        <p><b>观测指标：</b>{plan.metric}</p><p><b>与目标的关系：</b>{plan.goalRelation}</p>
+        <p><b>原基线：</b>{'unavailable' in plan.baseline?`尚未取得 · ${plan.baseline.unavailable}`:observation?.baselineValue==null?'待核对原始记录':String(observation.baselineValue)}{observation?.observedValue!=null?` · 最新值：${String(observation.observedValue)}`:''}{plan.comparison==='delta'&&observation?.comparedValue!=null?` · 差值：${String(observation.comparedValue)}`:''}</p>
+        <p><b>数据核对：</b>{observation?.status==='ready'?'已满足原观测条件':observation?.status==='needs_repair'?'需要修复观测':'等待有效观测'}{observation?.status==='ready'?` · ${verdictLabels[observation.verdict]}`:''}</p>
+        {observation?.issues.map(issue=><p className="subtle" key={issue}>{issue}</p>)}
+        <p className="subtle">数据时间最多落后 {plan.freshness.maxAgeSeconds} 秒；{plan.checks.map(c=>c.label).join('、')}。</p>
+        {!!observation?.checks.length&&<ul>{observation.checks.map((c,i)=><li key={i}>{c.label}：{c.status==='passed'?'符合约定':c.status==='failed'?'不符合约定':'缺少有效字段'}{c.observedValue!=null?` · ${String(c.observedValue)}`:''}</li>)}</ul>}
+        <p className="subtle">判断边界：{plan.limitation}</p>
+        <EvidenceReferences ids={[...new Set([...('evidenceId' in plan.baseline?[plan.baseline.evidenceId]:[]),...(observation?.evidenceId?[observation.evidenceId]:[])])]} data={data}/>
+      </div>}
       <p><b>反证条件：</b>{expected.disconfirm}</p><p className="subtle">观察窗口：{formatDate(expected.notBefore)} — {formatDate(expected.deadline)}</p>
       <p className="work-source">约定来源：{expected.source.kind==='file'?expected.source.path:expected.source.kind==='execution'?expected.source.command:expected.source.url}</p>
       {result&&<><Markdown>{result.reason}</Markdown><EvidenceReferences ids={result.evidenceIds} data={data}/></>}
@@ -84,9 +95,9 @@ function DecisionRecord({row,data,onChannel}:{row:DecisionView;data:ProjectLoop;
 export function ProjectThinking({api,projectId,onNavigate}:Pick<FeatureProps,'api'|'onNavigate'>&{projectId:string}){
   const {data,error}=useProjectWork(api,projectId);
   if(error)return <div className="feature-scroll"><p role="alert" className="form-error">{error}</p></div>;
-  if(!api.getProjectWork)return <EmptyState title="当前连接暂不支持项目判断" description="连接新版 NoHuman 服务后可查看。"/>;
+  if(!api.getProjectWork)return <EmptyState title="当前连接暂不支持项目判断" description="连接新版 Morrow 服务后可查看。"/>;
   if(!data)return <p className="subtle">正在读取项目判断…</p>;
-  if(!data.strategy)return <EmptyState title="当前服务尚未支持项目判断" description="更新所连接的 NoHuman 执行服务后，可查看项目认识与行动复盘。"/>;
+  if(!data.strategy)return <EmptyState title="当前服务尚未支持项目判断" description="更新所连接的 Morrow 执行服务后，可查看项目认识与行动复盘。"/>;
   const strategy=data.strategy,active=strategy?.decisions.filter(r=>r.status==='active')||[],history=strategy?.decisions.filter(r=>r.status==='reviewed')||[];
   return <div className="feature-scroll"><article className="finding-document strategy-document"><h1>当前判断</h1><p className="subtle">Codex 对项目的认识、为什么选择下一步，以及反馈如何改变判断。</p>
     {!active.length&&<section className="finding-section"><h2>{history.length?'已保存的下一步':data.verifications?.length?'已有复核反馈':'等待形成下一步判断'}</h2><p className="subtle">{history.at(-1)?.review?.nextDirection||(data.verifications?.length?'复核记录已保存，原频道可据此继续修正或核验。':'开始工作后，Codex 会理解项目现状，再记录值得推进的方向。这里仅展示已保存的真实判断。')}</p></section>}

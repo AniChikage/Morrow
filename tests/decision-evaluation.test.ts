@@ -7,14 +7,14 @@ import { randomUUID } from 'node:crypto';
 import { createServer } from 'node:http';
 import { startServer } from '../service/server.ts';
 import { FakeReviewer } from './fake-reviewer.ts';
-process.env.NOHUMAN_TEST_MODE='1';
+process.env.MORROW_TEST_MODE='1';
 const future=()=>new Date(Date.now()+3600000).toISOString();
 async function fixture(){
   const root=mkdtempSync(join(tmpdir(),'nh-evaluation-')),home=join(root,'home'),path=join(root,'project');mkdirSync(path);
   const s=await startServer({home,port:0}),token=readFileSync(join(home,'token'),'utf8');
   const request=async(method:string,route:string,input:unknown,auth=token,status=200)=>{const res=await fetch(`http://127.0.0.1:${s.port}${route}`,{method,headers:{Authorization:`Bearer ${auth}`,'Content-Type':'application/json'},body:JSON.stringify(input)});const data=await res.json();assert.equal(res.status,status,JSON.stringify(data));return data;};
   const project=await request('POST','/api/projects',{name:'反馈核对隔离夹具',path,goal:'提高交付完成率，同时保持交付内容完整'},token,201),channel=s.store.all<any>('channels')[0];
-  const run={id:randomUUID(),projectId:project.id,channelId:channel.id,runtime:'codex',status:'running',source:'nohuman-schedule',executionOwner:'codex-app',startedAt:new Date().toISOString(),finishedAt:'',summary:'',sessionId:'evaluation-fixture',workDirection:channel.goal};s.store.put('runs',run);s.engine.loop.prepare(run as any);
+  const run={id:randomUUID(),projectId:project.id,channelId:channel.id,runtime:'codex',status:'running',source:'morrow-schedule',executionOwner:'codex-app',startedAt:new Date().toISOString(),finishedAt:'',summary:'',sessionId:'evaluation-fixture',workDirection:channel.goal};s.store.put('runs',run);s.engine.loop.prepare(run as any);
   const grant=JSON.parse(readFileSync(join(home,'runs',run.id,'agent-context.json'),'utf8'));
   const call=(operation:string,input:unknown={},status=200,requestId=randomUUID())=>request('POST','/api/agent',{operation,input,requestId},grant.token,status);
   const context=await call('context');
@@ -149,4 +149,112 @@ test('the same misleading success claim passes the legacy evidence-presence gate
     const old=await s.call('decision.review',{id:d.id,revision:1,outcome:'improved',conclusion:'完成率达到目标，所以成功',evidenceIds:[e.id],nextDirection:'扩大投入'});
     assert.equal(old.review.outcome,'improved');assert.equal(old.review.assessment,undefined);
   }finally{await s.cleanup();}
+});
+
+function measured(s:Awaited<ReturnType<typeof fixture>>,baseline:{evidenceId:string}|{unavailable:string}){
+  return {...s.expectation,rule:{pointer:'/completion',operator:'gte',expected:0.25},measurement:{metric:'完成交付的用户数 / 全部开始交付的用户数；比例 0..1',goalRelation:'观察真实交付成功是否提高',limitation:'隔离采集样本；未证明真实用户收益或因果关系',comparison:'delta',baseline,freshness:{pointer:'/generatedAt',maxAgeSeconds:300},checks:[{label:'足够样本',pointer:'/sampleSize',operator:'gte',expected:100},{label:'采集完整',pointer:'/complete',operator:'equals',expected:true},{label:'相同人群与口径',pointer:'/population',operator:'equals',expected:'all-started-v1'}]}};
+}
+const sample=(extra:Record<string,unknown>={})=>({completion:0.5,sampleSize:100,complete:true,population:'all-started-v1',generatedAt:new Date().toISOString(),...extra});
+function measuredAssessment(s:Awaited<ReturnType<typeof fixture>>,evidenceId:string,verdict='met'){
+  return {...s.assessment(evidenceId),results:[{expectationId:'completion',verdict,reason:'仅按原始观测条件核对',evidenceIds:[evidenceId]}]};
+}
+test('measurement loop rejects attractive numbers with insufficient samples, then applies an independently reviewed baseline comparison and preserves it on restart',async()=>{
+  const s=await fixture();let reopened:Awaited<ReturnType<typeof startServer>>|undefined;
+  try{
+    const baseline=await s.capture(sample()),expectation=measured(s,{evidenceId:baseline.id});
+    const d=await s.call('decision.choose',{...s.input,expectations:[expectation]});
+    assert.equal(d.observations[0].baselineValue,0.5);assert.equal(d.observations[0].status,'waiting');
+    const bad=await s.capture(sample({completion:1,sampleSize:2}));
+    const gaps=await s.call('observation.read',{decisionId:d.id});assert.equal(gaps.observations[0].verdict,'unknown');assert.match(gaps.observations[0].issues.join(' '),/足够样本/);
+    await s.review(d,measuredAssessment(s,bad.id),'improved',400);
+    await s.call('verification.request',{decisionId:d.id,evidenceIds:[bad.id]},409);assert.equal(s.store.all('loop_verifications').length,0);
+    const good=await s.capture(sample({completion:0.875}));
+    const ready=(await s.call('context')).strategy.decisions.find((r:any)=>r.id===d.id).observations[0];
+    assert.equal(ready.status,'ready');assert.equal(ready.baselineValue,0.5);assert.equal(ready.observedValue,0.875);assert.equal(ready.comparedValue,0.375);assert.equal(ready.verdict,'met');
+    const pending=await s.review(d,measuredAssessment(s,good.id));assert.equal(pending.pendingVerification,true);
+    const verification=s.store.get<any>('loop_verifications',pending.verificationId);assert(verification.evidenceIds.includes(baseline.id));assert(verification.prompt.includes('all-started-v1'));
+    const reviewer=new FakeReviewer();reviewer.autoComplete=true;s.engine.loop.verification.connect(reviewer,v=>v);await s.engine.loop.verification.start(pending.verificationId);
+    const final=s.store.get<any>('strategy_decisions',d.id);assert.equal(final.status,'reviewed');assert.equal(final.review.outcome,'improved');assert.deepEqual(final.expectations,d.expectations);assert.equal(final.review.assessment.results[0].observation.comparedValue,0.375);
+    assert.equal(s.store.all<any>('loop_finalizations').find(r=>r.targetId===d.id).status,'applied');
+    const read=await s.call('observation.read',{decisionId:d.id});assert.equal(read.checkedAt,final.review.createdAt);assert.equal(read.observations[0].verdict,'met');
+    s.store.put('runs',{...s.run,status:'completed'});await s.close();reopened=await startServer({home:s.home,port:0});
+    assert.deepEqual(reopened.store.get<any>('strategy_decisions',d.id),final);assert.equal(reopened.store.get<any>('loop_evidence',baseline.id).data,baseline.data);assert.equal(reopened.engine.control(s.channel.id).enabled,false);
+  }finally{await reopened?.close();await s.cleanup();}
+});
+test('cached, future-dated, incomplete, shifted-population and mistyped data stay unknown even when the headline value passes',async()=>{
+  const s=await fixture();try{
+    const baseline=await s.capture(sample()),d=await s.call('decision.choose',{...s.input,expectations:[measured(s,{evidenceId:baseline.id})]});
+    const failures=[{generatedAt:new Date(Date.now()-3600000).toISOString()},{generatedAt:new Date(Date.now()+3600000).toISOString()},{generatedAt:undefined},{complete:false},{population:'successful-users-only'},{sampleSize:'1000'},{completion:'0.99'}];
+    for(const values of failures){
+      const e=await s.capture(sample({completion:0.99,...values}));
+      const observed=(await s.call('observation.read',{decisionId:d.id})).observations[0];assert.equal(observed.status,'needs_repair',JSON.stringify(values));assert.equal(observed.verdict,'unknown');
+      await s.review(d,measuredAssessment(s,e.id),'improved',400);await s.call('verification.request',{decisionId:d.id,evidenceIds:[e.id]},409);
+    }
+    const healthyButNoEffect=await s.capture(sample({completion:0.625})),obs=(await s.call('observation.read',{decisionId:d.id})).observations[0];
+    assert.equal(obs.status,'ready');assert.equal(obs.verdict,'not_met');assert.equal(obs.comparedValue,0.125);
+    const final=await s.review(d,{...measuredAssessment(s,healthyButNoEffect.id,'not_met'),diagnosis:'uncertain',adjustment:'method'},'not_improved');assert.equal(final.review.assessment.results[0].observation.comparedValue,0.125);assert.equal(s.store.all('loop_verifications').length,0);
+  }finally{await s.cleanup();}
+});
+test('missing baseline remains an actionable capability gap, cannot be backfilled into an old choice, and a new choice can use the collected baseline',async()=>{
+  const s=await fixture();try{
+    const expectation=measured(s,{unavailable:'尚未建立完整的交付采集链路'});
+    const d=await s.call('decision.choose',{...s.input,options:[{...s.input.options[0],kind:'build_capability'}],expectations:[expectation]});
+    assert.match(d.observations[0].issues.join(' '),/采集链路/);
+    const baseline=await s.capture(sample());await s.review(d,measuredAssessment(s,baseline.id),'improved',400);
+    const unknown=await s.review(d,{...measuredAssessment(s,baseline.id,'unknown'),diagnosis:'measurement',adjustment:'measurement'},'inconclusive');
+    assert.deepEqual(unknown.expectations[0].measurement.baseline,expectation.measurement.baseline);
+    const next=await s.call('decision.choose',{...s.input,expectations:[measured(s,{evidenceId:baseline.id})]});
+    const after=await s.capture(sample({completion:0.75}));const observed=(await s.call('observation.read',{decisionId:next.id})).observations[0];assert.equal(observed.verdict,'met');assert.equal(observed.baselineEvidenceId,baseline.id);assert.equal(observed.evidenceId,after.id);
+    await s.call('observation.read',{decisionId:'another-project-decision'},404);
+  }finally{await s.cleanup();}
+});
+test('baseline and quality contracts reject substituted sources, selective history and invalid configuration',async()=>{
+  const s=await fixture();try{
+    const choose=(expectation:any,status:number)=>s.call('decision.choose',{...s.input,expectations:[expectation]},status);
+    const older=await s.capture(sample()),latest=await s.capture(sample({completion:0.8}));
+    await choose(measured(s,{evidenceId:older.id}),409);
+    const wrong=await s.capture(sample(),'other.json');await choose(measured(s,{evidenceId:wrong.id}),400);
+    const agent=await s.call('evidence.record',{summary:'自写基线',source:join(s.path,'result.json'),observedAt:new Date().toISOString(),data:sample()});await choose(measured(s,{evidenceId:agent.id}),400);
+    await choose(measured(s,{evidenceId:'foreign'}),404);
+    const e=measured(s,{evidenceId:latest.id});
+    await choose({...e,measurement:{...e.measurement,checks:[]}},400);
+    await choose({...e,measurement:{...e.measurement,checks:[{label:'非法路径',pointer:'/bad~2',operator:'equals',expected:true}]}},400);
+    await choose({...e,measurement:{...e.measurement,freshness:{pointer:'/generatedAt',maxAgeSeconds:0}}},400);
+    await choose({...e,rule:{pointer:'/completion',operator:'equals',expected:'ok'}},400);
+    const invalid=await s.capture(sample({sampleSize:2}));const d=await choose(measured(s,{evidenceId:invalid.id}),200);await s.capture(sample({completion:1}));
+    const gaps=(await s.call('observation.read',{decisionId:d.id})).observations[0];assert.equal(gaps.verdict,'unknown');assert.match(gaps.issues.join(' '),/原基线/);
+  }finally{await s.cleanup();}
+});
+test('HTTP quality changes wake linked work, identical bad samples stay quiet, and a recovered source replaces cached success',async()=>{
+  const s=await fixture();let data=sample(),failure=false;const server=createServer((_req,res)=>{res.statusCode=failure?503:200;res.setHeader('Content-Type','application/json');res.end(JSON.stringify(data));});
+  await new Promise<void>(r=>server.listen(0,'127.0.0.1',r));try{
+    const watch=await s.call('watch.create',{title:'观测质量验收',url:`http://127.0.0.1:${(server.address() as any).port}/metrics`,pointer:'/completion',condition:'changed',intervalSeconds:30,deadline:future()});
+    await s.engine.loop.poll(watch.id);const baseline=s.store.get<any>('loop_watches',watch.id).lastEvidenceId;
+    const d=await s.call('decision.choose',{...s.input,expectations:[{...measured(s,{evidenceId:baseline}),source:{kind:'watch',watchId:watch.id}}]});
+    data=sample({completion:0.875,sampleSize:2});await s.engine.loop.poll(watch.id);
+    const bad=s.store.get<any>('loop_watches',watch.id).lastEvidenceId,count=s.store.all('loop_evidence').length,signals=s.store.all('strategy_signals').length;
+    data={...data,generatedAt:new Date().toISOString()};await s.engine.loop.poll(watch.id);assert.equal(s.store.all('loop_evidence').length,count);assert.equal(s.store.all('strategy_signals').length,signals);
+    data=sample({completion:0.875});await s.engine.loop.poll(watch.id);const good=s.store.get<any>('loop_watches',watch.id).lastEvidenceId;assert.notEqual(bad,good);
+    assert.equal((await s.call('observation.read',{decisionId:d.id})).observations[0].verdict,'met');
+    failure=true;await s.engine.loop.poll(watch.id);assert.match((await s.call('observation.read',{decisionId:d.id})).observations[0].issues.join(' '),/来源不可用/);
+    await s.review(d,measuredAssessment(s,good),'improved',400);await s.call('verification.request',{decisionId:d.id,evidenceIds:[good]},409);
+    const faultSignals=s.store.all('strategy_signals').length;await s.engine.loop.poll(watch.id);assert.equal(s.store.all('strategy_signals').length,faultSignals);
+    failure=false;await s.engine.loop.poll(watch.id);const recovered=s.store.get<any>('loop_watches',watch.id);assert.equal(recovered.error,undefined);assert.notEqual(recovered.lastEvidenceId,good);
+    assert.equal((await s.call('observation.read',{decisionId:d.id})).observations[0].verdict,'met');assert(s.store.all('strategy_signals').length>faultSignals);assert.equal(s.engine.control(s.channel.id).enabled,false);
+  }finally{await new Promise<void>(r=>server.close(()=>r()));await s.cleanup();}
+});
+test('HTTP metrics that stop updating become unknown once, and a fresh sample restores readiness without a polling storm',async t=>{
+  const s=await fixture();t.mock.timers.enable({apis:['Date'],now:Date.now()});let data=sample();
+  const server=createServer((_req,res)=>{res.setHeader('Content-Type','application/json');res.end(JSON.stringify(data));});await new Promise<void>(r=>server.listen(0,'127.0.0.1',r));
+  try{
+    const watch=await s.call('watch.create',{title:'采集停滞验收',url:`http://127.0.0.1:${(server.address() as any).port}/metrics`,pointer:'/completion',condition:'changed',intervalSeconds:30,deadline:future()});
+    await s.engine.loop.poll(watch.id);const baseline=s.store.get<any>('loop_watches',watch.id).lastEvidenceId;
+    const d=await s.call('decision.choose',{...s.input,expectations:[{...measured(s,{evidenceId:baseline}),source:{kind:'watch',watchId:watch.id}}]});
+    data=sample({completion:0.875});await s.engine.loop.poll(watch.id);assert.equal((await s.call('observation.read',{decisionId:d.id})).observations[0].verdict,'met');
+    t.mock.timers.tick(301000);const count=s.store.all('loop_evidence').length;await s.engine.loop.poll(watch.id);assert.equal(s.store.all('loop_evidence').length,count+1);
+    assert.equal((await s.call('observation.read',{decisionId:d.id})).observations[0].verdict,'unknown');
+    await s.engine.loop.poll(watch.id);assert.equal(s.store.all('loop_evidence').length,count+1);
+    data=sample({completion:0.875});await s.engine.loop.poll(watch.id);assert.equal(s.store.all('loop_evidence').length,count+2);assert.equal((await s.call('observation.read',{decisionId:d.id})).observations[0].verdict,'met');
+    await s.engine.loop.poll(watch.id);assert.equal(s.store.all('loop_evidence').length,count+2);
+  }finally{t.mock.timers.reset();await new Promise<void>(r=>server.close(()=>r()));await s.cleanup();}
 });

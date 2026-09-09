@@ -15,4 +15,4 @@ try {
   const response=await fetch(context.url,{method:'POST',headers:{'Content-Type':'application/json',Authorization:`Bearer ${context.token}`},body:JSON.stringify({operation,input,...(requestId?{requestId}:{})}),signal:AbortSignal.timeout(30000)});
   const result=await response.json();if(!response.ok)throw new Error(result.error||`HTTP ${response.status}`);
   process.stdout.write(JSON.stringify(result,null,2)+'\n');
-}catch(error){process.stderr.write((error instanceof Error?error.message:'NoHuman 工具调用失败')+'\n');process.exitCode=1;}
+}catch(error){process.stderr.write((error instanceof Error?error.message:'Morrow 工具调用失败')+'\n');process.exitCode=1;}

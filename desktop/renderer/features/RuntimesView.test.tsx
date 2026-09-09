@@ -89,7 +89,7 @@ test('an empty snapshot remains an empty detection state without invented runtim
 
 test('host overview uses the real connection label and does not infer remote availability from CLI detection', () => {
   const { props } = runtimeProps();
-  render(<RuntimesView {...props} connection={{ name: '远程 · dev-box', connected: false, config: { mode: 'ssh', host: 'dev-box', port: 43821, directory: '~/.local/share/nohuman' } }} />);
+  render(<RuntimesView {...props} connection={{ name: '远程 · dev-box', connected: false, config: { mode: 'ssh', host: 'dev-box', port: 43821, directory: '~/.local/share/morrow' } }} />);
   expect(screen.getByRole('heading', { name: '远程 · dev-box' })).toBeTruthy();
   expect(screen.getByText('未连接')).toBeTruthy();
   expect(screen.getByText('1 个运行时 · 1 个已检测到')).toBeTruthy();

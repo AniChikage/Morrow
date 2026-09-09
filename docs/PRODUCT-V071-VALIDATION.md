@@ -37,14 +37,14 @@
 
 自动召回和实际引用在这次隔离运行中得到验证；这不构成“如果没有召回就一定会失败”的因果实验。最终补充的上下文排序和 12 条短摘要限制在服务测试中验证，未将运行中的原生任务重启以替换上下文实现。
 
-原始记录、决策、完整原生测试输出和产物保存在 `/tmp/nohuman-v071-acceptance`；独立重跑结果为 `independent-final-tests.tap`，清理状态为 `cleanup.json`。脚本为 `/tmp/nohuman-memory-live.ts`。没有运行用户项目或发送外部消息。
+原始记录、决策、完整原生测试输出和产物保存在 `/tmp/morrow-v071-acceptance`；独立重跑结果为 `independent-final-tests.tap`，清理状态为 `cleanup.json`。脚本为 `/tmp/morrow-memory-live.ts`。没有运行用户项目或发送外部消息。
 
 ## 原生界面与安装
 
-CUA 已检查项目「当前判断」→「此前尝试与复盘」→「这次参考了哪些经验」：显示避免重犯的理由、当时版本、被推翻状态和文件证据，保留灰白紧凑布局。截图：`/tmp/nohuman-v071-memory-ui.png`。
+CUA 已检查项目「当前判断」→「此前尝试与复盘」→「这次参考了哪些经验」：显示避免重犯的理由、当时版本、被推翻状态和文件证据，保留灰白紧凑布局。截图：`/tmp/morrow-v071-memory-ui.png`。
 
-已安装 `/Users/bytedance/Applications/NoHuman.app`，版本 0.7.1。安装前备份 SQLite，确认用户频道均未启用且没有 NoHuman 调度执行，仅重启 NoHuman 应用及服务；共享 Codex 后台和原生任务未中断。安装后通过 CUA 确认原项目与频道恢复。
+已安装 `/Users/bytedance/Applications/Morrow.app`，版本 0.7.1。安装前备份 SQLite，确认用户频道均未启用且没有 Morrow 调度执行，仅重启 Morrow 应用及服务；共享 Codex 后台和原生任务未中断。安装后通过 CUA 确认原项目与频道恢复。
 
 检查保留 3 个项目、7 个频道、原生任务绑定、目标、权限、预算和暂停状态；启用频道仍为 0。`quick_check=ok`，安装服务与渲染器哈希匹配最终构建，原生连接 `connected=true`、`backgroundReady=true`。
 
-安装检查：`/tmp/nohuman-v071-install-checks.json`。数据库备份：`/tmp/nohuman-before-v071.sqlite`；安装脚本另保留旧 App。
+安装检查：`/tmp/morrow-v071-install-checks.json`。数据库备份：`/tmp/morrow-before-v071.sqlite`；安装脚本另保留旧 App。

@@ -10,15 +10,15 @@ struct SidebarView: View {
         VStack(alignment: .leading, spacing: 0) {
             Color.clear.frame(height: 46)
             HStack(spacing: 9) {
-                Text("N").font(.system(size: 11, weight: .semibold)).foregroundStyle(Color.nhSecondary).frame(width: 18)
-                Text("NoHuman").font(.system(size: 14, weight: .semibold))
+                Text("M").font(.system(size: 11, weight: .semibold)).foregroundStyle(Color.morrowSecondary).frame(width: 18)
+                Text("Morrow").font(.system(size: 14, weight: .semibold))
                 Spacer()
                 Menu {
                     ForEach(store.snapshot.projects) { project in Button(project.name) { store.selectProject(project) } }
                     Divider()
                     Button("新建项目", action: newProject)
                 } label: {
-                    Image(systemName: "chevron.down").font(.system(size: 10)).foregroundStyle(Color.nhSecondary).frame(width: 20, height: 28)
+                    Image(systemName: "chevron.down").font(.system(size: 10)).foregroundStyle(Color.morrowSecondary).frame(width: 20, height: 28)
                 }.menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize().accessibilityLabel("切换项目")
             }.padding(.horizontal, 16).frame(height: 38)
             VStack(spacing: 1) {
@@ -27,8 +27,8 @@ struct SidebarView: View {
                         Image(systemName: "magnifyingglass").font(.system(size: 14)).frame(width: 18)
                         Text("搜索…")
                         Spacer()
-                        Text("⌘ K").font(.system(size: 11)).foregroundStyle(Color.nhSecondary.opacity(0.65))
-                    }.font(.system(size: 13)).foregroundStyle(Color.nhSecondary).padding(.horizontal, 12).frame(height: 32).contentShape(Rectangle())
+                        Text("⌘ K").font(.system(size: 11)).foregroundStyle(Color.morrowSecondary.opacity(0.65))
+                    }.font(.system(size: 13)).foregroundStyle(Color.morrowSecondary).padding(.horizontal, 12).frame(height: 32).contentShape(Rectangle())
                 }.buttonStyle(.plain)
                 navRow("新建频道", symbol: "square.and.pencil", selected: false) { if store.selectedProject == nil { newProject() } else { newChannel() } }
             }.padding(.horizontal, 8).padding(.top, 6)
@@ -50,10 +50,10 @@ struct SidebarView: View {
                                     Image(systemName: "number").font(.system(size: 14)).frame(width: 18)
                                     Text(channel.name).font(.system(size: 13)).lineLimit(1)
                                     Spacer(minLength: 3)
-                                    if channel.status == "running" { Circle().fill(Color.nhAccent).frame(width: 5, height: 5) }
-                                    else if channel.status == "blocked" { Circle().fill(Color.nhOrange).frame(width: 5, height: 5) }
+                                    if channel.status == "running" { Circle().fill(Color.morrowAccent).frame(width: 5, height: 5) }
+                                    else if channel.status == "blocked" { Circle().fill(Color.morrowOrange).frame(width: 5, height: 5) }
                                 }
-                                .foregroundStyle(channel.id == store.selectedChannelID ? Color.nhInk : Color.nhSecondary)
+                                .foregroundStyle(channel.id == store.selectedChannelID ? Color.morrowInk : Color.morrowSecondary)
                                 .padding(.horizontal, 12).frame(height: 32)
                                 .background(channel.id == store.selectedChannelID && store.selection == "channel" ? Color.black.opacity(0.045) : .clear, in: RoundedRectangle(cornerRadius: 6))
                                 .contentShape(Rectangle())
@@ -67,20 +67,20 @@ struct SidebarView: View {
                             Image(systemName: "gearshape").font(.system(size: 14)).frame(width: 18)
                             Text("设置").font(.system(size: 13))
                             Spacer()
-                        }.foregroundStyle(Color.nhSecondary).padding(.horizontal, 12).frame(height: 32).contentShape(Rectangle())
+                        }.foregroundStyle(Color.morrowSecondary).padding(.horizontal, 12).frame(height: 32).contentShape(Rectangle())
                     }.buttonStyle(.plain)
                 }.padding(.horizontal, 8)
             }.scrollIndicators(.hidden)
             HStack(spacing: 7) {
-                Circle().fill(store.isConnected ? Color.nhGreen : Color.nhOrange).frame(width: 5, height: 5)
+                Circle().fill(store.isConnected ? Color.morrowGreen : Color.morrowOrange).frame(width: 5, height: 5)
                 Text(store.isConnected ? store.connectionName : "服务未连接").font(.system(size: 12))
                 Spacer()
                 SmallIconButton(symbol: "arrow.clockwise", help: "重新连接执行服务") { Task { await store.reconnect() } }
-            }.foregroundStyle(Color.nhSecondary).padding(.leading, 19).padding(.trailing, 11).frame(height: 44)
-        }.frame(maxHeight: .infinity).background(Color.nhSidebar)
+            }.foregroundStyle(Color.morrowSecondary).padding(.leading, 19).padding(.trailing, 11).frame(height: 44)
+        }.frame(maxHeight: .infinity).background(Color.morrowSidebar)
     }
     private func heading(_ value: String) -> some View {
-        Text(value).font(.system(size: 12, weight: .medium)).foregroundStyle(Color.nhSecondary).padding(.leading, 8).frame(height: 28)
+        Text(value).font(.system(size: 12, weight: .medium)).foregroundStyle(Color.morrowSecondary).padding(.leading, 8).frame(height: 28)
     }
     private func navRow(_ title: String, symbol: String, selected: Bool, action: @escaping () -> Void) -> some View {
         Button(action: action) {
@@ -88,7 +88,7 @@ struct SidebarView: View {
                 Image(systemName: symbol).font(.system(size: 14)).frame(width: 18)
                 Text(title).font(.system(size: 13, weight: selected ? .medium : .regular)).lineLimit(1)
                 Spacer(minLength: 4)
-            }.foregroundStyle(selected ? Color.nhInk : Color.nhSecondary).padding(.horizontal, 12).frame(height: 32)
+            }.foregroundStyle(selected ? Color.morrowInk : Color.morrowSecondary).padding(.horizontal, 12).frame(height: 32)
                 .background(selected ? Color.black.opacity(0.045) : .clear, in: RoundedRectangle(cornerRadius: 6))
                 .contentShape(Rectangle())
         }.buttonStyle(.plain)

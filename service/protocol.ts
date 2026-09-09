@@ -63,7 +63,7 @@ export type Run = {
   executionOwner?: "cli" | "codex-app";
   nativeTurnId?: string;
   nativeItemRevisions?: Record<string,number>;
-  source?: "nohuman-schedule" | "nohuman-chat" | "native-app";
+  source?: "morrow-schedule" | "morrow-chat" | "nohuman-schedule" | "nohuman-chat" | "native-app";
   trigger: "manual" | "schedule";
   resumedFromSessionId: string;
   reportStatus: "pending" | "valid" | "missing" | "invalid" | "conflict";

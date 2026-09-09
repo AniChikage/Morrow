@@ -6,6 +6,7 @@ import {
   readFileSync,
   writeFileSync,
   chmodSync,
+  existsSync,
   realpathSync,
   statSync,
   unlinkSync,
@@ -91,13 +92,13 @@ async function body(req: IncomingMessage) {
 export async function startServer(
   options: { home?: string; port?: number; nativeTransport?: NativeTransport } = {},
 ) {
-  const home =
-    options.home ||
-    process.env.NOHUMAN_HOME ||
-    join(homedir(), "Library/Application Support/NoHuman");
-  const port = options.port ?? Number(process.env.NOHUMAN_PORT || 43821);
+  const currentHome = join(homedir(), "Library/Application Support/Morrow");
+  const legacyHome = join(homedir(), "Library/Application Support/NoHuman");
+  const home = options.home || process.env.MORROW_HOME || process.env.NOHUMAN_HOME ||
+    (existsSync(currentHome) || !existsSync(legacyHome) ? currentHome : legacyHome);
+  const port = options.port ?? Number(process.env.MORROW_PORT || process.env.NOHUMAN_PORT || 43821);
   if (!Number.isInteger(port) || port < 0 || port > 65535)
-    throw new Error("NOHUMAN_PORT 无效");
+    throw new Error("MORROW_PORT 无效");
   mkdirSync(home, { recursive: true, mode: 0o700 });
   chmodSync(home, 0o700);
   const lockPath = join(home, "daemon.lock");
@@ -164,7 +165,7 @@ export async function startServer(
       const url = new URL(req.url || "/", `http://127.0.0.1:${port}`);
       const path = url.pathname;
       if (req.method === "GET" && path === "/health") {
-        respond(res, 200, { ok: true, service: "nohuman" });
+        respond(res, 200, { ok: true, service: "morrow" });
         return;
       }
       if (!path.startsWith("/api/")) throw new APIError(404, "接口不存在");
@@ -638,7 +639,7 @@ if (
 ) {
   startServer()
     .then((service) => {
-      console.log(`NoHuman listening on http://127.0.0.1:${service.port}`);
+      console.log(`Morrow listening on http://127.0.0.1:${service.port}`);
       let closing = false;
       for (const signal of ["SIGINT", "SIGTERM"] as const)
         process.on(signal, () => {
@@ -648,7 +649,7 @@ if (
         });
     })
     .catch((e) => {
-      console.error(`NoHuman: ${e instanceof Error ? e.message : "启动失败"}`);
+      console.error(`Morrow: ${e instanceof Error ? e.message : "启动失败"}`);
       process.exit(1);
     });
 }

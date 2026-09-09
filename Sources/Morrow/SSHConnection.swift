@@ -24,7 +24,7 @@ final class SSHConnection {
         let tokenPath = directory.hasPrefix("~/") ? "\"$HOME\"/" + quote(String(directory.dropFirst(2)) + "/token") : quote(directory + "/token")
         let token = try await Self.captureSSH(host: host, command: "head -c 129 -- " + tokenPath)
         guard token.range(of: "^[a-f0-9]{64}$", options: .regularExpression) != nil else {
-            throw ServiceError.message("远程令牌格式无效。请确认远程 NoHuman 服务已启动、数据目录正确。")
+            throw ServiceError.message("远程令牌格式无效。请确认远程 Morrow 服务已启动、数据目录正确。")
         }
         stop()
         try await Task.sleep(for: .milliseconds(200))

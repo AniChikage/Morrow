@@ -2,9 +2,9 @@
 import PackageDescription
 
 let package = Package(
-    name: "NoHuman",
+    name: "Morrow",
     platforms: [.macOS(.v14)],
-    products: [.executable(name: "NoHuman", targets: ["NoHuman"])],
-    targets: [.executableTarget(name: "NoHuman", path: "Sources/NoHuman")],
+    products: [.executable(name: "Morrow", targets: ["Morrow"])],
+    targets: [.executableTarget(name: "Morrow", path: "Sources/Morrow")],
     swiftLanguageModes: [.v5]
 )

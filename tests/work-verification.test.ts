@@ -8,14 +8,14 @@ import { startServer } from '../service/server.ts';
 import { sourceVersion } from '../service/source-version.ts';
 import { executionCommand } from '../service/execution-evidence.ts';
 import { FakeReviewer } from './fake-reviewer.ts';
-process.env.NOHUMAN_TEST_MODE='1';
+process.env.MORROW_TEST_MODE='1';
 const future=()=>new Date(Date.now()+3600000).toISOString();
 async function fixture(){
   const root=mkdtempSync(join(tmpdir(),'nh-v09-')),path=join(root,'project'),home=join(root,'home');mkdirSync(path);writeFileSync(join(path,'source.js'),'export const value=1;\n');
   const native=new FakeReviewer(),s=await startServer({home,port:0,nativeTransport:native}),token=readFileSync(join(home,'token'),'utf8');
   const request=async(route:string,input:unknown,auth=token,status=200)=>{const r=await fetch(`http://127.0.0.1:${s.port}${route}`,{method:'POST',headers:{Authorization:`Bearer ${auth}`,'Content-Type':'application/json'},body:JSON.stringify(input)});const data=await r.json();assert.equal(r.status,status,JSON.stringify(data));return data;};
   const project=await request('/api/projects',{name:'独立复核夹具',path,goal:'保留完整结果且可复现'},token,201),channel=s.store.all<any>('channels')[0];
-  const run={id:randomUUID(),projectId:project.id,channelId:channel.id,runtime:'codex',status:'running',source:'nohuman-schedule',executionOwner:'codex-app',startedAt:new Date().toISOString(),finishedAt:'',summary:'',sessionId:'implementer-thread',nativeTurnId:'implementer-turn'};s.store.put('runs',run);s.engine.loop.prepare(run as any);
+  const run={id:randomUUID(),projectId:project.id,channelId:channel.id,runtime:'codex',status:'running',source:'morrow-schedule',executionOwner:'codex-app',startedAt:new Date().toISOString(),finishedAt:'',summary:'',sessionId:'implementer-thread',nativeTurnId:'implementer-turn'};s.store.put('runs',run);s.engine.loop.prepare(run as any);
   const grant=JSON.parse(readFileSync(join(home,'runs',run.id,'agent-context.json'),'utf8'));
   const call=(operation:string,input:unknown={},status=200,requestId=randomUUID())=>request('/api/agent',{operation,input,requestId},grant.token,status);
   const itemInput={title:'完整结果',summary:'修复并追踪返回值',kind:'feature',status:'investigating',evidenceIds:[],nextStep:'验证反例'};

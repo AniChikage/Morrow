@@ -7,7 +7,7 @@ import { createConnection, type Socket } from 'node:net';
 import { DatabaseSync } from 'node:sqlite';
 
 // This is the installed desktop's owner/follower IPC, not the app-server protocol.
-// NoHuman remains a follower: it never takes ownership or launches another Codex.
+// Morrow remains a follower: it never takes ownership or launches another Codex.
 export interface NativeThreadSummary { id: string; title: string; cwd: string; updatedAt: number; createdAt: number; archived: boolean; model: string | null; source: string }
 export interface NativeThreadSnapshot { threadId: string; ownerClientId: string; revision: number; syncedAt: string; state: Record<string, any> }
 export type NativeThreadChange = { type: 'snapshot'; revision: number; conversationState: Record<string, any> } | { type: 'patches'; baseRevision: number; revision: number; patches: Array<{ op: 'add' | 'replace' | 'remove'; path: Array<string | number>; value?: unknown }> };
@@ -111,7 +111,7 @@ export class CodexDesktopTransport {
     socket.on('close', () => this.disconnected(socket));
     try {
       await new Promise<void>((resolve, reject) => { const timer = setTimeout(() => { socket.destroy(); reject(new NativeDesktopError('连接 Codex App 超时。')); }, this.timeout); socket.once('connect', () => { clearTimeout(timer); resolve(); }); socket.once('error', error => { clearTimeout(timer); reject(error); }); });
-      const response = await this.request('initialize', { clientType: 'nohuman' }, 0);
+      const response = await this.request('initialize', { clientType: 'morrow' }, 0);
       if (typeof response.result?.clientId !== 'string') throw new NativeDesktopError('Codex App 初始化协议不兼容。', 'protocol_mismatch');
       this.clientId = response.result.clientId; this.lastError = null;
       for (const [threadId, sub] of this.subscriptions) if ((sub.listeners.size + sub.changeListeners.size)) void this.attach(threadId, sub).catch(error => { this.lastError = error.message; });
@@ -168,7 +168,7 @@ export class CodexDesktopTransport {
     const sub = this.subscriptions.get(params.conversationId); if (!sub) return;
     if (message.method === 'thread-stream-following-status-requested' && message.version === 1 && (sub.listeners.size + sub.changeListeners.size) && sub.owner === message.sourceClientId) { this.follow(params.conversationId, sub, true); return; }
     if (message.method !== 'thread-stream-state-changed' || message.sourceClientId !== sub.owner) return;
-    if (message.version !== BROADCAST_VERSION) { this.lastError = 'Codex App 对话协议版本已变化，请更新 NoHuman。'; sub.snapshot = null; sub.error = new NativeDesktopError(this.lastError, 'protocol_mismatch'); this.failWaiters(sub, sub.error); return; }
+    if (message.version !== BROADCAST_VERSION) { this.lastError = 'Codex App 对话协议版本已变化，请更新 Morrow。'; sub.snapshot = null; sub.error = new NativeDesktopError(this.lastError, 'protocol_mismatch'); this.failWaiters(sub, sub.error); return; }
     const change = params.change;
     try {
       let state: Record<string, any>;

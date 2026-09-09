@@ -6,6 +6,7 @@ import type { ActionOption, Understanding, StrategyDecision, DecisionView, Strat
 import type { ProjectWorkLoop, Scope } from './project-loop.ts';
 import { ProjectMemory, memoryTables } from './project-memory.ts';
 import { DecisionEvaluation } from './decision-evaluation.ts';
+import { qualityChecks } from './measurement.ts';
 import { now } from './store.ts';
 import type { Verification } from './verification-types.ts';
 
@@ -49,7 +50,8 @@ export class ProjectStrategy {
       const signals=this.store.db.prepare("SELECT data FROM strategy_signals WHERE json_extract(data,'$.projectId')=? AND rowid>? AND (json_extract(data,'$.decisionId')=? OR json_extract(data,'$.decisionId') IS NULL) ORDER BY rowid DESC LIMIT 8").all(row.projectId,row.signalCursor,row.id) as {data:string}[];
       reviewReasons.push(...signals.map(r=>JSON.parse(r.data).reason));
     }
-    return {...row,runsUsed,reviewReasons:[...new Set(reviewReasons)]};
+    const observations=row.review?.assessment?row.review.assessment.results.flatMap(r=>r.observation?[r.observation]:[]):this.evaluation.observations(row,now());
+    return {...row,runsUsed,reviewReasons:[...new Set(reviewReasons)],observations};
   }
   view(projectId:string,itemId?:string,runId?:string):StrategyView {
     const allUnderstanding=this.loop.rows<Understanding>('strategy_understanding',projectId);
@@ -68,6 +70,7 @@ export class ProjectStrategy {
     partial:view.counts.understanding>40||view.counts.decisions>12,readMore:'truncated 为摘要，完整记录与旧经验通过 memory.search/read 读取；数量截断用 counts 与 partial 标明。',
     budget:{channelRunsToday:this.store.runCount(channel.id,day),channelDailyLimit:channel.maxRunsPerDay,reset:'UTC 日界；不会因选择新行动而重置'},
     evaluationGuidance:'新选择使用 expectations 留下可核对的结果、适用条件与不能牺牲的约束；复盘用 assessment 对照实际采集记录，原因不明就保留未知。遇到重复无效尝试，检查原假设、数据来源和工作方法是否需要修订；有依据地沿用或改向，不为填写分类而制造工作。一次调查或测试达成预期，不等于整个项目目标已经达成。',
+    observationGuidance:'设计改变时一起设计观测：先确认哪个真实结果代表目标、指标口径/分母/人群/版本、当前基线、反馈延迟与不能牺牲的条件。文件或 HTTP 指标用 expectation.measurement 保存目标关系、不能证明的部分、基线证据、数据时效和质量规则；delta 表示与原基线的绝对差值。先沿一次真实输入到结果核对采集链路；缺打点、查询、样本或权限时，自主比较 investigate/build_capability/observe 的价值，在已有授权内补齐，不能拿自编 JSON 当真实用户反馈。observations 会暴露等待/修复缺口；观测规则是否充分仍需判断。样本量门槛不等于统计显著性，代理指标提升不等于因果成立。执行检查无需伪造业务指标，未约定 measurement 的旧记录不会被补成已核验。',
     guidance:'先理解项目阶段和关键未知，自主比较有价值的行动、获取信息、补齐能力、观察或停止。首次接手可先调查，再保存真正影响决策的认识；无需填满类别。采用行动前用 decision.choose 留下选择依据、预期、验证与止损条件。reviewReasons 是复查信号，不能把旧判断当作仍然有效；用 decision.review 评估后再决定下一步。结果未知可继续观察，不必为了忙碌制造事项。其他频道的行动和认识是共享上下文；避免重复占用同一个 feature。relatedMemory 自动召回相关旧记录；准备新的方向时可用 memory.recall 描述拟解决的问题，再用 memory.read 阅读完整经验。选择行动时用 memoryRefs 记录哪些经验影响了取舍、适用条件有什么不同、为什么沿用/调整/避免/不适用；没有相关经验不必凑引用。文字相关不代表有效，失效认识和失败尝试不能直接沿用。',
   };}
   checkpoint(kind:MemoryKind,row:Understanding|StrategyDecision|Learning){
@@ -86,7 +89,14 @@ export class ProjectStrategy {
   }
   needsObservation(watch:FeedbackWatch,data:unknown){
     const latest=watch.lastEvidenceId?this.store.get<Evidence>('loop_evidence',watch.lastEvidenceId):undefined;
-    return this.active(watch.projectId).some(row=>row.expectations?.some(expected=>expected.source.kind==='watch'&&expected.source.watchId===watch.id&&expected.notBefore<=now()&&expected.deadline>=now()&&(!latest||latest.observedAt<expected.notBefore||!this.evaluation.isNew(row,latest)||!!expected.rule&&this.evaluation.ruleValue(expected,latest.data)!==this.evaluation.ruleValue(expected,data))));
+    return this.active(watch.projectId).some(row=>row.expectations?.some(expected=>expected.source.kind==='watch'&&expected.source.watchId===watch.id&&expected.notBefore<=now()&&expected.deadline>=now()&&(!latest||latest.observedAt<expected.notBefore||!this.evaluation.isNew(row,latest)||!!expected.rule&&this.evaluation.ruleValue(expected,latest.data)!==this.evaluation.ruleValue(expected,data)||this.measurementChanged(expected,latest,data))));
+  }
+  measurementChanged(expected:import('./strategy-types.ts').Expectation,latest:Evidence,data:unknown){
+    const plan=expected.measurement;if(!plan)return false;
+    const previous=qualityChecks(plan,latest.data,latest.observedAt),current=qualityChecks(plan,data,now());
+    // Fresh timestamps alone do not wake work every poll; quality transitions and sample changes do.
+    const signature=(rows:typeof previous)=>JSON.stringify(rows.map((r,i)=>[r.status,i===0?undefined:r.observedValue]));
+    return signature(previous)!==signature(current)||(previous[0].status==='passed'&&qualityChecks(plan,latest.data,now())[0].status!=='passed'&&current[0].status==='passed');
   }
   evidenceObserved(evidence:Evidence){
     for(const row of this.active(evidence.projectId))if(row.expectations?.some(expected=>this.evaluation.matches(expected,evidence)&&evidence.createdAt>=row.createdAt&&evidence.observedAt>=expected.notBefore&&evidence.observedAt<=expected.deadline)){

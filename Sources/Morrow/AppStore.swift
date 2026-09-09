@@ -41,9 +41,16 @@ final class AppStore: ObservableObject {
         config.timeoutIntervalForResource = 12
         session = URLSession(configuration: config)
         let env = ProcessInfo.processInfo.environment
-        dataDirectory = env["NOHUMAN_HOME"].map { URL(fileURLWithPath: $0) }
-            ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support/NoHuman", isDirectory: true)
-        localPort = Int(env["NOHUMAN_PORT"] ?? "43821") ?? 43821
+        let currentDirectory = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support/Morrow", isDirectory: true)
+        let legacyDirectory = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support/NoHuman", isDirectory: true)
+        dataDirectory = (env["MORROW_HOME"] ?? env["NOHUMAN_HOME"]).map { URL(fileURLWithPath: $0) }
+            ?? (FileManager.default.fileExists(atPath: currentDirectory.path) || !FileManager.default.fileExists(atPath: legacyDirectory.path) ? currentDirectory : legacyDirectory)
+        localPort = Int(env["MORROW_PORT"] ?? env["NOHUMAN_PORT"] ?? "43821") ?? 43821
+        if let legacy = UserDefaults(suiteName: "ai.nohuman.desktop") {
+            for key in ["selectedProjectID", "usingRemote", "remoteHost", "remotePort", "remoteDirectory"] where UserDefaults.standard.object(forKey: key) == nil {
+                if let value = legacy.object(forKey: key) { UserDefaults.standard.set(value, forKey: key) }
+            }
+        }
         selectedProjectID = UserDefaults.standard.string(forKey: "selectedProjectID")
         terminationObserver = NotificationCenter.default.addObserver(forName: NSApplication.willTerminateNotification, object: nil, queue: .main) { [weak self] _ in
             MainActor.assumeIsolated { self?.ssh.stop() }
@@ -65,7 +72,7 @@ final class AppStore: ObservableObject {
         isStarting = true
         do {
             if UserDefaults.standard.bool(forKey: "usingRemote"), let host = UserDefaults.standard.string(forKey: "remoteHost") {
-                await connectRemote(host: host, remotePort: UserDefaults.standard.integer(forKey: "remotePort"), directory: UserDefaults.standard.string(forKey: "remoteDirectory") ?? "~/.local/share/nohuman")
+                await connectRemote(host: host, remotePort: UserDefaults.standard.integer(forKey: "remotePort"), directory: UserDefaults.standard.string(forKey: "remoteDirectory") ?? "~/.local/share/morrow")
             } else {
             if !(await healthCheck()) { try startService() }
             for _ in 0..<40 {
@@ -98,7 +105,7 @@ final class AppStore: ObservableObject {
               (response as? HTTPURLResponse)?.statusCode == 200,
               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
         else { return false }
-        return json["service"] as? String == "nohuman" && json["ok"] as? Bool == true
+        return ["morrow", "nohuman"].contains(json["service"] as? String ?? "") && json["ok"] as? Bool == true
     }
 
     private func startService() throws {
@@ -107,10 +114,11 @@ final class AppStore: ObservableObject {
         let home = fm.homeDirectoryForCurrentUser.path
         let resources = Bundle.main.resourceURL
         let nodeCandidates: [String?] = [resources?.appendingPathComponent("bin/node").path,
+                              ProcessInfo.processInfo.environment["MORROW_NODE"],
                               ProcessInfo.processInfo.environment["NOHUMAN_NODE"],
                               "/opt/homebrew/bin/node", "/usr/local/bin/node", "\(home)/.local/bin/node"]
         guard let node = nodeCandidates.compactMap({ $0 }).first(where: fm.isExecutableFile(atPath:)) else {
-            throw ServiceError.message("未找到 Node.js。请安装 Node.js 24 或更高版本，再重新打开 NoHuman。")
+            throw ServiceError.message("未找到 Node.js。请安装 Node.js 24 或更高版本，再重新打开 Morrow。")
         }
         let sourceRoot = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
         let candidates = [resources?.appendingPathComponent("service/server.ts"), sourceRoot.appendingPathComponent("service/server.ts")]
@@ -128,8 +136,8 @@ final class AppStore: ObservableObject {
         var environment = ProcessInfo.processInfo.environment
         let extra = "\(home)/.local/bin:\(home)/.cargo/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
         environment["PATH"] = extra + ":" + (environment["PATH"] ?? "")
-        environment["NOHUMAN_HOME"] = dataDirectory.path
-        environment["NOHUMAN_PORT"] = String(port)
+        environment["MORROW_HOME"] = dataDirectory.path
+        environment["MORROW_PORT"] = String(port)
         process.environment = environment
         process.standardInput = FileHandle.nullDevice
         process.standardOutput = logHandle
@@ -256,7 +264,7 @@ final class AppStore: ObservableObject {
 
     func reconnect() async {
         if usingRemote {
-            await connectRemote(host: remoteHost, remotePort: UserDefaults.standard.integer(forKey: "remotePort"), directory: UserDefaults.standard.string(forKey: "remoteDirectory") ?? "~/.local/share/nohuman")
+            await connectRemote(host: remoteHost, remotePort: UserDefaults.standard.integer(forKey: "remotePort"), directory: UserDefaults.standard.string(forKey: "remoteDirectory") ?? "~/.local/share/morrow")
             return
         }
         errorMessage = nil
@@ -300,7 +308,7 @@ final class AppStore: ObservableObject {
                 if await healthCheck() { healthy = true; break }
                 try await Task.sleep(for: .milliseconds(250))
             }
-            guard healthy else { throw ServiceError.message("SSH 已连接，但远程 NoHuman 服务无响应。请确认服务端口。") }
+            guard healthy else { throw ServiceError.message("SSH 已连接，但远程 Morrow 服务无响应。请确认服务端口。") }
             let data = try await request("state")
             snapshot = try JSONDecoder().decode(WorkspaceSnapshot.self, from: data)
             isConnected = true

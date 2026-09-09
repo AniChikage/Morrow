@@ -1,5 +1,5 @@
-appId: ai.nohuman.desktop
-productName: NoHuman
+appId: ai.morrow.desktop
+productName: Morrow
 directories:
   output: .build/electron-package
   buildResources: .build/runtime-cache
@@ -20,7 +20,7 @@ extraResources:
     to: Node-LICENSE.txt
 mac:
   category: public.app-category.developer-tools
-  icon: .build/runtime-cache/NoHuman.icns
+  icon: .build/runtime-cache/Morrow.icns
   minimumSystemVersion: '14.0'
   target: dir
   identity: null

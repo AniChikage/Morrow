@@ -34,7 +34,7 @@ struct ChannelView: View {
                             } else {
                                 ForEach(items) { item in
                                     WorkItemRow(item: item, action: { selectItem(item) })
-                                        .overlay(alignment: .bottom) { Rectangle().fill(Color.nhLine).frame(height: 1) }
+                                        .overlay(alignment: .bottom) { Rectangle().fill(Color.morrowLine).frame(height: 1) }
                                 }
                             }
                         } else {
@@ -79,20 +79,20 @@ struct ChannelView: View {
         }
         .padding(.horizontal, 16)
         .frame(height: 44)
-        .overlay(alignment: .bottom) { Rectangle().fill(Color.nhLine).frame(height: 1) }
+        .overlay(alignment: .bottom) { Rectangle().fill(Color.morrowLine).frame(height: 1) }
     }
 
     private func tabButton(_ title: String, value: String, count: Int) -> some View {
         Button { tab = value } label: {
             HStack(spacing: 4) {
                 Text(title).font(.system(size: 12, weight: tab == value ? .medium : .regular))
-                Text("\(count)").font(.system(size: 11)).foregroundStyle(Color.nhSecondary)
+                Text("\(count)").font(.system(size: 11)).foregroundStyle(Color.morrowSecondary)
             }
-            .foregroundStyle(tab == value ? Color.nhInk : Color.nhSecondary)
+            .foregroundStyle(tab == value ? Color.morrowInk : Color.morrowSecondary)
             .fixedSize()
             .frame(height: 44)
             .overlay(alignment: .bottom) {
-                if tab == value { Rectangle().fill(Color.nhInk).frame(height: 1.5) }
+                if tab == value { Rectangle().fill(Color.morrowInk).frame(height: 1.5) }
             }
         }.buttonStyle(.plain)
     }
@@ -102,7 +102,7 @@ struct ChannelView: View {
             ZStack(alignment: .topLeading) {
                 if message.isEmpty {
                     Text("添加说明…")
-                        .font(.system(size: 13)).foregroundStyle(Color.nhSecondary)
+                        .font(.system(size: 13)).foregroundStyle(Color.morrowSecondary)
                         .padding(.horizontal, 5).padding(.top, 8).allowsHitTesting(false)
                 }
                 TextEditor(text: $message)
@@ -112,15 +112,15 @@ struct ChannelView: View {
             }
             HStack(spacing: 8) {
                 Text(isDemo ? "示例频道不会执行任务" : "下次运行时读取")
-                    .font(.system(size: 11)).foregroundStyle(Color.nhSecondary)
+                    .font(.system(size: 11)).foregroundStyle(Color.morrowSecondary)
                 Spacer()
-                Text("⌘ ↵").font(.system(size: 11)).foregroundStyle(Color.nhSecondary)
+                Text("⌘ ↵").font(.system(size: 11)).foregroundStyle(Color.morrowSecondary)
                 Button(action: sendMessage) {
                     Image(systemName: "arrow.up")
                         .font(.system(size: 12, weight: .semibold))
-                        .foregroundStyle(canSend ? Color.white : Color.nhSecondary)
+                        .foregroundStyle(canSend ? Color.white : Color.morrowSecondary)
                         .frame(width: 28, height: 28)
-                        .background(canSend ? Color.nhInk : Color.nhLine.opacity(0.55), in: RoundedRectangle(cornerRadius: 6))
+                        .background(canSend ? Color.morrowInk : Color.morrowLine.opacity(0.55), in: RoundedRectangle(cornerRadius: 6))
                 }
                 .buttonStyle(.plain)
                 .keyboardShortcut(.return, modifiers: .command)
@@ -129,7 +129,7 @@ struct ChannelView: View {
             }
         }
         .padding(.horizontal, 18).padding(.top, 8).padding(.bottom, 12)
-        .overlay(alignment: .top) { Rectangle().fill(Color.nhLine).frame(height: 1) }
+        .overlay(alignment: .top) { Rectangle().fill(Color.morrowLine).frame(height: 1) }
     }
 
     private func sendMessage() {
@@ -172,30 +172,30 @@ struct EventCard: View {
         HStack(alignment: .top, spacing: 10) {
             Image(systemName: symbol)
                 .font(.system(size: 13))
-                .foregroundStyle(event.kind == "error" ? Color.nhOrange : Color.nhSecondary)
+                .foregroundStyle(event.kind == "error" ? Color.morrowOrange : Color.morrowSecondary)
                 .frame(width: 16, height: 17)
             VStack(alignment: .leading, spacing: 5) {
                 HStack(spacing: 8) {
                     Text(label).font(.system(size: 12, weight: isSystem ? .regular : .medium))
-                        .foregroundStyle(isSystem ? Color.nhSecondary : Color.nhInk)
+                        .foregroundStyle(isSystem ? Color.morrowSecondary : Color.morrowInk)
                     Spacer(minLength: 4)
-                    Text(displayDate(event.createdAt)).font(.system(size: 11)).foregroundStyle(Color.nhSecondary)
+                    Text(displayDate(event.createdAt)).font(.system(size: 11)).foregroundStyle(Color.morrowSecondary)
                 }
                 Text(event.text)
                     .font(.system(size: event.kind == "tool" ? 11 : 13, design: event.kind == "tool" ? .monospaced : .default))
-                    .foregroundStyle(event.kind == "error" ? Color.nhOrange : isSystem ? Color.nhSecondary : Color.nhInk)
+                    .foregroundStyle(event.kind == "error" ? Color.morrowOrange : isSystem ? Color.morrowSecondary : Color.morrowInk)
                     .lineSpacing(3)
                     .lineLimit(expanded ? nil : isSystem ? 3 : 12)
                     .textSelection(.enabled)
                     .frame(maxWidth: .infinity, alignment: .leading)
                 if event.text.count > (isSystem ? 160 : 650) || event.text.components(separatedBy: "\n").count > (isSystem ? 3 : 12) {
                     Button(expanded ? "收起" : "展开") { expanded.toggle() }
-                        .buttonStyle(.plain).font(.system(size: 11)).foregroundStyle(Color.nhSecondary)
+                        .buttonStyle(.plain).font(.system(size: 11)).foregroundStyle(Color.morrowSecondary)
                 }
             }
         }
         .padding(.vertical, isSystem ? 10 : 14)
-        .overlay(alignment: .bottom) { Rectangle().fill(Color.nhLine.opacity(0.65)).frame(height: 1) }
+        .overlay(alignment: .bottom) { Rectangle().fill(Color.morrowLine.opacity(0.65)).frame(height: 1) }
     }
 }
 
@@ -205,14 +205,14 @@ struct RunCard: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 7) {
             HStack(spacing: 8) {
-                Image(systemName: "terminal").font(.system(size: 12)).foregroundStyle(Color.nhSecondary)
+                Image(systemName: "terminal").font(.system(size: 12)).foregroundStyle(Color.morrowSecondary)
                 Text(runtimeTitle(run.runtime)).font(.system(size: 13, weight: .medium))
-                Text(String(run.id.prefix(8))).font(.system(size: 11, design: .monospaced)).foregroundStyle(Color.nhSecondary)
+                Text(String(run.id.prefix(8))).font(.system(size: 11, design: .monospaced)).foregroundStyle(Color.morrowSecondary)
                 Spacer(minLength: 4)
                 StatusBadge(status: run.status)
             }
             Text(run.summary.isEmpty ? "等待执行结果…" : run.summary)
-                .font(.system(size: 13)).foregroundStyle(Color.nhInk)
+                .font(.system(size: 13)).foregroundStyle(Color.morrowInk)
                 .lineSpacing(3).lineLimit(expanded ? nil : 3).textSelection(.enabled)
                 .frame(maxWidth: .infinity, alignment: .leading)
             HStack(spacing: 6) {
@@ -222,9 +222,9 @@ struct RunCard: View {
                 if run.summary.count > 160 || run.summary.components(separatedBy: "\n").count > 3 {
                     Button(expanded ? "收起" : "展开") { expanded.toggle() }.buttonStyle(.plain)
                 }
-            }.font(.system(size: 11)).foregroundStyle(Color.nhSecondary)
+            }.font(.system(size: 11)).foregroundStyle(Color.morrowSecondary)
         }
         .padding(.vertical, 14)
-        .overlay(alignment: .bottom) { Rectangle().fill(Color.nhLine).frame(height: 1) }
+        .overlay(alignment: .bottom) { Rectangle().fill(Color.morrowLine).frame(height: 1) }
     }
 }

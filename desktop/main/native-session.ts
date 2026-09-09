@@ -29,7 +29,7 @@ export function prepareScript(target: NativeSessionTarget): string {
   const args = target.sessionId ? [target.runtime === 'claude' ? '--resume' : 'resume', target.sessionId] : [];
   return [
     '#!/bin/bash',
-    '# NoHuman opens the CLI native session. Authentication and settings remain with the CLI.',
+    '# Morrow opens the CLI native session. Authentication and settings remain with the CLI.',
     'set -e',
     `cd -- ${quote(target.projectPath)}`,
     `exec -- ${[target.executable, ...args].map(quote).join(' ')}`,

@@ -5,14 +5,16 @@ import { homedir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 
 export const shellQuote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
+const currentAgentLabel = 'ai.morrow.codex-bridge';
+const legacyAgentLabel = 'ai.nohuman.codex-bridge';
 export function bridgeLauncher(node: string, script: string, binary: string, directory: string) {
-  return `#!/bin/sh\nexport NOHUMAN_CODEX_BINARY=${shellQuote(binary)}\nexport NOHUMAN_CODEX_BRIDGE_HOME=${shellQuote(directory)}\nexec ${shellQuote(node)} ${shellQuote(script)} "$@"\n`;
+  return `#!/bin/sh\nexport MORROW_CODEX_BINARY=${shellQuote(binary)}\nexport MORROW_CODEX_BRIDGE_HOME=${shellQuote(directory)}\nexec ${shellQuote(node)} ${shellQuote(script)} "$@"\n`;
 }
-export function bridgeLoginAgent(launcher:string) {
+export function bridgeLoginAgent(launcher:string, label = currentAgentLabel) {
   const escaped=launcher.replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;');
-  return `<?xml version="1.0" encoding="UTF-8"?>\n<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n<plist version="1.0"><dict><key>Label</key><string>ai.nohuman.codex-bridge</string><key>ProgramArguments</key><array><string>/bin/launchctl</string><string>setenv</string><string>CODEX_CLI_PATH</string><string>${escaped}</string></array><key>RunAtLoad</key><true/></dict></plist>\n`;
+  return `<?xml version="1.0" encoding="UTF-8"?>\n<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n<plist version="1.0"><dict><key>Label</key><string>${label}</string><key>ProgramArguments</key><array><string>/bin/launchctl</string><string>setenv</string><string>CODEX_CLI_PATH</string><string>${escaped}</string></array><key>RunAtLoad</key><true/></dict></plist>\n`;
 }
-const loginAgentPath=()=>join(homedir(),'Library/LaunchAgents/ai.nohuman.codex-bridge.plist');
+const loginAgentPath=(label = currentAgentLabel)=>join(homedir(),`Library/LaunchAgents/${label}.plist`);
 export function configureCodexBridge(home: string) {
   if (process.platform !== 'darwin') throw new Error('Codex App 后台连接目前只支持本机 Mac。');
   const binary = '/Applications/ChatGPT.app/Contents/Resources/codex';
@@ -29,20 +31,28 @@ export function configureCodexBridge(home: string) {
   const receipt = existsSync(receiptPath) ? JSON.parse(readFileSync(receiptPath, 'utf8')) : { previousCliPath: previous, installedAt: new Date().toISOString() };
   writeFileSync(receiptPath, JSON.stringify({ ...receipt, launcher, binary, configuredAt: new Date().toISOString() }), { mode: 0o600 });
   const agentPath=loginAgentPath(),agentSource=bridgeLoginAgent(launcher);
-  if(existsSync(agentPath)&&readFileSync(agentPath,'utf8')!==agentSource)throw new Error('后台启动项已有其他配置，已保留；请检查 ai.nohuman.codex-bridge.plist。');
+  if(existsSync(agentPath)&&readFileSync(agentPath,'utf8')!==agentSource)throw new Error('后台启动项已有其他配置，已保留；请检查 ai.morrow.codex-bridge.plist。');
+  const legacyPath=loginAgentPath(legacyAgentLabel),legacySource=bridgeLoginAgent(launcher,legacyAgentLabel);
+  if(existsSync(legacyPath)&&readFileSync(legacyPath,'utf8')!==legacySource)throw new Error('检测到不同配置的旧版后台启动项，已保留；请检查 ai.nohuman.codex-bridge.plist。');
   mkdirSync(join(homedir(),'Library/LaunchAgents'),{recursive:true});writeFileSync(agentPath,agentSource,{mode:0o600});
   execFileSync('/bin/launchctl', ['setenv', 'CODEX_CLI_PATH', launcher], { stdio: 'pipe' });
-  return { launcher, restartRequired: true, detail: '后台桥接已配置。请在当前任务结束后重新打开一次 Codex App，之后可直接在 NoHuman 新建和恢复对话。' };
+  if(existsSync(legacyPath)){
+    try{execFileSync('/bin/launchctl',['bootout',`gui/${process.getuid!()}/${legacyAgentLabel}`],{stdio:'ignore'});}catch{/* It may not have been loaded since login. */}
+    unlinkSync(legacyPath);
+  }
+  return { launcher, restartRequired: true, detail: '后台桥接已配置。请在当前任务结束后重新打开一次 Codex App，之后可直接在 Morrow 新建和恢复对话。' };
 }
 export function restoreCodexBridge(home: string) {
   const launcher = join(home, 'codex-bridge', 'codex');
   let current = '';
   try { current = execFileSync('/bin/launchctl', ['getenv', 'CODEX_CLI_PATH'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim(); } catch { /* Already restored. */ }
   if (current === launcher) execFileSync('/bin/launchctl', ['unsetenv', 'CODEX_CLI_PATH'], { stdio: 'pipe' });
-  const agentPath=loginAgentPath();
-  if(existsSync(agentPath)&&readFileSync(agentPath,'utf8')===bridgeLoginAgent(launcher)){
-    try{execFileSync('/bin/launchctl',['bootout',`gui/${process.getuid!()}/ai.nohuman.codex-bridge`],{stdio:'ignore'});}catch{/* It may not have been loaded since login. */}
-    unlinkSync(agentPath);
+  for(const label of [currentAgentLabel,legacyAgentLabel]){
+    const agentPath=loginAgentPath(label);
+    if(existsSync(agentPath)&&readFileSync(agentPath,'utf8')===bridgeLoginAgent(launcher,label)){
+      try{execFileSync('/bin/launchctl',['bootout',`gui/${process.getuid!()}/${label}`],{stdio:'ignore'});}catch{/* It may not have been loaded since login. */}
+      unlinkSync(agentPath);
+    }
   }
   // Leave the running App's executable and sockets intact until it exits itself.
   return { restartRequired: true, detail: '已撤销后台启动设置，当前会话保持运行，下次打开 Codex App 时恢复原连接方式。' };

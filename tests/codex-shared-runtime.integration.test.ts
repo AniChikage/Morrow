@@ -7,10 +7,10 @@ import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { CodexSharedTransport, findSharedHost } from '../service/codex-shared-transport.ts';
 
-const binary=process.env.NOHUMAN_TEST_CODEX_BINARY;
+const binary=process.env.MORROW_TEST_CODEX_BINARY;
 async function until(check:()=>boolean){for(let count=0;count<400;count++){if(check())return;await new Promise(done=>setTimeout(done,25));}assert.fail('shared runtime timed out');}
 
-test('App launch bridge and NoHuman share cold tasks, active steering, external replies and runtime recovery', {skip:!binary,timeout:60_000}, async()=>{
+test('App launch bridge and Morrow share cold tasks, active steering, external replies and runtime recovery', {skip:!binary,timeout:60_000}, async()=>{
   const directory=mkdtempSync('/tmp/nh-native-'),workspace=join(directory,'project');mkdirSync(workspace);
   let modelCalls=0;
   const model=createServer(async(request,response)=>{
@@ -27,7 +27,7 @@ test('App launch bridge and NoHuman share cold tasks, active steering, external 
   writeFileSync(join(directory,'config.toml'),`model="fixture-model"\nmodel_provider="fixture"\napproval_policy="never"\nsandbox_mode="read-only"\n[model_providers.fixture]\nname="Isolated fixture"\nbase_url="http://127.0.0.1:${port}/v1"\nwire_api="responses"\nrequires_openai_auth=false\n`);
   const bridgeDirectory=join(directory,'bridge');let requestId=0;const hosts:any[]=[];const clients:CodexSharedTransport[]=[];
   async function appClient(){
-    const child=spawn(process.execPath,[resolve('service/codex-app-host-bridge.ts'),'app-server','--listen','stdio://','-c','model="fixture-model"'],{env:{...process.env,CODEX_HOME:directory,NOHUMAN_CODEX_BINARY:binary!,NOHUMAN_CODEX_BRIDGE_HOME:bridgeDirectory,NOHUMAN_CODEX_SOCKET_DIRECTORY:join(directory,'sockets')},stdio:['pipe','pipe','pipe']});hosts.push(child);
+    const child=spawn(process.execPath,[resolve('service/codex-app-host-bridge.ts'),'-c','features.code_mode_host=true','app-server','--listen','stdio://','-c','model="fixture-model"'],{env:{...process.env,CODEX_HOME:directory,MORROW_CODEX_BINARY:binary!,MORROW_CODEX_BRIDGE_HOME:bridgeDirectory,MORROW_CODEX_SOCKET_DIRECTORY:join(directory,'sockets')},stdio:['pipe','pipe','pipe']});hosts.push(child);
     let errors='';child.stderr.on('data',data=>errors+=data.toString());
     const pending=new Map<number,any>(),events:any[]=[];
     createInterface({input:child.stdout}).on('line',line=>{const message=JSON.parse(line);const entry=pending.get(message.id);if(entry){clearTimeout(entry.timer);pending.delete(message.id);message.error?entry.reject(Error(JSON.stringify(message.error))):entry.resolve(message.result);}else events.push(message);});
@@ -38,10 +38,10 @@ test('App launch bridge and NoHuman share cold tasks, active steering, external 
   }
   const newClient=()=>{const client=new CodexSharedTransport({directory:bridgeDirectory,codexHome:directory});clients.push(client);return client;};
   try{
-    const app=await appClient(),nohuman=newClient();
-    const created=await nohuman.createThread(workspace);const id=created.threadId;const snapshots:any[]=[];
-    await nohuman.subscribeChanges(id,snapshot=>snapshots.push(snapshot));
-    const started=await nohuman.sendMessage(id,'Create from NoHuman, no App task opened.','native-first');
+    const app=await appClient(),morrow=newClient();
+    const created=await morrow.createThread(workspace);const id=created.threadId;const snapshots:any[]=[];
+    await morrow.subscribeChanges(id,snapshot=>snapshots.push(snapshot));
+    const started=await morrow.sendMessage(id,'Create from Morrow, no App task opened.','native-first');
     await until(()=>modelCalls>0);
     const appResume=await app.request('thread/resume',{threadId:id,excludeTurns:true});assert.equal(appResume.thread.id,id);assert.equal(appResume.thread.status.type,'active');
     const steered=await app.request('turn/steer',{threadId:id,expectedTurnId:started.turn.id,clientUserMessageId:'app-steer',input:[{type:'text',text:'Continue the same native turn.',text_elements:[]}]});assert.equal(steered.turnId,started.turn.id);
@@ -50,7 +50,7 @@ test('App launch bridge and NoHuman share cold tasks, active steering, external 
     assert.ok(snapshots.at(-1).state.turns[0].items.some((item:any)=>item.type==='agentMessage'&&item.text.startsWith('SHARED-NATIVE-')));
     const outside=await app.request('turn/start',{threadId:id,clientUserMessageId:'app-message',input:[{type:'text',text:'App-originated input',text_elements:[]}]});
     await until(()=>snapshots.at(-1)?.state.turns.some((turn:any)=>turn.turnId===outside.turn.id&&turn.status==='completed'));
-    const beforeRestartId=nohuman.host!.launchId;nohuman.close();await app.stop();
+    const beforeRestartId=morrow.host!.launchId;morrow.close();await app.stop();
     const restartedApp=await appClient(),reconnected=newClient();
     // The new App client has only initialized; it has never opened/resumed this task.
     const resumed=await reconnected.readThread(id);assert.equal(resumed.threadId,id);assert.notEqual(reconnected.host!.launchId,beforeRestartId);assert.equal(resumed.state.turns.length,2);

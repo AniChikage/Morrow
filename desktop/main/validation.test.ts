@@ -7,11 +7,11 @@ test('IPC IDs cannot inject routes or query parameters', () => {
   assert.equal(id('a0b1-2c3d'), 'a0b1-2c3d');
 });
 test('only HTTP(S) web links without credentials leave the app', () => {
-  for (const value of ['file:///etc/passwd', 'javascript:alert(1)', 'nohuman://app/index.html', 'https://user:secret@example.com']) assert.throws(() => externalURL(value));
+  for (const value of ['file:///etc/passwd', 'javascript:alert(1)', 'morrow://app/index.html', 'https://user:secret@example.com']) assert.throws(() => externalURL(value));
   assert.equal(externalURL('https://example.com/a?x=1'), 'https://example.com/a?x=1');
 });
 test('SSH destinations and directories reject argument and command injection', () => {
-  const config = { mode: 'ssh', host: 'dev-box', port: 43821, directory: '~/.local/share/nohuman' };
+  const config = { mode: 'ssh', host: 'dev-box', port: 43821, directory: '~/.local/share/morrow' };
   assert.deepEqual(connectionConfig(config), config);
   for (const host of ['-oProxyCommand=anything', 'dev box', 'dev;touch /tmp/x', 'dev\nbox']) assert.throws(() => connectionConfig({ ...config, host }));
   for (const directory of ['relative/path', '~/test\nwhoami']) assert.throws(() => connectionConfig({ ...config, directory }));

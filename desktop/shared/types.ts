@@ -6,7 +6,7 @@ export type RuntimeID = 'codex' | 'claude' | 'trae';
 export interface Project { id: string; name: string; path: string; goal: string; createdAt: string; isDemo: boolean; runtime?: RuntimeID }
 export interface Channel { work?:ChannelWork; autonomyEnabled?:boolean; id: string; projectId: string; name: string; goal: string; runtime: RuntimeID; model: string; status: string; intervalMinutes: number; maxRunsPerDay: number; permission: 'read-only' | 'workspace-write' | 'native'; nextRunAt: string; lastRunAt: string; sessionId: string }
 export interface WorkItem { projectId?: string; number?: number; sourceChannelIds?: string[]; lastRunId?: string; revision?: number; id: string; channelId: string; title: string; summary: string; status: string; kind: string; evidence: string[]; nextStep: string; createdAt: string; updatedAt: string }
-export interface Run { projectId?: string; model?: string; permission?: Channel['permission'] | 'native'; executionOwner?: 'codex-app' | 'cli'; source?: 'nohuman-schedule' | 'nohuman-chat' | 'native-app'; nativeSettings?: Record<string, unknown>; trigger?: 'manual' | 'schedule'; resumedFromSessionId?: string; reportStatus?: 'pending' | 'valid' | 'missing' | 'invalid' | 'conflict'; reportError?: string; exitCode?: number; signal?: string; id: string; channelId: string; runtime: string; status: string; startedAt: string; finishedAt: string; summary: string; sessionId: string }
+export interface Run { projectId?: string; model?: string; permission?: Channel['permission'] | 'native'; executionOwner?: 'codex-app' | 'cli'; source?: 'morrow-schedule' | 'morrow-chat' | 'nohuman-schedule' | 'nohuman-chat' | 'native-app'; nativeSettings?: Record<string, unknown>; trigger?: 'manual' | 'schedule'; resumedFromSessionId?: string; reportStatus?: 'pending' | 'valid' | 'missing' | 'invalid' | 'conflict'; reportError?: string; exitCode?: number; signal?: string; id: string; channelId: string; runtime: string; status: string; startedAt: string; finishedAt: string; summary: string; sessionId: string }
 export interface EventDetail { type: string; tool?: string; input?: unknown; output?: unknown; status?: string; sequence?: number; toolCallId?: string }
 export interface WorkspaceEvent { projectId?: string; itemId?: string; actor?: 'human' | 'agent' | 'system'; action?: string; changes?: { before?: unknown; after?: unknown }; id: string; channelId: string; runId: string; kind: string; text: string; createdAt: string; detail?: EventDetail }
 export interface Runtime { id: string; name: string; available: boolean; path: string; version: string; detail: string; canWrite: boolean }
@@ -85,5 +85,5 @@ export interface DesktopAPI {
   openExternal(url: string): Promise<void>;
   onCommand(callback: (command: string) => void): () => void;
 }
-declare global { interface Window { nohuman?: DesktopAPI } }
+declare global { interface Window { morrow?: DesktopAPI; nohuman?: DesktopAPI } }
 export type Route = { kind: 'project'; id: string } | { kind: 'finding'; id: string } | { kind: 'channel'; id: string } | { kind: 'runs' } | { kind: 'runtimes' };

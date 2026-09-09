@@ -7,7 +7,7 @@ import { featureProps, item, TestProviders, timestamp } from '../features/testFi
 import type { ConnectionInfo } from '../../shared/types';
 const context = vi.hoisted(() => ({ current: {} as any }));
 vi.mock('../state/workspace', () => ({ useWorkspace: () => context.current }));
-const local: ConnectionInfo = { config: { mode:'local', host:'', port:43821, directory:'/Users/test/Library/Application Support/NoHuman' }, connected:true, name:'本机 Mac' };
+const local: ConnectionInfo = { config: { mode:'local', host:'', port:43821, directory:'/Users/test/Library/Application Support/Morrow' }, connected:true, name:'本机 Mac' };
 beforeEach(() => {
  const { props, api } = featureProps();
  props.snapshot.projects[1].path='/Users/test/projects/Other';
@@ -19,14 +19,14 @@ it('uses a remote directory when switching from Mac and remembers edited SSH set
  const user=userEvent.setup();
  render(<Dialogs modal={{kind:'settings'}} onClose={()=>{}} onNavigate={()=>{}}/>,{wrapper:TestProviders});
  await user.click(screen.getByRole('button',{name:'远程 SSH'}));
- expect((screen.getByRole('textbox',{name:'远程数据目录'}) as HTMLInputElement).value).toBe('~/.local/share/nohuman');
+ expect((screen.getByRole('textbox',{name:'远程数据目录'}) as HTMLInputElement).value).toBe('~/.local/share/morrow');
  await user.type(screen.getByRole('textbox',{name:/SSH 主机/}),'build-box');
  await user.clear(screen.getByRole('textbox',{name:'远程数据目录'}));
- await user.type(screen.getByRole('textbox',{name:'远程数据目录'}),'/srv/nohuman');
+ await user.type(screen.getByRole('textbox',{name:'远程数据目录'}),'/srv/morrow');
  await user.click(screen.getByRole('button',{name:'本机 Mac'}));
  await user.click(screen.getByRole('button',{name:'远程 SSH'}));
  expect((screen.getByRole('textbox',{name:/SSH 主机/}) as HTMLInputElement).value).toBe('build-box');
- expect((screen.getByRole('textbox',{name:'远程数据目录'}) as HTMLInputElement).value).toBe('/srv/nohuman');
+ expect((screen.getByRole('textbox',{name:'远程数据目录'}) as HTMLInputElement).value).toBe('/srv/morrow');
 });
 it('clears the old workspace before connecting and does not announce a failed resolved connection as successful',async()=>{
  const failure={...local,connected:false,error:'执行服务拒绝连接'};
@@ -92,7 +92,7 @@ it('keeps a failed native folder selection recoverable and never submits an empt
 
 it('accepts a remote project directory without invoking the local folder picker', async () => {
  const user=userEvent.setup(), onNavigate=vi.fn();
- context.current.connection={...local,config:{mode:'ssh',host:'build-box',port:43821,directory:'/srv/nohuman'}};
+ context.current.connection={...local,config:{mode:'ssh',host:'build-box',port:43821,directory:'/srv/morrow'}};
  context.current.api.createProject.mockResolvedValue({id:'remote-project'});
  render(<Dialogs modal={{kind:'project'}} onClose={()=>{}} onNavigate={onNavigate}/>,{wrapper:TestProviders});
  expect(screen.queryByRole('button',{name:'选择文件夹'})).toBeNull();

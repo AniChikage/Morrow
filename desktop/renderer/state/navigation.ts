@@ -14,7 +14,7 @@ function validRoute(value: unknown): value is Route {
 }
 function readSession(scope: string): Session {
   try {
-    const value = JSON.parse(localStorage.getItem('nh:tabs:' + scope) || 'null');
+    const value = JSON.parse(localStorage.getItem('morrow:tabs:' + scope) ?? localStorage.getItem('nh:tabs:' + scope) ?? 'null');
     const validTabs = Array.isArray(value?.tabs) && value.tabs.every((tab: TabSession) => tab && typeof tab.id === 'string' && !!tab.id && Array.isArray(tab.history) && tab.history.length > 0 && tab.history.every(validRoute) && Number.isInteger(tab.index) && tab.index >= 0 && tab.index < tab.history.length);
     if (validTabs && typeof value.active === 'string' && new Set(value.tabs.map((tab: TabSession) => tab.id)).size === value.tabs.length && (value.tabs.length ? value.tabs.some((tab: TabSession) => tab.id === value.active) : value.active === '')) {
       // An explicitly saved empty session means the user closed their last tab.
@@ -47,7 +47,7 @@ export function useNavigation(scope: string | null) {
     if (changed === previous) return;
     const next: ScopedSession = { ...changed, scope, hydrated: true };
     sessionRef.current = next;
-    try { localStorage.setItem('nh:tabs:' + scope, JSON.stringify(next.navigation)); } catch { /* Navigation still works when storage is unavailable. */ }
+    try { localStorage.setItem('morrow:tabs:' + scope, JSON.stringify(next.navigation)); } catch { /* Navigation still works when storage is unavailable. */ }
     setSession(next);
   }, [scope]);
 

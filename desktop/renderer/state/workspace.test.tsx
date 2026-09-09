@@ -5,7 +5,7 @@ import type { ReactNode } from 'react';
 import { emptySnapshot, type ConnectionInfo, type DesktopAPI, type Snapshot } from '../../shared/types';
 
 const api = { getState: vi.fn(), getConnection: vi.fn() } as unknown as DesktopAPI;
-window.nohuman = api;
+window.morrow = api;
 const { WorkspaceProvider, useWorkspace } = await import('./workspace');
 const state = (id: string): Snapshot => ({ ...emptySnapshot, projects: [{ id, name: id, path: '/project', goal: 'goal', createdAt: '', isDemo: false }] });
 const local: ConnectionInfo = { config: { mode: 'local', host: '', port: 43821, directory: '/local' }, name: 'local', connected: true };

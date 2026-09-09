@@ -1,7 +1,7 @@
 {
-  "name": "nohuman",
-  "productName": "NoHuman",
-  "version": "0.9.3",
+  "name": "morrow",
+  "productName": "Morrow",
+  "version": "0.9.4",
   "private": true,
   "type": "module",
   "description": "A local-first desktop workspace for continuously working AI channels.",

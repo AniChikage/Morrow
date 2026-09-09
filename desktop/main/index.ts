@@ -2,7 +2,7 @@ import { app, BrowserWindow, dialog, ipcMain, Menu, protocol, shell, type IpcMai
 import { readFile, stat } from 'node:fs/promises';
 import { extname, join, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { ServiceConnection } from './connection';
+import { resolveDataDirectory, ServiceConnection } from './connection';
 import { channelInput, channelPatch, choice, connectionConfig, eventsInput, externalURL, id, itemStatuses, projectInput, text, itemInput, itemPatch, runsInput, runOutputInput, nativeHistoryInput, nativeMessageInput, nativeResponseInput, integer } from './validation';
 
 import { launchNativeSession } from './native-session';
@@ -10,15 +10,16 @@ import { codexAppLink } from './codex-link';
 import type { NativeSessionTarget } from '../shared/types';
 
 const dirname = fileURLToPath(new URL('.', import.meta.url));
-const packagedURL = 'nohuman://app/index.html';
+const packagedURL = 'morrow://app/index.html';
 const developmentURL = !app.isPackaged ? process.env.ELECTRON_RENDERER_URL : undefined;
 if (developmentURL) {
   const parsed = new URL(developmentURL);
   if (parsed.protocol !== 'http:' || !['127.0.0.1', 'localhost'].includes(parsed.hostname)) throw new Error('开发页面必须使用本机 HTTP 地址。');
 }
-protocol.registerSchemesAsPrivileged([{ scheme: 'nohuman', privileges: { standard: true, secure: true, supportFetchAPI: true, corsEnabled: true } }]);
-app.setName('NoHuman');
-if(process.env.NOHUMAN_HOME)app.setPath('userData',join(process.env.NOHUMAN_HOME,'desktop-ui'));
+protocol.registerSchemesAsPrivileged([{ scheme: 'morrow', privileges: { standard: true, secure: true, supportFetchAPI: true, corsEnabled: true } }]);
+app.setName('Morrow');
+const explicitDataDirectory = process.env.MORROW_HOME || process.env.NOHUMAN_HOME;
+app.setPath('userData', explicitDataDirectory ? join(explicitDataDirectory, 'desktop-ui') : resolveDataDirectory());
 app.enableSandbox();
 const service = new ServiceConnection();
 let window: BrowserWindow | null = null;
@@ -27,14 +28,14 @@ function trustedURL(value: string): boolean {
   try {
     const url = new URL(value);
     if (developmentURL) return url.origin === new URL(developmentURL).origin;
-    return url.protocol === 'nohuman:' && url.host === 'app' && url.pathname === '/index.html';
+    return url.protocol === 'morrow:' && url.host === 'app' && url.pathname === '/index.html';
   } catch { return false; }
 }
 function validateSender(event: IpcMainInvokeEvent): void {
   if (!window || event.sender !== window.webContents || event.senderFrame !== window.webContents.mainFrame || !trustedURL(event.senderFrame.url)) throw new Error('不受信任的应用请求。');
 }
 function handle(channel: string, arity: number, callback: (...args: unknown[]) => unknown): void {
-  ipcMain.handle(`nohuman:${channel}`, (event, ...args: unknown[]) => {
+  ipcMain.handle(`morrow:${channel}`, (event, ...args: unknown[]) => {
     validateSender(event);
     if (args.length !== arity) throw new Error('请求参数不正确。');
     return callback(...args);
@@ -46,17 +47,17 @@ function sendCommand(command: string): void {
   if (target.isMinimized()) target.restore();
   target.show();
   target.focus();
-  if (target.webContents.isLoading()) target.webContents.once('did-finish-load', () => target.webContents.send('nohuman:command', command));
-  else target.webContents.send('nohuman:command', command);
+  if (target.webContents.isLoading()) target.webContents.once('did-finish-load', () => target.webContents.send('morrow:command', command));
+  else target.webContents.send('morrow:command', command);
 }
 function configureMenu(): void {
   const menu: MenuItemConstructorOptions[] = [
-    { label: 'NoHuman', submenu: [
-      { role: 'about', label: '关于 NoHuman' }, { type: 'separator' },
+    { label: 'Morrow', submenu: [
+      { role: 'about', label: '关于 Morrow' }, { type: 'separator' },
       { label: '设置…', accelerator: 'CmdOrCtrl+,', click: () => sendCommand('settings') },
       { type: 'separator' }, { role: 'services', label: '服务' }, { type: 'separator' },
-      { role: 'hide', label: '隐藏 NoHuman' }, { role: 'hideOthers', label: '隐藏其他应用' }, { role: 'unhide', label: '显示全部' },
-      { type: 'separator' }, { role: 'quit', label: '退出 NoHuman' }
+      { role: 'hide', label: '隐藏 Morrow' }, { role: 'hideOthers', label: '隐藏其他应用' }, { role: 'unhide', label: '显示全部' },
+      { type: 'separator' }, { role: 'quit', label: '退出 Morrow' }
     ] },
     { label: '文件', submenu: [
       { label: '新建项目', accelerator: 'CmdOrCtrl+N', click: () => sendCommand('new-project') },
@@ -153,7 +154,7 @@ function registerIPC(): void {
 async function registerRendererProtocol(): Promise<void> {
   const root = resolve(dirname, '../renderer');
   const mime: Record<string, string> = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css', '.svg': 'image/svg+xml', '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.webp': 'image/webp', '.ico': 'image/x-icon', '.woff2': 'font/woff2', '.woff': 'font/woff', '.ttf': 'font/ttf' };
-  protocol.handle('nohuman', async request => {
+  protocol.handle('morrow', async request => {
     try {
       const url = new URL(request.url);
       if (request.method !== 'GET' || url.host !== 'app') return new Response('Forbidden', { status: 403 });
@@ -171,7 +172,7 @@ async function registerRendererProtocol(): Promise<void> {
 }
 function createWindow(): BrowserWindow {
   const target = new BrowserWindow({
-    width: 1320, height: 840, minWidth: 1000, minHeight: 680, title: 'NoHuman', show: false,
+    width: 1320, height: 840, minWidth: 1000, minHeight: 680, title: 'Morrow', show: false,
     titleBarStyle: 'hiddenInset', trafficLightPosition: { x: 16, y: 16 }, backgroundColor: '#f5f5f6',
     webPreferences: { preload: join(dirname, '../preload/index.cjs'), sandbox: true, contextIsolation: true, nodeIntegration: false, webSecurity: true, allowRunningInsecureContent: false, webviewTag: false }
   });
@@ -181,7 +182,7 @@ function createWindow(): BrowserWindow {
   target.webContents.on('will-attach-webview', event => event.preventDefault());
   target.webContents.session.setPermissionRequestHandler((_contents, _permission, callback) => callback(false));
   target.webContents.session.setPermissionCheckHandler(() => false);
-  target.webContents.on('did-fail-load', (_event, code, description) => { if (code !== -3) console.error(`NoHuman renderer failed (${code}): ${description}`); });
+  target.webContents.on('did-fail-load', (_event, code, description) => { if (code !== -3) console.error(`Morrow renderer failed (${code}): ${description}`); });
   target.on('ready-to-show', () => target.show());
   target.on('closed', () => { if (window === target) window = null; });
   void target.loadURL(developmentURL || packagedURL);
@@ -195,11 +196,11 @@ else {
     await registerRendererProtocol();
     registerIPC();
     configureMenu();
-    app.setAboutPanelOptions({ applicationName: 'NoHuman', applicationVersion: app.getVersion(), copyright: 'NoHuman · 本地优先的持续 Agent 工作空间' });
+    app.setAboutPanelOptions({ applicationName: 'Morrow', applicationVersion: app.getVersion(), copyright: 'Morrow · 本地优先的持续 Agent 工作空间' });
     createWindow();
     void service.initialize();
     app.on('activate', () => { if (!BrowserWindow.getAllWindows().length) createWindow(); });
-  }).catch(error => { console.error('NoHuman startup failed:', error instanceof Error ? error.message : error); app.quit(); });
+  }).catch(error => { console.error('Morrow startup failed:', error instanceof Error ? error.message : error); app.quit(); });
   app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit(); });
   let quitting = false;
   app.on('before-quit', event => {

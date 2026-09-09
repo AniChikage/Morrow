@@ -28,9 +28,9 @@ struct NewProjectSheet: View {
                 GoalEditor(text: $goal, placeholder: "例如：持续改善产品可靠性，发现影响用户体验的问题，并提出可验证的改进。")
             }
             HStack(alignment: .top, spacing: 9) {
-                Image(systemName: "info.circle").foregroundStyle(Color.nhAccent).padding(.top, 1)
+                Image(systemName: "info.circle").foregroundStyle(Color.morrowAccent).padding(.top, 1)
                 Text("创建后会添加「系统完善」与「运营洞察」两个频道，初始为暂停、只读。你可以检查设置后开始运行。")
-                    .font(.system(size: 11)).foregroundStyle(Color.nhSecondary).lineSpacing(4)
+                    .font(.system(size: 11)).foregroundStyle(Color.morrowSecondary).lineSpacing(4)
             }
             SheetError()
             HStack {
@@ -40,7 +40,7 @@ struct NewProjectSheet: View {
                     Task { await store.createProject(name: name.trimmingCharacters(in: .whitespacesAndNewlines), path: path, goal: goal); if store.errorMessage == nil { dismiss() } }
                 }.disabled(!valid || store.isBusy || !store.isConnected).keyboardShortcut(.defaultAction)
             }
-        }.padding(30).frame(width: 540).background(Color.nhCanvas)
+        }.padding(30).frame(width: 540).background(Color.morrowCanvas)
     }
 }
 
@@ -65,7 +65,7 @@ struct NewChannelSheet: View {
                 }.labelsHidden().frame(maxWidth: .infinity, alignment: .leading)
             }
             Text("新频道将以只读权限创建并保持暂停。创建后可调整模型、运行间隔与每日预算。")
-                .font(.system(size: 11)).foregroundStyle(Color.nhSecondary).lineSpacing(4)
+                .font(.system(size: 11)).foregroundStyle(Color.morrowSecondary).lineSpacing(4)
             SheetError()
             HStack {
                 Spacer()
@@ -75,7 +75,7 @@ struct NewChannelSheet: View {
                 }.disabled(name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || goal.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || store.isBusy || !store.isConnected)
                     .keyboardShortcut(.defaultAction)
             }
-        }.padding(30).frame(width: 520).background(Color.nhCanvas)
+        }.padding(30).frame(width: 520).background(Color.morrowCanvas)
     }
 }
 
@@ -113,10 +113,10 @@ struct ChannelSettingsSheet: View {
                 }
             }
             if channel.status == "running" {
-                Text("当前正在运行。暂停频道后可以更换引擎、模型或执行权限。 ").font(.system(size: 11)).foregroundStyle(Color.nhOrange)
+                Text("当前正在运行。暂停频道后可以更换引擎、模型或执行权限。 ").font(.system(size: 11)).foregroundStyle(Color.morrowOrange)
             } else {
                 Text("切换引擎会开启新的原生会话，保留频道目标与历史证据。保存设置不会自动启动频道。")
-                    .font(.system(size: 10)).foregroundStyle(Color.nhSecondary).lineSpacing(4)
+                    .font(.system(size: 10)).foregroundStyle(Color.morrowSecondary).lineSpacing(4)
             }
             SheetError()
             HStack {
@@ -127,7 +127,7 @@ struct ChannelSettingsSheet: View {
                 }.disabled(channel.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || channel.goal.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || channel.intervalMinutes < 1 || channel.intervalMinutes > 1440 || channel.maxRunsPerDay < 1 || channel.maxRunsPerDay > 200 || store.isBusy || !store.isConnected)
                     .keyboardShortcut(.defaultAction)
             }
-        }.padding(30).frame(width: 580).background(Color.nhCanvas)
+        }.padding(30).frame(width: 580).background(Color.morrowCanvas)
     }
 }
 
@@ -144,11 +144,11 @@ struct SearchSheet: View {
     var body: some View {
         VStack(spacing: 0) {
             HStack(spacing: 12) {
-                Image(systemName: "magnifyingglass").foregroundStyle(Color.nhAccent)
+                Image(systemName: "magnifyingglass").foregroundStyle(Color.morrowAccent)
                 TextField("搜索当前项目的发现与证据…", text: $query).textFieldStyle(.plain).font(.system(size: 15)).focused($focused)
                 SmallIconButton(symbol: "xmark", help: "关闭搜索") { dismiss() }
             }.padding(22)
-            Rectangle().fill(Color.nhLine).frame(height: 1)
+            Rectangle().fill(Color.morrowLine).frame(height: 1)
             ScrollView {
                 if results.isEmpty { EmptyPanel(symbol: "magnifyingglass", title: "没有找到相关发现", detail: "尝试搜索标题、描述或证据中的关键词。") }
                 else {
@@ -158,12 +158,12 @@ struct SearchSheet: View {
                                 if store.selection == "runtimes" { store.selection = "overview" }
                                 select(item); dismiss()
                             }
-                            Rectangle().fill(Color.nhLine.opacity(0.5)).frame(height: 1).padding(.horizontal, 15)
+                            Rectangle().fill(Color.morrowLine.opacity(0.5)).frame(height: 1).padding(.horizontal, 15)
                         }
                     }.padding(8)
                 }
             }.frame(height: 350)
-            HStack { Text("本地搜索 · \(results.count) 条发现"); Spacer(); Text("ESC 关闭") }.font(.system(size: 10)).foregroundStyle(Color.nhSecondary).padding(.horizontal, 20).padding(.vertical, 13).background(Color.nhSidebar)
+            HStack { Text("本地搜索 · \(results.count) 条发现"); Spacer(); Text("ESC 关闭") }.font(.system(size: 10)).foregroundStyle(Color.morrowSecondary).padding(.horizontal, 20).padding(.vertical, 13).background(Color.morrowSidebar)
         }.frame(width: 620).background(Color.white).onAppear { focused = true }
             .background { Button("关闭") { dismiss() }.keyboardShortcut(.cancelAction).hidden() }
     }
@@ -175,9 +175,9 @@ struct SheetHeading: View {
     var detail: String
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Image(systemName: symbol).font(.system(size: 20, weight: .light)).foregroundStyle(Color.nhAccent).frame(width: 42, height: 42).background(Color.nhAccent.opacity(0.065), in: RoundedRectangle(cornerRadius: 10))
+            Image(systemName: symbol).font(.system(size: 20, weight: .light)).foregroundStyle(Color.morrowAccent).frame(width: 42, height: 42).background(Color.morrowAccent.opacity(0.065), in: RoundedRectangle(cornerRadius: 10))
             Text(title).font(.system(size: 23, weight: .semibold)).tracking(-0.5)
-            Text(detail).font(.system(size: 12)).foregroundStyle(Color.nhSecondary)
+            Text(detail).font(.system(size: 12)).foregroundStyle(Color.morrowSecondary)
         }.padding(.bottom, 3)
     }
 }
@@ -189,7 +189,7 @@ struct FormField<Content: View>: View {
         VStack(alignment: .leading, spacing: 8) {
             Text(title).font(.system(size: 11, weight: .medium))
             content().font(.system(size: 12))
-            if let hint { Text(hint).font(.system(size: 10)).foregroundStyle(Color.nhSecondary).lineSpacing(3) }
+            if let hint { Text(hint).font(.system(size: 10)).foregroundStyle(Color.morrowSecondary).lineSpacing(3) }
         }.frame(maxWidth: .infinity, alignment: .leading)
     }
 }
@@ -198,14 +198,14 @@ struct GoalEditor: View {
     var placeholder: String
     var body: some View {
         ZStack(alignment: .topLeading) {
-            if text.isEmpty { Text(placeholder).font(.system(size: 12)).foregroundStyle(Color.nhSecondary.opacity(0.6)).lineSpacing(4).padding(10).allowsHitTesting(false) }
+            if text.isEmpty { Text(placeholder).font(.system(size: 12)).foregroundStyle(Color.morrowSecondary.opacity(0.6)).lineSpacing(4).padding(10).allowsHitTesting(false) }
             TextEditor(text: $text).font(.system(size: 12)).scrollContentBackground(.hidden).padding(5).frame(height: 92)
-        }.background(Color.white, in: RoundedRectangle(cornerRadius: 6)).overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.nhLine, lineWidth: 1))
+        }.background(Color.white, in: RoundedRectangle(cornerRadius: 6)).overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.morrowLine, lineWidth: 1))
     }
 }
 struct SheetError: View {
     @EnvironmentObject var store: AppStore
     var body: some View {
-        if let error = store.errorMessage { Label(error, systemImage: "exclamationmark.circle").font(.system(size: 11)).foregroundStyle(Color.nhOrange).lineSpacing(3).textSelection(.enabled) }
+        if let error = store.errorMessage { Label(error, systemImage: "exclamationmark.circle").font(.system(size: 11)).foregroundStyle(Color.morrowOrange).lineSpacing(3).textSelection(.enabled) }
     }
 }

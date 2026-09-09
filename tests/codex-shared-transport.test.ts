@@ -45,6 +45,10 @@ test('App host bridge preserves native model, plugin, and permission overrides',
   assert.equal(sharedRuntimeArgs(['exec','user prompt'],'/socket'),null);
   assert.equal(sharedRuntimeArgs(['app-server','proxy'],'/socket'),null);
   assert.equal(sharedRuntimeArgs(['app-server','--listen','ws://other'],'/socket'),null);
+  const global=['-c','features.code_mode_host=true','--config','model="native-model"'];
+  assert.deepEqual(sharedRuntimeArgs([...global,...args],'/socket'),[...global,'app-server','-c','mcp_servers.codex_app={enabled=true}','-c','model="native-model"','--analytics-default-enabled','--listen','unix:///socket']);
+  assert.deepEqual(sharedRuntimeArgs(['--config=model="native-model"','app-server','--listen=stdio://'],'/socket'),['--config=model="native-model"','app-server','--listen','unix:///socket']);
+  for(const invalid of [['-c','app-server'],['-c','name=app-server','exec','hello'],['--unknown','app-server'],[...global,'app-server','proxy'],[...global,'app-server','--listen','ws://other']])assert.equal(sharedRuntimeArgs(invalid,'/socket'),null);
 });
 test('multiple backends are resolved by loaded bound tasks and a persisted native launch, without resuming candidates',async()=>{
   const directory=mkdtempSync('/tmp/nh-hosts-');chmodSync(directory,0o700);

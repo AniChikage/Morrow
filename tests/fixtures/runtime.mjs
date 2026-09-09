@@ -102,7 +102,7 @@ if (config.sleep) {
     needsHuman: false,
   };
   const claude = args.includes("--print");
-  const finalText = config.finalText ?? (config.markdown ? 'Implemented the requested work.\n\n```nohuman-report\n' + JSON.stringify(result) + '\n```' : JSON.stringify(result));
+  const finalText = config.finalText ?? (config.markdown ? 'Implemented the requested work.\n\n```morrow-report\n' + JSON.stringify(result) + '\n```' : JSON.stringify(result));
   console.log(
     JSON.stringify({
       type: claude ? "system" : "thread.started",

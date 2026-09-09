@@ -8,8 +8,8 @@ import { providerEventDetails } from "./event-details.ts";
 const execute = promisify(execFile);
 const titles = { codex: "Codex", claude: "Claude Code", trae: "Trae CLI" };
 export function runtimePath(id: RuntimeID): string {
-  if (process.env.NOHUMAN_TEST_MODE === "1") {
-    const p = process.env[`NOHUMAN_TEST_${id.toUpperCase()}_PATH`];
+  if (process.env.MORROW_TEST_MODE === "1") {
+    const p = process.env[`MORROW_TEST_${id.toUpperCase()}_PATH`];
     return p && existsSync(p) ? p : "";
   }
   const directories = [
@@ -121,7 +121,7 @@ export function invocation(
       "--permission-prompts",
       "none",
       "--name",
-      `NoHuman:${runId}`,
+      `Morrow:${runId}`,
     ];
     if (channel.model) args.push("--model", channel.model);
     if (channel.sessionId) args.push("--resume", channel.sessionId);

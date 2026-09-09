@@ -14,10 +14,11 @@ interface Props {
 }
 
 export function ProjectNavigation({ projects, channels, route, activeProjectId, scope, onNavigate, onNewChannel }: Props) {
-  const storageKey = `nh:project-navigation:${scope}`;
+  const storageKey = `morrow:project-navigation:${scope}`;
+  const legacyStorageKey = `nh:project-navigation:${scope}`;
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>(() => {
     try {
-      const saved: unknown = JSON.parse(localStorage.getItem(storageKey) || '{}');
+      const saved: unknown = JSON.parse(localStorage.getItem(storageKey) ?? localStorage.getItem(legacyStorageKey) ?? '{}');
       return saved && typeof saved === 'object' && !Array.isArray(saved)
         ? Object.fromEntries(Object.entries(saved).filter(([, value]) => value === true)) : {};
     } catch { return {}; }

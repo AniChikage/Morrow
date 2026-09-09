@@ -10,12 +10,12 @@ import { CodexDesktopTransport, applyDesktopPatches, encodeDesktopFrame } from '
 const threadId = 'native-thread-fixture';
 const state = { id: threadId, cwd: '/fixture', latestModel: 'native-model', latestThreadSettings: { model: 'native-model', sandboxPolicy: { type: 'readOnly' } }, threadRuntimeStatus: { type: 'idle' }, turns: [{ turnId: 'turn-old', status: 'completed', items: [{ type: 'agentMessage', id: 'reply', text: 'native answer' }] }], requests: [{ id: 12, method: 'item/commandExecution/requestApproval', params: { threadId, turnId: 'turn-new' } }] };
 async function fixture(options: { dropMutation?: boolean; rejectMutation?: boolean } = {}) {
-  const dir = mkdtempSync(join(tmpdir(), 'nohuman-desktop-ipc-')); chmodSync(dir, 0o700); const path = join(dir, 'ipc.sock');
+  const dir = mkdtempSync(join(tmpdir(), 'morrow-desktop-ipc-')); chmodSync(dir, 0o700); const path = join(dir, 'ipc.sock');
   const messages: any[] = []; const sockets = new Set<Socket>(); let revision = 10, latest: Socket | null = null;
-  const broadcast = (socket: Socket, change: any, version = 11) => socket.write(encodeDesktopFrame({ type: 'broadcast', method: 'thread-stream-state-changed', version, sourceClientId: 'app-owner', targetClientIds: ['nohuman-client'], params: { hostId: 'local', conversationId: threadId, change } }));
+  const broadcast = (socket: Socket, change: any, version = 11) => socket.write(encodeDesktopFrame({ type: 'broadcast', method: 'thread-stream-state-changed', version, sourceClientId: 'app-owner', targetClientIds: ['morrow-client'], params: { hostId: 'local', conversationId: threadId, change } }));
   const server = createServer(socket => { sockets.add(socket); latest = socket; let buffer: Buffer = Buffer.alloc(0); socket.on('close', () => sockets.delete(socket)); socket.on('data', chunk => { buffer = Buffer.concat([buffer, Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)]); while (buffer.length >= 4 && buffer.length >= buffer.readUInt32LE(0) + 4) { const size = buffer.readUInt32LE(0), message = JSON.parse(buffer.subarray(4, size + 4).toString()); buffer = buffer.subarray(size + 4); messages.push(message);
-    const result = (body: any) => { const frame = encodeDesktopFrame({ type: 'response', requestId: message.requestId, resultType: 'success', method: message.method, handledByClientId: message.method === 'initialize' ? 'nohuman-client' : 'app-owner', result: body }); socket.write(frame.subarray(0, 3)); socket.write(frame.subarray(3)); };
-    if (message.method === 'initialize') result({ clientId: 'nohuman-client' });
+    const result = (body: any) => { const frame = encodeDesktopFrame({ type: 'response', requestId: message.requestId, resultType: 'success', method: message.method, handledByClientId: message.method === 'initialize' ? 'morrow-client' : 'app-owner', result: body }); socket.write(frame.subarray(0, 3)); socket.write(frame.subarray(3)); };
+    if (message.method === 'initialize') result({ clientId: 'morrow-client' });
     else if (message.method === 'thread-owner-discovery') result({ supportsUntrustedAppInput: true });
     else if (message.method === 'thread-stream-following-changed' && message.params.following) broadcast(socket, { type: 'snapshot', revision: revision++, conversationState: state });
     else if (message.type === 'request') {

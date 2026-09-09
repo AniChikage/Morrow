@@ -53,9 +53,9 @@ export class ExecutionEvidence {
       if(row.nativeItemId&&row.nativeItemId!==item.id)continue;
       const position=this.loop.store.db.prepare('SELECT rowid AS n FROM native_items WHERE id=?').get(item.id) as {n:number}|undefined;
       if(!position||position.n<=row.nativeCursor)continue;
-      const raw=item.raw;const ended=['completed','failed','declined','interrupted'].includes(raw.status);
+      const raw=item.raw;const ended=typeof raw.status==='string'&&['completed','failed','declined','interrupted'].includes(raw.status);
       let error=row.error;
-      try{if(realpathSync(raw.cwd)!==row.cwd)error='原生命令目录与项目不同';if((row.status==='prepared'||ended)&&sourceVersion(row.cwd).digest!==row.version.digest)error='准备后或执行期间源文件发生变化';}
+      try{if(typeof raw.cwd!=='string')throw new Error('原生命令目录缺失');if(realpathSync(raw.cwd)!==row.cwd)error='原生命令目录与项目不同';if((row.status==='prepared'||ended)&&sourceVersion(row.cwd).digest!==row.version.digest)error='准备后或执行期间源文件发生变化';}
       catch{error='无法核对命令目录或源版本';}
       if(!ended){if(row.status==='prepared')this.loop.store.put('loop_executions',{...row,status:'running',nativeItemId:item.id,startedAt:now(),...(error?{error}:{})});continue;}
       const output=typeof raw.aggregatedOutput==='string'?raw.aggregatedOutput:'';

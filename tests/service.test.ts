@@ -19,9 +19,9 @@ import { startServer } from "../service/server.ts";
 import { invocation, diagnoseFailure } from "../service/runtimes.ts";
 import { validateResult } from "../service/protocol.ts";
 const fixture = resolve("tests/fixtures/runtime.mjs");
-process.env.NOHUMAN_TEST_MODE = "1";
+process.env.MORROW_TEST_MODE = "1";
 for (const id of ["CODEX", "CLAUDE", "TRAE"])
-  process.env[`NOHUMAN_TEST_${id}_PATH`] = fixture;
+  process.env[`MORROW_TEST_${id}_PATH`] = fixture;
 const pause = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 async function until(predicate: () => any, timeout = 5000) {
   const end = Date.now() + timeout;
@@ -33,7 +33,7 @@ async function until(predicate: () => any, timeout = 5000) {
   throw new Error("Timed out");
 }
 async function setup() {
-  const root = mkdtempSync(join(tmpdir(), "nohuman-test-"));
+  const root = mkdtempSync(join(tmpdir(), "morrow-test-"));
   const home = join(root, "home");
   const projectPath = join(root, "project");
   mkdirSync(projectPath);
@@ -93,7 +93,7 @@ test("local auth, schema validation, paused defaults and idempotent explicit dem
   try {
     assert.deepEqual(await (await fetch(s.base + "/health")).json(), {
       ok: true,
-      service: "nohuman",
+      service: "morrow",
     });
     assert.equal((await fetch(s.base + "/api/state")).status, 401);
     assert.equal(statSync(join(s.home, "token")).mode & 0o777, 0o600);
@@ -370,7 +370,7 @@ test("safe adapters and evidence validation", () => {
   );
 });
 test("restart recovers unfinished run, kills verified orphan and pauses channel", async () => {
-  const root = mkdtempSync(join(tmpdir(), "nohuman-restart-"));
+  const root = mkdtempSync(join(tmpdir(), "morrow-restart-"));
   const home = join(root, "home");
   const projectPath = join(root, "project");
   mkdirSync(projectPath);
@@ -383,7 +383,7 @@ test("restart recovers unfinished run, kills verified orphan and pauses channel"
   try {
     daemon = spawn(process.execPath, ["service/server.ts"], {
       cwd: resolve("."),
-      env: { ...process.env, NOHUMAN_HOME: home, NOHUMAN_PORT: "0" },
+      env: { ...process.env, MORROW_HOME: home, MORROW_PORT: "0" },
       stdio: ["ignore", "pipe", "pipe"],
     });
     let output = "";
@@ -456,7 +456,7 @@ test("split UTF-8 stream preserves Chinese structured output", async () => {
 });
 
 test("execution timeout interrupts and disables scheduling", async () => {
-  process.env.NOHUMAN_TEST_TIMEOUT_MS = "150";
+  process.env.MORROW_TEST_TIMEOUT_MS = "150";
   const s = await setup();
   try {
     s.config({ sleep: true });
@@ -474,7 +474,7 @@ test("execution timeout interrupts and disables scheduling", async () => {
     assert(s.store.all<any>("runs")[0].summary.includes("超时"));
   } finally {
     await s.cleanup();
-    delete process.env.NOHUMAN_TEST_TIMEOUT_MS;
+    delete process.env.MORROW_TEST_TIMEOUT_MS;
   }
 });
 
@@ -659,7 +659,7 @@ test('optional invalid reports do not fail native work and terminal success over
   const s=await setup();
   try {
     const c=s.channels[0];
-    s.config({finalText:'Native work finished.\n```nohuman-report\n{broken}\n```',events:[{type:'error',message:'Transient retry'}],recovered:true});
+    s.config({finalText:'Native work finished.\n```morrow-report\n{broken}\n```',events:[{type:'error',message:'Transient retry'}],recovered:true});
     await s.api('POST',`/api/channels/${c.id}/action`,{action:'resume'});
     await until(()=>s.store.all<any>('runs').some(r=>r.status==='completed'));
     const run=s.store.all<any>('runs')[0];
@@ -743,7 +743,7 @@ test('native handoff requires every project channel paused and records intent wi
 });
 
 test('legacy project board migration is idempotent and mirrors existing artifacts',()=>{
-  const home=mkdtempSync(join(tmpdir(),'nohuman-migration-'));const path=join(home,'workspace.sqlite');let store=new Store(path);
+  const home=mkdtempSync(join(tmpdir(),'morrow-migration-'));const path=join(home,'workspace.sqlite');let store=new Store(path);
   try{
     const projectId=randomUUID(),channelId=randomUUID(),itemId=randomUUID(),runId=randomUUID(),eventId=randomUUID();
     store.put('projects',{id:projectId,name:'legacy'});store.put('channels',{id:channelId,projectId,runtime:'trae',sessionId:'provider-native'});
@@ -756,7 +756,7 @@ test('legacy project board migration is idempotent and mirrors existing artifact
 });
 
 test('incremental raw output cursors never revise prior chunks, lose suffixes or expose pending token prefixes',()=>{
-  const home=mkdtempSync(join(tmpdir(),'nohuman-output-cursors-'));const path=join(home,'workspace.sqlite');let store=new Store(path);
+  const home=mkdtempSync(join(tmpdir(),'morrow-output-cursors-'));const path=join(home,'workspace.sqlite');let store=new Store(path);
   const secret='0123456789abcdef'.repeat(4),runId=randomUUID();
   try{
     store.ioStream(runId,'stdout','prefix '+secret.slice(0,32),secret);

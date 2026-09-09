@@ -28,7 +28,7 @@
 
 本实验运行期间补充的摘要限长、安静观察和工作接口复查拒绝规则，由隔离服务测试验证；真实模型实验主要验证自主理解、选择、复盘与反馈后的改向，不能据此声称覆盖了每个拒绝分支。
 
-原始实验数据、模型回复、决策版本及产物保存位置：`/tmp/nohuman-v070-acceptance`，独立重跑记录为该目录下的 `independent-final-tests.tap`。脚本与临时目录信息：`/tmp/nohuman-strategy-live.ts`、`/tmp/nohuman-strategy-live-info.json`。
+原始实验数据、模型回复、决策版本及产物保存位置：`/tmp/morrow-v070-acceptance`，独立重跑记录为该目录下的 `independent-final-tests.tap`。脚本与临时目录信息：`/tmp/morrow-strategy-live.ts`、`/tmp/morrow-strategy-live-info.json`。
 
 两轮运行 `a54c7275-5288-4d24-b551-4881f9c16b07` 与 `46f989a3-9f42-4fcf-8000-192eca8158d0` 均正常完成，第二轮于北京时间 15:04:04 结束。导出记录后已暂停隔离频道、关闭隔离服务及反馈端，并退出隔离验收窗口；没有留下持续消耗预算的测试任务。
 
@@ -36,8 +36,8 @@
 
 用 CUA 验证原生 Electron 窗口：项目看板 → 当前判断 → 展开认识/依据/候选方向 → 进入同一频道原生对话。完整内容与真实采集来源可见，空项目展示未形成判断，未伪造工作进展；保留灰白紧凑外壳和窄属性栏。原生窗口日志未出现渲染错误。最终界面将复盘结果明确标为「本次预期已达成」，避免暗示业务收益；连接旧服务时明确显示其尚未支持项目判断，该兼容分支有界面测试。
 
-截图：`/tmp/nohuman-v070-understanding.png`、`/tmp/nohuman-v070-decision.png`、`/tmp/nohuman-v070-revised-decision.png`。
+截图：`/tmp/morrow-v070-understanding.png`、`/tmp/morrow-v070-decision.png`、`/tmp/morrow-v070-revised-decision.png`。
 
-已安装 `/Users/bytedance/Applications/NoHuman.app`，版本 0.7.0。更新前备份 SQLite，关闭空闲旧服务后启动新版；未终止 Codex 共享后台。最终界面修正重新打包安装，仅重启 NoHuman 窗口，保留已运行的新版服务。保留 3 个项目、7 个频道、原生任务绑定、目标、权限、每日预算与暂停状态；启用的用户频道仍为 0。SQLite `quick_check=ok`，安装资源与最终服务源码、渲染器包哈希一致，原生连接的 `connected` 与 `backgroundReady` 均为 true。最终安装后已用 CUA 确认项目恢复和当前判断入口可用。
+已安装 `/Users/bytedance/Applications/Morrow.app`，版本 0.7.0。更新前备份 SQLite，关闭空闲旧服务后启动新版；未终止 Codex 共享后台。最终界面修正重新打包安装，仅重启 Morrow 窗口，保留已运行的新版服务。保留 3 个项目、7 个频道、原生任务绑定、目标、权限、每日预算与暂停状态；启用的用户频道仍为 0。SQLite `quick_check=ok`，安装资源与最终服务源码、渲染器包哈希一致，原生连接的 `connected` 与 `backgroundReady` 均为 true。最终安装后已用 CUA 确认项目恢复和当前判断入口可用。
 
-安装检查：`/tmp/nohuman-v070-install-checks.json`。回退数据库：`/tmp/nohuman-before-v070.sqlite`；安装脚本另保留旧版 App。
+安装检查：`/tmp/morrow-v070-install-checks.json`。回退数据库：`/tmp/morrow-before-v070.sqlite`；安装脚本另保留旧版 App。

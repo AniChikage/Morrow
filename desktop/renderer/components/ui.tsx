@@ -30,7 +30,7 @@ export function EmptyState({icon, title, description, action}: {icon?:ReactNode;
 }
 export function Markdown({children}: {children:string}) {
   return <div className="markdown"><ReactMarkdown remarkPlugins={[remarkGfm]} components={{
-    a: ({href, children}) => <a href={href} onClick={event=>{event.preventDefault();if(href && /^https?:\/\//i.test(href)) void window.nohuman?.openExternal(href).catch(()=>{});}}>{children}</a>,
+    a: ({href, children}) => <a href={href} onClick={event=>{event.preventDefault();if(href && /^https?:\/\//i.test(href)) void window.morrow?.openExternal(href).catch(()=>{});}}>{children}</a>,
     img: ({alt}) => <span className="attachment-label">图片{alt ? ` · ${alt}` : ''}</span>,
     pre: ({children}) => <CodeBlock>{children}</CodeBlock>,
   }}>{children}</ReactMarkdown></div>;
@@ -40,9 +40,9 @@ function CodeBlock({children}: {children:ReactNode}) {
   return <div className="code-block"><button className="copy-code" aria-label="复制代码" onClick={async()=>{try {await navigator.clipboard.writeText(ref.current?.textContent || '');setCopied(true);setTimeout(()=>setCopied(false),1500);}catch{setCopied(false);}}}>{copied ? <Check size={13}/> : <Copy size={13}/>}</button><pre ref={ref}>{children}</pre></div>;
 }
 export function PropertyPanel({children}: {children:ReactNode}) {
-  const [width,setWidth] = useState(()=> {try{return Math.max(240,Math.min(400,Number(localStorage.getItem('nh:inspector-width')) || 280));}catch{return 280;}});
+  const [width,setWidth] = useState(()=> {try{return Math.max(240,Math.min(400,Number(localStorage.getItem('morrow:inspector-width') ?? localStorage.getItem('nh:inspector-width')) || 280));}catch{return 280;}});
   const widthRef=useRef(width); widthRef.current=width;
   useEffect(()=>{document.documentElement.style.setProperty('--inspector-width',width+'px');},[width]);
-  function resize(event:PointerEvent<HTMLDivElement>) {const startX=event.clientX; const initial=width; event.currentTarget.setPointerCapture(event.pointerId); const node=event.currentTarget; const move=(e:globalThis.PointerEvent)=>setWidth(Math.max(240,Math.min(400,initial+startX-e.clientX))); const end=()=>{node.removeEventListener('pointermove',move);node.removeEventListener('pointerup',end);node.removeEventListener('pointercancel',end);try{localStorage.setItem('nh:inspector-width',String(widthRef.current));}catch{}};node.addEventListener('pointermove',move);node.addEventListener('pointerup',end);node.addEventListener('pointercancel',end);}
-  return <aside className="property-panel" style={{width}}><div role="separator" aria-label="调整属性栏宽度" aria-orientation="vertical" aria-valuenow={width} aria-valuemin={240} aria-valuemax={400} tabIndex={0} className="panel-resizer" onPointerDown={resize} onKeyDown={e=>{if(e.key==='ArrowLeft'||e.key==='ArrowRight'){e.preventDefault();const next=Math.max(240,Math.min(400,width+(e.key==='ArrowLeft'?16:-16)));setWidth(next);try{localStorage.setItem('nh:inspector-width',String(next));}catch{}}}}><GripVertical size={12}/></div><div className="property-scroll">{children}</div></aside>;
+  function resize(event:PointerEvent<HTMLDivElement>) {const startX=event.clientX; const initial=width; event.currentTarget.setPointerCapture(event.pointerId); const node=event.currentTarget; const move=(e:globalThis.PointerEvent)=>setWidth(Math.max(240,Math.min(400,initial+startX-e.clientX))); const end=()=>{node.removeEventListener('pointermove',move);node.removeEventListener('pointerup',end);node.removeEventListener('pointercancel',end);try{localStorage.setItem('morrow:inspector-width',String(widthRef.current));}catch{}};node.addEventListener('pointermove',move);node.addEventListener('pointerup',end);node.addEventListener('pointercancel',end);}
+  return <aside className="property-panel" style={{width}}><div role="separator" aria-label="调整属性栏宽度" aria-orientation="vertical" aria-valuenow={width} aria-valuemin={240} aria-valuemax={400} tabIndex={0} className="panel-resizer" onPointerDown={resize} onKeyDown={e=>{if(e.key==='ArrowLeft'||e.key==='ArrowRight'){e.preventDefault();const next=Math.max(240,Math.min(400,width+(e.key==='ArrowLeft'?16:-16)));setWidth(next);try{localStorage.setItem('morrow:inspector-width',String(next));}catch{}}}}><GripVertical size={12}/></div><div className="property-scroll">{children}</div></aside>;
 }

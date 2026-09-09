@@ -1,10 +1,10 @@
 import { createContext, useCallback, useContext, useEffect, useRef, useState, type ReactNode } from 'react';
 import { emptySnapshot, type ConnectionInfo, type DesktopAPI, type Snapshot } from '../../shared/types';
-const unavailable = async (): Promise<never> => { throw new Error('桌面连接不可用，请重新打开 NoHuman。'); };
-export const isDesktop = !!window.nohuman;
-let desktopAPI: DesktopAPI = window.nohuman || new Proxy({} as DesktopAPI, { get: () => unavailable });
+const unavailable = async (): Promise<never> => { throw new Error('桌面连接不可用，请重新打开 Morrow。'); };
+export const isDesktop = !!(window.morrow || window.nohuman);
+let desktopAPI: DesktopAPI = window.morrow || window.nohuman || new Proxy({} as DesktopAPI, { get: () => unavailable });
 export async function prepareAPI() {
-  if (!window.nohuman && import.meta.env.DEV) {
+  if (!window.morrow && !window.nohuman && import.meta.env.DEV) {
     desktopAPI = (await import('./preview')).previewAPI();
   }
 }

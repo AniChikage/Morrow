@@ -35,7 +35,7 @@ export interface NativeTransport {
   respond(threadId:string,requestId:string|number,kind:'command'|'file'|'permissions'|'userInput'|'mcp',response:unknown):Promise<unknown>;
   close():void;
 }
-type Binding = {id:string;projectId:string;threadId:string;cwd:string;createdAt:string;lastSyncedAt?:string;syncError?:string;createdByNoHuman?:boolean};
+type Binding = {id:string;projectId:string;threadId:string;cwd:string;createdAt:string;lastSyncedAt?:string;syncError?:string;createdByMorrow?:boolean};
 type StoredThread = NativeSnapshot & {id:string;summary:NativeThreadSummary;hash:string;projectionVersion?:number};
 type StoredItem = NativeItem & {threadId:string;ordinal:number;present:boolean};
 type Outbox = NativeMessageReceipt & {id:string;channelId:string;projectId:string;threadId:string;text:string;textHash?:string;attachmentIds?:string[];createdAt:string;source:'chat'|'schedule';runId?:string};
@@ -155,7 +155,7 @@ export class NativeConversations {
   restoreBackground() { const result=restoreCodexBridge(this.engine.home);this.store.transaction(()=>{this.store.put('migrations',{id:'codex-background-bridge',enabled:false,restoredAt:now()});this.engine.audit({projectId:'',actor:'human',action:'native.background-restored',text:'已恢复 Codex App 原始启动设置，当前会话未中断。'});});return result; }
   async start() {
     for(const entry of this.store.all<Outbox>('native_outbox').filter(entry=>entry.state==='pending'))this.store.put('native_outbox',{...entry,state:'unknown',error:'服务重新连接，正在核对原生任务；不会自动重发。'});
-    for(const run of this.store.all<Run>('runs').filter(run=>run.status==='running'&&run.executionOwner==='codex-app'&&run.source==='nohuman-schedule'))this.scheduled.set(run.channelId,{run,revisions:new Map(Object.entries(run.nativeItemRevisions || {})),runDir:join(this.engine.home,'runs',run.id)});
+    for(const run of this.store.all<Run>('runs').filter(run=>run.status==='running'&&run.executionOwner==='codex-app'&&run.source==='morrow-schedule'))this.scheduled.set(run.channelId,{run,revisions:new Map(Object.entries(run.nativeItemRevisions || {})),runDir:join(this.engine.home,'runs',run.id)});
     for(const binding of this.store.all<Binding>('native_bindings')) {try{this.recoverCheckpoint(binding.threadId);}catch(error){this.recordError(binding.threadId,error);}void this.attach(binding.threadId).catch(error=>this.recordError(binding.threadId,error));}
   }
   recordError(threadId:string,error:unknown) { if(this.closed)return;for(const binding of this.store.all<Binding>('native_bindings').filter(row=>row.threadId===threadId))this.store.put('native_bindings',{...binding,syncError:errorText(error)}); }
@@ -216,7 +216,7 @@ export class NativeConversations {
   }
   async list(id:string) { const {project}=this.channel(id);const status=await this.status();if(!status.connected)return {status,threads:[]};const threads=(await this.transport.listThreads(project.path)).filter(thread=>sameFolder(thread.cwd,project.path)).map(thread=>({id:thread.id,title:thread.title,cwd:thread.cwd,status:'idle',...(thread.model?{model:thread.model}:{}),...(thread.updatedAt?{updatedAt:typeof thread.updatedAt==='number'?new Date(thread.updatedAt<1e12?thread.updatedAt*1000:thread.updatedAt).toISOString():thread.updatedAt}:{})}));return {status,threads}; }
   canRecreateEmpty(binding:Binding):boolean {
-    if(!binding.createdByNoHuman||!this.transport.backgroundReady||!/no rollout found|missing source rollout/i.test(binding.syncError||''))return false;
+    if(!binding.createdByMorrow||!this.transport.backgroundReady||!/no rollout found|missing source rollout/i.test(binding.syncError||''))return false;
     this.flushPending(binding.threadId);
     const stored=this.cachedThread(binding.threadId);
     return !!stored&&!nativeTurns(stored.state).length&&!stored.state.requests?.length&&
@@ -229,12 +229,12 @@ export class NativeConversations {
       const previous=this.binding(id);
       if(previous){await this.conversation(id,{});if(!this.canRecreateEmpty(this.bound(id)))return this.conversation(id,{});}
       if(this.engine.active.has(id)||this.starting.has(id)||this.engine.control(id).enabled)throw new APIError(409,'请先暂停频道并等待本轮完成');
-      const status=await this.status();if(!status.capabilities.create||!this.transport.createThread)throw new APIError(409,'完成一次 Codex 后台连接设置后，即可在 NoHuman 新建对话。');
+      const status=await this.status();if(!status.capabilities.create||!this.transport.createThread)throw new APIError(409,'完成一次 Codex 后台连接设置后，即可在 Morrow 新建对话。');
       this.engine.audit({projectId:project.id,channelId:id,actor:'human',action:'native.creation-requested',text:'请求 Codex App 后台创建原生任务。'});
       let snapshot:NativeSnapshot;
       try{snapshot=await this.transport.createThread(project.path);}catch(error){this.engine.audit({projectId:project.id,channelId:id,actor:'system',action:'native.creation-failed',text:this.engine.redact(errorText(error))});throw error;}
       if(!sameFolder(summary(snapshot).cwd,project.path))throw new APIError(409,'原生任务目录与项目不一致');
-      const binding={id,projectId:project.id,threadId:snapshot.threadId,cwd:project.path,createdAt:now(),createdByNoHuman:true};
+      const binding={id,projectId:project.id,threadId:snapshot.threadId,cwd:project.path,createdAt:now(),createdByMorrow:true};
       this.store.transaction(()=>{this.store.put('native_bindings',binding);this.store.put('channels',{...channel,sessionId:snapshot.threadId});this.engine.audit({projectId:project.id,channelId:id,actor:'human',action:previous?'native.empty-recreated':'native.created',text:previous?'原生后台未保留尚未发送消息的空白任务，已按用户请求重新创建。':'已在 Codex App 共享后台创建原生任务。',...(previous?{before:previous}:{}),after:binding});});
       if(previous){this.subscriptions.get(previous.threadId)?.();this.subscriptions.delete(previous.threadId);}
       this.ingest(snapshot);await this.attach(snapshot.threadId);return this.conversation(id,{});
@@ -295,14 +295,14 @@ export class NativeConversations {
       const request=outbox.find(row=>row.turnId===turnId || turn.params?.clientUserMessageId===row.requestId || turn.items?.some((item:any)=>itemMatchesRequest(item,row.requestId)));
       const runId=request?.runId || previous?.runId || `${key.slice(0,8)}-${key.slice(8,12)}-${key.slice(12,16)}-${key.slice(16,20)}-${key.slice(20,32)}`;
       const existing=this.store.get<Run>('runs',runId);
-      const ownerScheduled=existing?.source==='nohuman-schedule';
+      const ownerScheduled=existing?.source==='morrow-schedule';
       const startedAt=typeof turn.turnStartedAtMs==='number'&&Number.isFinite(turn.turnStartedAtMs)?new Date(turn.turnStartedAtMs).toISOString():existing?.startedAt||'';
       const finishedAt=ended&&typeof turn.turnStartedAtMs==='number'&&typeof turn.durationMs==='number'?new Date(turn.turnStartedAtMs+turn.durationMs).toISOString():existing?.finishedAt||'';
       const final=finalText(turn);const promptItemIds:string[]=[...(previous?.promptItemIds || [])];
       const row={id:key,threadId:snapshot.threadId,nativeTurnId:turnId,channelId:binding.id,projectId:binding.projectId,runId,hash:rawHash,projectionVersion:PROJECTION_VERSION,raw:turn,promptItemIds,firstObservedAt:previous?.firstObservedAt||now(),updatedAt:now(),...(ended?{finalHash:rawHash}:{})};
       this.store.transaction(()=>{
         if(!ownerScheduled) {
-          const run:Run={id:runId,projectId:binding.projectId,channelId:binding.id,runtime:'codex',model:snapshot.state.latestThreadSettings?.model||snapshot.state.latestModel||'',permission:'native',executionOwner:'codex-app',source:request?'nohuman-chat':'native-app',trigger:'manual',resumedFromSessionId:snapshot.threadId,nativeTurnId:turnId,reportStatus:'missing',reportError:'此轮是原生对话，未作为持续职责报告自动更新看板。',status:ended?(turn.status==='completed'?'completed':turn.status==='interrupted'?'interrupted':'failed'):'running',startedAt,finishedAt,summary:(final || (ended?turn.error?.message || '原生轮次已结束':'原生任务正在执行。')).slice(0,20000),sessionId:snapshot.threadId};
+          const run:Run={id:runId,projectId:binding.projectId,channelId:binding.id,runtime:'codex',model:snapshot.state.latestThreadSettings?.model||snapshot.state.latestModel||'',permission:'native',executionOwner:'codex-app',source:request?'morrow-chat':'native-app',trigger:'manual',resumedFromSessionId:snapshot.threadId,nativeTurnId:turnId,reportStatus:'missing',reportError:'此轮是原生对话，未作为持续职责报告自动更新看板。',status:ended?(turn.status==='completed'?'completed':turn.status==='interrupted'?'interrupted':'failed'):'running',startedAt,finishedAt,summary:(final || (ended?turn.error?.message || '原生轮次已结束':'原生任务正在执行。')).slice(0,20000),sessionId:snapshot.threadId};
           this.store.put('runs',run);
           for(const [index,item] of (turn.items||[]).entries())if(isUserItem(item)) {const aliases=[item.serverUserMessageId,item.id,item.clientId,item.clientUserMessageId,item.restoreMessage?.id].filter(value=>typeof value==='string');if(!aliases.length)aliases.push(String(index));if(aliases.some(value=>promptItemIds.includes(value))){for(const alias of aliases)if(!promptItemIds.includes(alias))promptItemIds.push(alias);continue;}const text=userText(item);if(text)this.store.io(runId,'prompt',this.engine.redact(text));promptItemIds.push(...aliases);}
           if(ended&&previous?.finalHash!==rawHash){this.store.io(runId,'stdout',JSON.stringify(turn));if(final)this.store.io(runId,'final',final);}
@@ -324,7 +324,7 @@ export class NativeConversations {
       const sandbox=snapshot.state.currentPermissions?.sandboxPolicy?.type || snapshot.state.latestThreadSettings?.sandboxPolicy?.type || snapshot.state.sandboxPolicy?.type;
       const allowed=channel.permission==='native'?['readOnly','read-only','workspaceWrite','workspace-write','dangerFullAccess','danger-full-access','externalSandbox','external-sandbox']:channel.permission==='read-only' ? ['readOnly','read-only'] : ['readOnly','read-only','workspaceWrite','workspace-write'];
       if(!allowed.includes(sandbox))throw new APIError(409,'原生任务权限尚无法确认符合频道的自动执行范围；请在 Codex App 中设置只读或工作区权限后重试。普通对话可直接继续。');
-      const run:Run={id:randomUUID(),projectId:project.id,channelId:id,runtime:'codex',model:snapshot.state.model || snapshot.state.latestThreadSettings?.model || '',permission:'native',executionOwner:'codex-app',source:'nohuman-schedule',trigger:scheduled?'schedule':'manual',resumedFromSessionId:binding.threadId,workDirection:channel.goal,reportStatus:'pending',reportError:'',status:'running',startedAt:now(),finishedAt:'',summary:'',sessionId:binding.threadId,nativeItemRevisions:Object.fromEntries(this.store.projectItems(project.id).map(item=>[item.id,item.revision]))};
+      const run:Run={id:randomUUID(),projectId:project.id,channelId:id,runtime:'codex',model:snapshot.state.model || snapshot.state.latestThreadSettings?.model || '',permission:'native',executionOwner:'codex-app',source:'morrow-schedule',trigger:scheduled?'schedule':'manual',resumedFromSessionId:binding.threadId,workDirection:channel.goal,reportStatus:'pending',reportError:'',status:'running',startedAt:now(),finishedAt:'',summary:'',sessionId:binding.threadId,nativeItemRevisions:Object.fromEntries(this.store.projectItems(project.id).map(item=>[item.id,item.revision]))};
       const runDir=join(this.engine.home,'runs',run.id);mkdirSync(runDir,{recursive:true,mode:0o700});const prompt=this.engine.prompt(project,channel,run);this.store.put('runs',run);this.engine.persistIO(run.id,'prompt',prompt);this.scheduled.set(id,{run,revisions:new Map(this.store.projectItems(project.id).map(item=>[item.id,item.revision])),runDir});this.store.put('channels',{...channel,status:'running',lastRunAt:run.startedAt,nextRunAt:''});
       const receipt=await this.send(id,prompt,randomUUID(),'schedule',run.id);const active=this.scheduled.get(id);if(active){active.run.nativeTurnId=receipt.turnId;this.store.put('runs',active.run);if(receipt.state==='failed'){this.engine.finishFailure(active.run,'failed',receipt.error||'原生 App 拒绝了本轮请求');this.scheduled.delete(id);}else if(receipt.state!=='accepted'){this.engine.setControl(id,{enabled:false});this.store.put('channels',{...this.store.get<Channel>('channels',id)!,status:'blocked',nextRunAt:''});this.engine.event(id,run.id,'system',receipt.error||'原生发送结果待确认；已停止自动调度，避免重复执行。');}}
       const stored=this.cachedThread(binding.threadId);if(stored)this.finishScheduled(stored);

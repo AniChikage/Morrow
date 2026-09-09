@@ -1,4 +1,4 @@
-# NoHuman 0.3 desktop and daemon contract
+# Morrow 0.3 desktop and daemon contract
 
 The 0.6.0 autonomous work and release additions are specified in [Project work loop](PROJECT-WORK-CONTRACT.md). The sections below also preserve older client compatibility details.
 
@@ -8,11 +8,11 @@ Electron + React + TypeScript macOS desktop, independent Node.js >=24 TypeScript
 
 A project attaches one existing canonical filesystem directory and owns one feature board. A channel is a continuous responsibility and a source of findings, not a separate board. Sibling channels see the same project items and may advance them. `WorkItem.channelId` remains the first source channel; `sourceChannelIds` records contributing channels. Manually created items may have an empty first-source channel.
 
-Each NoHuman run starts or resumes a bounded, noninteractive native CLI turn in the project directory. Scheduling uses intervals, not filesystem-change notifications. Messages are saved for the next round; there is no live custom chat/PTY stdin injection. Manual interaction after a native-terminal handoff remains in the provider's native history and is not streamed back as a NoHuman run.
+Each Morrow run starts or resumes a bounded, noninteractive native CLI turn in the project directory. Scheduling uses intervals, not filesystem-change notifications. Messages are saved for the next round; there is no live custom chat/PTY stdin injection. Manual interaction after a native-terminal handoff remains in the provider's native history and is not streamed back as a Morrow run.
 
 ## Transport and conventions
 
-Start with `node service/server.ts`. `NOHUMAN_HOME` defaults to `~/Library/Application Support/NoHuman`; `NOHUMAN_PORT` defaults to `43821`. The server listens only on `127.0.0.1`. The data directory is private (0700), and the generated `token` file is 0600. All `/api/` requests require `Authorization: Bearer <token>` and reject browser Origin headers. Public `GET /health` returns `{ok:true,service:"nohuman"}`.
+Start with `node service/server.ts`. `MORROW_HOME` defaults to `~/Library/Application Support/Morrow`; `MORROW_PORT` defaults to `43821`. The server listens only on `127.0.0.1`. The data directory is private (0700), and the generated `token` file is 0600. All `/api/` requests require `Authorization: Bearer <token>` and reject browser Origin headers. Public `GET /health` returns `{ok:true,service:"morrow"}`.
 
 JSON responses use ISO8601 dates, UUID record IDs, and empty strings for absent textual values on existing required fields. Additional metadata fields may be omitted, especially in legacy records. No textual nulls are introduced. Errors are non-2xx `{error:string}`. Request bodies are limited to 1 MiB; mutation fields are allowlisted and validated. Tokens are not included in snapshots or exposed to the renderer.
 
@@ -95,7 +95,7 @@ Project/channel creation, channel settings and accepted actions, messages, item 
 
 ## Native execution and optional reports
 
-A run receives the project objective, channel responsibility, entire project board, recent human notes, previous run summaries and sourced knowledge. Work should produce a normal native Markdown response. It may include a fenced `nohuman-report` block with:
+A run receives the project objective, channel responsibility, entire project board, recent human notes, previous run summaries and sourced knowledge. Work should produce a normal native Markdown response. It may include a fenced `morrow-report` block with:
 
 ```ts
 AgentResult = {
@@ -112,17 +112,17 @@ Legacy JSON-only results and provider structured output are also accepted. Valid
 
 `Run.status` describes native execution. CLI exit success with absent or invalid optional report remains completed, preserves the native answer, and does not fabricate board updates. When continuous scheduling is enabled it uses the configured interval. `reportStatus` and `reportError` separately explain report availability, validation or conflicts. A terminal provider failure/nonzero exit remains failed; interruption remains interrupted. Recoverable diagnostics do not override a later successful terminal event. Valid `needsHuman:true` stops scheduling.
 
-Codex/Trae use `exec --json`, or `exec resume <exact-session-id>`, with the chosen sandbox, `approval_policy="never"` and sandboxed workspace-command network access disabled. No `--last`, dangerous bypass, `--ignore-user-config`, `--ignore-rules` or forced `--output-schema` is used. Native provider/model configuration, project rules and skills remain loadable; an explicit NoHuman model overrides the native default. The local-only execution prompt prohibits MCP/remote tools and external publication, but is not an independent OS policy engine for every native integration.
+Codex/Trae use `exec --json`, or `exec resume <exact-session-id>`, with the chosen sandbox, `approval_policy="never"` and sandboxed workspace-command network access disabled. No `--last`, dangerous bypass, `--ignore-user-config`, `--ignore-rules` or forced `--output-schema` is used. Native provider/model configuration, project rules and skills remain loadable; an explicit Morrow model overrides the native default. The local-only execution prompt prohibits MCP/remote tools and external publication, but is not an independent OS policy engine for every native integration.
 
 Claude uses `--print --verbose --output-format stream-json` and an exact `--resume` ID when present, without forced `--json-schema`. It retains `--safe-mode --restricted`, strict empty MCP configuration and explicit allowed tool lists: Read/Grep/Glob for read-only, plus Edit/Write for workspace editing. No Bash or MCP is available, so this adapter cannot run test commands. Native login and session reuse do not imply unchanged inheritance of Claude custom configuration, plugins or tools.
 
-Only one NoHuman run holds a project-path lock at a time. Other projects may run independently. A conflicting manual run returns 409; continuous work waits. Budgets count started attempts per UTC date (1–100 runs/day), intervals are 1–1440 minutes, and suggested rechecks cannot shorten the configured minimum. Single runs time out after 15 minutes; combined stdout/stderr is capped at 20 MiB, individual unbroken log lines at 1 MiB, and input context at 1 MiB. These limits are not token/dollar metering. Pause terminates the CLI process group and disables scheduling. Crash recovery marks unfinished runs interrupted and pauses channels, retaining exact native session IDs for explicit continuation.
+Only one Morrow run holds a project-path lock at a time. Other projects may run independently. A conflicting manual run returns 409; continuous work waits. Budgets count started attempts per UTC date (1–100 runs/day), intervals are 1–1440 minutes, and suggested rechecks cannot shorten the configured minimum. Single runs time out after 15 minutes; combined stdout/stderr is capped at 20 MiB, individual unbroken log lines at 1 MiB, and input context at 1 MiB. These limits are not token/dollar metering. Pause terminates the CLI process group and disables scheduling. Crash recovery marks unfinished runs interrupted and pauses channels, retaining exact native session IDs for explicit continuation.
 
 ## Native-terminal handoff
 
 `POST /api/channels/:id/native-handoff {}` returns `{projectPath,runtime,executable,sessionId}`. The project must be real, the CLI available, every project channel paused/blocked/idle with scheduling disabled, and no project run active. Otherwise the service rejects the request. It persists a human `native-session-opened` intent but does not launch the terminal or claim launch succeeded.
 
-Desktop `openNativeSession(channelId)` obtains that metadata and launches the native CLI through the main process for local connections. Remote mode requires continuing in a terminal on the execution host. An existing exact session ID is used rather than selecting an unrelated latest session. NoHuman does not capture subsequent interactive terminal I/O or automatically infer completion of that manual session.
+Desktop `openNativeSession(channelId)` obtains that metadata and launches the native CLI through the main process for local connections. Remote mode requires continuing in a terminal on the execution host. An existing exact session ID is used rather than selecting an unrelated latest session. Morrow does not capture subsequent interactive terminal I/O or automatically infer completion of that manual session.
 
 ## Desktop bridge and connection state
 
@@ -135,7 +135,7 @@ Desktop `openNativeSession(channelId)` obtains that metadata and launches the na
 - `loadDemo`, `refreshRuntimes`, `chooseFolder`, `openProjectFolder`, `openDataFolder`, `openExternal`.
 - `onCommand(callback) -> unsubscribe` for new-project/search/settings/close-tab/back/forward/toggle-sidebar.
 
-ConnectionConfig is `{mode:"local"|"ssh",host,port,directory}`; ConnectionInfo is `{config,connected,name,error?}`. Main owns daemon HTTP, tokens, SSH, directory dialogs and native launch. IPC validates the sender/main frame, argument counts and allowlisted fields. Renderer receives no generic HTTP, filesystem, raw IPC or token capability. Production loads `nohuman://app/index.html` with sandbox/contextIsolation, no nodeIntegration or webviews, and restrictive CSP. External links accept HTTP(S) without credentials.
+ConnectionConfig is `{mode:"local"|"ssh",host,port,directory}`; ConnectionInfo is `{config,connected,name,error?}`. Main owns daemon HTTP, tokens, SSH, directory dialogs and native launch. IPC validates the sender/main frame, argument counts and allowlisted fields. Renderer receives no generic HTTP, filesystem, raw IPC or token capability. Production loads `morrow://app/index.html` with sandbox/contextIsolation, no nodeIntegration or webviews, and restrictive CSP. External links accept HTTP(S) without credentials.
 
 SSH uses existing noninteractive OpenSSH configuration, strict known-host checking and a local tunnel at `127.0.0.1:43822`; remote bearer text stays in main memory. The app does not install/start remote daemons or transfer provider credentials. Folder dialogs, Finder operations and desktop native-session opening are local-only.
 
@@ -149,12 +149,12 @@ Boot migration derives legacy item project ownership from its source channel, fi
 
 Electron reuses an identifiable healthy daemon and starts bundled Node only when the configured local port refuses connection; it does not replace an active or unrecognized service. Quitting the UI leaves the local daemon running; it closes only its own SSH tunnel. New daemon capabilities require an actual service upgrade, not only a renderer update.
 
-Both desktop generations default to the same data directory, preserving workspace.sqlite, token and run files. Successful Electron connection preferences go to `desktop-connection.json` (0600). If absent/invalid, main can read the old `ai.nohuman.desktop` connection keys usingRemote/remoteHost/remotePort/remoteDirectory. No provider credentials are imported.
+Both desktop generations default to the same data directory, preserving workspace.sqlite, token and run files. Successful Electron connection preferences go to `desktop-connection.json` (0600). If absent/invalid, main can read the old `ai.morrow.desktop` connection keys usingRemote/remoteHost/remotePort/remoteDirectory. No provider credentials are imported.
 
 ## Build entry points and verification scope
 
-`npm ci` installs locked dependencies; `npm run dev` launches Electron with the real bridge; `npm run dev:ui` launches a browser preview. `npm run build` writes out/main, out/preload and out/renderer. `scripts/build-app.sh` delegates to `scripts/build-electron.sh` and builds dist/NoHuman.app (appId ai.nohuman.desktop, version 0.3.0). Install/DMG scripts consume that artifact. Official Node 24 is bundled after SHA-256 verification. Ad-hoc signing is local; Developer ID signing and notarization remain separate distribution work.
+`npm ci` installs locked dependencies; `npm run dev` launches Electron with the real bridge; `npm run dev:ui` launches a browser preview. `npm run build` writes out/main, out/preload and out/renderer. `scripts/build-app.sh` delegates to `scripts/build-electron.sh` and builds dist/Morrow.app (appId ai.morrow.desktop, version 0.3.0). Install/DMG scripts consume that artifact. Official Node 24 is bundled after SHA-256 verification. Ad-hoc signing is local; Developer ID signing and notarization remain separate distribution work.
 
-Legacy `Sources/NoHuman` and Package.swift remain independently buildable; `scripts/build-swiftui.sh` writes dist/NoHuman-SwiftUI.app. Legacy clients ignore additive fields but do not acquire the new project-board and full-records UI.
+Legacy `Sources/Morrow` and Package.swift remain independently buildable; `scripts/build-swiftui.sh` writes dist/Morrow-SwiftUI.app. Legacy clients ignore additive fields but do not acquire the new project-board and full-records UI.
 
 Verification commands include `npm run typecheck`, `npm test`, `npm run test:ui -- desktop`, and `bash scripts/build-app.sh`. Service tests use isolated databases and fixture CLIs; actual CLI/SSH integration and installed native-window UI acceptance are separate checks. This contract does not claim a completed 0.3.0 installation or UI acceptance run.

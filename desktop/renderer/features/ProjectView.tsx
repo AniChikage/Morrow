@@ -13,7 +13,7 @@ const statusOrder = ['open', 'investigating', 'blocked', 'verified', 'resolved']
 interface ProjectPreferences { layout: 'list' | 'board'; status: string; channel: string }
 const defaults: ProjectPreferences = { layout: 'board', status: 'all', channel: 'all' };
 function readPreferences(id: string): ProjectPreferences {
-  try { const stored = JSON.parse(localStorage.getItem(`nohuman.project-view.${id}`) || '{}'); return { layout: stored.layout === 'list' ? 'list' : 'board', status: typeof stored.status === 'string' ? stored.status : 'all', channel: typeof stored.channel === 'string' ? stored.channel : 'all' }; } catch { return defaults; }
+  try { const stored = JSON.parse(localStorage.getItem(`morrow.project-view.${id}`) || localStorage.getItem(`nohuman.project-view.${id}`) || '{}'); return { layout: stored.layout === 'list' ? 'list' : 'board', status: typeof stored.status === 'string' ? stored.status : 'all', channel: typeof stored.channel === 'string' ? stored.channel : 'all' }; } catch { return defaults; }
 }
 export function ProjectView(props: FeatureProps & { id: string }) {
   const { id, snapshot, api, onMutate, onNavigate, onNewFeature, showInspector, busy } = props;
@@ -26,7 +26,7 @@ export function ProjectView(props: FeatureProps & { id: string }) {
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
   useEffect(() => { setPreferences(readPreferences(id)); setQuery(''); setCollapsed(new Set()); setTab('items'); }, [id]);
   const changePreferences = (patch: Partial<ProjectPreferences>) => setPreferences(previous => {
-    const next = { ...previous, ...patch }; try { localStorage.setItem(`nohuman.project-view.${id}`, JSON.stringify(next)); } catch { /* Keep this view preference for the current session. */ } return next;
+    const next = { ...previous, ...patch }; try { localStorage.setItem(`morrow.project-view.${id}`, JSON.stringify(next)); } catch { /* Keep this view preference for the current session. */ } return next;
   });
   const queryText = query.trim().toLocaleLowerCase();
   const items = allItems.filter(item => (preferences.status === 'all' || item.status === preferences.status) && (preferences.channel === 'all' || (preferences.channel === 'manual' ? !item.channelId : featureSourceIds(item).includes(preferences.channel))) && (!queryText || `${featureNumber(item)} ${item.title} ${item.summary} ${item.evidence.join(' ')}`.toLocaleLowerCase().includes(queryText))).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));

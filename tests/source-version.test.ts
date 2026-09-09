@@ -22,7 +22,7 @@ test('nested dependency links and package caches stay outside Git source seals w
   const root=mkdtempSync(join(tmpdir(),'nh-source-deps-'));
   const git=(...args:string[])=>execFileSync('git',['-c','core.hooksPath=/dev/null','-c','commit.gpgsign=false','-C',root,...args],{stdio:'ignore'});
   try {
-    git('init');git('config','user.email','acceptance@localhost');git('config','user.name','NoHuman test');
+    git('init');git('config','user.email','acceptance@localhost');git('config','user.name','Morrow test');
     writeFileSync(join(root,'app.js'),'original');mkdirSync(join(root,'packages/cli/node_modules'),{recursive:true});mkdirSync(join(root,'.pnpm-store'));
     symlinkSync('/outside-dependency',join(root,'packages/cli/node_modules/dependency'));writeFileSync(join(root,'.pnpm-store/index.db'),'cache');
     git('add','.');git('commit','-m','fixture');

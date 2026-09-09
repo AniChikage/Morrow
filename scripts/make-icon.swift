@@ -15,20 +15,21 @@ for size in [16, 32, 128, 256, 512] {
         NSColor(calibratedRed: 0.32, green: 0.29, blue: 0.83, alpha: 1).setFill()
         tile.fill()
         NSGradient(starting: NSColor(calibratedRed: 0.47, green: 0.40, blue: 0.97, alpha: 1), ending: NSColor(calibratedRed: 0.28, green: 0.25, blue: 0.76, alpha: 1))!.draw(in: tile, angle: -90)
-        let n = NSBezierPath()
-        n.move(to: NSPoint(x: 315, y: 302))
-        n.line(to: NSPoint(x: 315, y: 700))
-        n.curve(to: NSPoint(x: 361, y: 716), controlPoint1: NSPoint(x: 315, y: 732), controlPoint2: NSPoint(x: 341, y: 745))
-        n.line(to: NSPoint(x: 666, y: 310))
-        n.curve(to: NSPoint(x: 709, y: 327), controlPoint1: NSPoint(x: 685, y: 284), controlPoint2: NSPoint(x: 709, y: 299))
-        n.line(to: NSPoint(x: 709, y: 722))
-        n.lineWidth = 79
-        n.lineCapStyle = .round
-        n.lineJoinStyle = .round
+        let m = NSBezierPath()
+        m.move(to: NSPoint(x: 270, y: 315))
+        m.line(to: NSPoint(x: 270, y: 700))
+        m.curve(to: NSPoint(x: 322, y: 714), controlPoint1: NSPoint(x: 270, y: 737), controlPoint2: NSPoint(x: 300, y: 740))
+        m.line(to: NSPoint(x: 512, y: 450))
+        m.line(to: NSPoint(x: 702, y: 714))
+        m.curve(to: NSPoint(x: 754, y: 700), controlPoint1: NSPoint(x: 724, y: 740), controlPoint2: NSPoint(x: 754, y: 737))
+        m.line(to: NSPoint(x: 754, y: 315))
+        m.lineWidth = 72
+        m.lineCapStyle = .round
+        m.lineJoinStyle = .round
         NSColor.white.setStroke()
-        n.stroke()
+        m.stroke()
         NSColor(calibratedRed: 0.74, green: 1, blue: 0.80, alpha: 1).setFill()
-        NSBezierPath(ovalIn: NSRect(x: 666, y: 682, width: 86, height: 86)).fill()
+        NSBezierPath(ovalIn: NSRect(x: 711, y: 680, width: 86, height: 86)).fill()
         NSGraphicsContext.restoreGraphicsState()
         let suffix = scale == 2 ? "@2x" : ""
         try rep.representation(using: .png, properties: [:])!.write(to: URL(fileURLWithPath: "\(output)/icon_\(size)x\(size)\(suffix).png"))

@@ -1,7 +1,7 @@
 import { app } from 'electron';
 import { spawn, execFile, type ChildProcess } from 'node:child_process';
 import { access, mkdir, readFile, writeFile, rename, open } from 'node:fs/promises';
-import { constants } from 'node:fs';
+import { constants, existsSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
@@ -12,9 +12,17 @@ const execute = promisify(execFile);
 const delay = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 class ServiceError extends Error { constructor(message: string, readonly status = 0) { super(message); } }
 
+export function resolveDataDirectory(): string {
+  const explicit = process.env.MORROW_HOME || process.env.NOHUMAN_HOME;
+  if (explicit) return explicit;
+  const current = join(homedir(), 'Library/Application Support/Morrow');
+  const legacy = join(homedir(), 'Library/Application Support/NoHuman');
+  return existsSync(current) || !existsSync(legacy) ? current : legacy;
+}
+
 export class ServiceConnection {
-  readonly dataDirectory = process.env.NOHUMAN_HOME || join(homedir(), 'Library/Application Support/NoHuman');
-  readonly localPort = Number(process.env.NOHUMAN_PORT || 43821);
+  readonly dataDirectory = resolveDataDirectory();
+  readonly localPort = Number(process.env.MORROW_PORT || process.env.NOHUMAN_PORT || 43821);
   private config: ConnectionConfig = { mode: 'local', host: '', port: this.localPort, directory: this.dataDirectory };
   private connected = false;
   private error = '';
@@ -45,14 +53,17 @@ export class ServiceConnection {
   }
   private async importSwiftConnection(): Promise<ConnectionConfig> {
     if (process.platform !== 'darwin') return this.config;
-    const preference = async (key: string): Promise<string> => {
-      try { return (await execute('/usr/bin/defaults', ['read', 'ai.nohuman.desktop', key], { timeout: 2000, maxBuffer: 8192 })).stdout.trim(); }
+    const preference = async (domain: string, key: string): Promise<string> => {
+      try { return (await execute('/usr/bin/defaults', ['read', domain, key], { timeout: 2000, maxBuffer: 8192 })).stdout.trim(); }
       catch { return ''; }
     };
     // Only connection preferences are read. Provider accounts and credentials are untouched.
-    const [usingRemote, host, port, directory] = await Promise.all(['usingRemote', 'remoteHost', 'remotePort', 'remoteDirectory'].map(preference));
+    const keys = ['usingRemote', 'remoteHost', 'remotePort', 'remoteDirectory'];
+    let values = await Promise.all(keys.map(key => preference('ai.morrow.desktop', key)));
+    if (!values.some(Boolean)) values = await Promise.all(keys.map(key => preference('ai.nohuman.desktop', key)));
+    const [usingRemote, host, port, directory] = values;
     if (usingRemote !== '1' && usingRemote !== 'true') return this.config;
-    try { return connectionConfig({ mode: 'ssh', host, port: Number(port || 43821), directory: directory || '~/.local/share/nohuman' }); }
+    try { return connectionConfig({ mode: 'ssh', host, port: Number(port || 43821), directory: directory || '~/.local/share/morrow' }); }
     catch { return this.config; }
   }
   private async switchConnection(config: ConnectionConfig, persist: boolean): Promise<ConnectionInfo> {
@@ -85,7 +96,7 @@ export class ServiceConnection {
     try {
       const response = await fetch(`http://127.0.0.1:${port}/health`, { signal: AbortSignal.timeout(1000), redirect: 'error' });
       const value = await response.json() as { ok?: boolean; service?: string };
-      return response.ok && value.ok === true && value.service === 'nohuman' ? 'online' : 'other';
+      return response.ok && value.ok === true && ['morrow', 'nohuman'].includes(value.service || '') ? 'online' : 'other';
     } catch (error) {
       const cause = (error as { cause?: { code?: string } }).cause;
       return cause?.code === 'ECONNREFUSED' ? 'absent' : 'other';
@@ -96,13 +107,13 @@ export class ServiceConnection {
     if (health === 'online') return;
     if (health === 'other') throw new Error(`本机 ${this.localPort} 端口已有无法识别的服务，请检查连接设置。`);
     const projectRoot = app.getAppPath();
-    const candidates = app.isPackaged ? [join(process.resourcesPath, 'bin/node')] : [join(projectRoot, '.build/runtime-cache/node/bin/node'), process.env.NOHUMAN_NODE || '', '/opt/homebrew/bin/node', '/usr/local/bin/node'];
+    const candidates = app.isPackaged ? [join(process.resourcesPath, 'bin/node')] : [join(projectRoot, '.build/runtime-cache/node/bin/node'), process.env.MORROW_NODE || process.env.NOHUMAN_NODE || '', '/opt/homebrew/bin/node', '/usr/local/bin/node'];
     let node = '';
     for (const candidate of candidates) {
       if (!candidate) continue;
       try { await access(candidate, constants.X_OK); node = candidate; break; } catch { /* next candidate */ }
     }
-    if (!node) throw new Error('未找到随应用打包的 Node.js 24+，请重新构建 NoHuman。');
+    if (!node) throw new Error('未找到随应用打包的 Node.js 24+，请重新构建 Morrow。');
     const version = (await execute(node, ['--version'], { timeout: 5000, maxBuffer: 1024 })).stdout;
     if (Number(version.match(/^v(\d+)/)?.[1] || 0) < 24) throw new Error('执行服务需要 Node.js 24 或更高版本。');
     const entry = app.isPackaged ? join(process.resourcesPath, 'service/server.ts') : join(projectRoot, 'service/server.ts');
@@ -113,7 +124,7 @@ export class ServiceConnection {
       const path = [join(homedir(), '.local/bin'), join(homedir(), '.cargo/bin'), '/opt/homebrew/bin', '/usr/local/bin', '/usr/bin', '/bin', '/usr/sbin', '/sbin', process.env.PATH || ''].join(':');
       const child = spawn(node, [entry], {
         cwd: app.isPackaged ? process.resourcesPath : projectRoot, detached: true, stdio: ['ignore', log.fd, log.fd],
-        env: { ...process.env, PATH: path, NOHUMAN_HOME: this.dataDirectory, NOHUMAN_PORT: String(this.localPort) }
+        env: { ...process.env, PATH: path, MORROW_HOME: this.dataDirectory, MORROW_PORT: String(this.localPort) }
       });
       await new Promise<void>((resolve, reject) => { child.once('spawn', resolve); child.once('error', reject); });
       child.unref(); // The independent daemon intentionally survives app shutdown.
@@ -146,7 +157,7 @@ export class ServiceConnection {
       if (await this.probe(this.tunnelPort) === 'online') return;
       await delay(250);
     }
-    throw new Error('SSH 已连接，但远程 NoHuman 服务无响应，请确认服务端口。');
+    throw new Error('SSH 已连接，但远程 Morrow 服务无响应，请确认服务端口。');
   }
   async stopTunnel(): Promise<void> {
     const child = this.tunnel;

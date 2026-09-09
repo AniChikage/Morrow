@@ -1,12 +1,12 @@
-# NoHuman
+# Morrow
 
-一个以项目文件夹为入口的 macOS 持续工作台。Codex 对话直接连接 Mac App 的同一条原生会话；其他引擎使用原生 CLI。NoHuman 负责持续职责、项目看板和可追溯记录，原生运行时管理登录、模型、工具及执行。
+一个以项目文件夹为入口的 macOS 持续工作台。Codex 对话直接连接 Mac App 的同一条原生会话；其他引擎使用原生 CLI。Morrow 负责持续职责、项目看板和可追溯记录，原生运行时管理登录、模型、工具及执行。
 
-0.9.3 使用 **Electron + React + TypeScript**，参考 Multica 的工作区、任务列表、详情与标签导航组织方式。界面与应用图标独立实现，通用图标使用 Lucide，没有复制 Multica 的 UI 源码或品牌素材。每个项目拥有一个统一功能看板；Channel 表示长期职责及事项来源，同项目频道共同推进同一批功能事项。
+0.9.4 使用 **Electron + React + TypeScript**，参考 Multica 的工作区、任务列表、详情与标签导航组织方式。界面与应用图标独立实现，通用图标使用 Lucide，没有复制 Multica 的 UI 源码或品牌素材。每个项目拥有一个统一功能看板；Channel 表示长期职责及事项来源，同项目频道共同推进同一批功能事项。
 
 ## 打开应用
 
-构建产物：`dist/NoHuman.app`，macOS 14+。脚本按当前 Mac 构建 Apple Silicon 或 Intel 包；当前实际验证环境为 Apple Silicon。开发和构建需要 Node 24+、npm 与 Xcode Command Line Tools（用于图标生成和签名）。
+构建产物：`dist/Morrow.app`，macOS 14+。脚本按当前 Mac 构建 Apple Silicon 或 Intel 包；当前实际验证环境为 Apple Silicon。开发和构建需要 Node 24+、npm 与 Xcode Command Line Tools（用于图标生成和签名）。
 
 ```bash
 npm ci
@@ -16,7 +16,7 @@ bash scripts/install-app.sh
 bash scripts/package-dmg.sh
 ```
 
-安装到 `~/Applications/NoHuman.app` 后从 Finder 打开。`npm run build:app` 同样调用 Electron 打包流程。缺少运行时缓存时，构建会下载官方 Node 24、验证 SHA-256 并打包在应用里；运行已打包应用不需要 Homebrew Node。界面依赖通过 `package-lock.json` 固定，使用 electron-vite 构建、electron-builder 打包。
+安装到 `~/Applications/Morrow.app` 后从 Finder 打开。`npm run build:app` 同样调用 Electron 打包流程。缺少运行时缓存时，构建会下载官方 Node 24、验证 SHA-256 并打包在应用里；运行已打包应用不需要 Homebrew Node。界面依赖通过 `package-lock.json` 固定，使用 electron-vite 构建、electron-builder 打包。
 
 ## 频道如何工作
 
@@ -48,7 +48,7 @@ Codex 在同一原生任务中调用项目范围的工作接口，自动建项�
 
 1. 创建项目，选择已有代码文件夹、项目目标和默认运行时。服务解析真实目录路径，重复接入同一文件夹返回提示；新项目准备一个开放的「自主推进」频道，默认暂停、允许编辑自己的项目工作区，每日最多 32 轮。点击开始后由 Codex 先理解现状，再选择工作方向。已有项目的频道、权限、预算和暂停状态保留。
 2. 点击左侧项目名称展开或折叠，并记住状态。项目下第一项「看板」进入统一看板，下面分块列出频道，点击频道进入对话；项目旁的加号创建该项目的频道。在项目的统一功能看板手工创建和编辑功能事项，查看状态、证据、下一步、编号与来源。频道发现的事项也进入这里，不再形成独立看板。
-3. Codex 频道首次启用「后台连接」，在当前任务结束后重新打开一次 Codex App。连接生效后，可直接在 NoHuman 新建原生对话，或关联同一项目已有任务；恢复已有任务不需要手动打开 App 对应页面。设置保留 App 的启动配置和工具，通过用户登录启动项延续，并可在界面撤销。
+3. Codex 频道首次启用「后台连接」，在当前任务结束后重新打开一次 Codex App。连接生效后，可直接在 Morrow 新建原生对话，或关联同一项目已有任务；恢复已有任务不需要手动打开 App 对应页面。设置保留 App 的启动配置和工具，通过用户登录启动项延续，并可在界面撤销。
 4. 「原生对话」与「动态」共用原生输入框，直接发送文字和图片，切换标签保留草稿与待核对回执；运行中发送会追加到当前轮次。两端消息、回复、工具、审批和运行活动保持同一原生 ID；断线时保留历史并禁用发送，重连后补齐。发送结果不确定时用同一请求 ID 核对，不自动重发。
 5. 配置持续职责、自动执行范围、间隔和次数。Codex 的「运行一次」及持续轮次也进入同一原生任务；原生权限必须符合自动执行范围。普通聊天继承 App 设置。其他 CLI 的旧备注入口仍用于补充下一轮上下文。
 
@@ -58,16 +58,16 @@ Codex 在同一原生任务中调用项目范围的工作接口，自动建项�
 
 ## 实际实现的执行能力
 
-- Codex 使用 App 启动的同一个原生后台。透明启动桥接保留原生参数、环境与工具配置，通过仅本机用户可访问的 Unix WebSocket 共享连接；NoHuman 自身不启动另一份执行后台。首次设置生效前回退到已有 owner/follower IPC，其能力仍受 App 已加载任务限制。协议升级不兼容时明确断开，需要适配新版本。
-- 原生任务、消息、轮次、请求、图片、原始事件及发件回执持久化到 SQLite；外部 App 发起的轮次也可追溯，不计入 NoHuman 自动预算。重启 NoHuman 不会中断原生 App 的工作。
-- 文字、工具记录、原生审批、结构化问答，以及 PNG/JPEG/WebP/GIF 图片可在 NoHuman 中操作。单图最多 10 MB，一批最多 5 张、合计 20 MB。其他原生请求及 App 专属界面通过「在 App 中处理」继续。当前同步仅支持本机 App，未提供远程 App 会话同步。
+- Codex 使用 App 启动的同一个原生后台。透明启动桥接保留原生参数、环境与工具配置，通过仅本机用户可访问的 Unix WebSocket 共享连接；Morrow 自身不启动另一份执行后台。首次设置生效前回退到已有 owner/follower IPC，其能力仍受 App 已加载任务限制。协议升级不兼容时明确断开，需要适配新版本。
+- 原生任务、消息、轮次、请求、图片、原始事件及发件回执持久化到 SQLite；外部 App 发起的轮次也可追溯，不计入 Morrow 自动预算。重启 Morrow 不会中断原生 App 的工作。
+- 文字、工具记录、原生审批、结构化问答，以及 PNG/JPEG/WebP/GIF 图片可在 Morrow 中操作。单图最多 10 MB，一批最多 5 张、合计 20 MB。其他原生请求及 App 专属界面通过「在 App 中处理」继续。当前同步仅支持本机 App，未提供远程 App 会话同步。
 
 - SQLite 保存项目、频道、功能事项、运行、事件、报告、带来源/时间的知识，以及完整原生对话和 CLI 输入输出。CLI 未换行输出立即落库；Codex App 快照、消息、工具活动与增量记录在独立原生表中保存，运行视图关联同一线程和轮次。
 - 项目内事项有稳定编号、首次来源频道、参与频道和版本号。同项目频道读取统一看板，人工编辑与运行期间的旧建议发生冲突时保留人工最新版本。
 - 项目/频道创建、频道设置和操作、消息、事项变更与冲突、原生会话交接意图都有持久化事件；事项修改和修改前后记录一同提交。
 - 持续职责轮次通过通用协议取得项目目标、整个项目看板、职责、知识和人工备注，不要求为每个项目编写专用巡检脚本。Codex 普通聊天原样进入 App，不附加这套调度提示。
-- NoHuman 调度按项目路径串行执行，并等待已关联的原生任务空闲；不同项目可独立运行。用户直接在 App 中发起的其他任务仍由 App 管理。调度支持继续工作、发布结果、HTTP JSON 反馈变化与复查期限；尚不包含文件变化触发器。
-- NoHuman 调度次数预算按 UTC 日界计算，失败和中断的已启动调度也计数；普通 Codex 聊天和外部 App 轮次不计入。其他 CLI 子进程单轮超时 15 分钟，stdout/stderr 合计上限 20 MiB，项目提示超过 1 MiB 时拒绝启动。这些 CLI 限制不套用到共享的 Codex App 轮次。
+- Morrow 调度按项目路径串行执行，并等待已关联的原生任务空闲；不同项目可独立运行。用户直接在 App 中发起的其他任务仍由 App 管理。调度支持继续工作、发布结果、HTTP JSON 反馈变化与复查期限；尚不包含文件变化触发器。
+- Morrow 调度次数预算按 UTC 日界计算，失败和中断的已启动调度也计数；普通 Codex 聊天和外部 App 轮次不计入。其他 CLI 子进程单轮超时 15 分钟，stdout/stderr 合计上限 20 MiB，项目提示超过 1 MiB 时拒绝启动。这些 CLI 限制不套用到共享的 Codex App 轮次。
 - CLI 暂停终止自身进程组；Codex 原生持续轮次仅向精确的原生轮次发送停止请求。服务意外重启后重新同步 App 中的实际状态，不把外部工作误判成已中断。
 - 执行状态与看板报告状态分开。持续职责轮次正常结束但未提供报告，或报告无效，仍记录为执行完成；不自动生成事项，已启用的持续运行按用户间隔继续。真正的原生轮次或 CLI 终态失败及中断保留失败语义。普通 Codex 聊天与 App 外部轮次仅同步记录，不自动将回复改写成看板结论。
 - 可选报告中的 Agent 已验证/已解决事项还需要当前版本的独立复核；缺失时保留待验证状态。已存在 ID 必须属于同项目。确认知识跨频道共享，未确认假设保留来源及确认状态。
@@ -76,7 +76,7 @@ Codex 在同一原生任务中调用项目范围的工作接口，自动建项�
 
 ## 运行时
 
-Codex 使用用户已登录的 Mac App，其他引擎使用用户安装、登录的 CLI。NoHuman 不保管模型 API Key。
+Codex 使用用户已登录的 Mac App，其他引擎使用用户安装、登录的 CLI。Morrow 不保管模型 API Key。
 
 | 引擎 | 接口 | 当前能力 |
 | --- | --- | --- |
@@ -88,19 +88,19 @@ Codex 使用用户已登录的 Mac App，其他引擎使用用户安装、登录
 
 Codex 普通聊天继承所关联 App 任务的模型、工具、权限及审批配置。自动工作轮次先核对频道范围，再应用只读/项目工作区沙箱与 Codex 原生自动审查；原生范围选项沿用当前沙箱。按原生协议，这些轮次设置也延续到后续对话。模型与登录继续由原生任务管理，修改频道不会清空任务。
 
-Trae 不传入 `--ignore-user-config`、`--ignore-rules` 或强制 `--output-schema`，保留 CLI 原生 provider、默认模型、规则和技能加载；NoHuman 显式设置所选沙箱、`approval_policy="never"` 和工作区命令网络限制，不使用危险绕过参数。显式填写模型时覆盖 Trae 默认模型。原生配置仍可能初始化集成，调度提示要求本地工作且不使用 MCP/远程工具，不能将提示等同于独立的系统权限隔离。
+Trae 不传入 `--ignore-user-config`、`--ignore-rules` 或强制 `--output-schema`，保留 CLI 原生 provider、默认模型、规则和技能加载；Morrow 显式设置所选沙箱、`approval_policy="never"` 和工作区命令网络限制，不使用危险绕过参数。显式填写模型时覆盖 Trae 默认模型。原生配置仍可能初始化集成，调度提示要求本地工作且不使用 MCP/远程工具，不能将提示等同于独立的系统权限隔离。
 
 Claude 不再强制 `--json-schema`，仍使用 `--safe-mode --restricted`、空 MCP 配置和受限工具列表。只读提供 Read/Grep/Glob，编辑只额外提供 Edit/Write，不提供 Bash 或 MCP，因此不能在此适配器内执行测试命令。它使用原生登录及会话，但不能宣称完整继承 Claude 的自定义配置、插件或工具能力。
 
-0.6.0 提供封存产物的 HTTP 发布适配器及回执核对。Codex 先完成实现、验证和发布说明，在项目「上线确认」提交具体版本；确认后 NoHuman 发送该封存产物，结果不明确时只查询回执，不重复发布。实际项目需提供或由 Codex 在授权范围内建立自己的发布端和反馈来源；这不是通用云平台部署器。原生工具、登录和权限仍由 Codex 管理，本地验证不能等同于线上效果。
+0.6.0 提供封存产物的 HTTP 发布适配器及回执核对。Codex 先完成实现、验证和发布说明，在项目「上线确认」提交具体版本；确认后 Morrow 发送该封存产物，结果不明确时只查询回执，不重复发布。实际项目需提供或由 Codex 在授权范围内建立自己的发布端和反馈来源；这不是通用云平台部署器。原生工具、登录和权限仍由 Codex 管理，本地验证不能等同于线上效果。
 
 ## 独立执行服务与远程主机
 
 App 优先连接正在运行的本机独立服务；只有本机端口没有监听服务时才启动打包的 daemon，不自动重启已有服务。退出界面后，本机服务继续运行，机器休眠期间不能工作。默认监听 `127.0.0.1:43821`，所有 API 使用本机随机 bearer token，拒绝浏览器跨域请求。
 
-Electron 主进程负责服务请求、令牌、SSH 和原生目录操作；隔离的 preload 只向 React 暴露经过校验的业务方法。生产界面从 `nohuman://app/index.html` 加载，启用 sandbox 与 contextIsolation，renderer 不获得 bearer token，也不直接请求 daemon。
+Electron 主进程负责服务请求、令牌、SSH 和原生目录操作；隔离的 preload 只向 React 暴露经过校验的业务方法。生产界面从 `morrow://app/index.html` 加载，启用 sandbox 与 contextIsolation，renderer 不获得 bearer token，也不直接请求 daemon。
 
-数据目录：`~/Library/Application Support/NoHuman/`，其中：
+数据目录：`~/Library/Application Support/Morrow/`，其中：
 
 - `workspace.sqlite`：状态、审计、知识、报告、`run_io` 输入输出，以及 `native_*` 原生绑定、线程、消息、轮次、请求、增量、发送回执和图片记录。
 - `runs/<run-id>/`：CLI 提示、流式日志、最终输出和报告的私有文件副本；原生 App 对话以 SQLite 记录为准。
@@ -111,7 +111,7 @@ Electron 主进程负责服务请求、令牌、SSH 和原生目录操作；隔�
 - `codex-bridge/`：透明启动器、配置回执和当前 App 原生后台的私有连接清单；撤销会移除对应登录启动项及 `CODEX_CLI_PATH` 设置，不删除任务数据。
 - `desktop-connection.json`：Electron 的本机/SSH 连接偏好，不包含模型凭据或服务令牌。
 
-从 SwiftUI 版升级继续使用同一数据目录、数据库、运行文件和 token，不复制或重建项目。首次启动在没有 Electron 连接配置时读取 `ai.nohuman.desktop` 的旧 SSH 偏好；只读取主机、端口、目录与连接模式，不读取 provider 凭据。0.3.0 daemon 启动时幂等补齐事项项目归属、编号和版本，保留原 ID，不自动合并旧事项；已有运行文件在限制范围内一次性导入数据库。项目/事项事件和完整运行记录均有分页接口，快照仅保留最近 500 轮和 1,500 条事件。
+从旧版本升级时会检测并继续使用原有数据目录、数据库、运行文件、token 与 SSH 偏好，不复制或重建项目；全新安装使用 Morrow 数据目录。兼容读取只涉及主机、端口、目录与连接模式，不读取 provider 凭据。0.3.0 daemon 启动时幂等补齐事项项目归属、编号和版本，保留原 ID，不自动合并旧事项；已有运行文件在限制范围内一次性导入数据库。项目/事项事件和完整运行记录均有分页接口，快照仅保留最近 500 轮和 1,500 条事件。
 
 UI 升级不会自动重启已有执行服务。仅当旧 daemon 完全缺少事件历史接口时，客户端可回退到其快照记录；没有对应接口的旧服务无法提供功能编辑、项目审计、完整 I/O 或 Codex App 同步，需要升级服务。不会用快照推造缺失的历史或显示虚假的原生连接成功。
 
@@ -121,7 +121,7 @@ UI 升级不会自动重启已有执行服务。仅当旧 daemon 完全缺少事
 
 ```bash
 # 在远程主机执行；路径对应你放置的 service/ 目录
-NOHUMAN_HOME="$HOME/.local/share/nohuman" node /path/to/nohuman/service/server.ts
+MORROW_HOME="$HOME/.local/share/morrow" node /path/to/morrow/service/server.ts
 ```
 
 使用主机的 systemd、launchd 或现有进程管理器保持服务常驻。Mac 通过已有 SSH 配置建立本地隧道，读取服务令牌到主进程内存；不复制模型凭据。SSH 必须已完成首次主机确认且可非交互登录，本机隧道使用 `127.0.0.1:43822`。远程项目路径是远程主机上的绝对路径，目录选择、Finder 打开和桌面原生会话启动仅适用于本机项目。远程 CLI 会话需在远端终端继续；当前版本不提供 SSH 主机与本机 Codex App 的跨机对话同步，也不会自动降级为远端 Codex CLI。退出 Mac App 只关闭本 App 的 SSH 隧道，远端服务继续执行。当前环境完成输入校验及代码审查，未进行实际远程主机联调。
@@ -147,7 +147,7 @@ node scripts/live-smoke.ts --run --runtime=trae
 
 目录：`desktop/main/` 主进程；`desktop/preload/` 业务桥；`desktop/shared/` 类型契约；`desktop/renderer/` React 界面、控件和视图状态；`service/` 独立执行服务；`tests/` 服务集成测试；`scripts/` 构建与安装。架构与协议见 [docs/MULTICA-ARCHITECTURE-REVIEW.md](docs/MULTICA-ARCHITECTURE-REVIEW.md)、[docs/contract.md](docs/contract.md)。
 
-旧 SwiftUI 实现保留在 `Sources/NoHuman/` 与 `Package.swift`。需要回看或单独构建时运行 `swift build` 或 `bash scripts/build-swiftui.sh`；后者输出 `dist/NoHuman-SwiftUI.app`，不覆盖 Electron 产物。旧客户端继续使用同一服务协议，但不包含新的 React 展示和标签交互。
+旧 SwiftUI 实现保留在 `Sources/Morrow/` 与 `Package.swift`。需要回看或单独构建时运行 `swift build` 或 `bash scripts/build-swiftui.sh`；后者输出 `dist/Morrow-SwiftUI.app`，不覆盖 Electron 产物。旧客户端继续使用同一服务协议，但不包含新的 React 展示和标签交互。
 
 当前包使用本机 ad-hoc 签名。面向其他 Mac 正式分发仍需 Developer ID 签名和 Apple 公证。
 

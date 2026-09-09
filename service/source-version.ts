@@ -27,6 +27,7 @@ export function sourceVersion(directory:string):SourceVersion {
     }};visit(root);
   }
   paths=[...new Set(paths)].filter(path=>!path.split('/').some(part=>dependencies.has(part))).sort();if(paths.length>5000)throw new APIError(409,'源版本超过 5000 个文件，无法完整封存');
+  // Keep the v2 salt stable so the rebrand does not invalidate sealed historical evidence.
   const hash=createHash('sha256').update('nohuman-source-v2\0'),buffer=Buffer.allocUnsafe(512*1024);let bytes=0;
   for(const path of paths){
     if(performance.now()-started>5000)throw new APIError(409,'源版本读取超过 5 秒，无法完整核验，请检查本地磁盘或项目规模');

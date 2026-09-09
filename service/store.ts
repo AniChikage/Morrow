@@ -133,7 +133,7 @@ export class Store {
       (
         this.db
           .prepare(
-            "SELECT COUNT(*) AS count FROM runs WHERE json_extract(data,'$.channelId')=? AND substr(json_extract(data,'$.startedAt'),1,10)=? AND (json_extract(data,'$.source') IS NULL OR json_extract(data,'$.source')='nohuman-schedule')",
+            "SELECT COUNT(*) AS count FROM runs WHERE json_extract(data,'$.channelId')=? AND substr(json_extract(data,'$.startedAt'),1,10)=? AND (json_extract(data,'$.source') IS NULL OR json_extract(data,'$.source') IN ('morrow-schedule','nohuman-schedule'))",
           )
           .get(channelId, day) as any
       ).count,

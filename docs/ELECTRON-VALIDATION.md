@@ -1,4 +1,4 @@
-# NoHuman 0.2.0 — Electron migration validation
+# Morrow 0.2.0 — Electron migration validation
 
 Date: 2026-09-07. Platform: macOS, Apple Silicon.
 
@@ -13,13 +13,13 @@ The desktop UI now uses Electron + React + TypeScript. Shared tokens, Radix prim
 - `npm test`: 17 service tests passed using temporary databases and fake CLI adapters.
 - `npm run build:app`: production renderer/preload/main build and arm64 application packaging passed.
 - `codesign --verify --deep --strict`: installed app passed ad-hoc signature verification.
-- `hdiutil verify dist/NoHuman.dmg`: image checksum valid; approximately 182 MiB.
+- `hdiutil verify dist/Morrow.dmg`: image checksum valid; approximately 182 MiB.
 
 ## Interactive validation
 
 The local browser preview was checked at 1320×840 and 1000×760: project filtering, board/list switching, search and result opening, full finding document, channel note submission and clearing, channel settings, dialog dismissal and SSH directory defaults. Final clean page reload produced no warning/error console entries. Temporary preview server and viewport override were cleaned up.
 
-The installed application was opened from `~/Applications/NoHuman.app`. It loaded the existing real workspace, displayed the project list and complete finding document, opened search through the native File menu and Command-K, opened the new-project dialog with Command-N, and displayed the native folder picker. The picker was cancelled without creating a project. Application reopening restored the active finding tab and history. The independent service continued responding after UI shutdown.
+The installed application was opened from `~/Applications/Morrow.app`. It loaded the existing real workspace, displayed the project list and complete finding document, opened search through the native File menu and Command-K, opened the new-project dialog with Command-N, and displayed the native folder picker. The picker was cancelled without creating a project. Application reopening restored the active finding tab and history. The independent service continued responding after UI shutdown.
 
 Native window captures (the Atlas content is explicitly labelled example data):
 

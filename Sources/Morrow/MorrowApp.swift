@@ -2,7 +2,7 @@ import SwiftUI
 import AppKit
 
 @main
-struct NoHumanApp: App {
+struct MorrowApp: App {
     @StateObject private var store = AppStore()
 
     var body: some Scene {
@@ -18,9 +18,9 @@ struct NoHumanApp: App {
         .windowResizability(.contentMinSize)
         .commands {
             CommandGroup(replacing: .appInfo) {
-                Button("关于 NoHuman") {
+                Button("关于 Morrow") {
                     NSApplication.shared.orderFrontStandardAboutPanel(options: [
-                        .applicationName: "NoHuman",
+                        .applicationName: "Morrow",
                         .applicationVersion: "0.1.0",
                         .credits: NSAttributedString(string: "让每个项目，都有持续负责的 AI。\n本地优先 · 原生 macOS · 多运行时")
                     ])
