@@ -10,6 +10,7 @@ import type {
   RunOutputQuery,
   NativeMessageInput,
   NativeHistoryQuery,
+  ProjectPatch,
 } from '../shared/types';
 
 const runtimes = ['codex'] as const;
@@ -53,14 +54,27 @@ export function connectionConfig(value: unknown): ConnectionConfig {
   }
   return { mode, host, port, directory };
 }
+const briefLimit = 65536;
 export function projectInput(value: unknown): CreateProject {
-  const data = record(value, ['name', 'path', 'goal', 'runtime']);
+  const data = record(value, ['name', 'path', 'goal', 'runtime', 'brief']);
+  const brief = data.brief === undefined ? '' : text(data.brief, '项目说明', briefLimit, true);
   return {
     name: text(data.name, '项目名称', 100),
     path: text(data.path, '项目目录', 4096),
     goal: text(data.goal, '项目目标', 20000),
     ...(data.runtime !== undefined ? { runtime: choice(data.runtime, runtimes) } : {}),
+    ...(brief ? { brief } : {}),
   };
+}
+export function projectPatch(value: unknown): ProjectPatch {
+  const data = record(value, ['goal', 'brief', 'revision']);
+  if (!Number.isInteger(data.revision) || Number(data.revision) < 0 || Number(data.revision) > Number.MAX_SAFE_INTEGER)
+    throw new Error('项目说明版本无效。');
+  const result: ProjectPatch = { revision: Number(data.revision) };
+  if (data.goal !== undefined) result.goal = text(data.goal, '项目目标', 20000);
+  if (data.brief !== undefined) result.brief = text(data.brief, '项目说明', briefLimit, true);
+  if (result.goal === undefined && result.brief === undefined) throw new Error('请至少修改项目目标或项目说明。');
+  return result;
 }
 const channelKeys = ['name', 'goal', 'runtime', 'model', 'intervalMinutes', 'maxRunsPerDay', 'permission'];
 export function channelPatch(value: unknown): ChannelPatch {

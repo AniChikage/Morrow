@@ -131,6 +131,8 @@ MORROW_HOME="$HOME/.local/share/morrow" npm start
 | `/api/channels/:id/native/conversation`、`messages` | 分页原生历史、提交/追加消息与幂等回执。 |
 | `/api/channels/:id/native/interrupt`、`respond` | 精确停止轮次、回答待处理原生请求。 |
 | `GET /api/projects/:id/work` | 项目工作记录，可通过 `itemId` 限定事项。 |
+| `GET /api/projects/:id/brief` | 项目目标与用户写下的项目说明及其版本；`/api/state` 只带版本号不带正文。 |
+| `PATCH /api/projects/:id` | `{goal?, brief?, revision}` 修改目标或项目说明，版本不符返回 409；每次保存写入版本记录与审计，并要求进行中的判断重新评估。 |
 | `POST /api/agent` | 运行范围内的 AI 工作操作。 |
 | `POST /api/releases/:id/review` | 桌面人工发布决定，工作凭据不能调用。 |
 

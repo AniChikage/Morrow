@@ -107,6 +107,37 @@ it('opens a native folder, derives the project name and always creates a Codex p
   expect(context.current.api.channelAction).not.toHaveBeenCalled();
 });
 
+it('sends a project brief only when one was written and fills the suggested outline from the template button', async () => {
+  const user = userEvent.setup(),
+    onNavigate = vi.fn();
+  context.current.api.chooseFolder.mockResolvedValue('/Users/test/projects/Atlas');
+  context.current.api.createProject.mockResolvedValue({ id: 'project-new' });
+  render(<Dialogs modal={{ kind: 'project' }} onClose={() => {}} onNavigate={onNavigate} />, {
+    wrapper: TestProviders,
+  });
+  await user.click(screen.getByRole('button', { name: '选择文件夹' }));
+  const brief = screen.getByRole('textbox', { name: /^项目说明/ }) as HTMLTextAreaElement;
+  expect(brief.placeholder).toContain('目标与成功标准');
+  expect(brief.placeholder).toContain('需要我决定的事');
+  await user.click(screen.getByRole('button', { name: '插入模板' }));
+  expect(brief.value.startsWith('## 目标与成功标准\n')).toBe(true);
+  expect(brief.value).toContain('\n## 约束与红线\n');
+  expect((screen.getByRole('button', { name: '插入模板' }) as HTMLButtonElement).disabled).toBe(true);
+  await user.clear(brief);
+  await user.type(brief, '  不得改动计费。  ');
+  await user.click(screen.getByRole('button', { name: '打开项目' }));
+  await waitFor(() =>
+    expect(context.current.api.createProject).toHaveBeenCalledWith({
+      name: 'Atlas',
+      path: '/Users/test/projects/Atlas',
+      runtime: 'codex',
+      goal: '持续跟踪项目进展，识别有证据支持的问题，在授权范围内推进修复并验证结果。',
+      brief: '不得改动计费。',
+    })
+  );
+  expect(onNavigate).toHaveBeenCalledWith({ kind: 'project', id: 'project-new' }, true);
+});
+
 it('opens an already connected folder without creating another project', async () => {
   const user = userEvent.setup(),
     onClose = vi.fn(),

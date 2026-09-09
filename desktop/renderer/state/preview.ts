@@ -218,6 +218,27 @@ export function previewAPI(): DesktopAPI {
     getConnection: async () => connection,
     connect: unavailable,
     createProject: unavailable,
+    getProjectBrief: async (id) => {
+      const project = snapshot.projects.find((value) => value.id === id);
+      if (!project) throw new Error('项目不存在');
+      return { goal: project.goal, brief: project.brief || '', briefRevision: project.briefRevision || 0 };
+    },
+    updateProject: async (id, data) => {
+      const project = snapshot.projects.find((value) => value.id === id);
+      if (!project) throw new Error('项目不存在');
+      if (data.revision !== (project.briefRevision || 0)) throw new Error('项目说明已被更新，请刷新后再保存。');
+      const before = { goal: project.goal, briefRevision: project.briefRevision || 0 };
+      Object.assign(project, {
+        ...(data.goal !== undefined ? { goal: data.goal } : {}),
+        ...(data.brief !== undefined ? { brief: data.brief } : {}),
+        briefRevision: (project.briefRevision || 0) + 1,
+      });
+      audit(id, '', '', '[预览] 更新了项目说明', 'project.updated', {
+        before,
+        after: { goal: project.goal, briefRevision: project.briefRevision },
+      });
+      return structuredClone(project);
+    },
     createChannel: unavailable,
     updateChannel: async (id, data) => {
       const channel = snapshot.channels.find((value) => value.id === id);

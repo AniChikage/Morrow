@@ -10,6 +10,7 @@ import {
   itemInput,
   itemPatch,
   projectInput,
+  projectPatch,
   runOutputInput,
   runsInput,
 } from './validation.ts';
@@ -55,6 +56,40 @@ test('channel inputs preserve supported settings and reject arbitrary fields', (
   ])
     assert.throws(() => channelPatch(value));
   assert.throws(() => projectInput({ name: '项目', path: '/tmp', goal: '目标', isDemo: true }));
+});
+test('project briefs travel only when written and edits must name the version they are based on', () => {
+  assert.deepEqual(projectInput({ name: '项目', path: '/tmp', goal: '目标', brief: '  ## 约束与红线\n不改计费 ' }), {
+    name: '项目',
+    path: '/tmp',
+    goal: '目标',
+    brief: '## 约束与红线\n不改计费',
+  });
+  assert.deepEqual(projectInput({ name: '项目', path: '/tmp', goal: '目标', brief: '   ' }), {
+    name: '项目',
+    path: '/tmp',
+    goal: '目标',
+  });
+  assert.throws(() => projectInput({ name: '项目', path: '/tmp', goal: '目标', brief: 'x'.repeat(65537) }));
+  assert.deepEqual(projectPatch({ goal: ' 新目标 ', brief: '', revision: 0 }), {
+    goal: '新目标',
+    brief: '',
+    revision: 0,
+  });
+  assert.deepEqual(projectPatch({ brief: '## 目标与成功标准', revision: 4 }), {
+    brief: '## 目标与成功标准',
+    revision: 4,
+  });
+  for (const value of [
+    { brief: '缺少版本' },
+    { brief: '负版本', revision: -1 },
+    { brief: '小数版本', revision: 1.5 },
+    { revision: 1 },
+    { goal: '', revision: 1 },
+    { brief: 'x'.repeat(65537), revision: 1 },
+    { brief: 'x', revision: 1, briefRevision: 9 },
+    { brief: 'x', revision: 1, isDemo: false },
+  ])
+    assert.throws(() => projectPatch(value));
 });
 test('event pagination is bounded and accepts only a single direction', () => {
   assert.deepEqual(eventsInput({ channelId: 'channel-1', before: 'event-2', limit: 100 }), {

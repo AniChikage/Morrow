@@ -256,7 +256,13 @@ export class ProjectWorkLoop {
       ).n
     );
     return {
-      project: { id: project.id, name: project.name, goal: project.goal },
+      project: {
+        id: project.id,
+        name: project.name,
+        goal: project.goal,
+        brief: project.brief || '',
+        briefRevision: project.briefRevision || 0,
+      },
       channel: { id: channel.id, goal: channel.goal },
       strategy: this.strategy.context(scope, item?.id),
       learningCoverage: {

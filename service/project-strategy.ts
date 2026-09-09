@@ -63,11 +63,16 @@ export class ProjectStrategy {
     return this.loop.store;
   }
   objective(project: Project, channel: Channel) {
+    // The brief joins the hash only once it has been written, so upgrading does not
+    // flip every existing active decision into "目标或工作方向已经改变".
+    const briefRevision = project.briefRevision || 0;
     return {
       goal: project.goal,
       direction: channel.goal,
       version: createHash('sha256')
-        .update(JSON.stringify([project.goal, channel.goal]))
+        .update(
+          JSON.stringify(briefRevision > 0 ? [project.goal, channel.goal, briefRevision] : [project.goal, channel.goal])
+        )
         .digest('hex'),
     };
   }

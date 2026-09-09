@@ -23,9 +23,24 @@ export type Project = {
   name: string;
   path: string;
   goal: string;
+  /** The user's own written requirements (Markdown, at most 64 KiB). Read by every turn, never edited by the agent. */
+  brief?: string;
+  /** Counts saved goal/brief versions; missing on rows written before the brief existed and treated as 0. */
+  briefRevision?: number;
   createdAt: string;
   isDemo: boolean;
   runtime: AnyRuntimeID;
+};
+export const projectBriefLimit = 65536;
+/** One row per saved goal/brief version; the human is the only author. */
+export type ProjectBriefRevision = {
+  id: string;
+  projectId: string;
+  revision: number;
+  goal: string;
+  brief: string;
+  updatedAt: string;
+  actor: 'human';
 };
 export type Channel = {
   work?: ChannelWork;

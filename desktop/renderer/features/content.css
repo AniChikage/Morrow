@@ -525,6 +525,76 @@
   margin: 0 0 33px;
   overflow-wrap: anywhere;
 }
+/* Project brief: the user's requirements as a readable document, edited in place without cards. */
+.brief-document > h1 {
+  margin-bottom: 20px;
+}
+.brief-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  margin: 0 0 12px;
+}
+.brief-heading > h1 {
+  font-size: 24px;
+  font-weight: 600;
+  line-height: 1.55;
+  letter-spacing: -0.35px;
+  color: #292a31;
+  margin: 0;
+}
+.brief-actions {
+  display: flex;
+  gap: 8px;
+  flex-shrink: 0;
+}
+.brief-intro {
+  margin: 0 0 30px;
+  font-size: 13px;
+  line-height: 1.7;
+}
+.brief-body .markdown {
+  font-size: 14px;
+  line-height: 1.9;
+}
+.brief-document textarea {
+  font: inherit;
+  font-size: 13px;
+  line-height: 1.7;
+}
+.brief-goal-field textarea {
+  min-height: 72px;
+}
+.brief-input {
+  min-height: 360px;
+}
+.dialog-content .brief-input {
+  min-height: 140px;
+}
+.brief-template-row {
+  display: flex;
+  margin: -10px 0 18px;
+}
+.property-goal {
+  display: block;
+  width: 100%;
+  border: 0;
+  background: transparent;
+  padding: 0;
+  margin: 0;
+  text-align: left;
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+}
+.property-goal > .property-description {
+  display: block;
+}
+.property-goal:hover .property-description,
+.property-goal:focus-visible .property-description {
+  color: var(--text);
+}
 .finding-section {
   margin: 0 0 34px;
 }

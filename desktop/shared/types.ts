@@ -23,9 +23,24 @@ export interface Project {
   name: string;
   path: string;
   goal: string;
+  /** The user's own written requirements. Absent from the polled snapshot; read through getProjectBrief. */
+  brief?: string;
+  /** Saved goal/brief version; 0 or absent until the user writes one. */
+  briefRevision?: number;
   createdAt: string;
   isDemo: boolean;
   runtime?: AnyRuntimeID;
+}
+export interface ProjectBrief {
+  goal: string;
+  brief: string;
+  briefRevision: number;
+}
+export interface ProjectPatch {
+  goal?: string;
+  brief?: string;
+  /** Must equal the current briefRevision; the service rejects a stale version. */
+  revision: number;
 }
 export interface Channel {
   work?: ChannelWork;
@@ -142,6 +157,7 @@ export interface CreateProject {
   path: string;
   goal: string;
   runtime?: RuntimeID;
+  brief?: string;
 }
 export interface CreateChannel {
   projectId: string;
@@ -304,6 +320,8 @@ export interface NativeHistoryQuery {
 }
 export interface DesktopAPI {
   getProjectWork?(projectId: string, itemId?: string): Promise<ProjectLoop>;
+  getProjectBrief?(projectId: string): Promise<ProjectBrief>;
+  updateProject?(id: string, data: ProjectPatch): Promise<Project>;
   reviewRelease?(id: string, reviewHash: string, decision: 'approve' | 'reject', feedback: string): Promise<Release>;
   reconcileRelease?(id: string): Promise<Release>;
   getState(): Promise<Snapshot>;

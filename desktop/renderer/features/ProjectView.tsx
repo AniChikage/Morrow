@@ -30,6 +30,7 @@ import { formatDate, kindLabel, statusLabel } from '../components/format';
 import { featureNumber, featureProjectId, featureSourceIds, featureSourceLabel } from './featureOwnership';
 import { ProjectRecords } from './ProjectRecords';
 import { ProjectReleases, ProjectThinking } from './ProjectWork';
+import { ProjectBrief } from './ProjectBrief';
 import './content.css';
 
 const statusOrder = ['open', 'investigating', 'blocked', 'verified', 'resolved'];
@@ -58,7 +59,7 @@ export function ProjectView(props: FeatureProps & { id: string }) {
   const project = snapshot.projects.find((project) => project.id === id);
   const channels = snapshot.channels.filter((channel) => channel.projectId === id);
   const allItems = snapshot.items.filter((item) => featureProjectId(item, snapshot.channels) === id);
-  const [tab, setTab] = useState<'items' | 'thinking' | 'records' | 'releases'>('items');
+  const [tab, setTab] = useState<'items' | 'brief' | 'thinking' | 'records' | 'releases'>('items');
   const [query, setQuery] = useState('');
   const [preferences, setPreferences] = useState(() => readPreferences(id));
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
@@ -115,6 +116,14 @@ export function ProjectView(props: FeatureProps & { id: string }) {
               onClick={() => setTab('items')}
             >
               功能看板 <span>{allItems.length}</span>
+            </button>
+            <button
+              role="tab"
+              aria-selected={tab === 'brief'}
+              className={tab === 'brief' ? 'active' : ''}
+              onClick={() => setTab('brief')}
+            >
+              项目说明
             </button>
             <button
               role="tab"
@@ -235,7 +244,9 @@ export function ProjectView(props: FeatureProps & { id: string }) {
             新建功能
           </Button>
         </div>
-        {tab === 'thinking' ? (
+        {tab === 'brief' ? (
+          <ProjectBrief key={id} api={api} project={project} busy={busy} onMutate={onMutate} />
+        ) : tab === 'thinking' ? (
           <ProjectThinking api={api} projectId={id} onNavigate={onNavigate} />
         ) : tab === 'releases' ? (
           <ProjectReleases {...props} key={id} projectId={id} />
@@ -355,9 +366,16 @@ export function ProjectView(props: FeatureProps & { id: string }) {
           </section>
           <section className="property-section">
             <h3>项目目标</h3>
-            <div className="property-description">
-              <Markdown>{project.goal}</Markdown>
-            </div>
+            <button
+              type="button"
+              className="property-goal"
+              title="打开项目说明，查看或编辑目标与要求"
+              onClick={() => setTab('brief')}
+            >
+              <span className="property-description">
+                <Markdown>{project.goal}</Markdown>
+              </span>
+            </button>
           </section>
           <section className="property-section">
             <h3>资源</h3>

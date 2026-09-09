@@ -47,6 +47,7 @@ export class Store {
       'native_outbox',
       'native_turns',
       'native_attachments',
+      'project_brief_revisions',
     ])
       this.db.exec(`CREATE TABLE IF NOT EXISTS ${table} (id TEXT PRIMARY KEY, data TEXT NOT NULL)`);
     this.db.exec(
@@ -73,16 +74,19 @@ export class Store {
       'loop_verifications',
       'loop_verification_events',
       'loop_finalizations',
+      'project_brief_revisions',
     ])
       this.db.exec(`CREATE INDEX IF NOT EXISTS ${table}_project ON ${table}(json_extract(data,'$.projectId'))`);
   }
   migrate(home: string) {
     this.transaction(() => {
+      // Projects written before the brief existed keep an empty brief at revision 0.
       for (const p of this.all<Project>('projects'))
-        if (!p.runtime)
+        if (!p.runtime || p.briefRevision === undefined)
           this.put('projects', {
             ...p,
-            runtime: this.all<Channel>('channels').find((c) => c.projectId === p.id)?.runtime || 'codex',
+            runtime: p.runtime || this.all<Channel>('channels').find((c) => c.projectId === p.id)?.runtime || 'codex',
+            briefRevision: p.briefRevision ?? 0,
           });
       const numbers = new Map<string, number>();
       for (const item of this.all<WorkItem>('items')) {
@@ -281,6 +285,7 @@ export class Store {
         'native_outbox',
         'native_turns',
         'native_attachments',
+        'project_brief_revisions',
       ].includes(t)
     )
       throw new Error('Unknown table');
@@ -442,7 +447,11 @@ export class Store {
   }
   snapshot(runtimes: any[]) {
     return {
-      projects: this.all<Project>('projects'),
+      // The polled snapshot carries the brief's revision, not its text; GET /api/projects/:id/brief returns the text.
+      projects: this.all<Project>('projects').map(({ brief, ...project }) => ({
+        ...project,
+        briefRevision: project.briefRevision || 0,
+      })),
       channels: this.all<Channel>('channels').map((channel) => ({
         ...channel,
         autonomyEnabled: !!this.get<any>('controls', channel.id)?.enabled,

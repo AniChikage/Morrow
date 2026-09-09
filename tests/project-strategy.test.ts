@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { startServer } from '../service/server.ts';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
@@ -275,6 +275,61 @@ test('goal changes reject stale selections and user guidance creates durable rev
       objectiveVersion: context.strategy.objective.version,
     });
     assert.notEqual(next.objective.direction, d.objective.direction);
+  } finally {
+    await s.cleanup();
+  }
+});
+test('a saved project brief changes the objective, asks active decisions to be reviewed and wakes only enabled channels', async () => {
+  const s = await setup();
+  try {
+    const d = await s.call('decision.choose', s.decisionInput);
+    // Until a brief is written the hash is the historical one, so upgrading does not flip existing decisions.
+    assert.equal(
+      d.objective.version,
+      createHash('sha256')
+        .update(JSON.stringify([s.project.goal, s.channel.goal]))
+        .digest('hex')
+    );
+    assert.equal((await s.call('context')).strategy.decisions[0].reviewReasons.length, 0);
+    const paused = await s.api(
+      'POST',
+      '/api/channels',
+      { projectId: s.project.id, name: '手动暂停的频道', goal: '暂不工作', runtime: 'codex' },
+      201
+    );
+    s.engine.setControl(s.channel.id, { enabled: true });
+    s.store.put('channels', { ...s.channel, nextRunAt: future() });
+    const updated = await s.api('PATCH', `/api/projects/${s.project.id}`, {
+      brief: '## 目标与成功标准\n\n先验证目标人群是否需要这个产品。',
+      revision: 0,
+    });
+    assert.equal(updated.briefRevision, 1);
+    const context = await s.call('context');
+    assert.equal(context.project.briefRevision, 1);
+    assert.notEqual(context.strategy.objective.version, d.objective.version);
+    const reasons = context.strategy.decisions.find((row: any) => row.id === d.id).reviewReasons;
+    assert(reasons.includes('目标或工作方向已经改变'));
+    assert(reasons.includes('项目说明已更新（版本 1）'));
+    assert(Date.parse(s.store.get<any>('channels', s.channel.id).nextRunAt) < Date.now() + 6000);
+    assert.equal(s.store.get<any>('channels', s.channel.id).status, 'waiting');
+    assert.equal(s.store.get<any>('channels', paused.id).nextRunAt, '');
+    assert.equal(s.store.get<any>('channels', paused.id).status, 'paused');
+    assert.equal(s.engine.control(paused.id).enabled, false);
+    await s.call('decision.choose', { ...s.decisionInput, objectiveVersion: d.objective.version }, 409);
+    await s.call('decision.review', {
+      ...s.reviewInput,
+      id: d.id,
+      revision: 1,
+      outcome: 'abandoned',
+      conclusion: '用户写下了新的要求',
+      evidenceIds: [],
+      nextDirection: '按项目说明验证需求',
+    });
+    const next = await s.call('decision.choose', {
+      ...s.decisionInput,
+      objectiveVersion: context.strategy.objective.version,
+    });
+    assert.equal(next.objective.version, context.strategy.objective.version);
   } finally {
     await s.cleanup();
   }

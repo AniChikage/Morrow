@@ -97,6 +97,147 @@ describe('one project-owned feature board', () => {
   });
 });
 
+describe('the project brief is the user-owned document between the board and Codex judgement', () => {
+  it('renders the brief as Markdown after opening the tab from the inspector goal', async () => {
+    const user = userEvent.setup();
+    const state = snapshot();
+    state.projects[0].briefRevision = 2;
+    const { props, api } = featureProps({ snapshot: state });
+    api.getProjectBrief.mockResolvedValue({
+      goal: '改善可靠性与激活体验。',
+      brief: '## 目标与成功标准\n\n- 首月留存 **提升到 40%**\n\n## 约束与红线\n\n不得改动计费。',
+      briefRevision: 2,
+    });
+    render(<ProjectView {...props} id="project-atlas" />, { wrapper: TestProviders });
+    expect(screen.getAllByRole('tab').map((tab) => tab.textContent)).toEqual([
+      '功能看板 3',
+      '项目说明',
+      '当前判断',
+      '全部记录',
+      '上线确认 ',
+    ]);
+    expect(screen.getByRole('tab', { name: '项目说明' }).getAttribute('aria-selected')).toBe('false');
+    await user.click(within(screen.getByRole('complementary')).getByRole('button', { name: /改善可靠性与激活体验/ }));
+    expect(screen.getByRole('tab', { name: '项目说明' }).getAttribute('aria-selected')).toBe('true');
+    expect(await screen.findByRole('heading', { level: 2, name: '目标与成功标准' })).toBeTruthy();
+    expect(screen.getByText('提升到 40%').tagName).toBe('STRONG');
+    expect(screen.getByRole('heading', { level: 2, name: '约束与红线' })).toBeTruthy();
+    expect(screen.getByText(/当前为版本 2/)).toBeTruthy();
+    expect(api.getProjectBrief).toHaveBeenCalledWith('project-atlas');
+    // Demo projects are readable but never editable.
+    expect(screen.queryByRole('button', { name: '编辑' })).toBeNull();
+  });
+
+  it('edits the goal and brief and saves them against the loaded version', async () => {
+    const user = userEvent.setup();
+    const state = snapshot();
+    state.projects[0].isDemo = false;
+    state.projects[0].briefRevision = 1;
+    const { props, api } = featureProps({ snapshot: state });
+    api.getProjectBrief.mockResolvedValue({ goal: '改善可靠性与激活体验。', brief: '旧说明', briefRevision: 1 });
+    api.updateProject.mockResolvedValue({
+      ...state.projects[0],
+      goal: '新目标',
+      brief: '## 目标与成功标准\n\n新说明',
+      briefRevision: 2,
+    });
+    render(<ProjectView {...props} id="project-atlas" />, { wrapper: TestProviders });
+    await user.click(screen.getByRole('tab', { name: '项目说明' }));
+    await user.click(await screen.findByRole('button', { name: '编辑' }));
+    const save = screen.getByRole('button', { name: '保存' }) as HTMLButtonElement;
+    expect(save.disabled).toBe(true);
+    const goal = screen.getByRole('textbox', { name: '项目目标' });
+    const brief = screen.getByRole('textbox', { name: /^项目说明/ });
+    expect((brief as HTMLTextAreaElement).value).toBe('旧说明');
+    await user.clear(goal);
+    await user.type(goal, ' 新目标 ');
+    await user.clear(brief);
+    await user.type(brief, '新说明 ');
+    expect(save.disabled).toBe(false);
+    await user.click(save);
+    await waitFor(() =>
+      expect(api.updateProject).toHaveBeenCalledWith('project-atlas', { goal: '新目标', brief: '新说明', revision: 1 })
+    );
+    expect(props.onMutate).toHaveBeenCalled();
+    expect(await screen.findByRole('heading', { level: 2, name: '目标与成功标准' })).toBeTruthy();
+    expect(screen.getByText('新目标')).toBeTruthy();
+    expect(screen.queryByRole('textbox', { name: '项目目标' })).toBeNull();
+  });
+
+  it('holds back a draft when the brief changed elsewhere and offers the latest version instead', async () => {
+    const user = userEvent.setup();
+    const state = snapshot();
+    state.projects[0].isDemo = false;
+    state.projects[0].briefRevision = 1;
+    const { props, api } = featureProps({ snapshot: state });
+    api.getProjectBrief
+      .mockResolvedValueOnce({ goal: '改善可靠性与激活体验。', brief: '旧说明', briefRevision: 1 })
+      .mockResolvedValue({ goal: '改善可靠性与激活体验。', brief: '别人写的新说明', briefRevision: 2 });
+    api.updateProject.mockRejectedValue(new Error('项目说明已被更新，请刷新后再保存'));
+    render(<ProjectView {...props} id="project-atlas" />, { wrapper: TestProviders });
+    await user.click(screen.getByRole('tab', { name: '项目说明' }));
+    await user.click(await screen.findByRole('button', { name: '编辑' }));
+    const brief = screen.getByRole('textbox', { name: /^项目说明/ }) as HTMLTextAreaElement;
+    await user.type(brief, '，我的补充');
+    await user.click(screen.getByRole('button', { name: '保存' }));
+    const alert = await screen.findByRole('alert');
+    expect(alert.textContent).toContain('项目说明已在别处更新（版本 2）');
+    expect(api.updateProject).toHaveBeenCalledWith('project-atlas', {
+      goal: '改善可靠性与激活体验。',
+      brief: '旧说明，我的补充',
+      revision: 1,
+    });
+    expect((screen.getByRole('button', { name: '保存' }) as HTMLButtonElement).disabled).toBe(true);
+    expect(brief.value).toBe('旧说明，我的补充');
+    await user.click(screen.getByRole('button', { name: '载入最新版本' }));
+    expect(screen.queryByRole('alert')).toBeNull();
+    expect((screen.getByRole('textbox', { name: /^项目说明/ }) as HTMLTextAreaElement).value).toBe('别人写的新说明');
+    await user.type(screen.getByRole('textbox', { name: /^项目说明/ }), '。');
+    expect((screen.getByRole('button', { name: '保存' }) as HTMLButtonElement).disabled).toBe(false);
+    expect(api.updateProject).toHaveBeenCalledTimes(1);
+  });
+
+  it('explains an empty brief and fills the suggested outline while editing', async () => {
+    const user = userEvent.setup();
+    const state = snapshot();
+    state.projects[0].isDemo = false;
+    const { props, api } = featureProps({ snapshot: state });
+    render(<ProjectView {...props} id="project-atlas" />, { wrapper: TestProviders });
+    await user.click(screen.getByRole('tab', { name: '项目说明' }));
+    expect(await screen.findByRole('heading', { level: 2, name: '还没有项目说明' })).toBeTruthy();
+    expect(screen.getByText(/目标与成功标准、目标用户与场景、当前阶段与已知问题/)).toBeTruthy();
+    await user.click(screen.getByRole('button', { name: '编辑' }));
+    await user.click(screen.getByRole('button', { name: '插入模板' }));
+    const brief = screen.getByRole('textbox', { name: /^项目说明/ }) as HTMLTextAreaElement;
+    expect(brief.value.startsWith('## 目标与成功标准\n')).toBe(true);
+    expect(brief.value).toContain('\n## 需要我决定的事\n');
+    expect(screen.queryByRole('button', { name: '插入模板' })).toBeNull();
+    await user.click(screen.getByRole('button', { name: '取消' }));
+    expect(screen.getByRole('heading', { level: 2, name: '还没有项目说明' })).toBeTruthy();
+    expect(api.updateProject).not.toHaveBeenCalled();
+  });
+
+  it('keeps the goal readable when the connected service or bridge has no brief support', async () => {
+    const user = userEvent.setup();
+    const state = snapshot();
+    state.projects[0].isDemo = false;
+    const { props, api } = featureProps({ snapshot: state });
+    api.getProjectBrief.mockRejectedValue(new Error('接口不存在'));
+    const view = render(<ProjectView {...props} id="project-atlas" />, { wrapper: TestProviders });
+    await user.click(screen.getByRole('tab', { name: '项目说明' }));
+    expect(await screen.findByText(/尚不支持项目说明/)).toBeTruthy();
+    expect(within(screen.getByRole('main')).getByText('改善可靠性与激活体验。')).toBeTruthy();
+    expect(screen.queryByRole('button', { name: '编辑' })).toBeNull();
+    view.unmount();
+    const older = featureProps({ snapshot: state });
+    delete (older.api as { getProjectBrief?: unknown }).getProjectBrief;
+    render(<ProjectView {...older.props} id="project-atlas" />, { wrapper: TestProviders });
+    await user.click(screen.getByRole('tab', { name: '项目说明' }));
+    expect(screen.getByText(/尚不支持项目说明/)).toBeTruthy();
+    expect(screen.queryByRole('button', { name: '编辑' })).toBeNull();
+  });
+});
+
 describe('manual feature details and audit', () => {
   it('resolves the project without a source channel, opens editing, sends revision-aware status changes and loads durable audit', async () => {
     const user = userEvent.setup();

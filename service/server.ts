@@ -24,9 +24,10 @@ import {
   itemKinds,
   keys,
   object,
+  projectBriefLimit,
   string,
 } from './protocol.ts';
-import type { Channel, Project, Run, WorkItem } from './protocol.ts';
+import type { Channel, Project, ProjectBriefRevision, Run, WorkItem } from './protocol.ts';
 import { now, Store } from './store.ts';
 import { Engine } from './engine.ts';
 import { eventHistory, runHistory, runOutput } from './event-history.ts';
@@ -55,6 +56,22 @@ function defaultChannel(projectId: string, name: string, goal: string): Channel 
     nextRunAt: '',
     lastRunAt: '',
     sessionId: '',
+  };
+}
+/** Audit rows describe the brief by revision and length; the text itself lives in the project and its revision rows. */
+function projectAudit(project: Project) {
+  const { brief, ...row } = project;
+  return { ...row, briefRevision: project.briefRevision || 0, briefLength: (brief || '').length };
+}
+function briefRevisionRow(project: Project, revision: number): ProjectBriefRevision {
+  return {
+    id: `${project.id}:${revision}`,
+    projectId: project.id,
+    revision,
+    goal: project.goal,
+    brief: project.brief || '',
+    updatedAt: now(),
+    actor: 'human',
   };
 }
 function itemFields(data: Record<string, any>, old?: WorkItem) {
@@ -194,6 +211,17 @@ export async function startServer(options: { home?: string; port?: number; nativ
         respond(res, 200, engine.loop.view(loopMatch[1], itemId));
         return;
       }
+      const briefMatch = path.match(/^\/api\/projects\/([^/]+)\/brief$/);
+      if (req.method === 'GET' && briefMatch) {
+        const project = store.get<Project>('projects', briefMatch[1]);
+        if (!project) throw new APIError(404, '项目不存在');
+        respond(res, 200, {
+          goal: project.goal,
+          brief: project.brief || '',
+          briefRevision: project.briefRevision || 0,
+        });
+        return;
+      }
       if (req.method === 'GET' && path === '/api/events') {
         respond(res, 200, eventHistory(store, url.searchParams));
         return;
@@ -329,9 +357,10 @@ export async function startServer(options: { home?: string; port?: number; nativ
         throw new APIError(405, '原生对话操作不支持此请求方法');
       }
       if (req.method === 'POST' && path === '/api/projects') {
-        keys(data, ['name', 'path', 'goal', 'runtime']);
+        keys(data, ['name', 'path', 'goal', 'runtime', 'brief']);
         const name = string(data.name, 'name', 100);
         const goal = string(data.goal, 'goal', 20000);
+        const brief = data.brief === undefined ? '' : string(data.brief, 'brief', projectBriefLimit, true);
         let projectPath = '';
         try {
           projectPath = realpathSync(string(data.path, 'path', 4096));
@@ -346,18 +375,21 @@ export async function startServer(options: { home?: string; port?: number; nativ
           name,
           path: projectPath,
           goal,
+          ...(brief ? { brief } : {}),
+          briefRevision: brief ? 1 : 0,
           createdAt: now(),
           isDemo: false,
           runtime: data.runtime === undefined ? 'codex' : choice(data.runtime, 'runtime', engines),
         };
         store.transaction(() => {
           store.put('projects', project);
+          if (brief) store.put('project_brief_revisions', briefRevisionRow(project, 1));
           engine.audit({
             projectId: project.id,
             actor: 'human',
             action: 'project.created',
-            text: `已添加项目「${project.name}」。`,
-            after: project,
+            text: `已添加项目「${project.name}」${brief ? '，并写下项目说明' : ''}。`,
+            after: projectAudit(project),
           });
           for (const c of [
             defaultChannel(
@@ -380,6 +412,50 @@ export async function startServer(options: { home?: string; port?: number; nativ
           }
         });
         respond(res, 201, project);
+        return;
+      }
+      const projectMatch = path.match(/^\/api\/projects\/([^/]+)$/);
+      if (req.method === 'PATCH' && projectMatch) {
+        keys(data, ['goal', 'brief', 'revision']);
+        const project = store.get<Project>('projects', projectMatch[1]);
+        if (!project) throw new APIError(404, '项目不存在');
+        if (project.isDemo) throw new APIError(409, '示例项目不能修改目标或项目说明');
+        if (data.goal === undefined && data.brief === undefined) throw new APIError(400, '请提供 goal 或 brief');
+        const current = project.briefRevision || 0;
+        if (integer(data.revision, 'revision', 0, Number.MAX_SAFE_INTEGER) !== current)
+          throw new APIError(409, '项目说明已被更新，请刷新后再保存');
+        const goal = data.goal === undefined ? project.goal : string(data.goal, 'goal', 20000);
+        const brief =
+          data.brief === undefined ? project.brief || '' : string(data.brief, 'brief', projectBriefLimit, true);
+        const changed = [goal !== project.goal ? '项目目标' : '', brief !== (project.brief || '') ? '项目说明' : '']
+          .filter(Boolean)
+          .join('与');
+        // Saving identical content creates no version and does not send channels back to reassess.
+        if (!changed) {
+          respond(res, 200, project);
+          return;
+        }
+        const revision = current + 1;
+        const updated: Project = { ...project, goal, brief, briefRevision: revision };
+        const reason = `${changed}已更新（版本 ${revision}）`;
+        store.transaction(() => {
+          store.put('projects', updated);
+          store.put('project_brief_revisions', briefRevisionRow(updated, revision));
+          engine.audit({
+            projectId: project.id,
+            actor: 'human',
+            action: 'project.updated',
+            text: `已更新项目「${project.name}」的${changed}（版本 ${revision}）。`,
+            before: projectAudit(project),
+            after: projectAudit(updated),
+          });
+          // Active decisions must be reviewed against the new requirements; only enabled channels
+          // are scheduled, so a manually paused channel stays paused.
+          engine.loop.strategy.notify(project.id, reason);
+          for (const c of store.all<Channel>('channels'))
+            if (c.projectId === project.id) engine.loop.wake(c.id, reason);
+        });
+        respond(res, 200, updated);
         return;
       }
       const createItemMatch = path.match(/^\/api\/projects\/([^/]+)\/items$/);
@@ -671,6 +747,7 @@ function createDemo(store: Store, engine: Engine) {
     name: 'Atlas 示例项目',
     path: '',
     goal: '让每个产品团队都能把客户反馈转化为清晰、可验证的产品改进。',
+    briefRevision: 0,
     createdAt,
     isDemo: true,
     runtime: 'codex',

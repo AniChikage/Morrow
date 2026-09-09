@@ -5,6 +5,7 @@ import { X, FolderOpen, Plus, Search, Hash, Folder, FileText, Laptop, Server, Ar
 import { Button, IconButton, StatusIcon } from './ui';
 import { kindLabel } from './format';
 import { useWorkspace } from '../state/workspace';
+import { briefPlaceholder, briefTemplate } from '../features/ProjectBrief';
 import { isLegacyRuntime } from '../../shared/types';
 import type { Channel, ChannelPatch, ConnectionConfig, Route, WorkItem, ItemPatch } from '../../shared/types';
 
@@ -108,6 +109,7 @@ function ProjectDialog({
   const [name, setName] = useState(''),
     [path, setPath] = useState(''),
     [goal, setGoal] = useState(''),
+    [brief, setBrief] = useState(''),
     [localError, setLocalError] = useState('');
   const remote = connection?.config.mode === 'ssh';
   const existing = path.trim()
@@ -140,6 +142,7 @@ function ProjectDialog({
         path: path.trim(),
         goal: goal.trim() || '持续跟踪项目进展，识别有证据支持的问题，在授权范围内推进修复并验证结果。',
         runtime: 'codex',
+        ...(brief.trim() ? { brief: brief.trim() } : {}),
       });
       projectId = project.id;
     });
@@ -184,6 +187,23 @@ function ProjectDialog({
             maxLength={10000}
           />
         </Field>
+        <Field
+          title="项目说明"
+          hint="可选。Codex 每轮都会读取，把它当作优先于自己推断的要求，但不会修改；之后可在项目页的「项目说明」中修改。"
+        >
+          <textarea
+            className="brief-input"
+            value={brief}
+            onChange={(e) => setBrief(e.target.value)}
+            placeholder={briefPlaceholder}
+            maxLength={65536}
+          />
+        </Field>
+        <div className="brief-template-row">
+          <Button variant="ghost" disabled={!!brief.trim()} onClick={() => setBrief(briefTemplate)}>
+            插入模板
+          </Button>
+        </div>
         <p className="form-note">
           所有频道共用这个项目的功能看板。Codex 沿用 Codex App
           的登录与权限设置；接入后可开启持续跟踪，频道初始保持暂停。

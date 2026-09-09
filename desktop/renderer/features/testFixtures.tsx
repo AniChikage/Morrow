@@ -6,6 +6,7 @@ import type {
   CreateItem,
   DesktopAPI,
   ItemPatch,
+  ProjectPatch,
   Snapshot,
   WorkItem,
   WorkspaceEvent,
@@ -107,6 +108,14 @@ export function featureProps(patch: Partial<FeatureProps> = {}) {
     getConnection: vi.fn(),
     connect: vi.fn(),
     createProject: vi.fn(),
+    getProjectBrief: vi.fn(async (id: string) => {
+      const project = state.projects.find((value) => value.id === id);
+      return { goal: project?.goal || '', brief: project?.brief || '', briefRevision: project?.briefRevision || 0 };
+    }),
+    updateProject: vi.fn(async (id: string, patch: ProjectPatch) => {
+      const project = state.projects.find((value) => value.id === id)!;
+      return { ...project, goal: patch.goal ?? project.goal, brief: patch.brief, briefRevision: patch.revision + 1 };
+    }),
     createChannel: vi.fn(),
     updateChannel: vi.fn(),
     channelAction: vi.fn(async () => ({ ok: true })),

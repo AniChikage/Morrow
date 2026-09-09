@@ -23,6 +23,7 @@ import {
   id,
   itemStatuses,
   projectInput,
+  projectPatch,
   text,
   itemInput,
   itemPatch,
@@ -237,6 +238,10 @@ function registerIPC(): void {
   );
   handle('get-project-work', 2, (projectId, itemId) =>
     service.request(`projects/${id(projectId)}/work${itemId ? '?itemId=' + encodeURIComponent(id(itemId)) : ''}`)
+  );
+  handle('get-project-brief', 1, (projectId) => service.request(`projects/${id(projectId)}/brief`));
+  handle('update-project', 2, (projectId, value) =>
+    service.request(`projects/${id(projectId)}`, 'PATCH', projectPatch(value))
   );
   handle('review-release', 4, (releaseId, hash, decision, feedback) =>
     service.request(`releases/${id(releaseId)}/review`, 'POST', {
