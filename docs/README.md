@@ -7,7 +7,7 @@
 | 文档 | 内容 |
 | --- | --- |
 | [开始使用](GETTING-STARTED.md) | 安装、Codex 后台连接、第一个项目和日常操作。 |
-| [原生运行时](RUNTIMES.md) | Codex、Claude Code 和 Trae 的能力范围与限制。 |
+| [原生运行时](RUNTIMES.md) | Codex 的接入方式、默认权限与能力边界，以及旧运行时记录的处理。 |
 | [升级与数据迁移](UPGRADING.md) | 旧 NoHuman 数据、任务连续性、更新与备份。 |
 
 ## 机制与开发

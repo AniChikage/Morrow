@@ -5,6 +5,8 @@ import { homedir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 
 export const shellQuote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
+/** The command-line runtime the Codex App launches for its own tasks. */
+export const codexAppBinary = '/Applications/ChatGPT.app/Contents/Resources/codex';
 const currentAgentLabel = 'ai.morrow.codex-bridge';
 const legacyAgentLabel = 'ai.nohuman.codex-bridge';
 export function bridgeLauncher(node: string, script: string, binary: string, directory: string) {
@@ -17,7 +19,7 @@ export function bridgeLoginAgent(launcher: string, label = currentAgentLabel) {
 const loginAgentPath = (label = currentAgentLabel) => join(homedir(), `Library/LaunchAgents/${label}.plist`);
 export function configureCodexBridge(home: string) {
   if (process.platform !== 'darwin') throw new Error('Codex App 后台连接目前只支持本机 Mac。');
-  const binary = '/Applications/ChatGPT.app/Contents/Resources/codex';
+  const binary = codexAppBinary;
   if (!existsSync(binary)) throw new Error('未找到已安装的 Codex App。');
   const directory = join(home, 'codex-bridge'),
     launcher = join(directory, 'codex');

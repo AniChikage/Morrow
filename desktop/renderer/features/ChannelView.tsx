@@ -12,6 +12,7 @@ import {
   Settings2,
   Terminal,
 } from 'lucide-react';
+import { isLegacyRuntime } from '../../shared/types';
 import type { NativeConversation, WorkspaceEvent } from '../../shared/types';
 import type { FeatureProps } from './types';
 import { Button, EmptyState, Markdown, PropertyPanel, StatusLabel } from '../components/ui';
@@ -28,6 +29,8 @@ export function ChannelView(props: FeatureProps & { id: string }) {
   const channel = snapshot.channels.find((c) => c.id === id);
   const project = snapshot.projects.find((p) => p.id === channel?.projectId);
   const nativeCodex = channel?.runtime === 'codex' && !project?.isDemo;
+  // Channels from retired runtimes (Claude Code / Trae) keep their history but never execute again.
+  const legacy = !!channel && isLegacyRuntime(channel.runtime);
   const [tab, setTab] = useState<'conversation' | 'activity' | 'runs'>(nativeCodex ? 'conversation' : 'activity');
   const [nativeConversation, setNativeConversation] = useState<NativeConversation | null>(null);
   const [details, setDetails] = useState(false);
@@ -160,7 +163,9 @@ export function ChannelView(props: FeatureProps & { id: string }) {
             description={
               nativeCodex
                 ? '这里记录频道设置、调度和操作；下方消息直接发送到 Codex App。'
-                : '补充背景或约束，再运行一次。Agent 会带着这些上下文继续探索。'
+                : legacy
+                  ? '此频道不再执行，这里只保留历史记录。'
+                  : '补充背景或约束，再运行一次。Agent 会带着这些上下文继续探索。'
             }
           />
         )
@@ -227,14 +232,14 @@ export function ChannelView(props: FeatureProps & { id: string }) {
               <>
                 <Button
                   variant="primary"
-                  disabled={busy || demo || channel.status === 'running' || nativeRunUnavailable}
+                  disabled={busy || demo || legacy || channel.status === 'running' || nativeRunUnavailable}
                   onClick={() => void onMutate(() => api.channelAction(id, 'run'))}
                 >
                   <Play size={13} />
                   运行一次
                 </Button>
                 <Button
-                  disabled={busy || demo}
+                  disabled={busy || demo || (legacy && paused)}
                   onClick={() => void onMutate(() => api.channelAction(id, paused ? 'resume' : 'pause'))}
                 >
                   {paused ? <RefreshCw size={13} /> : <Pause size={13} />}
@@ -263,6 +268,11 @@ export function ChannelView(props: FeatureProps & { id: string }) {
           </div>
         )}
         {demo && <div className="channel-demo-note">示例频道用于浏览流程，不会执行任务。</div>}
+        {legacy && (
+          <div className="channel-demo-note" role="note">
+            此频道使用的运行时已停止支持：历史记录保持可读，不再执行；请新建 Codex 频道继续这项工作。
+          </div>
+        )}
         {(!nativeCodex || details) && (
           <div className="feature-toolbar channel-tabbar">
             <div className="feature-tabs" role="tablist" aria-label="频道内容">
@@ -326,7 +336,7 @@ export function ChannelView(props: FeatureProps & { id: string }) {
             )}
           </div>
         )}
-        {!nativeCodex && tab === 'activity' && (
+        {!nativeCodex && !legacy && tab === 'activity' && (
           <div className="message-composer">
             <div className="composer-box">
               <textarea
@@ -374,7 +384,13 @@ export function ChannelView(props: FeatureProps & { id: string }) {
               {nativeCodex ? nativeConversation?.thread?.model || '原生对话设置' : channel.model || 'CLI 默认模型'}
             </Property>
             <Property label="权限">
-              {nativeCodex ? '原生对话设置' : channel.permission === 'read-only' ? '只读工作空间' : '允许工作区写入'}
+              {nativeCodex
+                ? '原生对话设置'
+                : channel.permission === 'native'
+                  ? '沿用 Codex App 原生权限'
+                  : channel.permission === 'read-only'
+                    ? '只读工作空间'
+                    : '允许工作区写入'}
             </Property>
             <Property label="运行间隔">{channel.intervalMinutes} 分钟</Property>
             <Property label="每日上限">{channel.maxRunsPerDay} 次</Property>
@@ -393,8 +409,12 @@ export function ChannelView(props: FeatureProps & { id: string }) {
             ) : (
               <Button
                 variant="ghost"
-                title={nativeBlock || '继续此频道的原生会话；没有会话时打开项目目录中的 CLI。'}
-                disabled={busy || !!nativeBlock}
+                title={
+                  legacy
+                    ? '此频道使用的运行时已停止支持，无法打开原生会话。'
+                    : nativeBlock || '继续此频道的原生会话；没有会话时打开项目目录中的 CLI。'
+                }
+                disabled={busy || legacy || !!nativeBlock}
                 onClick={() => void onMutate(() => api.openNativeSession(channel.id))}
               >
                 <Terminal size={14} />

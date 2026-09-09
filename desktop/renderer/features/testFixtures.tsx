@@ -19,7 +19,7 @@ export function channel(id = 'channel-system', projectId = 'project-atlas'): Cha
     projectId,
     name: id === 'channel-growth' ? '运营洞察' : '系统完善',
     goal: '持续验证问题并记录证据。',
-    runtime: id === 'channel-growth' ? 'claude' : 'codex',
+    runtime: 'codex',
     model: '',
     status: 'paused',
     intervalMinutes: 60,

@@ -100,20 +100,5 @@ export function providerEventDetails(data: any): EventDetail[] {
         },
       ];
   }
-  // A Claude message can contain multiple independent tool blocks.
-  const content = Array.isArray(data?.message?.content) ? data.message.content : [];
-  const blocks = content.filter((block: any) => block && ['tool_use', 'tool_result'].includes(block.type));
-  if (data && ['tool_use', 'tool_result'].includes(data.type)) blocks.push(data);
-  return blocks
-    .slice(0, 40)
-    .map((block: any): EventDetail =>
-      block.type === 'tool_use'
-        ? { type: 'tool_use', tool: block.name, input: block.input, status: 'running', toolCallId: block.id }
-        : {
-            type: 'tool_result',
-            output: block.content,
-            status: block.is_error ? 'failed' : 'completed',
-            toolCallId: block.tool_use_id,
-          }
-    );
+  return [];
 }

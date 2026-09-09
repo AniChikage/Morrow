@@ -11,7 +11,13 @@ export type ChannelWork = {
 import type { ProjectLoop, Release } from '../../service/autonomy-types';
 export type { ProjectLoop, Release, Evidence, Learning, FeedbackWatch } from '../../service/autonomy-types';
 export type { Understanding, StrategyDecision, DecisionView, StrategyView } from '../../service/strategy-types';
-export type RuntimeID = 'codex' | 'claude' | 'trae';
+export type RuntimeID = 'codex';
+/** Runtimes that older records may still reference. Their records stay readable but never execute. */
+export type LegacyRuntimeID = 'claude' | 'trae';
+export type AnyRuntimeID = RuntimeID | LegacyRuntimeID;
+export const legacyRuntimes: readonly LegacyRuntimeID[] = ['claude', 'trae'];
+export const isLegacyRuntime = (value: string): value is LegacyRuntimeID =>
+  (legacyRuntimes as readonly string[]).includes(value);
 export interface Project {
   id: string;
   name: string;
@@ -19,7 +25,7 @@ export interface Project {
   goal: string;
   createdAt: string;
   isDemo: boolean;
-  runtime?: RuntimeID;
+  runtime?: AnyRuntimeID;
 }
 export interface Channel {
   work?: ChannelWork;
@@ -28,7 +34,7 @@ export interface Channel {
   projectId: string;
   name: string;
   goal: string;
-  runtime: RuntimeID;
+  runtime: AnyRuntimeID;
   model: string;
   status: string;
   intervalMinutes: number;
@@ -148,7 +154,7 @@ export interface CreateChannel {
   permission?: Channel['permission'];
 }
 export type ChannelPatch = Partial<
-  Pick<Channel, 'name' | 'goal' | 'runtime' | 'model' | 'intervalMinutes' | 'maxRunsPerDay' | 'permission'>
+  Pick<Channel, 'name' | 'goal' | 'model' | 'intervalMinutes' | 'maxRunsPerDay' | 'permission'> & { runtime: RuntimeID }
 >;
 export interface EventsQuery {
   projectId?: string;

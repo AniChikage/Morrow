@@ -12,7 +12,7 @@ import type {
   NativeHistoryQuery,
 } from '../shared/types';
 
-const runtimes = ['codex', 'claude', 'trae'];
+const runtimes = ['codex'] as const;
 export const itemStatuses = ['open', 'investigating', 'verified', 'resolved', 'blocked'];
 export function record(value: unknown, allowed: string[]): Record<string, unknown> {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('请求必须是对象。');
@@ -59,7 +59,7 @@ export function projectInput(value: unknown): CreateProject {
     name: text(data.name, '项目名称', 100),
     path: text(data.path, '项目目录', 4096),
     goal: text(data.goal, '项目目标', 20000),
-    ...(data.runtime !== undefined ? { runtime: choice(data.runtime, ['codex', 'claude', 'trae'] as const) } : {}),
+    ...(data.runtime !== undefined ? { runtime: choice(data.runtime, runtimes) } : {}),
   };
 }
 const channelKeys = ['name', 'goal', 'runtime', 'model', 'intervalMinutes', 'maxRunsPerDay', 'permission'];

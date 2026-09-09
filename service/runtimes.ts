@@ -3,15 +3,29 @@ import { delimiter, join } from 'node:path';
 import { homedir } from 'node:os';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
+import { engines } from './protocol.ts';
 import type { Channel, EventDetail, Runtime, RuntimeID } from './protocol.ts';
 import { providerEventDetails } from './event-details.ts';
+import { codexAppBinary } from './codex-bridge-setup.ts';
 const execute = promisify(execFile);
-const titles = { codex: 'Codex', claude: 'Claude Code', trae: 'Trae CLI' };
+const titles: Record<RuntimeID, string> = { codex: 'Codex' };
+const codexAppBundle = '/Applications/ChatGPT.app';
+function executable(path: string): boolean {
+  try {
+    accessSync(path, constants.X_OK);
+    return true;
+  } catch {
+    return false;
+  }
+}
 export function runtimePath(id: RuntimeID): string {
   if (process.env.MORROW_TEST_MODE === '1') {
     const p = process.env[`MORROW_TEST_${id.toUpperCase()}_PATH`];
     return p && existsSync(p) ? p : '';
   }
+  // The Codex App bundles the exact runtime it launches for its own tasks. Prefer it over an older
+  // PATH installation so any terminal fallback matches the native task Morrow shares.
+  if (id === 'codex' && executable(codexAppBinary)) return codexAppBinary;
   const directories = [
     ...(process.env.PATH || '').split(delimiter),
     join(homedir(), '.local/bin'),
@@ -19,55 +33,51 @@ export function runtimePath(id: RuntimeID): string {
     '/usr/local/bin',
     '/usr/bin',
   ];
-  for (const name of id === 'trae' ? ['traex', 'traecli'] : [id])
-    for (const d of directories) {
-      const p = join(d, name);
-      try {
-        accessSync(p, constants.X_OK);
-        return p;
-      } catch {}
-    }
+  for (const d of directories) {
+    const p = join(d, id);
+    if (executable(p)) return p;
+  }
   return '';
 }
+/** Version of the installed Codex App bundle, read from its Info.plist without launching anything. */
+export async function codexAppVersion(): Promise<string> {
+  const plist = join(codexAppBundle, 'Contents/Info.plist');
+  if (process.platform !== 'darwin' || process.env.MORROW_TEST_MODE === '1' || !existsSync(plist)) return '';
+  try {
+    const { stdout } = await execute('/usr/bin/plutil', ['-convert', 'json', '-o', '-', plist], {
+      timeout: 5000,
+      maxBuffer: 1024 * 1024,
+    });
+    const info = JSON.parse(stdout);
+    return typeof info.CFBundleShortVersionString === 'string' ? info.CFBundleShortVersionString.slice(0, 100) : '';
+  } catch {
+    return '';
+  }
+}
 export async function discoverRuntimes(): Promise<Runtime[]> {
+  const appVersion = await codexAppVersion();
   return await Promise.all(
-    (['codex', 'claude', 'trae'] as RuntimeID[]).map(async (id) => {
+    engines.map(async (id): Promise<Runtime> => {
       const path = runtimePath(id);
-      const base = {
+      const bundled = !!path && path === codexAppBinary;
+      const base: Runtime = {
         id,
         name: titles[id],
         path,
         version: '',
         available: false,
         canWrite: false,
-        detail: '未找到命令行运行时，请安装并在终端登录。',
+        detail: '未找到 Codex 命令行运行时。安装并登录 Codex App 后重新检测。',
+        ...(bundled ? { bundled: true } : {}),
+        ...(appVersion ? { appVersion } : {}),
       };
       if (!path) return base;
       try {
         const [version, help] = await Promise.all([
           execute(path, ['--version'], { timeout: 8000, maxBuffer: 64 * 1024 }),
-          execute(path, id === 'claude' ? ['--help'] : ['exec', '--help'], {
-            timeout: 8000,
-            maxBuffer: 256 * 1024,
-          }),
+          execute(path, ['exec', '--help'], { timeout: 8000, maxBuffer: 256 * 1024 }),
         ]);
-        const required =
-          id === 'claude'
-            ? [
-                '--restricted',
-                '--tools',
-                '--safe-mode',
-                '--permission-prompts',
-                '--permission-mode',
-                '--strict-mcp-config',
-                '--mcp-config',
-                '--allowedTools',
-                '--name',
-                '--resume',
-                '--verbose',
-                '--output-format',
-              ]
-            : ['--json', '--sandbox', '--output-last-message'];
+        const required = ['--json', '--sandbox', '--output-last-message'];
         if (!required.every((flag) => help.stdout.includes(flag)))
           return {
             ...base,
@@ -79,7 +89,9 @@ export async function discoverRuntimes(): Promise<Runtime[]> {
           version: version.stdout.trim().slice(0, 300),
           available: true,
           canWrite: true,
-          detail: 'CLI 已安装，尚未验证登录和配额；执行时将使用本机登录状态。',
+          detail: bundled
+            ? 'Codex App 自带的命令行运行时；登录、模型与配额由 App 管理。'
+            : 'CLI 已安装，尚未验证登录和配额；执行时将使用本机登录状态。',
         };
       } catch {
         return { ...base, detail: 'CLI 探测失败或超时，请在终端检查安装。' };
@@ -87,50 +99,20 @@ export async function discoverRuntimes(): Promise<Runtime[]> {
     })
   );
 }
-export function invocation(channel: Channel, runId: string, schemaPath: string, outputPath: string): string[] {
-  if (channel.runtime === 'claude') {
-    const tools = channel.permission === 'read-only' ? 'Read,Grep,Glob' : 'Read,Grep,Glob,Edit,Write';
-    const args = [
-      '--print',
-      '--verbose',
-      '--output-format',
-      'stream-json',
-      '--safe-mode',
-      '--restricted',
-      '--strict-mcp-config',
-      '--mcp-config',
-      '{"mcpServers":{}}',
-      '--tools',
-      tools,
-      '--allowedTools',
-      tools,
-      '--permission-mode',
-      channel.permission === 'read-only' ? 'dontAsk' : 'acceptEdits',
-      '--permission-prompts',
-      'none',
-      '--name',
-      `Morrow:${runId}`,
-    ];
-    if (channel.model) args.push('--model', channel.model);
-    if (channel.sessionId) args.push('--resume', channel.sessionId);
-    return args;
-  }
-  // Config overrides apply on fresh and resumed sessions; no bypass switches are used.
+/**
+ * Fixture-only command line. Production Codex channels always run inside the shared App task; this
+ * path is reached only under MORROW_TEST_MODE with the fake runtime.
+ */
+export function invocation(channel: Channel, outputPath: string): string[] {
+  // A channel that follows the App's own settings maps to full access here; other scopes keep the
+  // sandbox and stay offline. No bypass switches are used on fresh or resumed sessions.
+  const sandbox = channel.permission === 'native' ? 'danger-full-access' : channel.permission;
   const args = ['exec'];
   if (channel.sessionId) args.push('resume');
-  args.push(
-    '--json',
-    '--skip-git-repo-check',
-    '-c',
-    `sandbox_mode="${channel.permission}"`,
-    '-c',
-    'approval_policy="never"',
-    '-c',
-    'sandbox_workspace_write.network_access=false',
-    '--output-last-message',
-    outputPath
-  );
-  if (!channel.sessionId) args.push('--sandbox', channel.permission);
+  args.push('--json', '--skip-git-repo-check', '-c', `sandbox_mode="${sandbox}"`, '-c', 'approval_policy="never"');
+  if (channel.permission !== 'native') args.push('-c', 'sandbox_workspace_write.network_access=false');
+  args.push('--output-last-message', outputPath);
+  if (!channel.sessionId) args.push('--sandbox', sandbox);
   if (channel.model) args.push('--model', channel.model);
   if (channel.sessionId) args.push(channel.sessionId);
   args.push('-');
@@ -160,16 +142,6 @@ export function decodeLine(line: string): {
     : {};
   const sessionId =
     typeof (data.thread_id || data.session_id) === 'string' ? data.thread_id || data.session_id : undefined;
-  if (data.type === 'result')
-    return {
-      kind: data.is_error ? 'error' : 'result',
-      text: typeof data.result === 'string' ? data.result : JSON.stringify(data.structured_output || data),
-      sessionId,
-      final: data.structured_output,
-      finalText: typeof data.result === 'string' ? data.result : undefined,
-      error: !!data.is_error,
-      terminalOutcome: data.is_error ? 'failed' : 'completed',
-    };
   if (data.item?.type === 'agent_message')
     return {
       kind: 'assistant',
@@ -177,21 +149,6 @@ export function decodeLine(line: string): {
       sessionId,
       finalText: typeof data.item.text === 'string' ? data.item.text : undefined,
     };
-  if (data.type === 'assistant') {
-    const content = Array.isArray(data.message?.content)
-      ? data.message.content.filter((block: any) => block && typeof block === 'object')
-      : [];
-    const text = content
-      .filter((b: any) => b.type === 'text' && typeof b.text === 'string')
-      .map((b: any) => b.text)
-      .join('\n');
-    return {
-      kind: content.some((b: any) => b.type === 'tool_use') ? 'tool' : 'assistant',
-      text: text || JSON.stringify(data),
-      sessionId,
-      ...detailFields,
-    };
-  }
   if (data.summary && Array.isArray(data.items))
     return {
       kind: 'result',
@@ -215,7 +172,7 @@ export function decodeLine(line: string): {
 }
 
 export function diagnoseFailure(runtime: RuntimeID, text: string): { priority: number; summary: string } | undefined {
-  const command = runtime === 'claude' ? 'claude auth login' : runtime === 'trae' ? 'traex login' : 'codex login';
+  const command = 'codex login';
   if (
     /not logged in|authentication[_ -]failed|unauthenticated|unauthorized|\b401\b|invalid[_ -](?:api[_ -])?(?:key|token)|login required/i.test(
       text

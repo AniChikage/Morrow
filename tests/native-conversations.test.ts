@@ -9,8 +9,7 @@ import { NativeConversations } from '../service/native-conversations.ts';
 import { applyDesktopPatches } from '../service/codex-desktop-transport.ts';
 import type { NativeTransport, NativeSnapshot, NativeWorkOptions } from '../service/native-conversations.ts';
 process.env.MORROW_TEST_MODE = '1';
-for (const id of ['CODEX', 'CLAUDE', 'TRAE'])
-  process.env[`MORROW_TEST_${id}_PATH`] = resolve('tests/fixtures/runtime.mjs');
+process.env.MORROW_TEST_CODEX_PATH = resolve('tests/fixtures/runtime.mjs');
 class FakeNative implements NativeTransport {
   connected = true;
   cwd = '';
@@ -184,11 +183,14 @@ test('shared background creates one native task per channel and records creation
     await s.cleanup();
   }
 });
-test('an explicitly selected native scope inherits App permissions and attaches scoped work tools to the same task', async () => {
+test('the native scope inherits App permissions where a narrower saved scope is refused, and scoped work tools attach to the same task', async () => {
   const s = await setup();
   try {
     await s.native.bind(s.channel.id, s.transport.threadId);
     s.transport.emit({ currentPermissions: { sandboxPolicy: { type: 'dangerFullAccess' } } });
+    // New channels follow the App's own settings; a channel narrowed to workspace-write still cannot inherit full access.
+    assert.equal(s.channel.permission, 'native');
+    await s.api('PATCH', `/api/channels/${s.channel.id}`, { permission: 'workspace-write' });
     await s.api('POST', `/api/channels/${s.channel.id}/action`, { action: 'resume' }, 409);
     await s.api('PATCH', `/api/channels/${s.channel.id}`, { permission: 'native' });
     await s.engine.action(s.channel.id, 'resume');

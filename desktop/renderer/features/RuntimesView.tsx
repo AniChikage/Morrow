@@ -6,7 +6,7 @@ import { Button, EmptyState } from '../components/ui';
 import './content.css';
 import './runtimes.css';
 
-const runtimeMarks: Record<string, string> = { codex: 'CX', claude: 'CL', trae: 'TR' };
+const runtimeMarks: Record<string, string> = { codex: 'CX' };
 function RuntimeMark({ runtime }: { runtime: Runtime }) {
   return (
     <span className={`runtime-settings-mark ${runtimeMarks[runtime.id] ? runtime.id : 'other'}`} aria-hidden="true">
@@ -188,7 +188,7 @@ export function RuntimesView({
                               <dd>
                                 {runtime.available
                                   ? runtime.canWrite
-                                    ? '只读 / 工作区编辑，由每个频道单独设置。'
+                                    ? '默认沿用 Codex App 的权限设置；每个频道可单独收紧为只读或工作区编辑。'
                                     : '只读执行'
                                   : 'CLI 可用后读取支持的权限。'}
                               </dd>
@@ -238,8 +238,8 @@ export function RuntimesView({
           <p className="runtime-settings-note">
             <Info size={13} />
             <span>
-              Codex 对话连接 Mac App；终端 CLI 版本仅供查看。其他引擎继续使用原生
-              CLI。连接检测不会调用模型，也不代表账号或配额已经验证。
+              Codex 对话连接 Mac App；终端 CLI 版本仅供查看。连接检测不会调用模型，也不代表账号或配额已经验证。旧的
+              Claude Code / Trae 频道保持可读，但不再执行。
             </span>
           </p>
         </div>

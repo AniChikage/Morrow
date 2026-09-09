@@ -14,7 +14,18 @@ import {
 import { join } from 'node:path';
 import { homedir } from 'node:os';
 import { pathToFileURL } from 'node:url';
-import { APIError, choice, engines, integer, itemStatuses, itemKinds, keys, object, string } from './protocol.ts';
+import {
+  APIError,
+  choice,
+  engines,
+  integer,
+  isLegacyRuntime,
+  itemStatuses,
+  itemKinds,
+  keys,
+  object,
+  string,
+} from './protocol.ts';
 import type { Channel, Project, Run, WorkItem } from './protocol.ts';
 import { now, Store } from './store.ts';
 import { Engine } from './engine.ts';
@@ -39,7 +50,8 @@ function defaultChannel(projectId: string, name: string, goal: string): Channel 
     status: 'paused',
     intervalMinutes: 60,
     maxRunsPerDay: 8,
-    permission: 'workspace-write',
+    // New channels follow the Codex App's own permission settings (full access by default).
+    permission: 'native',
     nextRunAt: '',
     lastRunAt: '',
     sessionId: '',
@@ -419,7 +431,7 @@ export async function startServer(options: { home?: string; port?: number; nativ
           maxRunsPerDay: data.maxRunsPerDay === undefined ? 8 : integer(data.maxRunsPerDay, 'maxRunsPerDay', 1, 100),
           permission:
             data.permission === undefined
-              ? ('read-only' as const)
+              ? ('native' as const)
               : choice(data.permission, 'permission', ['read-only', 'workspace-write', 'native'] as const),
         };
         if (c.permission === 'native' && c.runtime !== 'codex')
@@ -529,6 +541,7 @@ export async function startServer(options: { home?: string; port?: number; nativ
           keys(data, []);
           const project = store.get<Project>('projects', c.projectId)!;
           if (project.isDemo) throw new APIError(409, '示例项目不能打开原生会话');
+          if (isLegacyRuntime(c.runtime)) throw new APIError(409, '此频道使用已停止支持的运行时，无法打开原生会话');
           if (
             store
               .all<Channel>('channels')
@@ -663,10 +676,7 @@ function createDemo(store: Store, engine: Engine) {
     runtime: 'codex',
   };
   const system = defaultChannel(p.id, '系统完善', '持续提升 Atlas 的可靠性与产品体验。');
-  const operations = {
-    ...defaultChannel(p.id, '运营洞察', '从用户反馈中发现增长机会，记录证据并验证假设。'),
-    runtime: 'claude' as const,
-  };
+  const operations = defaultChannel(p.id, '运营洞察', '从用户反馈中发现增长机会，记录证据并验证假设。');
   store.transaction(() => {
     store.put('projects', p);
     store.put('channels', system);

@@ -8,10 +8,16 @@ export type ChannelWork = {
   updatedAt: string;
   awaitingReply: boolean;
 };
-export const engines = ['codex', 'claude', 'trae'] as const;
+export const engines = ['codex'] as const;
+/** Runtimes that older databases may still reference. Their records stay readable but never execute. */
+export const legacyEngines = ['claude', 'trae'] as const;
 export const itemStatuses = ['open', 'investigating', 'verified', 'resolved', 'blocked'] as const;
 export const itemKinds = ['feature', 'issue', 'opportunity', 'hypothesis'] as const;
 export type RuntimeID = (typeof engines)[number];
+export type LegacyRuntimeID = (typeof legacyEngines)[number];
+export type AnyRuntimeID = RuntimeID | LegacyRuntimeID;
+export const isLegacyRuntime = (value: string): value is LegacyRuntimeID =>
+  (legacyEngines as readonly string[]).includes(value);
 export type Project = {
   id: string;
   name: string;
@@ -19,7 +25,7 @@ export type Project = {
   goal: string;
   createdAt: string;
   isDemo: boolean;
-  runtime: RuntimeID;
+  runtime: AnyRuntimeID;
 };
 export type Channel = {
   work?: ChannelWork;
@@ -28,7 +34,7 @@ export type Channel = {
   projectId: string;
   name: string;
   goal: string;
-  runtime: RuntimeID;
+  runtime: AnyRuntimeID;
   model: string;
   status: string;
   intervalMinutes: number;
@@ -60,7 +66,7 @@ export type Run = {
   id: string;
   projectId: string;
   channelId: string;
-  runtime: RuntimeID;
+  runtime: AnyRuntimeID;
   model: string;
   permission: 'read-only' | 'workspace-write' | 'native';
   executionOwner?: 'cli' | 'codex-app';
@@ -176,6 +182,10 @@ export type Runtime = {
   version: string;
   detail: string;
   canWrite: boolean;
+  /** The executable is the one bundled inside the installed Codex App. */
+  bundled?: boolean;
+  /** Version of the installed Codex App bundle, when it can be read. */
+  appVersion?: string;
 };
 export type AgentResult = {
   summary: string;

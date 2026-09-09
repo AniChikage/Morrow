@@ -132,14 +132,6 @@
   background: #eeeef0;
   color: #33333a;
 }
-.runtime-settings-mark.claude {
-  background: #f5ece6;
-  color: #986044;
-}
-.runtime-settings-mark.trae {
-  background: #e8f0ec;
-  color: #44735c;
-}
 .runtime-settings-mark.other {
   background: var(--hover);
   color: var(--muted);

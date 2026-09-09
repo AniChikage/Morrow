@@ -8,9 +8,8 @@ if (args.includes('--version')) {
   process.exit(0);
 }
 if (args.includes('--help')) {
-  console.log(
-    '--restricted --tools --safe-mode --json-schema --permission-prompts --permission-mode --strict-mcp-config --mcp-config --allowedTools --name --resume --verbose --output-format --json --sandbox --output-last-message --ignore-user-config'
-  );
+  // Only the flags the real `codex exec --help` advertises; drift against the real CLI must stay visible.
+  console.log('--json --sandbox --output-last-message --skip-git-repo-check --model --ignore-user-config');
   process.exit(0);
 }
 let input = '';
@@ -92,7 +91,6 @@ if (config.sleep) {
     ],
     needsHuman: false,
   };
-  const claude = args.includes('--print');
   const finalText =
     config.finalText ??
     (config.markdown
@@ -100,30 +98,18 @@ if (config.sleep) {
       : JSON.stringify(result));
   console.log(
     JSON.stringify({
-      type: claude ? 'system' : 'thread.started',
+      type: 'thread.started',
       session_id: 'fixture-session-1',
       thread_id: 'fixture-session-1',
     })
   );
-  if (claude)
-    console.log(
-      JSON.stringify({
-        type: 'result',
-        is_error: false,
-        session_id: 'fixture-session-1',
-        ...(config.finalText !== undefined || config.markdown ? {} : { structured_output: result }),
-        result: finalText,
-      })
-    );
-  else {
-    const output = args[args.indexOf('--output-last-message') + 1];
-    if (output) writeFileSync(output, finalText);
-    console.log(
-      JSON.stringify({
-        type: 'item.completed',
-        item: { type: 'agent_message', text: finalText },
-      })
-    );
-  }
+  const output = args[args.indexOf('--output-last-message') + 1];
+  if (output) writeFileSync(output, finalText);
+  console.log(
+    JSON.stringify({
+      type: 'item.completed',
+      item: { type: 'agent_message', text: finalText },
+    })
+  );
   if (config.recovered) console.log(JSON.stringify({ type: 'turn.completed' }));
 }

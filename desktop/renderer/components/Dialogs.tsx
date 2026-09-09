@@ -3,17 +3,10 @@ import { useEffect, useId, useRef, useState, type ReactNode, type FormEvent } fr
 import * as Dialog from '@radix-ui/react-dialog';
 import { X, FolderOpen, Plus, Search, Hash, Folder, FileText, Laptop, Server, ArrowUpRight, Check } from 'lucide-react';
 import { Button, IconButton, StatusIcon } from './ui';
-import { runtimeLabel, kindLabel } from './format';
+import { kindLabel } from './format';
 import { useWorkspace } from '../state/workspace';
-import type {
-  Channel,
-  ChannelPatch,
-  ConnectionConfig,
-  Route,
-  RuntimeID,
-  WorkItem,
-  ItemPatch,
-} from '../../shared/types';
+import { isLegacyRuntime } from '../../shared/types';
+import type { Channel, ChannelPatch, ConnectionConfig, Route, WorkItem, ItemPatch } from '../../shared/types';
 
 export type ModalState =
   | { kind: 'project' }
@@ -115,7 +108,6 @@ function ProjectDialog({
   const [name, setName] = useState(''),
     [path, setPath] = useState(''),
     [goal, setGoal] = useState(''),
-    [runtime, setRuntime] = useState<RuntimeID>('codex'),
     [localError, setLocalError] = useState('');
   const remote = connection?.config.mode === 'ssh';
   const existing = path.trim()
@@ -147,7 +139,7 @@ function ProjectDialog({
         name: name.trim() || path.split('/').filter(Boolean).pop() || '项目',
         path: path.trim(),
         goal: goal.trim() || '持续跟踪项目进展，识别有证据支持的问题，在授权范围内推进修复并验证结果。',
-        runtime,
+        runtime: 'codex',
       });
       projectId = project.id;
     });
@@ -184,15 +176,6 @@ function ProjectDialog({
             maxLength={100}
           />
         </Field>
-        <Field title="默认运行时" hint="使用 CLI 已有登录；原生会话继续由 CLI 管理。">
-          <select value={runtime} onChange={(e) => setRuntime(e.target.value as RuntimeID)}>
-            {(['codex', 'claude', 'trae'] as const).map((id) => (
-              <option key={id} value={id}>
-                {runtimeLabel(id)}
-              </option>
-            ))}
-          </select>
-        </Field>
         <Field title="持续目标" hint="可以留空，稍后在频道中细化长期职责。">
           <textarea
             value={goal}
@@ -202,7 +185,8 @@ function ProjectDialog({
           />
         </Field>
         <p className="form-note">
-          所有频道共用这个项目的功能看板。接入后可打开原生 CLI，也可开启持续跟踪；频道初始保持暂停。
+          所有频道共用这个项目的功能看板。Codex 沿用 Codex App
+          的登录与权限设置；接入后可开启持续跟踪，频道初始保持暂停。
         </p>
         {existing && <p className="form-note">这个文件夹已接入，将打开已有项目。</p>}
         {(error || localError) && (
@@ -413,12 +397,14 @@ function ChannelDialog({
   const { api, mutate, busy, error, clearError, snapshot } = useWorkspace();
   const [name, setName] = useState(channel?.name || '');
   const [goal, setGoal] = useState(channel?.goal || '');
-  const [runtime, setRuntime] = useState<RuntimeID>(channel?.runtime || 'codex');
   const [model, setModel] = useState(channel?.model || '');
-  const [permission, setPermission] = useState<Channel['permission']>(channel?.permission || 'workspace-write');
+  // New channels follow the Codex App's own permission settings (full access by default).
+  const [permission, setPermission] = useState<Channel['permission']>(channel?.permission || 'native');
   const [interval, setInterval] = useState(channel?.intervalMinutes || 60);
   const [budget, setBudget] = useState(channel?.maxRunsPerDay || 32);
   const running = channel && snapshot.channels.find((c) => c.id === channel.id)?.status === 'running';
+  // Channels from retired runtimes keep their records; only their name and direction remain editable.
+  const legacy = !!channel && isLegacyRuntime(channel.runtime);
   useEffect(() => clearError(), []);
   async function submit(e: FormEvent) {
     e.preventDefault();
@@ -430,8 +416,7 @@ function ChannelDialog({
           intervalMinutes: interval,
           maxRunsPerDay: budget,
         };
-        if (!running) {
-          if (runtime !== channel.runtime) data.runtime = runtime;
+        if (!running && !legacy) {
           if (model !== channel.model) data.model = model.trim();
           if (permission !== channel.permission) data.permission = permission;
         }
@@ -441,7 +426,7 @@ function ChannelDialog({
           projectId,
           name: name.trim(),
           goal: goal.trim(),
-          runtime,
+          runtime: 'codex',
           model: model.trim(),
           permission,
           intervalMinutes: interval,
@@ -480,42 +465,26 @@ function ChannelDialog({
         </Field>
         <details className="feature-form-details">
           <summary>工作设置</summary>
-          <div className="form-row">
-            <Field title="运行引擎">
-              <select
-                value={runtime}
-                onChange={(e) => {
-                  setRuntime(e.target.value as RuntimeID);
-                  setModel('');
-                  if (e.target.value !== 'codex' && permission === 'native') setPermission('workspace-write');
-                }}
-                disabled={running}
-              >
-                {(['codex', 'claude', 'trae'] as const).map((id) => (
-                  <option key={id} value={id}>
-                    {runtimeLabel(id)}
-                  </option>
-                ))}
-              </select>
-            </Field>
-            <Field title="模型">
-              <input
-                value={model}
-                onChange={(e) => setModel(e.target.value)}
-                placeholder="CLI 默认模型"
-                disabled={running}
-              />
-            </Field>
-          </div>
-          <Field title="执行权限">
+          <Field title="模型">
+            <input
+              value={model}
+              onChange={(e) => setModel(e.target.value)}
+              placeholder="Codex App 默认模型"
+              disabled={running || legacy}
+            />
+          </Field>
+          <Field
+            title="执行权限"
+            hint="默认沿用 Codex App 的权限设置（默认为完整访问）；需要收紧时改为只读或工作区写入。"
+          >
             <select
               value={permission}
               onChange={(e) => setPermission(e.target.value as Channel['permission'])}
-              disabled={running}
+              disabled={running || legacy}
             >
               <option value="read-only">只读工作空间</option>
               <option value="workspace-write">允许工作区写入</option>
-              {runtime === 'codex' && <option value="native">沿用 Codex App 原生权限</option>}
+              {!legacy && <option value="native">沿用 Codex App 原生权限</option>}
             </select>
           </Field>
           <div className="form-row">
@@ -542,7 +511,11 @@ function ChannelDialog({
           </div>
         </details>
         <p className="form-note">
-          {running ? '暂停频道后可以更换引擎、模型或执行权限。' : '保存后可在频道开始工作。已有对话和进展会保留。'}
+          {legacy
+            ? '此频道使用的运行时已停止支持，只能调整名称与方向；历史记录保持可读，新工作请新建 Codex 频道。'
+            : running
+              ? '暂停频道后可以更换模型或执行权限。'
+              : '保存后可在频道开始工作。已有对话和进展会保留。'}
         </p>
         {error && (
           <p className="form-error" role="alert">

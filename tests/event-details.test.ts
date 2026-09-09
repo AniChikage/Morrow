@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { decodeLine } from '../service/runtimes.ts';
 import { sanitizeEventDetail } from '../service/event-details.ts';
 
-test('Codex and Trae command lifecycle retains original text with structured identity and output', () => {
+test('Codex command lifecycle retains original text with structured identity and output', () => {
   const start = {
     type: 'item.started',
     item: { id: 'cmd-1', type: 'command_execution', command: 'cat README.md', status: 'in_progress' },
@@ -32,7 +32,7 @@ test('Codex and Trae command lifecycle retains original text with structured ide
   );
 });
 
-test('tool adapters normalize MCP calls, local file changes, and every Claude tool block', () => {
+test('tool adapters normalize MCP calls and local file changes without inventing details for foreign shapes', () => {
   const mcp = decodeLine(
     JSON.stringify({
       type: 'item.completed',
@@ -56,43 +56,16 @@ test('tool adapters normalize MCP calls, local file changes, and every Claude to
     })
   );
   assert.equal(file.detail?.tool, 'apply_patch');
-  const assistant = decodeLine(
+  // Message-block shapes from retired runtimes stay plain system lines: no tool metadata is invented.
+  const foreign = decodeLine(
     JSON.stringify({
       type: 'assistant',
-      message: {
-        content: [
-          { type: 'text', text: '检查两个文件。' },
-          { type: 'tool_use', id: 'a', name: 'Read', input: { path: 'a.txt' } },
-          { type: 'tool_use', id: 'b', name: 'Grep', input: { pattern: 'TODO' } },
-        ],
-      },
+      message: { content: [{ type: 'tool_use', id: 'a', name: 'Read', input: { path: 'a.txt' } }] },
     })
   );
-  assert.equal(assistant.text, '检查两个文件。');
-  assert.equal(assistant.detail?.toolCallId, 'a');
-  assert.equal(assistant.additionalDetails?.length, 1);
-  assert.equal(assistant.additionalDetails?.[0].tool, 'Grep');
-  const result = decodeLine(
-    JSON.stringify({
-      type: 'user',
-      message: {
-        content: [
-          {
-            type: 'tool_result',
-            tool_use_id: 'a',
-            content: [{ type: 'text', text: 'file contents' }],
-            is_error: false,
-          },
-          { type: 'tool_result', tool_use_id: 'b', content: 'No access', is_error: true },
-        ],
-      },
-    })
-  );
-  assert.equal(result.kind, 'tool');
-  assert.equal(result.detail?.type, 'tool_result');
-  assert.deepEqual(result.detail?.output, [{ type: 'text', text: 'file contents' }]);
-  assert.equal(result.additionalDetails?.[0].status, 'failed');
-  assert.equal(result.error, false, 'a failed tool is not a failed run');
+  assert.equal(foreign.kind, 'system');
+  assert.equal(foreign.detail, undefined);
+  assert.equal(foreign.additionalDetails, undefined);
 });
 
 test('unstructured and primitive legacy log lines retain text without invented tool metadata', () => {

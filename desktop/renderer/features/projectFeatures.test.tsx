@@ -195,9 +195,10 @@ describe('channels are execution sources, not separate boards', () => {
     expect(api.channelAction).not.toHaveBeenCalled();
   });
 
-  it('uses the App entry for legacy Codex projects without a stored default runtime and never falls back to another CLI', async () => {
+  it('uses the App entry for projects without a stored default runtime and never falls back to another CLI once only retired channels remain', async () => {
     const state = snapshot();
     state.projects[0].isDemo = false;
+    state.channels[1].runtime = 'claude';
     const { props, api } = featureProps({ snapshot: state });
     const view = render(<ProjectView {...props} id="project-atlas" />, { wrapper: TestProviders });
     await userEvent.setup().click(screen.getByRole('button', { name: '在 Codex App 中继续此项目' }));
@@ -210,9 +211,9 @@ describe('channels are execution sources, not separate boards', () => {
       channels: state.channels.filter((channel) => channel.id !== 'channel-system'),
     };
     view.rerender(<ProjectView {...props} snapshot={noCodex} id="project-atlas" />);
-    expect((screen.getByRole('button', { name: '在 Codex App 中继续此项目' }) as HTMLButtonElement).disabled).toBe(
-      true
-    );
+    const entry = screen.getByRole('button', { name: '在 Codex App 中继续此项目' }) as HTMLButtonElement;
+    expect(entry.disabled).toBe(true);
+    expect(entry.title).toContain('已停止支持');
     expect(screen.queryByRole('button', { name: '在原生 CLI 中继续' })).toBeNull();
     expect(api.openNativeSession).not.toHaveBeenCalled();
   });
@@ -227,44 +228,42 @@ describe('channels are execution sources, not separate boards', () => {
     expect(props.onNavigate).toHaveBeenCalledWith({ kind: 'project', id: 'project-atlas' });
   });
 
-  it('opens the project runtime’s exact channel in the native CLI only when the whole project is inactive', async () => {
+  it('continues a project whose stored default runtime is retired through its Codex channel and counts the old ones', async () => {
     const state = snapshot();
     state.projects[0].isDemo = false;
     state.projects[0].runtime = 'claude';
+    state.channels[1].runtime = 'claude';
     const { props, api } = featureProps({ snapshot: state });
-    const view = render(<ProjectView {...props} id="project-atlas" />, { wrapper: TestProviders });
-    await userEvent.setup().click(screen.getByRole('button', { name: '在原生 CLI 中继续' }));
-    expect(api.openNativeSession).toHaveBeenCalledWith('channel-growth');
-    const scheduled = {
-      ...state,
-      channels: state.channels.map((channel) =>
-        channel.id === 'channel-system' ? { ...channel, status: 'idle', nextRunAt: '2026-09-08T12:00:00Z' } : channel
-      ),
-    };
-    view.rerender(<ProjectView {...props} snapshot={scheduled} id="project-atlas" />);
-    expect((screen.getByRole('button', { name: '在原生 CLI 中继续' }) as HTMLButtonElement).disabled).toBe(true);
-    expect(api.openNativeSession).toHaveBeenCalledTimes(1);
+    render(<ProjectView {...props} id="project-atlas" />, { wrapper: TestProviders });
+    expect(screen.queryByRole('button', { name: '在原生 CLI 中继续' })).toBeNull();
+    await userEvent.setup().click(screen.getByRole('button', { name: '在 Codex App 中继续此项目' }));
+    expect(api.openNativeApp).toHaveBeenCalledWith('channel-system');
+    expect(api.openNativeSession).not.toHaveBeenCalled();
+    expect(within(screen.getByRole('complementary')).getByText('1 个旧频道，历史可读')).toBeTruthy();
   });
 
-  it('does not open a native CLI while a sibling channel’s run is still active', () => {
+  it('never opens a native CLI for a retired-runtime channel, even when the rest of the project is idle', () => {
     const state = snapshot();
     state.projects[0].isDemo = false;
     state.channels[0].runtime = 'claude';
     state.runs = [
       {
-        id: 'active-run',
-        channelId: 'channel-growth',
+        id: 'old-run',
+        channelId: 'channel-system',
         runtime: 'claude',
-        status: 'running',
+        status: 'completed',
         startedAt: timestamp,
-        finishedAt: '',
-        summary: '',
-        sessionId: '',
+        finishedAt: timestamp,
+        summary: '旧运行时的历史轮次',
+        sessionId: 'old-session',
       },
     ];
     const { props, api } = featureProps({ snapshot: state });
     render(<ChannelView {...props} id="channel-system" />, { wrapper: TestProviders });
-    expect((screen.getByRole('button', { name: '在原生 CLI 中继续' }) as HTMLButtonElement).disabled).toBe(true);
+    const handoff = screen.getByRole('button', { name: '在原生 CLI 中继续' }) as HTMLButtonElement;
+    expect(handoff.disabled).toBe(true);
+    expect(handoff.title).toContain('已停止支持');
+    expect(screen.getByRole('tab', { name: '运行记录 1' })).toBeTruthy();
     expect(api.openNativeSession).not.toHaveBeenCalled();
   });
 });

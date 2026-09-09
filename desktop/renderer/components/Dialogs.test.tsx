@@ -70,7 +70,7 @@ it('only announces success after the actual connection succeeds', async () => {
   expect(context.current.setConnectionInfo).toHaveBeenCalledWith(local);
 });
 
-it('opens a native folder, derives the project name and saves the chosen default runtime before navigating', async () => {
+it('opens a native folder, derives the project name and always creates a Codex project before navigating', async () => {
   const user = userEvent.setup(),
     onClose = vi.fn(),
     onNavigate = vi.fn();
@@ -79,7 +79,7 @@ it('opens a native folder, derives the project name and saves the chosen default
     id: 'project-new',
     name: 'Atlas',
     path: '/Users/test/projects/Atlas',
-    runtime: 'claude',
+    runtime: 'codex',
     goal: '',
     createdAt: timestamp,
     isDemo: false,
@@ -92,14 +92,13 @@ it('opens a native folder, derives the project name and saves the chosen default
     '/Users/test/projects/Atlas'
   );
   expect((screen.getByRole('textbox', { name: '项目名称' }) as HTMLInputElement).value).toBe('Atlas');
-  expect((screen.getByRole('combobox', { name: /默认运行时/ }) as HTMLSelectElement).value).toBe('codex');
-  await user.selectOptions(screen.getByRole('combobox', { name: /默认运行时/ }), 'claude');
+  expect(screen.queryByRole('combobox', { name: /运行时|引擎/ })).toBeNull();
   await user.click(screen.getByRole('button', { name: '打开项目' }));
   await waitFor(() =>
     expect(context.current.api.createProject).toHaveBeenCalledWith({
       name: 'Atlas',
       path: '/Users/test/projects/Atlas',
-      runtime: 'claude',
+      runtime: 'codex',
       goal: '持续跟踪项目进展，识别有证据支持的问题，在授权范围内推进修复并验证结果。',
     })
   );
@@ -147,14 +146,13 @@ it('accepts a remote project directory without invoking the local folder picker'
   expect(screen.queryByRole('button', { name: '选择文件夹' })).toBeNull();
   await user.type(screen.getByRole('textbox', { name: '远程项目目录' }), '/srv/projects/remote-app');
   await user.type(screen.getByRole('textbox', { name: /持续目标/ }), '验证远程构建结果');
-  await user.selectOptions(screen.getByRole('combobox', { name: /默认运行时/ }), 'trae');
   await user.click(screen.getByRole('button', { name: '打开项目' }));
   await waitFor(() =>
     expect(context.current.api.createProject).toHaveBeenCalledWith({
       name: 'remote-app',
       path: '/srv/projects/remote-app',
       goal: '验证远程构建结果',
-      runtime: 'trae',
+      runtime: 'codex',
     })
   );
   expect(context.current.api.chooseFolder).not.toHaveBeenCalled();
@@ -281,6 +279,82 @@ it('edits a channel direction without making scheduling fields the primary form 
   expect(context.current.api.updateChannel).toHaveBeenCalledWith(
     channel.id,
     expect.objectContaining({ goal: '持续改善登录体验，优先复现用户遇到的问题' })
+  );
+  expect(context.current.api.channelAction).not.toHaveBeenCalled();
+});
+
+it('creates a Codex channel that follows the App permissions by default and never offers another runtime', async () => {
+  const user = userEvent.setup(),
+    onClose = vi.fn(),
+    onNavigate = vi.fn();
+  context.current.api.createChannel.mockResolvedValue({ id: 'channel-new' });
+  render(
+    <Dialogs modal={{ kind: 'channel', projectId: 'project-other' }} onClose={onClose} onNavigate={onNavigate} />,
+    {
+      wrapper: TestProviders,
+    }
+  );
+  expect(screen.queryByRole('combobox', { name: /运行引擎|运行时/ })).toBeNull();
+  await user.type(screen.getByRole('textbox', { name: '频道名称' }), '性能与稳定性');
+  await user.type(screen.getByRole('textbox', { name: '工作方向' }), '持续改善性能');
+  await user.click(screen.getByText('工作设置'));
+  const permission = screen.getByRole('combobox', { name: /执行权限/ }) as HTMLSelectElement;
+  expect(permission.value).toBe('native');
+  expect(Array.from(permission.options).map((option) => option.value)).toEqual([
+    'read-only',
+    'workspace-write',
+    'native',
+  ]);
+  await user.click(screen.getByRole('button', { name: '创建频道' }));
+  await waitFor(() =>
+    expect(context.current.api.createChannel).toHaveBeenCalledWith({
+      projectId: 'project-other',
+      name: '性能与稳定性',
+      goal: '持续改善性能',
+      runtime: 'codex',
+      model: '',
+      permission: 'native',
+      intervalMinutes: 60,
+      maxRunsPerDay: 32,
+    })
+  );
+  expect(onNavigate).toHaveBeenCalledWith({ kind: 'channel', id: 'channel-new' });
+  expect(onClose).toHaveBeenCalledOnce();
+  expect(context.current.api.channelAction).not.toHaveBeenCalled();
+});
+
+it('keeps a retired-runtime channel editable in name and direction only, without touching its runtime, model or permission', async () => {
+  const user = userEvent.setup();
+  const channel = {
+    ...context.current.snapshot.channels[0],
+    runtime: 'claude' as const,
+    permission: 'read-only' as const,
+  };
+  render(
+    <Dialogs
+      modal={{ kind: 'channel', projectId: channel.projectId, channel }}
+      onClose={() => {}}
+      onNavigate={() => {}}
+    />,
+    { wrapper: TestProviders }
+  );
+  expect(screen.getByText(/已停止支持/)).toBeTruthy();
+  await user.click(screen.getByText('工作设置'));
+  const permission = screen.getByRole('combobox', { name: /执行权限/ }) as HTMLSelectElement;
+  expect(permission.disabled).toBe(true);
+  expect(permission.value).toBe('read-only');
+  expect(Array.from(permission.options).map((option) => option.value)).toEqual(['read-only', 'workspace-write']);
+  expect((screen.getByRole('textbox', { name: '模型' }) as HTMLInputElement).disabled).toBe(true);
+  await user.clear(screen.getByRole('textbox', { name: '频道名称' }));
+  await user.type(screen.getByRole('textbox', { name: '频道名称' }), '归档的系统完善');
+  await user.click(screen.getByRole('button', { name: '保存方向' }));
+  await waitFor(() =>
+    expect(context.current.api.updateChannel).toHaveBeenCalledWith(channel.id, {
+      name: '归档的系统完善',
+      goal: channel.goal,
+      intervalMinutes: 60,
+      maxRunsPerDay: 8,
+    })
   );
   expect(context.current.api.channelAction).not.toHaveBeenCalled();
 });

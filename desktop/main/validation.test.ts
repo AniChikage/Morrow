@@ -155,9 +155,12 @@ test('item text and evidence bounds match daemon acceptance limits', () => {
     assert.throws(() => itemPatch(value));
 });
 
-test('project runtime selection remains an enum and cannot add native launch parameters', () => {
-  assert.equal(projectInput({ name: '项目', path: '/tmp/project', goal: '目标', runtime: 'claude' }).runtime, 'claude');
-  assert.throws(() => projectInput({ name: '项目', path: '/tmp/project', goal: '目标', runtime: 'bash' }));
+test('project and channel runtimes accept only Codex; retired runtimes and native launch parameters are rejected', () => {
+  assert.equal(projectInput({ name: '项目', path: '/tmp/project', goal: '目标', runtime: 'codex' }).runtime, 'codex');
+  for (const runtime of ['claude', 'trae', 'bash'])
+    assert.throws(() => projectInput({ name: '项目', path: '/tmp/project', goal: '目标', runtime }), runtime);
+  for (const runtime of ['claude', 'trae']) assert.throws(() => channelPatch({ runtime }), runtime);
+  assert.deepEqual(channelPatch({ runtime: 'codex' }), { runtime: 'codex' });
   assert.throws(() => projectInput({ name: '项目', path: '/tmp/project', goal: '目标', executable: '/bin/bash' }));
 });
 

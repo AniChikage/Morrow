@@ -5,7 +5,7 @@ import type { ChildProcessWithoutNullStreams } from 'node:child_process';
 import { appendFileSync, mkdirSync, readFileSync, writeFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
-import { APIError, resultSchema } from './protocol.ts';
+import { APIError, isLegacyRuntime, resultSchema } from './protocol.ts';
 import type { AgentResult, Channel, Event, Project, Run, Runtime, WorkItem } from './protocol.ts';
 import { sanitizeEventDetail } from './event-details.ts';
 import type { EventDetail } from './protocol.ts';
@@ -13,6 +13,8 @@ import { Store, now } from './store.ts';
 import { decodeLine, diagnoseFailure, invocation } from './runtimes.ts';
 import { extractReport } from './reports.ts';
 type Control = { id: string; enabled: boolean; pid: number; runId: string };
+const legacyRuntimeMessage =
+  '此频道使用已停止支持的运行时（Claude Code / Trae）。历史记录保持可读；请新建 Codex 频道继续工作。';
 type Active = {
   child: ChildProcessWithoutNullStreams;
   channelId: string;
@@ -177,6 +179,15 @@ export class Engine {
     this.loop.tick();
     for (const channel of this.store.all<Channel>('channels')) {
       const control = this.control(channel.id);
+      if (isLegacyRuntime(channel.runtime)) {
+        // Records from retired runtimes stay readable, but they never schedule work again.
+        if (control.enabled) {
+          this.setControl(channel.id, { enabled: false, pid: 0, runId: '' });
+          this.store.put('channels', { ...channel, status: 'paused', nextRunAt: '' });
+          this.event(channel.id, '', 'system', '此频道使用的运行时已停止支持，自动调度已关闭；历史记录保持可读。');
+        }
+        continue;
+      }
       if (
         control.enabled &&
         !this.active.has(channel.id) &&
@@ -226,6 +237,7 @@ export class Engine {
     const activationVersion = this.activationVersions.get(id) || 0;
     const c = this.store.get<Channel>('channels', id);
     if (!c) throw new APIError(404, '频道不存在');
+    if (action !== 'pause' && isLegacyRuntime(c.runtime)) throw new APIError(409, legacyRuntimeMessage);
     if (action === 'pause') {
       this.setControl(id, { enabled: false });
       this.loop.verification.cancelChannel(id);
@@ -267,6 +279,7 @@ export class Engine {
     const channel = this.store.get<Channel>('channels', id)!;
     const project = this.store.get<Project>('projects', channel.projectId)!;
     if (project.isDemo) throw new APIError(409, '示例项目不能执行');
+    if (isLegacyRuntime(channel.runtime)) throw new APIError(409, legacyRuntimeMessage);
     if (this.active.has(id)) throw new APIError(409, '频道正在执行');
     // A queued/running reviewer owns the frozen project source. Existing
     // reassessment signals must not launch another autonomous turn that can
@@ -307,10 +320,12 @@ export class Engine {
     } catch {
       throw new APIError(400, '项目目录不存在或不可访问');
     }
-    if (channel.runtime === 'codex' && (process.env.MORROW_TEST_MODE !== '1' || this.native?.binding(id))) {
+    if (process.env.MORROW_TEST_MODE !== '1' || this.native?.binding(id)) {
       if (!this.native) throw new APIError(409, '请连接并绑定 Codex App 中的原生任务');
       return this.native.startScheduled(id, scheduled);
     }
+    // Fixture runtime path: only MORROW_TEST_MODE reaches the bounded CLI subprocess below. Real Codex
+    // channels always run inside the shared App task above.
     const runtime = this.runtimes.find((r) => r.id === channel.runtime);
     if (!runtime?.available) throw new APIError(409, '所选 CLI 不可用，请在运行环境页刷新并检查安装');
     const run: Run = {
@@ -332,9 +347,7 @@ export class Engine {
     };
     const runDir = join(this.home, 'runs', run.id);
     mkdirSync(runDir, { recursive: true, mode: 0o700 });
-    const schemaPath = join(runDir, 'schema.json');
     const outputPath = join(runDir, 'last-message.json');
-    writeFileSync(schemaPath, JSON.stringify(resultSchema), { mode: 0o600 });
     const prompt = this.prompt(project, channel);
     if (Buffer.byteLength(prompt) > 1024 * 1024)
       throw new APIError(400, '项目看板与备注上下文超过 1 MiB，无法安全启动本轮；请整理过长的事项内容后重试');
@@ -351,9 +364,9 @@ export class Engine {
       id,
       run.id,
       'system',
-      `${runtime.name} 开始执行 · ${channel.permission === 'read-only' ? '只读分析' : '工作区编辑'} · ${channel.sessionId ? '恢复原生会话' : '完整上下文启动'}。`
+      `${runtime.name} 开始执行 · ${channel.permission === 'read-only' ? '只读分析' : channel.permission === 'native' ? '沿用 App 权限' : '工作区编辑'} · ${channel.sessionId ? '恢复原生会话' : '完整上下文启动'}。`
     );
-    const child = spawn(runtime.path, invocation(channel, run.id, schemaPath, outputPath), {
+    const child = spawn(runtime.path, invocation(channel, outputPath), {
       cwd: project.path,
       env: { ...process.env, NO_COLOR: '1' },
       detached: true,
@@ -385,7 +398,7 @@ export class Engine {
     let spawnError = '';
     let failureDiagnosis: { priority: number; summary: string } | undefined;
     const diagnose = (text: string) => {
-      const candidate = diagnoseFailure(channel.runtime, text);
+      const candidate = diagnoseFailure('codex', text);
       if (candidate && (!failureDiagnosis || candidate.priority > failureDiagnosis.priority))
         failureDiagnosis = candidate;
     };

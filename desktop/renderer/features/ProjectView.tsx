@@ -11,9 +11,9 @@ import {
   List,
   Plus,
   Search,
-  Terminal,
   X,
 } from 'lucide-react';
+import { isLegacyRuntime } from '../../shared/types';
 import type { Channel, WorkItem } from '../../shared/types';
 import type { FeatureProps } from './types';
 import {
@@ -27,13 +27,7 @@ import {
   StatusIcon,
 } from '../components/ui';
 import { formatDate, kindLabel, statusLabel } from '../components/format';
-import {
-  featureNumber,
-  featureProjectId,
-  featureSourceIds,
-  featureSourceLabel,
-  nativeContinuationBlock,
-} from './featureOwnership';
+import { featureNumber, featureProjectId, featureSourceIds, featureSourceLabel } from './featureOwnership';
 import { ProjectRecords } from './ProjectRecords';
 import { ProjectReleases, ProjectThinking } from './ProjectWork';
 import './content.css';
@@ -105,10 +99,9 @@ export function ProjectView(props: FeatureProps & { id: string }) {
     setQuery('');
   };
   const openItem = (item: WorkItem) => onNavigate({ kind: 'finding', id: item.id });
-  const nativeChannel = channels.find((channel) => channel.runtime === project?.runtime) || channels[0];
-  const nativeCodex = !project?.isDemo && (project?.runtime || nativeChannel?.runtime) === 'codex';
-  const codexChannel = nativeCodex ? channels.find((channel) => channel.runtime === 'codex') : undefined;
-  const nativeBlock = nativeContinuationBlock(snapshot, id);
+  // Only a Codex channel can continue in the App; channels from retired runtimes stay readable but never execute.
+  const codexChannel = channels.find((channel) => channel.runtime === 'codex');
+  const legacyChannels = channels.filter((channel) => isLegacyRuntime(channel.runtime));
   if (!project) return <EmptyState title="项目不存在" description="项目可能已被移除，请在侧栏重新选择。" />;
   return (
     <div className="feature-layout">
@@ -219,33 +212,24 @@ export function ProjectView(props: FeatureProps & { id: string }) {
               </IconButton>
             </>
           )}
-          {nativeCodex ? (
-            <Button
-              variant="ghost"
-              aria-label="在 Codex App 中继续此项目"
-              title={
-                codexChannel
+          <Button
+            variant="ghost"
+            aria-label="在 Codex App 中继续此项目"
+            title={
+              project.isDemo
+                ? '示例项目不会打开原生对话。'
+                : codexChannel
                   ? '打开此项目的原生会话；尚未关联时打开 App 新建对话。'
-                  : '创建 Codex 频道后可打开原生对话。'
-              }
-              disabled={busy || !codexChannel}
-              onClick={() => codexChannel && void onMutate(() => api.openNativeApp(codexChannel.id))}
-            >
-              <ArrowUpRight size={14} />
-              <span className="project-native-label">Codex App</span>
-            </Button>
-          ) : (
-            <Button
-              variant="ghost"
-              aria-label="在原生 CLI 中继续"
-              title={nativeBlock || '在原生 CLI 中继续此项目'}
-              disabled={busy || !!nativeBlock || !nativeChannel}
-              onClick={() => nativeChannel && void onMutate(() => api.openNativeSession(nativeChannel.id))}
-            >
-              <Terminal size={14} />
-              <span className="project-native-label">原生 CLI</span>
-            </Button>
-          )}
+                  : legacyChannels.length
+                    ? '旧频道使用的运行时已停止支持；新建 Codex 频道后可打开原生对话。'
+                    : '创建 Codex 频道后可打开原生对话。'
+            }
+            disabled={busy || project.isDemo || !codexChannel}
+            onClick={() => codexChannel && void onMutate(() => api.openNativeApp(codexChannel.id))}
+          >
+            <ArrowUpRight size={14} />
+            <span className="project-native-label">Codex App</span>
+          </Button>
           <Button disabled={busy} onClick={() => onNewFeature(id)}>
             <Plus size={14} />
             新建功能
@@ -363,6 +347,9 @@ export function ProjectView(props: FeatureProps & { id: string }) {
             <h3>属性</h3>
             <Property label="项目功能">{allItems.length} 个</Property>
             <Property label="持续频道">{channels.length} 个</Property>
+            {legacyChannels.length > 0 && (
+              <Property label="已停止支持">{legacyChannels.length} 个旧频道，历史可读</Property>
+            )}
             <Property label="正在运行">{channels.filter((channel) => channel.status === 'running').length} 个</Property>
             <Property label="创建时间">{formatDate(project.createdAt)}</Property>
           </section>

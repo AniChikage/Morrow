@@ -6,7 +6,7 @@ import { isAbsolute, join } from 'node:path';
 
 export interface NativeSessionTarget {
   projectPath: string;
-  runtime: 'codex' | 'claude' | 'trae';
+  runtime: 'codex';
   executable: string;
   sessionId: string;
 }
@@ -25,7 +25,8 @@ function validate(target: NativeSessionTarget): void {
     throw new Error('原生会话参数无效。');
   absolutePath(target.projectPath, '项目目录');
   absolutePath(target.executable, '运行时命令');
-  if (!['codex', 'claude', 'trae'].includes(target.runtime)) throw new Error('不支持此运行时的原生会话。');
+  // Retired runtimes (Claude Code / Trae) keep their records but never get a terminal session.
+  if (target.runtime !== 'codex') throw new Error('不支持此运行时的原生会话。');
   if (
     typeof target.sessionId !== 'string' ||
     (target.sessionId !== '' && !/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(target.sessionId))
@@ -39,7 +40,7 @@ function quote(value: string): string {
 /** Generate only a native interactive invocation, never a prompt, headless run or permission override. */
 export function prepareScript(target: NativeSessionTarget): string {
   validate(target);
-  const args = target.sessionId ? [target.runtime === 'claude' ? '--resume' : 'resume', target.sessionId] : [];
+  const args = target.sessionId ? ['resume', target.sessionId] : [];
   return [
     '#!/bin/bash',
     '# Morrow opens the CLI native session. Authentication and settings remain with the CLI.',

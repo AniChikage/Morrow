@@ -1,3 +1,4 @@
+import { isLegacyRuntime, type LegacyRuntimeID } from '../../shared/types';
 export const statuses: Record<string, string> = {
   open: '待处理',
   investigating: '调查中',
@@ -18,10 +19,13 @@ export const kinds: Record<string, string> = {
   opportunity: '机会',
   hypothesis: '假设',
 };
-export const engines: Record<string, string> = { codex: 'Codex', claude: 'Claude Code', trae: 'Trae CLI' };
+export const engines: Record<string, string> = { codex: 'Codex' };
+/** Retired runtimes: their channels, runs and events stay readable, so their names must still render. */
+const legacyEngines: Record<LegacyRuntimeID, string> = { claude: 'Claude Code', trae: 'Trae CLI' };
 export const statusLabel = (value: string) => statuses[value] || value;
 export const kindLabel = (value: string) => kinds[value] || value;
-export const runtimeLabel = (value: string) => engines[value] || value;
+export const runtimeLabel = (value: string) =>
+  engines[value] || (isLegacyRuntime(value) ? `${legacyEngines[value]}（已停止支持）` : value);
 const timeFormatter = new Intl.DateTimeFormat('zh-CN', {
   month: '2-digit',
   day: '2-digit',

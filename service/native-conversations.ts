@@ -964,23 +964,21 @@ export class NativeConversations {
         .map((entry) => entry.turnId)
     );
     const limit = query.limit || 80;
-    const page = all
-      .slice(Math.max(0, index - limit), index)
-      .map(({ threadId, ordinal, present, ...item }) => ({
-        ...item,
-        ...(item.role === 'user' &&
-        scheduledTurns.has(item.turnId) &&
-        this.store
-          .nativeRows<Outbox>('native_outbox', binding.threadId)
-          .some(
-            (entry) =>
-              entry.source === 'schedule' &&
-              entry.turnId === item.turnId &&
-              (itemMatchesRequest(item.raw, entry.requestId) || item.text === entry.text)
-          )
-          ? { autonomousContext: true }
-          : {}),
-      }));
+    const page = all.slice(Math.max(0, index - limit), index).map(({ threadId, ordinal, present, ...item }) => ({
+      ...item,
+      ...(item.role === 'user' &&
+      scheduledTurns.has(item.turnId) &&
+      this.store
+        .nativeRows<Outbox>('native_outbox', binding.threadId)
+        .some(
+          (entry) =>
+            entry.source === 'schedule' &&
+            entry.turnId === item.turnId &&
+            (itemMatchesRequest(item.raw, entry.requestId) || item.text === entry.text)
+        )
+        ? { autonomousContext: true }
+        : {}),
+    }));
     const requests = this.store
       .all<any>('native_requests')
       .filter((row) => row.threadId === binding.threadId && row.status === 'pending')

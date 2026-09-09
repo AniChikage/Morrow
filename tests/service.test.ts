@@ -12,7 +12,7 @@ import { invocation, diagnoseFailure } from '../service/runtimes.ts';
 import { validateResult } from '../service/protocol.ts';
 const fixture = resolve('tests/fixtures/runtime.mjs');
 process.env.MORROW_TEST_MODE = '1';
-for (const id of ['CODEX', 'CLAUDE', 'TRAE']) process.env[`MORROW_TEST_${id}_PATH`] = fixture;
+process.env.MORROW_TEST_CODEX_PATH = fixture;
 const pause = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 async function until(predicate: () => any, timeout = 5000) {
   const end = Date.now() + timeout;
@@ -106,13 +106,14 @@ test('local auth, schema validation, paused defaults and idempotent explicit dem
       ).status,
       403
     );
-    assert(
-      s.channels.every((c: any) => c.status === 'paused' && c.permission === 'workspace-write' && c.sessionId === '')
-    );
+    assert(s.channels.every((c: any) => c.status === 'paused' && c.sessionId === ''));
+    assert.equal(s.channels[0].permission, 'native');
+    assert.equal(s.channels[1].permission, 'workspace-write');
     await s.api('POST', '/api/projects', { name: 'Again', path: s.projectPath, goal: 'Duplicate' }, 409);
     await s.api('PATCH', `/api/channels/${s.channels[0].id}`, { model: '--dangerous' }, 400);
     await s.api('PATCH', `/api/channels/${s.channels[0].id}`, { maxRunsPerDay: 0 }, 400);
     await s.api('POST', '/api/channels', { projectId: s.project.id, name: 'A', goal: 'B', runtime: 'unknown' }, 400);
+    await s.api('POST', '/api/channels', { projectId: s.project.id, name: 'A', goal: 'B', runtime: 'claude' }, 400);
     await s.api('POST', '/api/demo', {});
     await s.api('POST', '/api/demo', {});
     const state = await s.api('GET', '/api/state');
@@ -147,19 +148,18 @@ test('one-shot persists valid results, shared sourced knowledge, messages, nativ
     await s.api('POST', `/api/channels/${c.id}/action`, { action: 'run' });
     await until(() => s.store.all<any>('runs').filter((r) => r.status === 'completed').length === 2);
     assert(JSON.parse(readFileSync(join(s.projectPath, '.fixture-capture.json'), 'utf8')).args.includes('resume'));
-    const updated = await s.api('PATCH', `/api/channels/${c.id}`, {
-      runtime: 'claude',
-    });
+    await s.api('PATCH', `/api/channels/${c.id}`, { runtime: 'claude' }, 400);
+    const updated = await s.api('PATCH', `/api/channels/${c.id}`, { model: 'gpt-5-codex' });
     assert.equal(updated.sessionId, '');
     await s.api('POST', `/api/channels/${c.id}/action`, { action: 'run' });
     await until(() => s.store.all<any>('runs').filter((r) => r.status === 'completed').length === 3);
     const nextCapture = JSON.parse(readFileSync(join(s.projectPath, '.fixture-capture.json'), 'utf8'));
-    assert(!nextCapture.args.includes('--resume'));
+    assert(!nextCapture.args.includes('resume'));
     assert(nextCapture.input.includes('Fixture 发现'));
-    assert(nextCapture.args.includes('--restricted'));
-    assert.equal(nextCapture.args[nextCapture.args.indexOf('--tools') + 1], 'Read,Grep,Glob');
+    assert.equal(nextCapture.args[nextCapture.args.indexOf('--model') + 1], 'gpt-5-codex');
     state = await s.api('GET', '/api/state');
-    assert.equal(state.runs.at(-1).runtime, 'claude');
+    assert.equal(state.runs.at(-1).runtime, 'codex');
+    assert.equal(state.runs.at(-1).model, 'gpt-5-codex');
   } finally {
     await s.cleanup();
   }
@@ -208,7 +208,7 @@ test('project execution lock, settings guard, pause cancels complete process gro
     await until(() => existsSync(join(s.projectPath, '.fixture-child-ready')));
     const child = Number(readFileSync(join(s.projectPath, '.fixture-child.pid'), 'utf8'));
     await s.api('POST', `/api/channels/${b.id}/action`, { action: 'run' }, 409);
-    await s.api('PATCH', `/api/channels/${a.id}`, { runtime: 'claude' }, 409);
+    await s.api('PATCH', `/api/channels/${a.id}`, { permission: 'read-only' }, 409);
     await s.api('POST', `/api/channels/${a.id}/action`, { action: 'pause' });
     await until(() => s.store.all<any>('runs').some((r) => r.status === 'interrupted'));
     await until(() => {
@@ -221,6 +221,56 @@ test('project execution lock, settings guard, pause cancels complete process gro
     });
     assert.equal(s.store.get<any>('channels', a.id).status, 'paused');
     assert.equal(s.engine.active.size, 0);
+  } finally {
+    await s.cleanup();
+  }
+});
+test('channels from retired runtimes stay readable but never execute again', async () => {
+  const s = await setup();
+  try {
+    // An old database row: a Claude channel that was still scheduled when support ended.
+    const legacy = {
+      id: randomUUID(),
+      projectId: s.project.id,
+      name: '旧 Claude 频道',
+      goal: '历史职责',
+      runtime: 'claude',
+      model: '',
+      status: 'idle',
+      intervalMinutes: 60,
+      maxRunsPerDay: 8,
+      permission: 'workspace-write',
+      nextRunAt: new Date(Date.now() - 60_000).toISOString(),
+      lastRunAt: '',
+      sessionId: 'legacy-claude-session',
+    };
+    s.store.put('channels', legacy);
+    s.engine.setControl(legacy.id, { enabled: true });
+    const listed = (await s.api('GET', '/api/state')).channels.find((c: any) => c.id === legacy.id);
+    assert.equal(listed.runtime, 'claude');
+    assert.equal(listed.sessionId, 'legacy-claude-session');
+    for (const action of ['run', 'resume']) {
+      const rejected = await s.api('POST', `/api/channels/${legacy.id}/action`, { action }, 409);
+      assert.match(rejected.error, /停止支持/);
+    }
+    const notices = () =>
+      s.store.all<any>('events').filter((e) => e.channelId === legacy.id && e.text.includes('停止支持'));
+    s.engine.tick();
+    s.engine.tick();
+    assert.equal(s.store.all('runs').length, 0);
+    assert.equal(s.engine.control(legacy.id).enabled, false);
+    const current = s.store.get<any>('channels', legacy.id);
+    assert.equal(current.status, 'paused');
+    assert.equal(current.nextRunAt, '');
+    assert.equal(current.sessionId, 'legacy-claude-session');
+    assert.equal(notices().length, 1);
+    assert.equal(notices()[0].kind, 'system');
+    const handoff = await s.api('POST', `/api/channels/${legacy.id}/native-handoff`, {}, 409);
+    assert.match(handoff.error, /停止支持/);
+    await s.api('POST', `/api/channels/${legacy.id}/action`, { action: 'pause' });
+    assert.equal(s.store.get<any>('channels', legacy.id).status, 'paused');
+    assert.equal(s.store.all('runs').length, 0);
+    assert.equal(notices().length, 1);
   } finally {
     await s.cleanup();
   }
@@ -261,17 +311,16 @@ test('safe adapters and evidence validation', () => {
     sessionId: 'previous-session',
     model: '',
   };
-  for (const runtime of ['codex', 'trae']) {
-    const args = invocation({ ...channel, runtime }, 'run', 'schema', 'output');
-    assert(args.includes('resume'));
-    assert(args.includes('sandbox_mode="read-only"'));
-    assert(args.includes('approval_policy="never"'));
-    assert(!args.some((a) => a.includes('dangerously')));
-  }
-  const args = invocation({ ...channel, runtime: 'claude', permission: 'workspace-write' }, 'run', 'schema', 'output');
-  assert.equal(args[args.indexOf('--tools') + 1], 'Read,Grep,Glob,Edit,Write');
-  assert(args.includes('acceptEdits'));
-  assert(!args.includes('Bash'));
+  const args = invocation(channel, 'output');
+  assert(args.includes('resume'));
+  assert(args.includes('sandbox_mode="read-only"'));
+  assert(args.includes('approval_policy="never"'));
+  assert(args.includes('sandbox_workspace_write.network_access=false'));
+  assert(!args.some((a) => a.includes('dangerously')));
+  const native = invocation({ ...channel, permission: 'native', sessionId: '' }, 'output');
+  assert(native.includes('sandbox_mode="danger-full-access"'));
+  assert(!native.includes('sandbox_workspace_write.network_access=false'));
+  assert.equal(native[native.indexOf('--sandbox') + 1], 'danger-full-access');
   assert.throws(() =>
     validateResult({
       summary: 'Claim',
@@ -394,13 +443,11 @@ test('authentication failures are actionable and never reported as valid results
   try {
     s.config({ fail: true, authFailure: true });
     const c = s.channels[0];
-    await s.api('PATCH', `/api/channels/${c.id}`, { runtime: 'claude' });
     await s.api('POST', `/api/channels/${c.id}/action`, { action: 'run' });
     await until(() => s.store.all<any>('runs').some((r) => r.status === 'failed'));
-    assert(s.store.all<any>('runs')[0].summary.includes('claude auth login'));
+    assert(s.store.all<any>('runs')[0].summary.includes('codex login'));
     assert.equal(s.store.all('results').length, 0);
     assert.equal(s.store.all('items').length, 0);
-    assert(diagnoseFailure('trae', 'get_detail_param returned 401')?.summary.includes('traex login'));
     assert(diagnoseFailure('codex', '429 rate_limit')?.summary.includes('配额'));
   } finally {
     await s.cleanup();
@@ -514,29 +561,48 @@ test('event history uses scoped stable cursors and includes legacy events', asyn
   }
 });
 
-test('streamed Claude tools persist multiple details, matched names and sanitized output', async () => {
+test('streamed Codex tool items persist details, matched names and sanitized output', async () => {
   const s = await setup();
   try {
     const channelId = s.channels[0].id;
-    await s.api('PATCH', `/api/channels/${channelId}`, { runtime: 'claude' });
     s.config({
       events: [
         {
-          type: 'assistant',
-          message: {
-            content: [
-              { type: 'tool_use', id: 'read-a', name: 'Read', input: { path: 'a.txt' } },
-              { type: 'tool_use', id: 'read-b', name: 'Grep', input: { pattern: 'TODO' } },
-            ],
+          type: 'item.started',
+          item: { id: 'cmd-a', type: 'command_execution', command: 'cat a.txt', status: 'in_progress' },
+        },
+        {
+          type: 'item.started',
+          item: {
+            id: 'mcp-b',
+            type: 'mcp_tool_call',
+            server: 'local',
+            tool: 'grep',
+            arguments: { pattern: 'TODO' },
+            status: 'in_progress',
           },
         },
         {
-          type: 'user',
-          message: {
-            content: [
-              { type: 'tool_result', tool_use_id: 'read-a', content: `visible ${s.token}`, is_error: false },
-              { type: 'tool_result', tool_use_id: 'read-b', content: 'no matches', is_error: false },
-            ],
+          type: 'item.completed',
+          item: {
+            id: 'cmd-a',
+            type: 'command_execution',
+            command: 'cat a.txt',
+            aggregated_output: `visible ${s.token}`,
+            exit_code: 0,
+            status: 'completed',
+          },
+        },
+        {
+          type: 'item.completed',
+          item: {
+            id: 'mcp-b',
+            type: 'mcp_tool_call',
+            server: 'local',
+            tool: 'grep',
+            arguments: { pattern: 'TODO' },
+            result: 'no matches',
+            status: 'completed',
           },
         },
       ],
@@ -549,7 +615,11 @@ test('streamed Claude tools persist multiple details, matched names and sanitize
     assert.equal(details.length, 4);
     assert.deepEqual(
       details.map((d: any) => d.tool),
-      ['Read', 'Grep', 'Read', 'Grep']
+      ['shell', 'local.grep', 'shell', 'local.grep']
+    );
+    assert.deepEqual(
+      details.map((d: any) => d.toolCallId),
+      ['cmd-a', 'mcp-b', 'cmd-a', 'mcp-b']
     );
     assert(details.every((d: any, i: number) => i === 0 || d.sequence > details[i - 1].sequence));
     assert(!JSON.stringify(page).includes(s.token));
@@ -596,15 +666,16 @@ test('project board creation, provenance, optimistic edits and project audit are
     assert.equal((await fetch(s.base + `/api/events?projectId=${s.project.id}`)).status, 401);
     const rootPath = join(s.root, 'second');
     mkdirSync(rootPath);
+    await s.api('POST', '/api/projects', { name: 'Other', path: rootPath, goal: 'other', runtime: 'claude' }, 400);
     const project = await s.api(
       'POST',
       '/api/projects',
-      { name: 'Other', path: rootPath, goal: 'other', runtime: 'claude' },
+      { name: 'Other', path: rootPath, goal: 'other', runtime: 'codex' },
       201
     );
     const state = await s.api('GET', '/api/state');
-    assert.equal(project.runtime, 'claude');
-    assert(state.channels.filter((c: any) => c.projectId === project.id).every((c: any) => c.runtime === 'claude'));
+    assert.equal(project.runtime, 'codex');
+    assert(state.channels.filter((c: any) => c.projectId === project.id).every((c: any) => c.runtime === 'codex'));
     await s.api(
       'POST',
       `/api/projects/${project.id}/items`,
@@ -706,17 +777,12 @@ test('optional invalid reports do not fail native work and terminal success over
     assert(detail.prompt.includes('可选'));
     assert.equal(detail.report, undefined);
     await s.api('POST', `/api/channels/${c.id}/action`, { action: 'pause' });
-    const args = invocation({ ...c, sessionId: 'exact-session' }, run.id, 'schema', 'output');
-    for (const flag of ['--ignore-user-config', '--ignore-rules', '--output-schema', '--last'])
+    const args = invocation({ ...c, permission: 'workspace-write', sessionId: 'exact-session' }, 'output');
+    for (const flag of ['--ignore-user-config', '--ignore-rules', '--output-schema', '--last', '--json-schema'])
       assert(!args.includes(flag));
     assert(args.includes('exact-session'));
     assert(args.includes('approval_policy="never"'));
     assert(args.includes('sandbox_workspace_write.network_access=false'));
-    const claude = invocation({ ...c, runtime: 'claude', sessionId: 'exact-claude' }, run.id, 'schema', 'output');
-    assert(!claude.includes('--json-schema'));
-    assert(claude.includes('--resume'));
-    assert(claude.includes('exact-claude'));
-    assert(!claude.includes('Bash'));
   } finally {
     await s.cleanup();
   }
@@ -730,7 +796,7 @@ test('full run records and raw I/O page beyond snapshots with auth and scoped cu
     await until(() => s.store.all<any>('runs').some((r) => r.status === 'completed'));
     const run = s.store.all<any>('runs')[0];
     const detail = await s.api('GET', `/api/runs/${run.id}`);
-    assert.equal(detail.run.permission, 'workspace-write');
+    assert.equal(detail.run.permission, 'native');
     assert.equal(detail.run.projectId, s.project.id);
     assert(detail.prompt.includes('验证完整项目循环'));
     assert.equal(detail.report.summary, run.summary);

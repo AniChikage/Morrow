@@ -22,20 +22,21 @@ function runtimeProps(runtimes: Runtime[] = [installed]) {
   return featureProps({ snapshot: state });
 }
 
-test('CLI detection stays separate from authentication and details are progressively disclosed', async () => {
-  const cli = { ...installed, id: 'claude', name: 'Claude Code', path: '/opt/homebrew/bin/claude' };
-  const { props } = runtimeProps([cli]);
+test('CLI detection stays separate from authentication and details are progressively disclosed while App status is unknown', async () => {
+  const { props, api } = runtimeProps();
+  // Until the App status answers, the Codex row can only report what the CLI probe found.
+  api.getNativeStatus.mockImplementation(() => new Promise(() => {}));
   render(<RuntimesView {...props} />);
   expect(screen.getByText('已检测到')).toBeTruthy();
   expect(screen.getByText('待验证')).toBeTruthy();
   expect(screen.queryByText('已登录')).toBeNull();
-  expect(screen.queryByText(cli.path)).toBeNull();
-  const row = screen.getByRole('button', { name: 'Claude Code，已检测到，查看详情' });
+  expect(screen.queryByText(installed.path)).toBeNull();
+  const row = screen.getByRole('button', { name: 'Codex，已检测到，查看详情' });
   expect(row.getAttribute('aria-expanded')).toBe('false');
   await userEvent.setup().click(row);
-  const details = within(screen.getByRole('region', { name: 'Claude Code 详情' }));
-  expect(details.getByText(cli.path)).toBeTruthy();
-  expect(details.getByText('只读 / 工作区编辑，由每个频道单独设置。')).toBeTruthy();
+  const details = within(screen.getByRole('region', { name: 'Codex 详情' }));
+  expect(details.getByText(installed.path)).toBeTruthy();
+  expect(details.getByText('默认沿用 Codex App 的权限设置；每个频道可单独收紧为只读或工作区编辑。')).toBeTruthy();
   expect(details.getByText(/登录状态与配额在实际执行时验证/)).toBeTruthy();
   expect(row.getAttribute('aria-expanded')).toBe('true');
   expect(screen.queryByRole('button', { name: /安装|登录|配置/ })).toBeNull();
@@ -60,14 +61,28 @@ test('Codex reports the live App connection separately from its unused terminal 
   expect(screen.getByText(installed.path)).toBeTruthy();
 });
 
-test('an installed but incompatible CLI differs from a CLI missing from PATH', () => {
-  const { props } = runtimeProps([
+test('an installed but incompatible CLI differs from a CLI missing from PATH, and retired runtimes are never listed', () => {
+  const { props, api } = runtimeProps([
     { ...installed, available: false, detail: '当前 CLI 版本缺少必要的安全或结构化输出选项，请升级。' },
-    { ...installed, id: 'claude', name: 'Claude Code', available: false, path: '', version: '', canWrite: false },
   ]);
-  render(<RuntimesView {...props} />);
+  // A channel left over from a retired runtime is not counted against the Codex row and gets no row of its own.
+  props.snapshot.channels[1].runtime = 'claude';
+  api.getNativeStatus.mockImplementation(() => new Promise(() => {}));
+  const view = render(<RuntimesView {...props} />);
   expect(screen.getByRole('button', { name: 'Codex，需检查，查看详情' })).toBeTruthy();
-  expect(screen.getByRole('button', { name: 'Claude Code，未检测到，查看详情' })).toBeTruthy();
+  expect(screen.getByText('2 个频道')).toBeTruthy();
+  expect(screen.queryByRole('button', { name: /Claude Code|Trae/ })).toBeNull();
+  expect(screen.getAllByRole('button', { name: /查看详情/ })).toHaveLength(1);
+  view.rerender(
+    <RuntimesView
+      {...props}
+      snapshot={{
+        ...props.snapshot,
+        runtimes: [{ ...installed, available: false, path: '', version: '', canWrite: false }],
+      }}
+    />
+  );
+  expect(screen.getByRole('button', { name: 'Codex，未检测到，查看详情' })).toBeTruthy();
   expect(screen.queryByText('已检测到')).toBeNull();
 });
 

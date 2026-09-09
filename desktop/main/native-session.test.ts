@@ -38,42 +38,34 @@ afterEach(async () => {
   await rm(temporary, { recursive: true, force: true });
 });
 
-test.each([
-  ['codex', 'resume'],
-  ['claude', '--resume'],
-  ['trae', 'resume'],
-] as const)(
-  '%s resumes the exact native session with safely quoted paths and no extra flags',
-  async (runtime, resume) => {
-    const scriptPath = join(temporary, 'prepared.command');
-    await writeFile(scriptPath, prepareScript({ ...target, runtime }));
-    const result = await execute('/bin/bash', [scriptPath], { cwd: temporary });
-    expect(result.stdout.trim().split('\n')).toEqual([
-      `cwd=${target.projectPath}`,
-      `arg=${resume}`,
-      `arg=${target.sessionId}`,
-    ]);
-    expect((await readdir(temporary)).filter((name) => name.startsWith('UNSAFE_'))).toEqual([]);
-    expect(await readdir(target.projectPath)).toEqual([]);
-  }
-);
+test('codex resumes the exact native session with safely quoted paths and no extra flags', async () => {
+  const scriptPath = join(temporary, 'prepared.command');
+  await writeFile(scriptPath, prepareScript(target));
+  const result = await execute('/bin/bash', [scriptPath], { cwd: temporary });
+  expect(result.stdout.trim().split('\n')).toEqual([
+    `cwd=${target.projectPath}`,
+    'arg=resume',
+    `arg=${target.sessionId}`,
+  ]);
+  expect((await readdir(temporary)).filter((name) => name.startsWith('UNSAFE_'))).toEqual([]);
+  expect(await readdir(target.projectPath)).toEqual([]);
+});
 
-test.each(['codex', 'claude', 'trae'] as const)(
-  '%s without a session starts the native interactive CLI without prompt or config overrides',
-  async (runtime) => {
-    const scriptPath = join(temporary, 'fresh.command');
-    await writeFile(scriptPath, prepareScript({ ...target, runtime, sessionId: '' }));
-    const result = await execute('/bin/bash', [scriptPath]);
-    expect(result.stdout.trim()).toBe(`cwd=${target.projectPath}`);
-  }
-);
+test('codex without a session starts the native interactive CLI without prompt or config overrides', async () => {
+  const scriptPath = join(temporary, 'fresh.command');
+  await writeFile(scriptPath, prepareScript({ ...target, sessionId: '' }));
+  const result = await execute('/bin/bash', [scriptPath]);
+  expect(result.stdout.trim()).toBe(`cwd=${target.projectPath}`);
+});
 
-test('invalid destinations, runtimes and session options cannot become shell commands', () => {
+test('invalid destinations, retired runtimes and session options cannot become shell commands', () => {
   for (const patch of [
     { projectPath: 'relative/path' },
     { executable: 'codex' },
     { projectPath: '/tmp/one\ntwo' },
     { runtime: 'shell' },
+    { runtime: 'claude' },
+    { runtime: 'trae' },
     { sessionId: '--last' },
     { sessionId: 'id; touch unsafe' },
     { sessionId: 'id$(touch unsafe)' },

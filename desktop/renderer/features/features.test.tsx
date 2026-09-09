@@ -115,28 +115,36 @@ describe('channel control and history', () => {
     expect(api.channelAction).not.toHaveBeenCalled();
   });
 
-  it('dispatches run, resume and pause to the selected real channel without overlapping a running task', async () => {
+  it('keeps a retired-runtime channel readable: notice shown, run and resume disabled, pause still dispatched', async () => {
     const user = userEvent.setup();
     const state = snapshot();
     state.projects[0].isDemo = false;
     state.channels[0].runtime = 'claude';
+    state.channels[0].status = 'idle';
+    state.channels[0].nextRunAt = '2026-09-08T12:00:00Z';
     const { props, api } = featureProps({ snapshot: state });
+    api.getEvents.mockResolvedValueOnce({ events: [event('legacy-history', '旧运行时留下的记录')], hasMore: false });
     const view = render(<ChannelView {...props} id="channel-system" />, { wrapper: TestProviders });
-    await user.click(screen.getByRole('button', { name: '运行一次' }));
-    expect(api.channelAction).toHaveBeenLastCalledWith('channel-system', 'run');
-    await user.click(screen.getByRole('button', { name: '开启持续运行' }));
-    expect(api.channelAction).toHaveBeenLastCalledWith('channel-system', 'resume');
-    const runningState = {
-      ...state,
-      channels: state.channels.map((channel) =>
-        channel.id === 'channel-system' ? { ...channel, status: 'running' } : channel
-      ),
-    };
-    view.rerender(<ChannelView {...props} snapshot={runningState} id="channel-system" />);
+    await screen.findByText('旧运行时留下的记录');
+    expect(screen.getByRole('note').textContent).toContain('已停止支持');
+    expect(screen.getAllByText('Claude Code（已停止支持）').length).toBeGreaterThan(0);
     expect((screen.getByRole('button', { name: '运行一次' }) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByRole('button', { name: '在原生 CLI 中继续' }) as HTMLButtonElement).disabled).toBe(true);
+    expect(screen.queryByRole('textbox', { name: '向频道补充上下文' })).toBeNull();
     await user.click(screen.getByRole('button', { name: '暂停频道' }));
     expect(api.channelAction).toHaveBeenLastCalledWith('channel-system', 'pause');
-    expect(api.channelAction).toHaveBeenCalledTimes(3);
+    const pausedState = {
+      ...state,
+      channels: state.channels.map((channel) =>
+        channel.id === 'channel-system' ? { ...channel, status: 'paused', nextRunAt: '' } : channel
+      ),
+    };
+    view.rerender(<ChannelView {...props} snapshot={pausedState} id="channel-system" />);
+    expect((screen.getByRole('button', { name: '开启持续运行' }) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByRole('button', { name: '运行一次' }) as HTMLButtonElement).disabled).toBe(true);
+    expect(screen.getByText('旧运行时留下的记录')).toBeTruthy();
+    expect(api.channelAction).toHaveBeenCalledTimes(1);
+    expect(api.openNativeSession).not.toHaveBeenCalled();
   });
 
   it('preserves an unsent note when the mutation fails', async () => {
