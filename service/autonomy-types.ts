@@ -1,7 +1,7 @@
 export type Evidence = {
   id:string; projectId:string; channelId:string; runId:string; itemId?:string;
   summary:string; source:string; observedAt:string; createdAt:string;
-  origin:'agent'|'file'|'http'; data:unknown; digest?:string;
+  origin:'agent'|'file'|'http'|'execution'; data:unknown; digest?:string; watchId?:string;
 };
 export type Learning = {
   id:string; projectId:string; channelId:string; runId:string; itemId?:string;
@@ -22,6 +22,7 @@ export type Release = {
   id:string; projectId:string; channelId:string; runId:string; itemIds:string[];
   title:string; changes:string; rationale:string; expectedBenefit:string;
   checks:Array<{name:string; result:'passed'|'not_verified'; evidenceIds:string[]}>;
+  verificationIds?:string[];
   risks:string; rollback:string; observationPlan:string;
   artifact:{name:string; sha256:string; bytes:number};
   target:{url:string; statusUrl:string; label:string};
@@ -30,4 +31,4 @@ export type Release = {
   createdAt:string; updatedAt:string; approvedAt?:string; publishedAt?:string;
   feedback?:string; error?:string; publishedUrl?:string;
 };
-export type ProjectLoop = { evidence:Evidence[]; learning:Learning[]; watches:FeedbackWatch[]; releases:Release[] };
+export type ProjectLoop = { evidence:Evidence[]; learning:Learning[]; watches:FeedbackWatch[]; releases:Release[]; strategy?:import('./strategy-types.ts').StrategyView; verifications?:Array<Omit<import('./verification-types.ts').Verification,'prompt'>&{current:boolean}>; finalizations?:Array<Omit<import('./verification-types.ts').Finalization,'input'>> };

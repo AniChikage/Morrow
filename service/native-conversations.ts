@@ -14,8 +14,8 @@ import { resolveNativeAttachments } from './native-media.ts';
 
 export type NativeSnapshot = {threadId:string;ownerClientId:string;revision:number;syncedAt:string;state:Record<string,any>};
 export type NativeWorkOptions = {
-  approvalPolicy: 'on-request';
-  approvalsReviewer: 'auto_review';
+  approvalPolicy: 'on-request'|'never';
+  approvalsReviewer?: 'auto_review';
   sandboxPolicy?: {type:'readOnly';networkAccess:false} | {type:'workspaceWrite';writableRoots:string[];networkAccess:false;excludeTmpdirEnvVar:true;excludeSlashTmp:true};
 };
 type NativeChange = {type:'patches';baseRevision:number;revision:number;patches:unknown[]} | {type:'snapshot';revision:number;conversationState:Record<string,any>};
@@ -121,6 +121,9 @@ export class NativeConversations {
     // This small journal can recover a checkpoint after an unclean shutdown.
     this.store.put('native_events',{id:stable(snapshot.threadId,`ipc:${snapshot.ownerClientId}:${snapshot.revision}`),kind:'native.patch',threadId:snapshot.threadId,ownerClientId:snapshot.ownerClientId,revision:snapshot.revision,createdAt:snapshot.syncedAt,change:this.safe(change)});
     this.journaled.set(snapshot.threadId,{owner:snapshot.ownerClientId,revision:snapshot.revision});this.pendingSnapshots.set(snapshot.threadId,snapshot);
+    // A prepared execution seal must observe start and completion even for commands
+    // faster than the normal 250 ms renderer projection window.
+    if(this.engine.loop.executions.observing(snapshot.threadId)){this.flushPending(snapshot.threadId);return;}
     if(!this.pendingTimers.has(snapshot.threadId)){const timer=setTimeout(()=>{this.pendingTimers.delete(snapshot.threadId);try{this.flushPending(snapshot.threadId);}catch(error){this.recordError(snapshot.threadId,error);}},250);timer.unref();this.pendingTimers.set(snapshot.threadId,timer);}
   }
   flushPending(threadId?:string) {for(const id of threadId?[threadId]:[...this.pendingSnapshots.keys()]){const timer=this.pendingTimers.get(id);if(timer)clearTimeout(timer);this.pendingTimers.delete(id);const snapshot=this.pendingSnapshots.get(id);this.pendingSnapshots.delete(id);if(snapshot)this.ingest(snapshot);}}
@@ -202,6 +205,7 @@ export class NativeConversations {
     if(checkpoint){this.dirtyThreads.delete(safe.threadId);this.checkpointAt.set(safe.threadId,Date.now());}else this.dirtyThreads.add(safe.threadId);
     this.observed.set(snapshot.threadId,{owner:snapshot.ownerClientId,revision:snapshot.revision,syncedAt:snapshot.syncedAt});
     this.recordNativeRuns(safe,checkpoint);
+    this.engine.loop.executions.observe(safe.threadId,changedItems);
     for(const entry of this.store.nativeRows<Outbox>('native_outbox',safe.threadId))if(entry.state==='accepted'&&entry.source==='chat'&&!(entry as any).guidanceHandled)this.receipt(entry);
     const channelBinding=this.store.all<Binding>('native_bindings').find(binding=>binding.threadId===safe.threadId);
     if(channelBinding){

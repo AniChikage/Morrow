@@ -204,6 +204,7 @@ export class Engine {
     if (!c) throw new APIError(404, "频道不存在");
     if (action === "pause") {
       this.setControl(id, { enabled: false });
+      this.loop.verification.cancelChannel(id);
       this.store.put("channels", { ...c, ...(c.work?{work:{...c.work,awaitingReply:false}}:{}),status: "paused", nextRunAt: "" });
       this.interrupt(id, "用户暂停了执行");
       if (this.native?.binding(id)) await this.native.pause(id);
@@ -235,6 +236,14 @@ export class Engine {
     const project = this.store.get<Project>("projects", channel.projectId)!;
     if (project.isDemo) throw new APIError(409, "示例项目不能执行");
     if (this.active.has(id)) throw new APIError(409, "频道正在执行");
+    // A queued/running reviewer owns the frozen project source. Existing
+    // reassessment signals must not launch another autonomous turn that can
+    // invalidate that source or spend a run just to poll the pending review.
+    if (this.loop.verification.rows(project.id).some(row => ['queued','running'].includes(row.status))) {
+      if (!scheduled) throw new APIError(409, '项目独立复核尚未完成，完成后会继续原任务');
+      this.store.put('channels', {...channel, status:'waiting', nextRunAt:new Date(Date.now()+5000).toISOString()});
+      return;
+    }
     if ([...this.active.values()].some((a) => a.projectPath === project.path) || this.native?.isProjectBusy(project.id,id)) {
       if (!scheduled)
         throw new APIError(409, "同一项目已有频道正在执行，请稍后重试");
@@ -510,10 +519,11 @@ export class Engine {
       this.store.put('channels',{...channel,work,status:work.awaitingReply?'blocked':enabled?'waiting':'paused',nextRunAt:enabled?new Date(Date.now()+(decision.state==='continue'?30_000:(decision.waitMinutes||channel.intervalMinutes)*60_000)).toISOString():''});
       this.audit({projectId:channel.projectId,channelId:channel.id,runId:run.id,actor:'agent',action:'channel.next-step',text:work.nextStep,after:work});
     });
-    } finally {this.loop.finish(run);}
+    } finally {this.loop.finish(run);this.loop.strategy.finish(run);}
   }
   acceptNativeGuidance(id:string) {
     const channel=this.store.get<Channel>('channels',id);if(!channel)return;
+    for(const decision of this.loop.strategy.active(channel.projectId))if(decision.channelId===id)this.loop.strategy.notify(channel.projectId,'收到用户新指导，先判断是否需要调整当前选择',decision.id);
     if(!channel.work?.awaitingReply&&!this.control(id).enabled)return;
     this.store.transaction(()=>{
       this.setControl(id,{enabled:true});
@@ -565,6 +575,11 @@ export class Engine {
           lastRunId:run.id, revision:(old?.revision || 0) + 1,
           createdAt:old?.createdAt || time, updatedAt:time,
         };
+        if(['verified','resolved'].includes(updated.status)){
+          this.store.put('items',{...updated,status:'investigating'});
+          try{this.loop.verification.requirePassed({id:'report',projectId:original.projectId,channelId:run.channelId,runId:run.id,expiresAt:time},updated.id);}
+          catch{updated.status='investigating';updated.nextStep=`等待当前版本的独立复核；${updated.nextStep}`;}
+        }
         this.store.put('items', updated);
         this.audit({projectId:original.projectId,channelId:run.channelId,runId:run.id,itemId:updated.id,actor:'agent',action:old ? 'item.updated' : 'item.created',text:`${old ? '更新' : '创建'}功能事项 #${updated.number}「${updated.title}」。`,before:old,after:updated});
       }

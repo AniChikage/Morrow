@@ -9,6 +9,7 @@ import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { startServer } from '../service/server.ts';
 import { ProjectWorkLoop } from '../service/project-loop.ts';
+import { FakeReviewer } from './fake-reviewer.ts';
 process.env.NOHUMAN_TEST_MODE='1';
 async function setup(){
   const root=mkdtempSync(join(tmpdir(),'nohuman-loop-'));const home=join(root,'home'),path=join(root,'project');mkdirSync(path);
@@ -17,11 +18,20 @@ async function setup(){
   await new Promise<void>(r=>remote.listen(0,'127.0.0.1',r));const remoteURL=`http://127.0.0.1:${(remote.address() as any).port}`;
   const s=await startServer({home,port:0});const token=readFileSync(join(home,'token'),'utf8');const api=async(method:string,url:string,data?:unknown,expected=200,bearer=token)=>{const response=await fetch(`http://127.0.0.1:${s.port}${url}`,{method,headers:{Authorization:`Bearer ${bearer}`,'Content-Type':'application/json'},...(data===undefined?{}:{body:JSON.stringify(data)})});const value=await response.json();assert.equal(response.status,expected,JSON.stringify(value));return value;};
   const project=await api('POST','/api/projects',{name:'闭环验收',path,goal:'持续改善首次使用体验'},201);const channel=s.store.all<any>('channels')[0];
+  await api('POST','/api/channels',{projectId:project.id,name:'共享观察验收',goal:'独立验证跨频道反馈',runtime:'codex'},201);
   const run={id:randomUUID(),projectId:project.id,channelId:channel.id,runtime:'codex',status:'running',source:'nohuman-schedule',executionOwner:'codex-app',startedAt:new Date().toISOString(),finishedAt:'',summary:'',sessionId:'isolated-native'};s.store.put('runs',run);s.engine.loop.prepare(run as any);const context=JSON.parse(readFileSync(join(home,'runs',run.id,'agent-context.json'),'utf8'));
   const call=(operation:string,input:unknown,requestId=randomUUID(),expected=200)=>api('POST','/api/agent',{operation,input,requestId},expected,context.token);
   const feature=await call('feature.upsert',{title:'改善首次使用',summary:'追踪实际体验',kind:'feature',status:'investigating',evidenceIds:[],nextStep:'建立反馈'});
   writeFileSync(join(path,'checks.log'),'2 tests passed\n');const evidence=await call('evidence.capture',{itemId:feature.id,summary:'隔离测试日志',path:'checks.log'});
   writeFileSync(join(path,'release.txt'),'immutable build one');
+  // Release transport tests now cross the independent native gate with an explicit
+  // protocol double; they do not claim that a real model verified this fixture.
+  const reviewer=new FakeReviewer();reviewer.autoComplete=true;s.engine.loop.verification.connect(reviewer,v=>v);
+  const completion=await call('feature.upsert',{id:feature.id,revision:s.store.get<any>('items',feature.id).revision,title:feature.title,summary:feature.summary,kind:feature.kind,status:'verified',evidenceIds:[evidence.id],nextStep:'准备本地发布'});
+  assert.equal(completion.pendingVerification,true);await s.engine.loop.verification.start(completion.verificationId);
+  assert.equal(s.store.get<any>('loop_verifications',completion.verificationId).status,'passed');
+  assert.equal(s.store.get<any>('items',feature.id).status,'verified');
+  assert.equal(s.store.get<any>('loop_finalizations',completion.finalizationId).status,'applied');
   const releaseInput={itemIds:[feature.id],title:'首次体验改进',changes:'修正失败提示并补充关键流程反馈',rationale:'测试发现失败状态无法恢复',expectedBenefit:'预期减少首次操作失败；线上收益尚待验证',checks:[{name:'恢复流程测试',result:'passed',evidenceIds:[evidence.id]}],risks:'影响首次使用路径',rollback:'恢复上一个产物',observationPlan:'观察关键操作完成率，再决定是否继续',artifactPath:'release.txt',target:{url:remoteURL+'/deploy',statusUrl:remoteURL+'/status',label:'隔离测试发布端'}};
   return {...s,root,home,path,api,call,context,project,channel,run,feature,evidence,releaseInput,remoteURL,get posts(){return posts;},get uploaded(){return uploaded;},setFeedback:(value:any)=>feedback=value,setMode:(value:string)=>responseMode=value,cleanup:async()=>{await s.close();await new Promise<void>(r=>remote.close(()=>r()));rmSync(root,{recursive:true,force:true});}};
 }

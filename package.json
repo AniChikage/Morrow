@@ -1,7 +1,7 @@
 {
   "name": "nohuman",
   "productName": "NoHuman",
-  "version": "0.6.0",
+  "version": "0.9.3",
   "private": true,
   "type": "module",
   "description": "A local-first desktop workspace for continuously working AI channels.",

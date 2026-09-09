@@ -1,6 +1,7 @@
 export type ChannelWork = { state:'continue'|'wait'|'needs_input';focus:string;reason:string;nextStep:string;waitMinutes?:number;runId:string;updatedAt:string;awaitingReply:boolean };
 import type { ProjectLoop, Release } from '../../service/autonomy-types';
 export type { ProjectLoop, Release, Evidence, Learning, FeedbackWatch } from '../../service/autonomy-types';
+export type { Understanding, StrategyDecision, DecisionView, StrategyView } from '../../service/strategy-types';
 export type RuntimeID = 'codex' | 'claude' | 'trae';
 export interface Project { id: string; name: string; path: string; goal: string; createdAt: string; isDemo: boolean; runtime?: RuntimeID }
 export interface Channel { work?:ChannelWork; autonomyEnabled?:boolean; id: string; projectId: string; name: string; goal: string; runtime: RuntimeID; model: string; status: string; intervalMinutes: number; maxRunsPerDay: number; permission: 'read-only' | 'workspace-write' | 'native'; nextRunAt: string; lastRunAt: string; sessionId: string }

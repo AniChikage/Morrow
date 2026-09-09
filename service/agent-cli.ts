@@ -11,7 +11,7 @@ try {
   const inputPath=flag('--input');
   const input=inputPath?JSON.parse(readFileSync(inputPath==='-'?0:inputPath,'utf8')):{};
   const requestId=flag('--request-id');
-  if(operation!=='context'&&!requestId)throw new Error('写操作需要稳定的 --request-id；重试必须沿用相同 ID 和输入');
+  if(!['context','evidence.read','memory.search','memory.read','memory.recall','execution.read','verification.read'].includes(operation)&&!requestId)throw new Error('写操作需要稳定的 --request-id；重试必须沿用相同 ID 和输入');
   const response=await fetch(context.url,{method:'POST',headers:{'Content-Type':'application/json',Authorization:`Bearer ${context.token}`},body:JSON.stringify({operation,input,...(requestId?{requestId}:{})}),signal:AbortSignal.timeout(30000)});
   const result=await response.json();if(!response.ok)throw new Error(result.error||`HTTP ${response.status}`);
   process.stdout.write(JSON.stringify(result,null,2)+'\n');

@@ -148,6 +148,7 @@ export async function startServer(
   const engine = new Engine(store, home, token);
   const native = new NativeConversations(store,engine,options.nativeTransport);
   engine.native = native;
+  engine.loop.verification.connect(native.transport,value=>engine.redact(value));
   engine.recover();
   engine.runtimes = await discoverRuntimes();
   const respond = (res: ServerResponse, status: number, data: any) => {
@@ -259,22 +260,18 @@ export async function startServer(
           for (const c of [
             defaultChannel(
               project.id,
-              "系统完善",
-              "持续检查项目，发现并验证影响可靠性、体验和可维护性的问题，按价值推进。",
-            ),
-            defaultChannel(
-              project.id,
-              "运营洞察",
-              "结合项目目标及可用资料，寻找有证据支持的用户、增长和运营机会，区分假设与事实。",
+              "自主推进",
+              "围绕项目目标理解现状与关键未知，自主选择有价值的行动，获取真实反馈并调整策略；按需要补齐工作能力，合理使用资源。",
             ),
           ]) {
             c.runtime = project.runtime;
+            c.maxRunsPerDay = 32;
             store.put("channels", c);
             engine.event(
               c.id,
               "",
               "system",
-              "频道已创建，默认为只读且暂停。设置目标后可开始单次运行。",
+              "已准备自主推进频道。开始工作后，Codex 会先理解项目并选择下一步；当前保持暂停。",
               undefined,
               {projectId:project.id,actor:'human',action:'channel.created',changes:{after:c}},
             );

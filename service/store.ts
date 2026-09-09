@@ -26,6 +26,8 @@ export class Store {
       "run_io_pending",
       "migrations",
       "loop_grants", "loop_calls", "loop_evidence", "loop_learning", "loop_watches", "loop_waits", "loop_releases",
+      "strategy_understanding", "strategy_decisions", "strategy_revisions", "strategy_runs", "strategy_signals",
+      "loop_executions", "loop_verifications", "loop_verification_events", "loop_finalizations",
       "native_bindings", "native_threads", "native_items", "native_events", "native_requests", "native_outbox", "native_turns", "native_attachments",
     ])
       this.db.exec(
@@ -37,7 +39,7 @@ export class Store {
     this.db.exec("CREATE INDEX IF NOT EXISTS items_project ON items(json_extract(data,'$.projectId')); CREATE INDEX IF NOT EXISTS events_project ON events(json_extract(data,'$.projectId')); CREATE INDEX IF NOT EXISTS events_item ON events(json_extract(data,'$.itemId')); CREATE INDEX IF NOT EXISTS runs_project ON runs(json_extract(data,'$.projectId')); CREATE INDEX IF NOT EXISTS run_io_run ON run_io(json_extract(data,'$.runId'));");
     this.db.exec("CREATE INDEX IF NOT EXISTS native_items_thread ON native_items(json_extract(data,'$.threadId')); CREATE INDEX IF NOT EXISTS native_outbox_thread ON native_outbox(json_extract(data,'$.threadId')); CREATE INDEX IF NOT EXISTS native_turns_thread ON native_turns(json_extract(data,'$.threadId')); ");
     this.migrate(dirname(path));
-    for (const table of ['loop_evidence','loop_learning','loop_watches','loop_releases']) this.db.exec(`CREATE INDEX IF NOT EXISTS ${table}_project ON ${table}(json_extract(data,'$.projectId'))`);
+    for (const table of ['loop_evidence','loop_learning','loop_watches','loop_releases','strategy_understanding','strategy_decisions','strategy_revisions','strategy_runs','strategy_signals','loop_executions','loop_verifications','loop_verification_events','loop_finalizations']) this.db.exec(`CREATE INDEX IF NOT EXISTS ${table}_project ON ${table}(json_extract(data,'$.projectId'))`);
   }
   migrate(home: string) {
     this.transaction(() => {
@@ -135,7 +137,7 @@ export class Store {
           )
           .get(channelId, day) as any
       ).count,
-    );
+    ) + Number((this.db.prepare("SELECT COUNT(*) AS n FROM loop_verifications WHERE json_extract(data,'$.channelId')=? AND substr(json_extract(data,'$.startedAt'),1,10)=?").get(channelId,day) as any).n);
   }
   contextKnowledge(projectId: string, channelId: string): any[] {
     return this.db
@@ -175,6 +177,8 @@ export class Store {
         "run_io_pending",
         "migrations",
         "loop_grants", "loop_calls", "loop_evidence", "loop_learning", "loop_watches", "loop_waits", "loop_releases",
+        "strategy_understanding", "strategy_decisions", "strategy_revisions", "strategy_runs", "strategy_signals",
+        "loop_executions", "loop_verifications", "loop_verification_events", "loop_finalizations",
         "native_bindings", "native_threads", "native_items", "native_events", "native_requests", "native_outbox", "native_turns", "native_attachments",
       ].includes(t)
     )

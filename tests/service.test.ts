@@ -66,6 +66,9 @@ async function setup() {
   );
   const state = await api("GET", "/api/state");
   const channels = state.channels;
+  assert.equal(channels.length,1);
+  assert.equal(channels[0].name,'自主推进');
+  channels.push(await api('POST','/api/channels',{projectId:project.id,name:'独立验收职责',goal:'验证共享项目上下文',runtime:'codex',permission:'workspace-write'},201));
   const config = (value: any) =>
     writeFileSync(join(projectPath, ".fixture.json"), JSON.stringify(value));
   return {
