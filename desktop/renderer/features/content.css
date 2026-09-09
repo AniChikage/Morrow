@@ -558,6 +558,21 @@
   font-size: 14px;
   line-height: 1.9;
 }
+/* The brief's own headings sit on the same scale as the fixed 项目目标 section heading (.finding-section > h2). */
+.brief-body .markdown h2 {
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 1.5;
+  color: #4b4c54;
+  margin: 28px 0 10px;
+}
+.brief-body .markdown h3 {
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.5;
+  color: #4b4c54;
+  margin: 22px 0 8px;
+}
 .brief-document textarea {
   font: inherit;
   font-size: 13px;
@@ -566,7 +581,8 @@
 .brief-goal-field textarea {
   min-height: 72px;
 }
-.brief-input {
+/* Scoped to the brief editor so it outranks `.form-field textarea` (ui.css); the new-project dialog keeps its own height below. */
+.brief-document .brief-input {
   min-height: 360px;
 }
 .dialog-content .brief-input {
