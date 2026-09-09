@@ -25,14 +25,14 @@ describe('one project-owned feature board', () => {
     const { props } = featureProps({ snapshot: state });
     render(<ProjectView {...props} id="project-atlas" />, { wrapper: TestProviders });
     expect(screen.getByRole('tab', { name: '功能看板 4' })).toBeTruthy();
-    expect(screen.getByRole('button', { name: /CSV 重试会重复提交/ })).toBeTruthy();
-    expect(screen.getByRole('button', { name: /缩短激活路径/ })).toBeTruthy();
+    expect(screen.getByRole('button', { name: /^打开.*CSV 重试会重复提交/ })).toBeTruthy();
+    expect(screen.getByRole('button', { name: /^打开.*缩短激活路径/ })).toBeTruthy();
     expect(screen.getByRole('button', { name: /#7.*人工创建的功能/ })).toBeTruthy();
     expect(screen.queryByText('明确属于其他项目')).toBeNull();
     expect(screen.queryByRole('tab', { name: /持续频道/ })).toBeNull();
     await user.click(screen.getByRole('button', { name: '筛选' }));
     await user.click(screen.getByRole('menuitem', { name: '手动创建' }));
-    expect(screen.getByRole('button', { name: /人工创建的功能/ })).toBeTruthy();
+    expect(screen.getByRole('button', { name: /^打开.*人工创建的功能/ })).toBeTruthy();
     expect(screen.queryByText('CSV 重试会重复提交')).toBeNull();
     await user.click(screen.getByRole('button', { name: '新建功能' }));
     expect(props.onNewFeature).toHaveBeenCalledWith('project-atlas');
@@ -46,7 +46,7 @@ describe('one project-owned feature board', () => {
     render(<ProjectView {...props} id="project-atlas" />, { wrapper: TestProviders });
     await user.click(screen.getByRole('button', { name: '筛选' }));
     await user.click(screen.getByRole('menuitem', { name: '运营洞察' }));
-    expect(screen.getByRole('button', { name: /CSV 重试会重复提交/ })).toBeTruthy();
+    expect(screen.getByRole('button', { name: /^打开.*CSV 重试会重复提交/ })).toBeTruthy();
     expect(screen.getByTitle('来源：系统完善')).toBeTruthy();
   });
 

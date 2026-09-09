@@ -27,19 +27,19 @@ describe('project discovery workflow', () => {
     expect(screen.queryByText('其他项目的发现')).toBeNull();
     const search = screen.getByRole('textbox', { name: '搜索功能和证据' });
     await user.type(search, '唯一证据关键词');
-    expect(screen.getByRole('button', { name: /CSV 重试会重复提交/ })).toBeTruthy();
+    expect(screen.getByRole('button', { name: /^打开.*CSV 重试会重复提交/ })).toBeTruthy();
     expect(screen.queryByText('缩短激活路径')).toBeNull();
     await user.clear(search);
     await user.click(screen.getByRole('button', { name: '筛选' }));
     await user.click(screen.getByRole('menuitem', { name: '已验证' }));
-    expect(screen.getByRole('button', { name: /输入焦点已恢复/ })).toBeTruthy();
+    expect(screen.getByRole('button', { name: /^打开.*输入焦点已恢复/ })).toBeTruthy();
     expect(screen.queryByText('CSV 重试会重复提交')).toBeNull();
     await user.click(screen.getByRole('button', { name: '已筛选' }));
     await user.click(screen.getByRole('menuitem', { name: '所有状态' }));
     await user.click(screen.getByRole('button', { name: '筛选' }));
     await user.click(screen.getByRole('menuitem', { name: '运营洞察' }));
     expect(screen.queryByText('输入焦点已恢复')).toBeNull();
-    await user.click(screen.getByRole('button', { name: /缩短激活路径/ }));
+    await user.click(screen.getByRole('button', { name: /^打开.*缩短激活路径/ }));
     expect(props.onNavigate).toHaveBeenCalledWith({ kind: 'finding', id: 'finding-growth' });
   });
 
@@ -54,7 +54,7 @@ describe('project discovery workflow', () => {
     expect(screen.getByRole('button', { name: '切换为看板' })).toBeTruthy();
     second.rerender(<ProjectView {...props} id="project-other" />);
     await waitFor(() => expect(screen.getByRole('button', { name: '切换为列表' })).toBeTruthy());
-    expect(screen.getByRole('button', { name: /其他项目的发现/ })).toBeTruthy();
+    expect(screen.getByRole('button', { name: /^打开.*其他项目的发现/ })).toBeTruthy();
   });
 });
 
