@@ -227,7 +227,11 @@ export async function startServer(
         return;
       }
       if (req.method === 'GET' && path === '/api/native/status') {
-        respond(res, 200, await native.status());
+        const [state] = await Promise.all([
+          native.status(),
+          url.searchParams.get('refreshUsage') === '1' ? engine.usage.refresh() : undefined,
+        ]);
+        respond(res, 200, { ...state, usage: engine.usage.status() });
         return;
       }
       if (req.method === 'GET' && path === '/api/settings') {

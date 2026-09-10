@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, expect, test, vi } from 'vitest';
-import { cleanup, render, screen, waitFor, within } from '@testing-library/react';
+import { act, cleanup, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { RuntimesView } from './RuntimesView';
 import { featureProps, snapshot } from './testFixtures';
@@ -257,7 +257,7 @@ test('the checklist ends with the account usage per window, or a red unknown wit
     [{ connected: true, usage: { stale: true, attempted: false } }, ['额度未知', '尚未读取账户用量']],
     [
       { connected: true, usage: { stale: true, attempted: true, lastError: '原生后台不支持读取额度' } },
-      ['额度未知', '协议未返回账户用量'],
+      ['额度未知', '读取失败：原生后台不支持读取额度'],
     ],
     [{ connected: true, usage: { stale: true } }, ['额度未知', '协议未返回账户用量']],
     [{ connected: true, usage: { reading, stale: true, attempted: true } }, ['额度未知', '读数已过期']],
@@ -272,4 +272,72 @@ test('the checklist ends with the account usage per window, or a red unknown wit
     expect(!!line.querySelector('.usage-unknown')).toBe(expected.includes('额度未知'));
     view.unmount();
   }
+});
+
+test('entering the page and manual detection request fresh usage and display later readings or refresh failure', async () => {
+  const { props, api } = runtimeProps();
+  const reading = (usedPercent: number) => ({
+    at: new Date().toISOString(),
+    source: 'protocol' as const,
+    windows: [{ name: 'weekly' as const, usedPercent }],
+  });
+  api.getNativeStatus
+    .mockResolvedValueOnce(status({ connected: true, usage: { reading: reading(37), stale: false, attempted: true } }))
+    .mockResolvedValueOnce(status({ connected: true, usage: { reading: reading(41), stale: false, attempted: true } }))
+    .mockResolvedValue(
+      status({
+        connected: true,
+        usage: { reading: reading(41), stale: false, attempted: true, lastError: 'fixture unavailable' },
+      })
+    );
+  render(<RuntimesView {...props} />);
+  await screen.findByText('每周 已用 37%，重置时间未知');
+  expect(api.getNativeStatus).toHaveBeenNthCalledWith(1, true);
+  await userEvent.setup().click(screen.getByRole('button', { name: '重新检测' }));
+  await screen.findByText('每周 已用 41%，重置时间未知');
+  expect(api.refreshRuntimes).toHaveBeenCalledOnce();
+  expect(api.getNativeStatus).toHaveBeenNthCalledWith(2, true);
+  await userEvent.setup().click(screen.getByRole('button', { name: '重新检测' }));
+  await screen.findByText('刷新失败，显示最近读数');
+  expect(screen.getByLabelText('账户用量').textContent).toContain('41%');
+  expect(api.createNativeThread).not.toHaveBeenCalled();
+  expect(api.channelAction).not.toHaveBeenCalled();
+});
+
+test('a delayed usage response from a previous host cannot overwrite the current host', async () => {
+  const { props, api } = runtimeProps();
+  let resolveOld!: (value: NativeConnectionStatus) => void;
+  api.getNativeStatus
+    .mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          resolveOld = resolve;
+        })
+    )
+    .mockResolvedValue(
+      status({
+        connected: true,
+        usage: {
+          reading: { at: new Date().toISOString(), source: 'protocol', windows: [{ name: 'weekly', usedPercent: 22 }] },
+          stale: false,
+        },
+      })
+    );
+  const view = render(<RuntimesView {...props} />);
+  await waitFor(() => expect(api.getNativeStatus).toHaveBeenCalledOnce());
+  view.rerender(<RuntimesView {...props} connection={remote} />);
+  await screen.findByText('每周 已用 22%，重置时间未知');
+  await act(async () => {
+    resolveOld(
+      status({
+        connected: true,
+        usage: {
+          reading: { at: new Date().toISOString(), source: 'protocol', windows: [{ name: 'weekly', usedPercent: 99 }] },
+          stale: false,
+        },
+      })
+    );
+  });
+  await waitFor(() => expect(screen.getByLabelText('账户用量').textContent).toContain('22%'));
+  expect(screen.queryByText('每周 已用 99%，重置时间未知')).toBeNull();
 });

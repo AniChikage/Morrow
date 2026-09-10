@@ -423,7 +423,7 @@ export interface DesktopAPI {
   updateChannel(id: string, data: ChannelPatch): Promise<Channel>;
   channelAction(id: string, action: 'run' | 'pause' | 'resume'): Promise<unknown>;
   sendMessage(id: string, text: string): Promise<WorkspaceEvent>;
-  getNativeStatus(): Promise<NativeConnectionStatus>;
+  getNativeStatus(refreshUsage?: boolean): Promise<NativeConnectionStatus>;
   setupNativeBackground?(): Promise<{ restartRequired: boolean; detail: string }>;
   restoreNativeBackground?(): Promise<{ restartRequired: boolean; detail: string }>;
   listNativeThreads(channelId: string): Promise<{ status: NativeConnectionStatus; threads: NativeThreadSummary[] }>;

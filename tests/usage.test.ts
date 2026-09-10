@@ -446,3 +446,36 @@ test('settings and budget routes validate input, refuse demo projects and work g
     await s.cleanup();
   }
 });
+
+test('runtime usage refresh works before association or budget configuration; ordinary status reads stay cheap', async () => {
+  const transport = new UsageNative();
+  const s = await startIsolated({ nativeTransport: transport, project: false });
+  try {
+    transport.usage(() => reading(37, iso(3600_000)));
+    const initial = await s.api('GET', '/api/native/status');
+    assert.equal(initial.usage.attempted, false);
+    assert.equal(transport.reads, 0);
+    const first = await s.api('GET', '/api/native/status?refreshUsage=1');
+    assert.equal(first.usage.reading.windows[0].usedPercent, 37);
+    assert.equal(first.usage.stale, false);
+    assert.equal(first.usage.attempted, true);
+    transport.usage(() => reading(41, iso(3600_000)));
+    await s.api('GET', '/api/native/status');
+    assert.equal(transport.reads, 1);
+    const next = await s.api('GET', '/api/native/status?refreshUsage=1');
+    assert.equal(next.usage.reading.windows[0].usedPercent, 41);
+    transport.usage(() => {
+      throw new Error('usage fixture unavailable');
+    });
+    const failed = await s.api('GET', '/api/native/status?refreshUsage=1');
+    assert.equal(failed.connected, true);
+    assert.equal(failed.usage.reading.windows[0].usedPercent, 41);
+    assert.equal(failed.usage.lastError, 'usage fixture unavailable');
+    assert.equal(s.store.all('projects').length, 0);
+    assert.equal(s.store.all('native_bindings').length, 0);
+    assert.equal(s.store.all('runs').length, 0);
+    assert.equal(transport.sent.length, 0);
+  } finally {
+    await s.cleanup();
+  }
+});

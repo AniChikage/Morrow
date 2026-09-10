@@ -177,7 +177,10 @@ function registerIPC(): void {
   handle('send-message', 2, (channelId, value) =>
     service.request(`channels/${id(channelId)}/messages`, 'POST', { text: text(value, '消息', 10000) })
   );
-  handle('get-native-status', 0, () => service.request('native/status'));
+  handle('get-native-status', 1, (refreshUsage) => {
+    if (typeof refreshUsage !== 'boolean') throw new Error('额度刷新参数必须是开或关。');
+    return service.request(`native/status${refreshUsage ? '?refreshUsage=1' : ''}`);
+  });
   handle('setup-native-background', 0, async () => {
     if ((await service.getInfo()).config.mode !== 'local')
       throw new Error('后台桥接需要在 Codex App 所在的本机 Mac 设置。');

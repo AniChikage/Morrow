@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import { ArrowUpRight, ChevronRight, Hash, Info, Monitor, RefreshCw, Server, Terminal } from 'lucide-react';
 import type { ConnectionInfo, DesktopAPI, NativeConnectionStatus, Runtime } from '../../shared/types';
@@ -121,15 +121,22 @@ function AppChecklist({
             <span className="usage-unknown">额度未知</span>
             {/* Never read ≠ read and refused. A service too old to report `attempted` keeps the old reason. */}
             <span title={native.usage?.lastError}>
-              {!native.connected
-                ? '后台未连接'
-                : native.usage?.reading
-                  ? '读数已过期'
-                  : native.usage?.attempted === false
-                    ? '尚未读取账户用量'
-                    : '协议未返回账户用量'}
+              {native.usage?.lastError
+                ? `读取失败：${native.usage.lastError}`
+                : !native.connected
+                  ? '后台未连接'
+                  : native.usage?.reading
+                    ? '读数已过期'
+                    : native.usage?.attempted === false
+                      ? '尚未读取账户用量'
+                      : '协议未返回账户用量'}
             </span>
           </>
+        )}
+        {native.usage?.reading && !native.usage.stale && native.usage.lastError && (
+          <span className="usage-unknown" title={native.usage.lastError}>
+            刷新失败，显示最近读数
+          </span>
         )}
       </p>
     </div>
@@ -147,12 +154,17 @@ export function RuntimesView({
   const [expanded, setExpanded] = useState<string | null>(null);
   const [native, setNative] = useState<NativeConnectionStatus>();
   const [nativeUnreachable, setNativeUnreachable] = useState(false);
+  const nativeRequest = useRef(0);
   const refreshNative = useCallback(async () => {
     if (typeof api.getNativeStatus !== 'function') return;
+    const request = ++nativeRequest.current;
     try {
-      setNative(await api.getNativeStatus());
+      const next = await api.getNativeStatus(true);
+      if (request !== nativeRequest.current) return;
+      setNative(next);
       setNativeUnreachable(false);
     } catch {
+      if (request !== nativeRequest.current) return;
       setNative({
         available: false,
         connected: false,
@@ -163,8 +175,19 @@ export function RuntimesView({
     }
   }, [api]);
   useEffect(() => {
+    setNative(undefined);
+    setNativeUnreachable(false);
     void refreshNative();
-  }, [refreshNative, connection?.config.mode, connection?.config.host]);
+    return () => {
+      nativeRequest.current++;
+    };
+  }, [
+    refreshNative,
+    connection?.config.mode,
+    connection?.config.host,
+    connection?.config.port,
+    connection?.config.directory,
+  ]);
   const availableCount = snapshot.runtimes.filter((runtime) => runtime.available).length;
   const runningCount = snapshot.channels.filter((channel) => channel.status === 'running').length;
   const remote = connection?.config.mode === 'ssh';
