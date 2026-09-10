@@ -1,5 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { realpathSync } from 'node:fs';
+import { dirname, isAbsolute, relative } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { APIError, keys, string } from './protocol.ts';
 import type { NativeItem } from './protocol.ts';
 import type { ProjectWorkLoop, Scope } from './project-loop.ts';
@@ -69,6 +71,14 @@ export class ExecutionEvidence {
   prepare(scope: Scope, input: Record<string, unknown>) {
     keys(input, ['command']);
     const { project, run } = this.loop.scope(scope);
+    const projectRoot = realpathSync(project.path);
+    const serviceDirectory = realpathSync(dirname(fileURLToPath(import.meta.url)));
+    const serviceRelative = relative(projectRoot, serviceDirectory);
+    if (
+      !serviceRelative ||
+      (serviceRelative !== '..' && !serviceRelative.startsWith('../') && !isAbsolute(serviceRelative))
+    )
+      throw new APIError(409, '运行中的 Morrow 服务位于项目目录内；请使用独立安装版服务后再准备执行证据。');
     if (!run.sessionId || !run.nativeTurnId) throw new APIError(409, '执行证据需要当前原生任务与轮次');
     const command = string(input.command, 'command', 20000);
     const previous = this.loop
@@ -85,7 +95,7 @@ export class ExecutionEvidence {
       threadId: run.sessionId,
       turnId: run.nativeTurnId,
       command,
-      cwd: realpathSync(project.path),
+      cwd: projectRoot,
       version: sourceVersion(project.path),
       status: 'prepared',
       createdAt: now(),

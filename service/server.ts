@@ -118,6 +118,12 @@ export async function startServer(
     reviewRunner?: ReviewRunner;
   } = {}
 ) {
+  if (
+    !options.home &&
+    !process.env.MORROW_HOME &&
+    Object.keys(process.env).some((key) => key.startsWith('CODEX_SANDBOX'))
+  )
+    throw new Error('检测到 CODEX_SANDBOX 环境；请显式设置 MORROW_HOME 使用隔离数据目录，拒绝默认数据目录和端口。');
   const currentHome = join(homedir(), 'Library/Application Support/Morrow');
   const legacyHome = join(homedir(), 'Library/Application Support/NoHuman');
   const home =
