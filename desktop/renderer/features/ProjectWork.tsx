@@ -740,7 +740,8 @@ export function ProjectThinking({
   api,
   projectId,
   onNavigate,
-}: Pick<FeatureProps, 'api' | 'onNavigate'> & { projectId: string }) {
+  isDemo = false,
+}: Pick<FeatureProps, 'api' | 'onNavigate'> & { projectId: string; isDemo?: boolean }) {
   const { data, error, moreHistory, loadingHistory, historyError, loadHistory } = useProjectWork(api, projectId);
   if (error)
     return (
@@ -749,6 +750,13 @@ export function ProjectThinking({
           {error}
         </p>
       </div>
+    );
+  if (isDemo && (!api.getProjectWork || (data && !data.strategy)))
+    return (
+      <EmptyState
+        title="此示例暂未提供项目判断数据"
+        description="可先查看「功能看板」中的示例事项。真实项目开展工作后，这里会展示保存的项目认识、行动依据与复盘。"
+      />
     );
   if (!api.getProjectWork)
     return <EmptyState title="当前连接暂不支持项目判断" description="连接新版 Morrow 服务后可查看。" />;

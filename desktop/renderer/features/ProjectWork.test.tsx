@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ProjectLoop, Release, DecisionView } from '../../shared/types';
 import { ProjectReleases, FeatureWork, ProjectThinking } from './ProjectWork';
 import { ProjectView } from './ProjectView';
+import { previewAPI } from '../state/preview';
 import { featureProps, TestProviders, timestamp } from './testFixtures';
 beforeEach(() => {
   localStorage.clear();
@@ -661,6 +662,42 @@ describe('AI work and release review', () => {
     await user.click(screen.getByRole('button', { name: '进入对话' }));
     expect(f.props.onNavigate).toHaveBeenCalledWith({ kind: 'channel', id: 'channel-system' });
     expect(f.reviewRelease).not.toHaveBeenCalled();
+  });
+  it('shows an accurate empty state through the actual preview adapter and project tab', async () => {
+    const api = previewAPI();
+    const snapshot = await api.getState();
+    const { props } = featureProps({ snapshot });
+    expect(api.getProjectWork).toBeUndefined();
+    render(<ProjectView {...props} api={api} id="demo-atlas" />, { wrapper: TestProviders });
+    await userEvent.setup().click(screen.getByRole('tab', { name: '当前判断' }));
+    expect(await screen.findByRole('heading', { name: '此示例暂未提供项目判断数据' })).toBeTruthy();
+    expect(screen.getByText(/可先查看「功能看板」/)).toBeTruthy();
+    expect(screen.queryByText(/连接新版 Morrow 服务/)).toBeNull();
+  });
+  it('keeps real old-service hints while distinguishing demo data that lacks strategy', async () => {
+    const { props } = featureProps();
+    const view = render(<ProjectThinking api={props.api} projectId="real" onNavigate={props.onNavigate} />, {
+      wrapper: TestProviders,
+    });
+    expect(screen.getByRole('heading', { name: '当前连接暂不支持项目判断' })).toBeTruthy();
+    const f = fixture();
+    view.rerender(<ProjectThinking api={f.api} projectId="demo" isDemo onNavigate={f.props.onNavigate} />);
+    expect(await screen.findByRole('heading', { name: '此示例暂未提供项目判断数据' })).toBeTruthy();
+    view.rerender(<ProjectThinking api={f.api} projectId="demo" onNavigate={f.props.onNavigate} />);
+    expect(screen.getByRole('heading', { name: '当前服务尚未支持项目判断' })).toBeTruthy();
+  });
+  it('does not mask demo read errors or replace available strategy data with the demo placeholder', async () => {
+    const f = fixture();
+    f.data.strategy = { understanding: [], decisions: [], counts: { understanding: 0, decisions: 0 } };
+    f.getProjectWork.mockRejectedValueOnce(new Error('读取判断失败'));
+    const view = render(<ProjectThinking api={f.api} projectId="demo-error" isDemo onNavigate={f.props.onNavigate} />, {
+      wrapper: TestProviders,
+    });
+    expect((await screen.findByRole('alert')).textContent).toContain('读取判断失败');
+    expect(screen.queryByText('此示例暂未提供项目判断数据')).toBeNull();
+    view.rerender(<ProjectThinking api={f.api} projectId="demo-data" isDemo onNavigate={f.props.onNavigate} />);
+    expect(await screen.findByRole('heading', { name: '等待形成下一步判断' })).toBeTruthy();
+    expect(screen.queryByText('此示例暂未提供项目判断数据')).toBeNull();
   });
   it('keeps an empty project honest and shows retrieval errors instead of made-up thinking', async () => {
     const f = fixture();
