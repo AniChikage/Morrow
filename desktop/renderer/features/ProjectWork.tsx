@@ -214,54 +214,122 @@ const verificationLabels = {
   failed: '复核发现问题',
   unknown: '复核尚不能判断',
 };
-function VerificationRecords({ data }: { data: ProjectLoop }) {
-  if (!data.verifications?.length) return null;
+type VerificationRow = NonNullable<ProjectLoop['verifications']>[number];
+function VerificationRecord({
+  row,
+  data,
+  expanded,
+  compact = false,
+}: {
+  row: VerificationRow;
+  data: ProjectLoop;
+  expanded: boolean;
+  compact?: boolean;
+}) {
   return (
-    <section className="finding-section">
-      <h2>独立复核</h2>
-      {data.verifications
-        .slice()
-        .reverse()
-        .map((row) => (
-          <details className="work-record" key={row.id} open={row.status === 'failed' || row.status === 'running'}>
-            <summary>
-              <strong>
-                {row.status === 'passed' && !row.current
-                  ? '源码或核验材料已变化，需要重新复核'
-                  : verificationLabels[row.status]}
-              </strong>
-              <span className="subtle">{formatDate(row.finishedAt || row.createdAt)}</span>
-            </summary>
-            <div className="work-record-body">
-              <Markdown>{row.summary}</Markdown>
-              {row.findings.map((f, i) => (
-                <p key={i}>
-                  <b>{f.severity === 'blocking' ? '需要修正' : '复核备注'}：</b>
-                  {f.message}
-                </p>
-              ))}
-              {row.checks.map((c) => (
-                <p key={c.expectationId}>
-                  <b>{verdictLabels[c.verdict]}：</b>
-                  {c.reason}
-                </p>
-              ))}
-              {row.limitations.map((v, i) => (
-                <p className="subtle" key={i}>
-                  {v}
-                </p>
-              ))}
-              <p className="subtle">
-                独立只读任务 · 最多 5 分钟 · 计入频道预算。通过仅覆盖本次核验范围，业务效果仍需实际反馈。
-              </p>
-              <p className="work-source">
-                源版本：{row.version.digest.slice(0, 16)} · {row.version.files} 个文件
-                {row.threadId ? ` · 原生任务：${row.threadId}` : ''}
-              </p>
-              <EvidenceReferences ids={row.evidenceIds} data={data} />
-            </div>
-          </details>
+    <details className="work-record" open={expanded}>
+      <summary>
+        <strong>
+          {row.status === 'passed' && !row.current
+            ? '源码或核验材料已变化，需要重新复核'
+            : verificationLabels[row.status]}
+          {compact && (
+            <span className="verification-summary">
+              {row.summary.length > 120 ? row.summary.slice(0, 120) + '…' : row.summary}
+            </span>
+          )}
+        </strong>
+        <span className="subtle">{formatDate(row.finishedAt || row.createdAt)}</span>
+      </summary>
+      <div className="work-record-body">
+        <Markdown>{row.summary}</Markdown>
+        {row.findings.map((f, i) => (
+          <p key={i}>
+            <b>{f.severity === 'blocking' ? '需要修正' : '复核备注'}：</b>
+            {f.message}
+          </p>
         ))}
+        {row.checks.map((c) => (
+          <p key={c.expectationId}>
+            <b>{verdictLabels[c.verdict]}：</b>
+            {c.reason}
+          </p>
+        ))}
+        {row.limitations.map((v, i) => (
+          <p className="subtle" key={i}>
+            {v}
+          </p>
+        ))}
+        <p className="subtle">
+          独立只读任务 · 最多 5 分钟 · 计入频道预算。通过仅覆盖本次核验范围，业务效果仍需实际反馈。
+        </p>
+        <p className="work-source">
+          源版本：{row.version.digest.slice(0, 16)} · {row.version.files} 个文件
+          {row.threadId ? ` · 原生任务：${row.threadId}` : ''}
+        </p>
+        <EvidenceReferences ids={row.evidenceIds} data={data} />
+      </div>
+    </details>
+  );
+}
+function VerificationRecords({ data, compact = false }: { data: ProjectLoop; compact?: boolean }) {
+  if (!data.verifications?.length) return null;
+  const rows = data.verifications.slice().reverse();
+  if (!compact)
+    return (
+      <section className="finding-section">
+        <h2>独立复核</h2>
+        {rows.map((row) => (
+          <VerificationRecord
+            key={row.id}
+            row={row}
+            data={data}
+            expanded={row.status === 'failed' || row.status === 'running'}
+          />
+        ))}
+      </section>
+    );
+  // A retry or a new decision for the same shared feature supersedes its earlier
+  // presentation, never its stored verdict. Unscoped decisions/channels stay distinct.
+  rows.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  const latest = new Map<string, VerificationRow>();
+  const history: VerificationRow[] = [];
+  for (const row of rows) {
+    const key = row.itemId
+      ? `item:${row.itemId}`
+      : row.decisionId
+        ? `decision:${row.decisionId}`
+        : `channel:${row.channelId}`;
+    if (latest.has(key)) history.push(row);
+    else latest.set(key, row);
+  }
+  const active = data.strategy?.decisions.filter((row) => row.status === 'active') || [];
+  return (
+    <section className="finding-section" aria-label="最近复核">
+      <h2>最近复核</h2>
+      {[...latest.values()].map((row) => (
+        <VerificationRecord
+          key={row.id}
+          row={row}
+          data={data}
+          compact
+          expanded={
+            row.status === 'running' ||
+            (row.status === 'failed' &&
+              active.some((d) => (row.itemId ? d.itemId === row.itemId : d.id === row.decisionId)))
+          }
+        />
+      ))}
+      {!!history.length && (
+        <details className="work-record verification-history">
+          <summary>
+            历史复核 <span className="subtle">{history.length}</span>
+          </summary>
+          {history.map((row) => (
+            <VerificationRecord key={row.id} row={row} data={data} compact expanded={false} />
+          ))}
+        </details>
+      )}
     </section>
   );
 }
@@ -621,7 +689,6 @@ export function ProjectThinking({
             </p>
           </section>
         )}
-        <VerificationRecords data={data} />
         {active.map((row) => (
           <DecisionRecord
             key={row.id}
@@ -630,6 +697,7 @@ export function ProjectThinking({
             onChannel={() => onNavigate({ kind: 'channel', id: row.channelId })}
           />
         ))}
+        <VerificationRecords data={data} compact />
         {!!strategy?.understanding.length && (
           <section className="finding-section">
             <h2>对项目的认识</h2>

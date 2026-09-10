@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { cleanup, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ProjectLoop, Release, DecisionView } from '../../shared/types';
@@ -275,6 +275,113 @@ describe('AI work and release review', () => {
     await userEvent.setup().click(screen.getByText('源码或核验材料已变化，需要重新复核'));
     expect(screen.getByText('尚未验证业务收益')).not.toBeNull();
     expect(screen.getByText(/原生任务：independent-native-task/)).not.toBeNull();
+  });
+  it('puts active work before latest reviews and preserves superseded failures in collapsed history', async () => {
+    const f = fixture();
+    const decision = { ...evaluatedDecision(), status: 'active' as const, review: undefined };
+    f.data.strategy = { understanding: [], decisions: [decision], counts: { understanding: 0, decisions: 1 } };
+    const review = (id: string, patch: Partial<NonNullable<ProjectLoop['verifications']>[number]> = {}) => ({
+      id,
+      projectId: 'project-atlas',
+      channelId: 'channel-system',
+      runId: 'run-one',
+      itemId: 'finding-import',
+      decisionId: 'evaluated',
+      evidenceIds: ['evidence-one'],
+      subjectHash: id,
+      version: {
+        digest: 'original-digest',
+        head: 'commit',
+        files: 1,
+        bytes: 1,
+        coverage: 'git-tracked-and-unignored' as const,
+      },
+      status: 'failed' as const,
+      summary: id,
+      findings: [{ severity: 'blocking' as const, message: '原反例保留' }],
+      checks: [],
+      limitations: ['未部署'],
+      createdAt: '2026-09-07T00:00:00Z',
+      current: true,
+      bytes: 0,
+      commandCount: 1,
+      timeoutSeconds: 300,
+      ...patch,
+    });
+    // Completion order and array order must not let an older attempt replace a newer one.
+    f.data.verifications = [
+      review('older failure', { finishedAt: '2026-09-10T00:00:00Z', decisionId: 'previous-decision' }),
+      review('new pass', { createdAt: '2026-09-09T00:00:00Z', status: 'passed', findings: [] }),
+      review('other item failure', {
+        itemId: 'finding-other',
+        decisionId: 'other-decision',
+        createdAt: '2026-09-08T00:00:00Z',
+      }),
+    ];
+    const original = structuredClone(f.data.verifications);
+    render(<ProjectThinking api={f.api} projectId="project-atlas" onNavigate={f.props.onNavigate} />, {
+      wrapper: TestProviders,
+    });
+    const current = await screen.findByRole('heading', { name: '验证交付效果' });
+    const recent = screen.getByRole('region', { name: '最近复核' });
+    expect(current.compareDocumentPosition(recent) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    const historical = within(recent).getByText('历史复核').closest('details')!;
+    expect(historical.open).toBe(false);
+    const old = within(historical).getAllByText('older failure')[0].closest('details')!;
+    expect(old.open).toBe(false);
+    const latest = within(recent).getAllByText('new pass')[0].closest('details')!;
+    const other = within(recent).getAllByText('other item failure')[0].closest('details')!;
+    expect(historical.contains(latest)).toBe(false);
+    expect(historical.contains(other)).toBe(false);
+    expect(other.open).toBe(false);
+    await userEvent.setup().click(within(recent).getByText('历史复核'));
+    await userEvent.setup().click(old.querySelector('summary')!);
+    expect(old.open).toBe(true);
+    expect(within(old).getByText(/原反例保留/)).toBeTruthy();
+    await userEvent.setup().click(within(old).getByText('测试日志'));
+    expect(within(old).getByText('2 tests passed')).toBeTruthy();
+    expect(f.data.verifications).toEqual(original);
+  });
+  it('keeps unscoped decisions and channels distinct and expands only current actionable review details', async () => {
+    const f = fixture();
+    const decision = { ...evaluatedDecision(), itemId: undefined, status: 'active' as const, review: undefined };
+    f.data.strategy = { understanding: [], decisions: [decision], counts: { understanding: 0, decisions: 1 } };
+    const review = (id: string, patch: Record<string, unknown> = {}) => ({
+      id,
+      projectId: 'project-atlas',
+      channelId: 'channel-system',
+      runId: 'run',
+      evidenceIds: [],
+      subjectHash: id,
+      version: { digest: 'source', head: 'commit', files: 1, bytes: 1, coverage: 'git-tracked-and-unignored' },
+      status: 'failed',
+      summary: id,
+      findings: [],
+      checks: [],
+      limitations: [],
+      createdAt: '2026-09-08T00:00:00Z',
+      current: true,
+      bytes: 0,
+      commandCount: 1,
+      timeoutSeconds: 300,
+      ...patch,
+    });
+    f.data.verifications = [
+      review('current failure', { decisionId: decision.id }),
+      review('other decision', { decisionId: 'other' }),
+      review('channel-only'),
+      review('other channel', { channelId: 'other-channel' }),
+      review('running review', { itemId: 'running-item', status: 'running' }),
+    ] as NonNullable<ProjectLoop['verifications']>;
+    render(<ProjectThinking api={f.api} projectId="project-atlas" onNavigate={f.props.onNavigate} />, {
+      wrapper: TestProviders,
+    });
+    const recent = await screen.findByRole('region', { name: '最近复核' });
+    expect(within(recent).queryByText('历史复核')).toBeNull();
+    for (const title of ['current failure', 'other decision', 'channel-only', 'other channel', 'running review']) {
+      const row = within(recent).getAllByText(title)[0].closest('details')!;
+      expect(row.open).toBe(['current failure', 'running review'].includes(title));
+    }
   });
   it('shows the saved next direction after review and labels original native execution evidence', async () => {
     const f = fixture(),

@@ -29,7 +29,9 @@ function deferred<T>() {
   return { promise, resolve };
 }
 function headings() {
-  return screen.getAllByRole('button').filter((button) => button.classList.contains('run-heading'));
+  // These assertions count the rendered page range; avoid recomputing visibility
+  // across the entire 180-row accessibility tree on every count and order check.
+  return [...document.querySelectorAll<HTMLButtonElement>('button.run-heading')];
 }
 
 it('labels unavailable native timestamps truthfully for completed App turns and identifies their source', async () => {
@@ -266,7 +268,7 @@ it('keeps the durable page range authoritative when a large snapshot includes un
     .mockResolvedValueOnce({ runs: snapshot.slice(20, 100), hasMore: true, cursor: 'older-20' })
     .mockResolvedValueOnce({ runs: snapshot.slice(0, 20), hasMore: false });
   const view = render(<RunHistory {...props} runs={snapshot} />, { wrapper: TestProviders });
-  await screen.findByRole('button', { name: '加载更早运行' });
+  await screen.findByText('加载更早运行', { selector: 'button' });
   expect(headings()).toHaveLength(80);
   expect(screen.queryByText('000099')).toBeNull();
   const fresh = run('fresh-run', { status: 'running', finishedAt: '' });
@@ -275,17 +277,17 @@ it('keeps the durable page range authoritative when a large snapshot includes un
   );
   view.rerender(<RunHistory {...props} runs={[...live, fresh]} />);
   expect(headings()).toHaveLength(81);
-  expect(screen.getByRole('button', { name: /000179/ }).textContent).toContain('运行中');
-  expect(screen.getByRole('button', { name: /FRESH-/ }).textContent).toContain('运行中');
+  expect(screen.getByText('000179').closest('button')!.textContent).toContain('运行中');
+  expect(screen.getByText('FRESH-').closest('button')!.textContent).toContain('运行中');
   expect(screen.queryByText('000099')).toBeNull();
-  await user.click(screen.getByRole('button', { name: '加载更早运行' }));
+  await user.click(screen.getByText('加载更早运行', { selector: 'button' }));
   await waitFor(() => expect(headings()).toHaveLength(161));
   expect(props.api.getRuns).toHaveBeenNthCalledWith(2, { before: 'older-100', limit: 80 });
   expect(screen.getByText('000099')).toBeTruthy();
   expect(screen.queryByText('000019')).toBeNull();
-  await user.click(screen.getByRole('button', { name: '加载更早运行' }));
+  await user.click(screen.getByText('加载更早运行', { selector: 'button' }));
   await waitFor(() => expect(headings()).toHaveLength(181));
   expect(props.api.getRuns).toHaveBeenNthCalledWith(3, { before: 'older-20', limit: 80 });
   expect(screen.getByText('000019')).toBeTruthy();
-  expect(screen.queryByRole('button', { name: '加载更早运行' })).toBeNull();
+  expect(screen.queryByText('加载更早运行', { selector: 'button' })).toBeNull();
 });
