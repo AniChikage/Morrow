@@ -112,6 +112,8 @@ MORROW_HOME="$HOME/.local/share/morrow" npm start
 
 `release.propose` 要求关联事项、具体改动、预期收益、检查证据、影响、回退和观察计划，并封存项目内的产物文件及审阅摘要。当前产物上限为 8 MiB，大型发布可以提交不可变的部署清单。
 
+发布门禁分两半：每个关联事项至少有一次独立复核通过（可以是改动当时的源版本，ID 记入 `verificationIds`），并且有一次覆盖全部关联事项、绑定当前源版本的发布级复核通过（`verification.request kind:"release"`，ID 记入 `releaseVerificationId`）。发布级复核复用同一套排队、只读 CLI 会话、5 分钟上限、未知处理与重试机制；请求时要求至少一项绑定当前源版本的 execution 证据，任一事项从未复核通过则返回 409。事项自身完成（`feature.upsert` 到 verified/resolved 与报告路径）仍要求该事项当前源版本的复核。
+
 发布目标有两种形状：`target.kind` 为 `http`（省略时同）或 `local-script`。
 
 | 适配 | 约定 |

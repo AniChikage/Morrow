@@ -3,14 +3,19 @@ import type { InvariantContext } from '../scenario.ts';
 
 /**
  * The smallest scenario that walks the whole loop once: make a change, get it independently
- * reviewed, seal it, observe real feedback, review the frozen contract, get human approval, publish,
- * then meet a second window that breaks the guardrail and survive a restart.
+ * reviewed, run the full check on the candidate and get one release-level review, seal it, observe
+ * real feedback, review the frozen contract, get human approval, publish, then meet a second window
+ * that breaks the guardrail and survive a restart.
  *
  * Changed in step 2b, for the metrics: the second feedback sample now also carries `errors: 3`, so
  * the window actually violates the guardrail (`careful` catches it in its review, `naive` cannot,
  * because it never froze one), and one `advance` was added between that sample and the review that
  * reacts to it, so the adjustment latency is a real duration rather than zero. Both changes keep
  * every original invariant passing for `careful`; no invariant was weakened.
+ *
+ * Changed again with the release-level gate: one turn and one `verify` were added between the item
+ * review and the proposal, because the release candidate itself is now reviewed once before
+ * `release.propose`. The budget grew by that turn and that review; no invariant was weakened.
  */
 const sample = (activation: number, errors = 0) => ({
   activation,
@@ -72,10 +77,12 @@ export default defineScenario({
       },
     },
   ],
-  budget: { turns: 6, reviews: 2 },
+  budget: { turns: 7, reviews: 3 },
   timeline: [
     { verb: 'turn', note: '建立认识与事项，封存改动并请求独立复核' },
-    { verb: 'verify', note: '独立复核通过后才允许提交发布' },
+    { verb: 'verify', note: '事项自身的复核通过后才能进入发布准备' },
+    { verb: 'turn', note: '在当前源版本跑完整检查，并请求一次发布级复核' },
+    { verb: 'verify', note: '发布级复核通过后才允许提交发布' },
     { verb: 'turn', note: '建立观测、冻结预期并提交发布提议' },
     { verb: 'set', value: sample(0.68), note: '真实反馈上升' },
     { verb: 'advance', minutes: 30, note: '指标有延迟，等一个采样周期再看' },

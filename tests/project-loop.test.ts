@@ -21,7 +21,12 @@ async function setup() {
     { projectId: s.project.id, name: '共享观察验收', goal: '独立验证跨频道反馈', runtime: 'codex' },
     201
   );
-  const grant = grantFor(s, { projectId: s.project.id, channelId: s.channel.id });
+  const grant = grantFor(s, {
+    projectId: s.project.id,
+    channelId: s.channel.id,
+    // The release gate needs one execution capture, which needs a native task and turn to bind to.
+    overrides: { sessionId: 'isolated-test', nativeTurnId: 'isolated-turn' },
+  });
   const { run, context } = grant;
   const call = (operation: string, input: unknown, requestId = randomUUID(), expected = 200) =>
     grant.call(operation, input, expected, requestId);
@@ -57,6 +62,16 @@ async function setup() {
   assert.equal(s.store.get<any>('loop_verifications', completion.verificationId).status, 'passed');
   assert.equal(s.store.get<any>('items', feature.id).status, 'verified');
   assert.equal(s.store.get<any>('loop_finalizations', completion.finalizationId).status, 'applied');
+  // The release gate also wants one review of the candidate itself, citing a check bound to this
+  // exact source version. Every project file already exists, so the digest no longer moves.
+  const execution = await grant.execute('node --test');
+  const releaseReview = await call('verification.request', {
+    kind: 'release',
+    itemIds: [feature.id],
+    evidenceIds: [execution.id],
+  });
+  await s.engine.loop.verification.start(releaseReview.id);
+  assert.equal(s.store.get<any>('loop_verifications', releaseReview.id).status, 'passed');
   const releaseInput = {
     itemIds: [feature.id],
     title: '首次体验改进',

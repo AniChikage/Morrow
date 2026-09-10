@@ -956,6 +956,48 @@ describe('AI work and release review', () => {
     expect(await screen.findByText(/#!\/usr\/bin\/env bash/)).not.toBeNull();
     expect(screen.queryByRole('button', { name: '查看将要执行的脚本' })).toBeNull();
   });
+  it('shows the release-level review on its own line and labels release-kind records', async () => {
+    const f = fixture();
+    f.release.releaseVerificationId = 'verify-release';
+    f.release.verificationIds = ['verify-item'];
+    f.data.verifications = [
+      {
+        ...historyRow('verify-item'),
+        status: 'passed',
+        summary: '事项自身的复核在当时的源版本通过',
+        current: false,
+      },
+      {
+        ...historyRow('verify-release'),
+        itemId: undefined,
+        kind: 'release',
+        itemIds: ['finding-import'],
+        status: 'passed',
+        summary: '候选版本的检查与各事项改动一致',
+        current: true,
+      },
+    ];
+    render(
+      <TestProviders>
+        <ProjectReleases {...f.props} projectId="project-atlas" />
+      </TestProviders>
+    );
+    await userEvent.setup().click(screen.getByRole('button', { name: /导入失败恢复/ }));
+    expect(
+      await screen.findByText('发布级复核：独立复核通过 · 候选版本的检查与各事项改动一致', { exact: false })
+    ).not.toBeNull();
+    // The item's own review is listed as it stands: passed at an earlier source version.
+    expect(screen.getByText('源码或核验材料已变化，需要重新复核')).not.toBeNull();
+    cleanup();
+    // The review list itself marks which record covered the whole release candidate.
+    render(
+      <TestProviders>
+        <FeatureWork api={f.api} projectId="project-atlas" itemId="finding-import" />
+      </TestProviders>
+    );
+    expect(await screen.findByText('发布级')).not.toBeNull();
+    expect(screen.getByText('候选版本的检查与各事项改动一致', { exact: false })).not.toBeNull();
+  });
   it('requires every cited check to remain reviewable before approval', async () => {
     const f = fixture();
     f.data.evidence = [];

@@ -30,13 +30,19 @@ const allowedEnv = [
 
 /**
  * One isolated service whose project already holds a committed-style release script and a release
- * manifest, plus a passed independent review for the feature the release closes. The HTTP receiver
- * only exists to prove a local publication never reaches the network.
+ * manifest, a passed independent review for the feature the release closes, and a passed
+ * release-level review of this exact source version. The HTTP receiver only exists to prove a local
+ * publication never reaches the network.
  */
 async function setup() {
   const receiver = await startReceiver({ feedback: { activation: 0.2 } });
   const s = await startIsolated({ project: { name: '本地脚本发布', goal: '让批准后的安装可复现' } });
-  const grant = grantFor(s, { projectId: s.project.id, channelId: s.channel.id });
+  const grant = grantFor(s, {
+    projectId: s.project.id,
+    channelId: s.channel.id,
+    // The release gate needs one execution capture, which needs a native task and turn to bind to.
+    overrides: { sessionId: 'isolated-test', nativeTurnId: 'isolated-turn' },
+  });
   const call = (operation: string, input: unknown, requestId = randomUUID(), expected = 200) =>
     grant.call(operation, input, expected, requestId);
   // Every project file has to exist before the review passes: a later write changes the source
@@ -72,6 +78,15 @@ async function setup() {
   });
   await s.engine.loop.verification.start(completion.verificationId);
   assert.equal(s.store.get<any>('items', feature.id).status, 'verified');
+  // The candidate itself is reviewed once, citing a check bound to this exact source version.
+  const execution = await grant.execute('bash scripts/checks.sh');
+  const releaseReview = await call('verification.request', {
+    kind: 'release',
+    itemIds: [feature.id],
+    evidenceIds: [execution.id],
+  });
+  await s.engine.loop.verification.start(releaseReview.id);
+  assert.equal(s.store.get<any>('loop_verifications', releaseReview.id).status, 'passed');
   const base = {
     itemIds: [feature.id],
     title: '安装当前提交',

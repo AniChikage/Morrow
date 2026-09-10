@@ -88,7 +88,10 @@ export type Release = {
   rationale: string;
   expectedBenefit: string;
   checks: Array<{ name: string; result: 'passed' | 'not_verified'; evidenceIds: string[] }>;
+  /** Each item's latest passed review, from whatever source version it was made at. */
   verificationIds?: string[];
+  /** The release-level review of this candidate: passed and bound to the proposal's source version. */
+  releaseVerificationId?: string;
   risks: string;
   rollback: string;
   observationPlan: string;

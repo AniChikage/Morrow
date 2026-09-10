@@ -9,6 +9,8 @@ export class FakeReviewer implements NativeTransport {
   sent: Array<{ threadId: string; text: string; requestId: string; options?: NativeWorkOptions }> = [];
   interrupted: string[] = [];
   autoComplete = false;
+  /** Verdict the generated report carries; `fail`/`unknown` force that outcome, including for release kind. */
+  verdict: 'pass' | 'fail' | 'unknown' = 'pass';
   async connect() {}
   status() {
     return { connected: true, socketPath: 'fake-reviewer', lastError: null };
@@ -58,17 +60,22 @@ export class FakeReviewer implements NativeTransport {
     s.syncedAt = new Date().toISOString();
     this.listeners.get(id)?.(structuredClone(s));
   }
+  /** Reads the frozen subject out of the prompt; a release-kind subject carries `release.itemIds`. */
   report(id: string) {
     const sent = this.sent.find((s) => s.threadId === id)!,
       subject = JSON.parse(sent.text.split('原始核验对象：')[1].split('\n')[0]);
+    const release: string[] | undefined = subject.release?.itemIds;
     const ids = subject.decision?.expectations?.length
       ? subject.decision.expectations.map((e: any) => e.id)
       : ['feature'];
+    const verdict = this.verdict === 'pass' ? 'met' : this.verdict === 'fail' ? 'not_met' : 'unknown';
     return {
-      verdict: 'pass',
-      summary: '隔离原生协议夹具完成只读核验',
-      checks: ids.map((expectationId: string) => ({ expectationId, verdict: 'met', reason: '仅为协议夹具的检查结果' })),
-      findings: [],
+      verdict: this.verdict,
+      summary: release
+        ? `隔离原生协议夹具完成发布级只读核验，覆盖 ${release.length} 个事项`
+        : '隔离原生协议夹具完成只读核验',
+      checks: ids.map((expectationId: string) => ({ expectationId, verdict, reason: '仅为协议夹具的检查结果' })),
+      findings: this.verdict === 'fail' ? [{ severity: 'blocking', message: '夹具按要求给出反例' }] : [],
       limitations: ['此记录为 fake native transport，不代表模型效果验收'],
     };
   }

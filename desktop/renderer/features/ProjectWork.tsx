@@ -312,6 +312,7 @@ function VerificationRecord({
             </span>
           )}
         </strong>
+        {row.kind === 'release' && <span className="verification-kind">发布级</span>}
         <span className="subtle">{formatDate(row.finishedAt || row.createdAt)}</span>
       </summary>
       <div className="work-record-body">
@@ -376,11 +377,14 @@ function VerificationRecords({
   const latest = new Map<string, VerificationRow>();
   const previous: VerificationRow[] = [];
   for (const row of rows) {
-    const key = row.itemId
-      ? `item:${row.itemId}`
-      : row.decisionId
-        ? `decision:${row.decisionId}`
-        : `channel:${row.channelId}`;
+    const key =
+      row.kind === 'release'
+        ? `release:${(row.itemIds || []).join(',')}`
+        : row.itemId
+          ? `item:${row.itemId}`
+          : row.decisionId
+            ? `decision:${row.decisionId}`
+            : `channel:${row.channelId}`;
     if (latest.has(key)) previous.push(row);
     else latest.set(key, row);
   }
@@ -923,6 +927,10 @@ export function ProjectReleases(props: FeatureProps & { projectId: string }) {
     !!row &&
     !!data &&
     row.checks.some((check) => check.evidenceIds.some((id) => !data.evidence.some((e) => e.id === id)));
+  // The one review of this candidate as a whole; each item's own review stays in the list below.
+  const releaseReview = row?.releaseVerificationId
+    ? data?.verifications?.find((v) => v.id === row.releaseVerificationId)
+    : undefined;
   const review = async (decision: 'approve' | 'reject') => {
     if (!row || !api.reviewRelease || pending) return;
     setPending(true);
@@ -1022,6 +1030,18 @@ export function ProjectReleases(props: FeatureProps & { projectId: string }) {
           <Markdown>{row.risks}</Markdown>
           <Markdown>{row.rollback}</Markdown>
         </section>
+        {!!row.releaseVerificationId && (
+          <p className="work-source">
+            发布级复核：
+            {releaseReview
+              ? `${
+                  releaseReview.status === 'passed' && !releaseReview.current
+                    ? '源码或核验材料已变化，需要重新复核'
+                    : verificationLabels[releaseReview.status]
+                } · ${releaseReview.summary}`
+              : '记录尚未读取'}
+          </p>
+        )}
         {!!row.verificationIds?.length && data && (
           <VerificationRecords
             data={{ ...data, verifications: data.verifications?.filter((v) => row.verificationIds!.includes(v.id)) }}

@@ -55,6 +55,12 @@ export type TurnContext = {
   service: TransportService;
   scenario: PolicyScenario;
   memory: PolicyMemory;
+  /**
+   * Emits one native `commandExecution` item, start and completion, into the turn this policy is
+   * running in, so an `execution.prepare` seal observes it through the service's own native
+   * ingestion. Nothing is executed and no model runs: the reported exit code and output are given here.
+   */
+  runCommand(command: string, reported?: { exitCode?: number; output?: string }): void;
 };
 /** Returns the final assistant text of a scheduled turn; it must end with a ```morrow-next``` block. */
 export type TurnPolicy = (context: TurnContext) => Promise<string>;
@@ -120,6 +126,7 @@ export class ScriptedNativeTransport extends FakeReviewer {
   readUsage?: () => Promise<UsageReading | undefined>;
   private service?: TransportService;
   private pending = new Set<Promise<void>>();
+  private commands = 0;
 
   constructor(options: ScriptedNativeOptions) {
     super();
@@ -179,6 +186,33 @@ export class ScriptedNativeTransport extends FakeReviewer {
 
   close() {
     // A restart reuses this instance, so closing the service must not discard scripted state.
+  }
+
+  /**
+   * Appends a completed `commandExecution` to the scheduled thread's running turn and pushes both of
+   * its states through the normal subscription, which is how a prepared execution seal observes a
+   * real start and completion. No command is run; the exit code and output are the ones supplied.
+   */
+  runCommand(command: string, reported: { exitCode?: number; output?: string } = {}) {
+    const snapshot = this.snapshots.get(this.threadId)!;
+    const turn = snapshot.state.turns?.[0];
+    if (!turn) throw new Error('ScriptedNativeTransport.runCommand needs a turn in progress');
+    const raw: Record<string, unknown> = {
+      id: `scripted-command-${++this.commands}`,
+      type: 'commandExecution',
+      command,
+      cwd: this.options.projectPath,
+      status: 'inProgress',
+      aggregatedOutput: '',
+    };
+    turn.items = [...(turn.items || []), raw];
+    this.emit(this.threadId);
+    Object.assign(raw, {
+      status: 'completed',
+      exitCode: reported.exitCode ?? 0,
+      aggregatedOutput: reported.output ?? `${command} 完成`,
+    });
+    this.emit(this.threadId);
   }
 
   private track(work: Promise<void>) {
@@ -261,6 +295,7 @@ export class ScriptedNativeTransport extends FakeReviewer {
       service,
       scenario: this.options.scenario,
       memory: this.memory,
+      runCommand: (command, reported) => this.runCommand(command, reported),
     };
   }
 

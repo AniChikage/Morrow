@@ -224,7 +224,7 @@ const workContract = {
     'execution.read':
       '{id}；读取准备记录及自动采集的原生执行证据。未收到开始事件、输出不完整、版本变化或没有退出码时不能证明成功。',
     'verification.request':
-      '{itemId?,decisionId?,evidenceIds:[]}；准备完实际证据后发起有界独立只读复核。不传执行者的通过结论。事先保存的预期是验收条件；有关联预期时，补充 feature 进度说明不会使复核失效。已覆盖的证据子集复用同次复核，新原始观测仍须核对；修正后提交新版本/新证据。读取 verification.read 或 context 中的结果，把反例交回本任务修正。新行动 improved 与 feature 完成会自动触发此步骤，尚未通过时返回 pendingVerification，不能当成已完成。',
+      '{itemId?,decisionId?,evidenceIds:[]}，或发布级 {kind:"release",itemIds:[1..30],evidenceIds:[]}；准备完实际证据后发起有界独立只读复核。不传执行者的通过结论。事先保存的预期是验收条件；有关联预期时，补充 feature 进度说明不会使复核失效。已覆盖的证据子集复用同次复核，新原始观测仍须核对；修正后提交新版本/新证据。读取 verification.read 或 context 中的结果，把反例交回本任务修正。新行动 improved 与 feature 完成会自动触发此步骤（按事项自身的当前源版本复核），尚未通过时返回 pendingVerification，不能当成已完成。kind:"release" 是发布前的一次候选版本复核：itemIds 是本次要发布的事项，每个至少已有一次复核通过（可以是当时的源版本，否则返回 409 并列出从未通过的事项）；evidenceIds 必须包含至少一项绑定当前源版本的 execution 证据（先 execution.prepare，再在同一原生轮次跑完整检查），否则返回 400。复核者会核对这些检查确实属于当前源码，并逐个事项检查其复核后的改动有没有推翻原结论。发布级复核绑定请求时的源版本；同一源版本与同一事项集合不会重复付费，已有结论（含 failed/unknown）直接复用，未知结果用 verification.retry 有界重试，反例先修正源码。源码再变更后只需重做发布级复核，不必逐项重核。',
     'verification.read':
       '{id}；读取独立复核结论、问题、源版本是否仍有效和原生记录。queued/running 时可以做独立工作，或 wait 等待（不紧密轮询）；已提交的 decision.review/feature 完成请求会在通过后自动落库，不需要再花一轮重提；从 context.finalizations 查看 applied/stale/rejected。旧 requestId 仍只重放原回执，请读取当前状态。stale 时先合并新版本再提交；failed/unknown 时先解决反例或缺少的证据。',
     'verification.retry':
@@ -236,7 +236,7 @@ const workContract = {
     'watch.cancel': '{id}；停止已不再有价值的观测。',
     wait: '{watchIds:[], releaseIds:[], deadline:ISO时间, reason}；任一条件满足或截止后唤醒，保持自动工作开关；有独立工作可做时不要等待。',
     'release.propose':
-      '{itemIds:[], title, changes, rationale, expectedBenefit, checks:[{name,result:passed|not_verified,evidenceIds:[]}], risks, rollback, observationPlan, artifactPath, target:{kind:"http",url,statusUrl,label} 或 {kind:"local-script",label,script,args?:[],timeoutSeconds:30..3600,statusScript?}}；准备好的文件复制封存，变更内容不可修改。至少一项通过的检查须引用实际采集证据。人批准后由发布接口发送封存产物或执行封存脚本。kind 省略时按 http 处理。local-script 的 script/statusScript 是项目内的相对路径，必须是已经提交在项目里的普通文件（≤256 KiB）；args 最多 16 项、每项 ≤1000 字符，作为参数数组传给脚本，不经过 shell；label ≤100 字。脚本内容在提议时被复制封存并计入 reviewHash，之后修改项目里的原文件不会改变将要执行的内容。你不能提供或修改脚本摘要，也不能自己执行发布。',
+      '{itemIds:[], title, changes, rationale, expectedBenefit, checks:[{name,result:passed|not_verified,evidenceIds:[]}], risks, rollback, observationPlan, artifactPath, target:{kind:"http",url,statusUrl,label} 或 {kind:"local-script",label,script,args?:[],timeoutSeconds:30..3600,statusScript?}}；准备好的文件复制封存，变更内容不可修改。至少一项通过的检查须引用实际采集证据。发布门禁有两半：每个 itemIds 里的事项至少有一次独立复核通过（可以是改动当时的源版本，记入 verificationIds），并且存在一次当前源版本、覆盖本次全部 itemIds 的发布级复核通过（verification.request kind:"release"，记入 releaseVerificationId）；缺少时返回 409。源码在发布级复核后再变更，只需重做发布级复核。人批准后由发布接口发送封存产物或执行封存脚本。kind 省略时按 http 处理。local-script 的 script/statusScript 是项目内的相对路径，必须是已经提交在项目里的普通文件（≤256 KiB）；args 最多 16 项、每项 ≤1000 字符，作为参数数组传给脚本，不经过 shell；label ≤100 字。脚本内容在提议时被复制封存并计入 reviewHash，之后修改项目里的原文件不会改变将要执行的内容。你不能提供或修改脚本摘要，也不能自己执行发布。',
   },
   releaseAdapter:
     'http 目标：发布端接收 POST {releaseId,reviewHash,artifact:{name,sha256,base64}}，Idempotency-Key 为 releaseId；仅在响应 {releaseId,artifactSha256,status:"published",url?} 匹配时认定已上线。statusUrl 的 GET 返回同一回执用于重启/超时后核对。local-script 目标：人批准后，Morrow 在项目根目录以固定最小环境执行封存脚本，只有 PATH、HOME、NO_COLOR=1、TMPDIR（可选，仅当服务自身有该变量时透传）、MORROW_RELEASE_ID、MORROW_ARTIFACT_PATH（封存产物副本）、MORROW_ARTIFACT_SHA256、MORROW_REVIEW_HASH、MORROW_PROJECT_PATH、MORROW_RECEIPT_PATH、MORROW_RUNTIME_CACHE，不含服务凭据和其余环境变量；退出码 0 且最后一行 stdout 是 {releaseId,artifactSha256,status:"published"|"failed",...} 才认定结果，非零退出、非 JSON 或超时保持 unknown，由回执文件（MORROW_RECEIPT_PATH）或 statusScript 事后核对，不会自动重跑。输出合计保留最后 1 MiB 作为 log。先在已有授权内准备真实接收端或已提交的脚本与产物，不能编造地址、脚本路径或摘要；缺部署能力时继续准备工作并明确缺口。',
@@ -299,7 +299,10 @@ export class ProjectWorkLoop {
     const verificationPage = this.verification.page(
       projectId,
       itemId,
-      releases.flatMap((row) => row.verificationIds || []),
+      releases.flatMap((row) => [
+        ...(row.verificationIds || []),
+        ...(row.releaseVerificationId ? [row.releaseVerificationId] : []),
+      ]),
       verificationOptions
     );
     const verifications = verificationPage.verifications;
@@ -926,7 +929,9 @@ export class ProjectWorkLoop {
     const itemIds = list(input.itemIds, 'itemIds');
     if (!itemIds.length) throw new APIError(400, '发布至少关联一个 feature');
     for (const id of itemIds) this.item(scope, id, false);
-    const verificationIds = [...new Set(itemIds.map((id) => this.verification.requirePassed(scope, id).id))];
+    // Each item keeps the review made at the version it changed; the candidate itself is reviewed once.
+    const verificationIds = [...new Set(itemIds.map((id) => this.verification.requirePassedEver(scope, id).id))];
+    const releaseVerificationId = this.verification.requireReleasePassed(scope, itemIds).id;
     if (!Array.isArray(input.checks) || !input.checks.length || input.checks.length > 30)
       throw new APIError(400, '请提供发布验证结果');
     const checks: Release['checks'] = input.checks.map((v: unknown) => {
@@ -998,6 +1003,7 @@ export class ProjectWorkLoop {
       expectedBenefit: text(input.expectedBenefit, 'expectedBenefit'),
       checks,
       verificationIds,
+      releaseVerificationId,
       risks: text(input.risks, 'risks'),
       rollback: text(input.rollback, 'rollback'),
       observationPlan: text(input.observationPlan, 'observationPlan'),

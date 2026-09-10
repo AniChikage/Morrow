@@ -68,7 +68,9 @@ test('the smoke scenario runs end to end in fixture mode with every invariant ho
   assert.equal(operations.filter((name) => name === 'release.propose').length, 1);
   assert.equal(operations.filter((name) => name === 'decision.choose').length, 2);
   assert.equal(operations.filter((name) => name === 'decision.review').length, 2);
-  assert.equal(operations.filter((name) => name === 'verification.request').length, 1);
+  // One review of the item's own change, and one of the release candidate as a whole.
+  assert.equal(operations.filter((name) => name === 'verification.request').length, 2);
+  assert.equal(operations.filter((name) => name === 'execution.prepare').length, 1);
   assert(
     result.calls.every((row) => row.status === 200),
     'every work-interface call was accepted'

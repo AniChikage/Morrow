@@ -29,8 +29,15 @@ export type Verification = {
   projectId: string;
   channelId: string;
   runId: string;
+  /**
+   * `release` reviews one release candidate: its source version, the items it closes and the checks
+   * run on it. Absent (or `item`) is the per-item/per-decision review and keeps its old meaning.
+   */
+  kind?: 'item' | 'release';
   itemId?: string;
   decisionId?: string;
+  /** The items a `release` review covers. Absent for item reviews, which carry `itemId` instead. */
+  itemIds?: string[];
   evidenceIds: string[];
   subjectHash: string;
   version: SourceVersion;

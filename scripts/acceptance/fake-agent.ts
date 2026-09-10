@@ -25,6 +25,8 @@ const understandingMs = 7 * 24 * 3600_000;
 const maxRuns = 8;
 /** How many decisions the policy opens before it settles into observation. */
 const maxDecisions = 2;
+/** The full check both policies run on the release candidate before asking for a release-level review. */
+const checkCommand = 'node --test';
 
 const iso = (offsetMs: number) => new Date(Date.now() + offsetMs).toISOString();
 
@@ -36,6 +38,10 @@ type Snapshot = {
   decision?: any;
   reviewDue: boolean;
   verified: boolean;
+  /** A release-level review of this source version, covering the feature, has passed. */
+  releaseReviewed: boolean;
+  /** A release-level review is queued or running, so a second request would be refused. */
+  releasePending: boolean;
   release?: any;
   publishedRelease?: any;
   artifactEvidenceId?: string;
@@ -48,6 +54,7 @@ async function careful(turn: TurnContext): Promise<string> {
   const state = read(context, turn.scenario);
   if (!state.feature) return plan(turn, state);
   if (state.decision && state.reviewDue) return review(turn, state);
+  if (!state.release && state.verified && !state.releaseReviewed) return candidate(turn, state);
   if (!state.release && state.verified) return ship(turn, state);
   return observe(turn, state);
 }
@@ -64,6 +71,9 @@ function read(context: any, scenario: PolicyScenario): Snapshot {
     .filter((row: any) => row.itemId === feature?.id)
     .filter((row: any) => row.status === 'passed' && row.current)
     .at(-1);
+  const releaseReviews = (context.verifications || []).filter(
+    (row: any) => row.kind === 'release' && !!feature && (row.itemIds || []).includes(feature.id)
+  );
   const releases = context.releases || [];
   const artifact = (context.evidence || [])
     .filter((row: any) => row.origin === 'file' && row.source.endsWith(scenario.artifactPath))
@@ -76,6 +86,8 @@ function read(context: any, scenario: PolicyScenario): Snapshot {
     decision,
     reviewDue: !!decision?.reviewReasons?.length,
     verified: !!verification,
+    releaseReviewed: releaseReviews.some((row: any) => row.status === 'passed' && row.current),
+    releasePending: releaseReviews.some((row: any) => ['queued', 'running'].includes(row.status)),
     release: releases.at(-1),
     publishedRelease: releases.filter((row: any) => row.status === 'published').at(-1),
     artifactEvidenceId: artifact?.id,
@@ -125,6 +137,46 @@ async function plan(turn: TurnContext, state: Snapshot): Promise<string> {
   return finish('wait', scenario.goal, '改动已封存并送独立复核。', '复核通过后建立观测、冻结预期并提交发布。');
 }
 
+/**
+ * Runs the release candidate's full check as a real native command and returns the execution
+ * evidence it produced. The seal comes from `execution.prepare`, the command and its exit code from
+ * the native record; the policy never writes its own claim about a run.
+ */
+async function fullCheck(turn: TurnContext): Promise<string> {
+  const prepared = await turn.grant.call('execution.prepare', { command: checkCommand });
+  turn.runCommand(checkCommand, { output: '隔离夹具的检查输出，不代表真实模型或真实测试结果' });
+  const { evidence } = await turn.grant.call('execution.read', { id: prepared.id });
+  if (!evidence?.id) throw new Error('fixture: the prepared full check produced no execution evidence');
+  return evidence.id as string;
+}
+
+/**
+ * The item's own review passed. Run the full check on exactly this source version and ask for the
+ * one release-level review the release gate wants, so the candidate is judged as a whole instead of
+ * one paid review per item.
+ */
+async function candidate(turn: TurnContext, state: Snapshot): Promise<string> {
+  const call = turn.grant.call;
+  const scenario = turn.scenario;
+  if (state.releasePending) {
+    await call('wait', { watchIds: [], releaseIds: [], deadline: iso(windowMs), reason: '等待发布级复核结论。' });
+    return finish('wait', scenario.goal, '发布级复核仍在进行。', '等待发布级复核结论后再提交发布。');
+  }
+  const evidenceId = await fullCheck(turn);
+  await call('verification.request', {
+    kind: 'release',
+    itemIds: [state.feature.id],
+    evidenceIds: [evidenceId],
+  });
+  await call('wait', { watchIds: [], releaseIds: [], deadline: iso(windowMs), reason: '等待发布级复核结论。' });
+  return finish(
+    'wait',
+    scenario.goal,
+    '已在当前源版本跑完整检查，并把候选送发布级复核。',
+    '复核通过后建立观测、冻结预期并提交发布。'
+  );
+}
+
 function expectation(spec: PolicyExpectation, kind: 'outcome' | 'guardrail', watchId: string) {
   return {
     id: spec.id,
@@ -140,9 +192,9 @@ function expectation(spec: PolicyExpectation, kind: 'outcome' | 'guardrail', wat
 }
 
 /**
- * The independent review passed: register the observation, freeze the contract that will judge the
- * change, and seal the artifact for human approval — all in one turn, so no signal lands between
- * choosing and proposing.
+ * Both reviews passed — the item's own and the release-level one for this candidate: register the
+ * observation, freeze the contract that will judge the change, and seal the artifact for human
+ * approval — all in one turn, so no signal lands between choosing and proposing.
  */
 async function ship(turn: TurnContext, state: Snapshot): Promise<string> {
   const call = turn.grant.call;
@@ -200,7 +252,7 @@ async function ship(turn: TurnContext, state: Snapshot): Promise<string> {
     itemIds: [state.feature.id],
     title: `${scenario.goal}：第一次改动`,
     changes: `更新 ${scenario.artifactPath}。`,
-    rationale: '独立复核已通过当前源版本，改动可以交付。',
+    rationale: '事项复核与当前源版本的发布级复核都已通过，改动可以交付。',
     expectedBenefit: `${scenario.feedback.outcome.claim}；线上收益仍待观测证实。`,
     checks: [{ name: '产物内容核对', result: 'passed', evidenceIds: [state.artifactEvidenceId] }],
     risks: '改动直接影响首次使用路径。',
@@ -384,7 +436,9 @@ function finish(state: 'continue' | 'wait', focus: string, reason: string, nextS
  * 3. never compares conditions: its `decision.review` claims `conditions: 'matched'` and a confident
  *    diagnosis without reading a sample, citing no captured evidence at all;
  * 4. resubmits unchanged material: after a refusal it sends the identical request again, so the
- *    service refuses it again. Those refusals are the run's repeated failures.
+ *    service refuses it again. Those refusals are the run's repeated failures — the same release
+ *    proposal goes out three times, including once right after it asked for the release-level
+ *    review, when that review cannot possibly have passed yet.
  *
  * It never crashes the run: every call that the framework is expected to refuse goes through
  * `attempt`, which swallows the rejection. The call is still recorded in `transport.calls` with its
@@ -395,6 +449,7 @@ async function naive(turn: TurnContext): Promise<string> {
   const state = read(context, turn.scenario);
   if (state.decision && state.reviewDue) return naiveReview(turn, state);
   if (!state.feature) return naivePlan(turn);
+  if (!state.decision && state.verified && !state.releaseReviewed) return naiveCheck(turn, state);
   if (!state.decision && state.verified) return naiveShip(turn, state);
   return naiveWait(turn, state.watch?.id, '继续等着指标自己变好。', '沿用旧经验的做法，不另做核对。');
 }
@@ -440,8 +495,29 @@ async function naivePlan(turn: TurnContext): Promise<string> {
 }
 
 /**
- * The review passed: adopt the seeded experience, freeze only the outcome (no guardrail), and send
- * the same release proposal a third time — now accepted, since the gate it kept failing is satisfied.
+ * The item's review passed. It runs the full check and asks for the release-level review the gate
+ * wants — then sends the same release proposal straight away, without waiting for a verdict, so the
+ * gate refuses the identical body a third time.
+ */
+async function naiveCheck(turn: TurnContext, state: Snapshot): Promise<string> {
+  const call = turn.grant.call;
+  const scenario = turn.scenario;
+  if (!state.artifactEvidenceId) throw new Error('naive: no captured artifact evidence to cite in a release check');
+  const evidenceId = await fullCheck(turn);
+  await attempt(call, 'verification.request', {
+    kind: 'release',
+    itemIds: [state.feature.id],
+    evidenceIds: [evidenceId],
+  });
+  await attempt(call, 'release.propose', naiveRelease(scenario, state.feature.id, state.artifactEvidenceId));
+  await call('wait', { watchIds: [], releaseIds: [], deadline: iso(windowMs), reason: '等复核后再发一次。' });
+  return finish('wait', scenario.goal, '检查跑过了，发布也照样提交了。', '等复核通过后重发同一份发布提议。');
+}
+
+/**
+ * The release-level review passed on its own: adopt the seeded experience, freeze only the outcome
+ * (no guardrail), and send the identical release proposal once more — now accepted, since the gate
+ * it kept failing is satisfied.
  */
 async function naiveShip(turn: TurnContext, state: Snapshot): Promise<string> {
   const call = turn.grant.call;

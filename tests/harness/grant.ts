@@ -1,7 +1,8 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
-import type { Channel, Run } from '../../service/protocol.ts';
+import type { Channel, Project, Run } from '../../service/protocol.ts';
+import type { Evidence } from '../../service/autonomy-types.ts';
 import type { IsolatedService } from './service.ts';
 
 export type Grant = {
@@ -13,6 +14,13 @@ export type Grant = {
   context: any;
   /** `POST /api/agent` with the grant token, asserting `status`; repeat a `requestId` to test idempotency. */
   call: (operation: string, input?: unknown, status?: number, requestId?: string) => Promise<any>;
+  /**
+   * Seals `command` with `execution.prepare` and emits the native items its capture observes, so a
+   * test holds real execution evidence bound to the current source version. Nothing is executed and
+   * no model runs: the reported exit code and output are the ones passed in. Needs `sessionId` and
+   * `nativeTurnId` overrides, and the project must not change between the two emitted states.
+   */
+  execute: (command: string, reported?: { exitCode?: number; output?: string }) => Promise<Evidence>;
 };
 
 /**
@@ -45,5 +53,41 @@ export function grantFor(
   const context = JSON.parse(readFileSync(join(service.home, 'runs', run.id, 'agent-context.json'), 'utf8'));
   const call = (operation: string, input: unknown = {}, status = 200, requestId: string = randomUUID()) =>
     service.api('POST', '/api/agent', { operation, input, requestId }, status, context.token);
-  return { run, token: context.token as string, context, call };
+  const execute = async (command: string, reported: { exitCode?: number; output?: string } = {}) => {
+    if (!run.sessionId || !run.nativeTurnId)
+      throw new Error('grantFor: execution evidence needs sessionId and nativeTurnId overrides');
+    const prepared = await call('execution.prepare', { command });
+    const cwd = service.store.get<Project>('projects', options.projectId)!.path;
+    const id = `execution-item-${prepared.id}`;
+    const emit = (status: 'inProgress' | 'completed') => {
+      const output = status === 'inProgress' ? '' : (reported.output ?? `${command} 完成`);
+      const raw = {
+        id,
+        type: 'commandExecution',
+        command,
+        cwd,
+        status,
+        aggregatedOutput: output,
+        ...(status === 'inProgress' ? {} : { exitCode: reported.exitCode ?? 0 }),
+      };
+      const row = {
+        id,
+        threadId: run.sessionId,
+        turnId: run.nativeTurnId,
+        type: 'commandExecution',
+        role: 'tool',
+        text: output,
+        status,
+        raw,
+        present: true,
+        ordinal: 0,
+      };
+      service.store.put('native_items', row);
+      service.engine.loop.executions.observe(run.sessionId!, [row] as any);
+    };
+    emit('inProgress');
+    emit('completed');
+    return (await call('execution.read', { id: prepared.id })).evidence as Evidence;
+  };
+  return { run, token: context.token as string, context, call, execute };
 }
