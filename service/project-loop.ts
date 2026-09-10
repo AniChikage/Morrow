@@ -38,6 +38,19 @@ type Wait = {
   event?: string;
 };
 const digest = (value: string | Buffer) => createHash('sha256').update(value).digest('hex');
+function fileValueDigest(value: unknown): string {
+  const ordered = (v: unknown): unknown =>
+    v === null || typeof v !== 'object'
+      ? v
+      : Array.isArray(v)
+        ? v.map(ordered)
+        : Object.fromEntries(
+            Object.keys(v)
+              .sort()
+              .map((key) => [key, ordered((v as Record<string, unknown>)[key])])
+          );
+  return digest(JSON.stringify(ordered(value)));
+}
 const text = (value: unknown, field: string, max = 10000) => string(value, field, max);
 const list = (value: unknown, field: string, max = 50): string[] => {
   if (!Array.isArray(value) || value.length > max) throw new APIError(400, `${field} 必须为数组，最多 ${max} 项`);
@@ -1039,12 +1052,13 @@ export class ProjectWorkLoop {
       const { data, hash } = sample;
       const value = valueAt(data, watch.pointer);
       if (value === undefined) throw new Error('数据中不存在指定字段');
-      const valueHash = watch.kind === 'file' && !watch.pointer ? hash : digest(JSON.stringify(value));
+      const valueHash =
+        watch.kind === 'file' ? (watch.pointer ? fileValueDigest(value) : hash) : digest(JSON.stringify(value));
       // Older file watches stored a whole-file digest even with a pointer. Use
       // their saved value so switching comparison methods does not create a wakeup.
       const previousDigest =
         watch.kind === 'file' && watch.pointer && watch.lastDigest && watch.lastValue !== undefined
-          ? digest(JSON.stringify(watch.lastValue))
+          ? fileValueDigest(watch.lastValue)
           : watch.lastDigest;
       const changed = previousDigest !== valueHash;
       let evidenceId = watch.lastEvidenceId;

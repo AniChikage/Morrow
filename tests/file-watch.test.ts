@@ -200,6 +200,37 @@ test('empty file pointers compare full bytes after a quiet existing-file baselin
   }
 });
 
+test('object key ordering is irrelevant for selected file values while array order and real values matter', async () => {
+  const s = await startIsolated();
+  try {
+    const { call } = grantFor(s, { projectId: s.project.id, channelId: s.channel.id });
+    const path = join(s.path, 'metrics.json');
+    const original = '{"selected":{"a":1,"b":{"x":2,"y":3},"list":[{"m":4,"n":5},6]}}';
+    writeFileSync(path, original);
+    const w = await call('watch.create', input('metrics.json', '/selected'));
+    await s.engine.loop.poll(w.id);
+    const wait = () => call('wait', { watchIds: [w.id], releaseIds: [], deadline: future(), reason: '等选定值变化' });
+    await wait();
+    writeFileSync(path, '{"selected":{"list":[{"n":5,"m":4},6],"b":{"y":3,"x":2},"a":1}}');
+    await s.engine.loop.poll(w.id);
+    assert.equal(s.store.all('loop_evidence').length, 1);
+    assert.equal(s.store.get<any>('loop_waits', s.channel.id).status, 'waiting');
+    const changed = '{"selected":{"list":[6,{"n":5,"m":4}],"b":{"y":3,"x":2},"a":1}}';
+    writeFileSync(path, changed);
+    await s.engine.loop.poll(w.id);
+    assert.equal(s.store.all('loop_evidence').length, 2);
+    assert.equal(s.store.get<any>('loop_waits', s.channel.id).status, 'ready');
+    assert.equal(s.store.all<any>('loop_evidence').at(-1).digest, createHash('sha256').update(changed).digest('hex'));
+    await wait();
+    writeFileSync(path, changed.replace('"x":2', '"x":9'));
+    await s.engine.loop.poll(w.id);
+    assert.equal(s.store.all('loop_evidence').length, 3);
+    assert.equal(s.store.get<any>('loop_waits', s.channel.id).status, 'ready');
+  } finally {
+    await s.cleanup();
+  }
+});
+
 test('file watches reject escape, symlink components, mixed sources and later symlink replacements', async () => {
   const s = await startIsolated();
   try {
