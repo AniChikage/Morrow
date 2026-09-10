@@ -1,0 +1,354 @@
+{
+  "testedAt": "2026-09-10T02:32:57.253Z",
+  "morrowCommit": "91cb90c22252bebfc062884e9dabff6c60e83b2e",
+  "appVersion": "26.903.61454",
+  "appBuild": "8378",
+  "codexVersion": "0.153.4",
+  "method": "Real installed signed App and CLI; synthetic test tasks; private temporary server home; no production runtime replacement.",
+  "follower": {
+    "readOnly": {
+      "threadId": "01a0891e-c278-7590-ad94-212c45237258",
+      "turnId": "01a08920-2f8d-7d31-af85-0cbd2e3f5d75",
+      "status": "completed",
+      "effectivePermissions": {
+        "activePermissionProfile": null,
+        "approvalPolicy": "never",
+        "approvalsReviewer": "user",
+        "runtimeWorkspaceRoots": [
+          "$APP_PROJECTLESS_ROOT",
+          "$APP_TEST_TASK",
+          "$ORIGINAL_CODEX_HOME/visualizations/2026/09/10/01a0891e-c278-7590-ad94-212c45237258"
+        ],
+        "sandboxPolicy": {
+          "type": "readOnly",
+          "networkAccess": false
+        }
+      },
+      "final": [
+        "MORROW_READONLY_CANARY_RESULT\n\n```text\nTraceback (most recent call last):\n  File \"<string>\", line 1, in <module>\n  File \"$PYTHON_RUNTIME/lib/python3.11/pathlib.py\", line 1078, in write_text\n    with self.open(mode='w', encoding=encoding, errors=errors, newline=newline) as f:\n         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"$PYTHON_RUNTIME/lib/python3.11/pathlib.py\", line 1044, in open\n    return io.open(self, mode, buffering, encoding, errors, newline)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\nPermissionError: [Errno 1] Operation not permitted: '$APP_TEST_TASK/readonly-canary.txt'\n```"
+      ],
+      "tools": [
+        {
+          "type": "commandExecution",
+          "status": "failed",
+          "exitCode": 1
+        }
+      ]
+    },
+    "workspaceWrite": {
+      "threadId": "01a0891e-c278-7590-ad94-212c45237258",
+      "turnId": "01a08920-ee70-7841-87c9-12fc9ef92c7f",
+      "status": "completed",
+      "effectivePermissions": {
+        "activePermissionProfile": null,
+        "approvalPolicy": "never",
+        "approvalsReviewer": "auto_review",
+        "runtimeWorkspaceRoots": [
+          "$APP_PROJECTLESS_ROOT",
+          "$APP_TEST_TASK",
+          "$ORIGINAL_CODEX_HOME/visualizations/2026/09/10/01a0891e-c278-7590-ad94-212c45237258"
+        ],
+        "sandboxPolicy": {
+          "type": "workspaceWrite",
+          "writableRoots": [
+            "$APP_TEST_TASK",
+            "$APP_PROJECTLESS_ROOT",
+            "$ORIGINAL_CODEX_HOME/visualizations/2026/09/10/01a0891e-c278-7590-ad94-212c45237258"
+          ],
+          "networkAccess": false,
+          "excludeTmpdirEnvVar": true,
+          "excludeSlashTmp": true
+        }
+      },
+      "final": [
+        "MORROW_WORKSPACE_RESULT\n\n```text\nINSIDE WRITE_ALLOWED\nOUTSIDE WRITE_DENIED PermissionError 1\n```"
+      ],
+      "tools": [
+        {
+          "type": "commandExecution",
+          "status": "completed",
+          "exitCode": 0
+        }
+      ]
+    },
+    "appTools": {
+      "threadId": "01a0891e-c278-7590-ad94-212c45237258",
+      "turnId": "01a08921-ddc5-78e0-83bd-7c0fc6ab685a",
+      "status": "completed",
+      "effectivePermissions": {
+        "activePermissionProfile": null,
+        "approvalPolicy": "never",
+        "approvalsReviewer": "user",
+        "runtimeWorkspaceRoots": [
+          "$APP_PROJECTLESS_ROOT",
+          "$APP_TEST_TASK",
+          "$ORIGINAL_CODEX_HOME/visualizations/2026/09/10/01a0891e-c278-7590-ad94-212c45237258"
+        ],
+        "sandboxPolicy": {
+          "type": "dangerFullAccess"
+        }
+      },
+      "final": [
+        "MORROW_FOLLOWER_TOOLS_RESULT\n\n1. Browser：成功，通过应用内浏览器真实点击 Run probe，已关闭本轮新建的测试 tab。\n   - marker：`3288b376-5f28-4cc9-a7aa-34ad26afe404`\n   - 点击后文本：`CLICK_OK:3288b376-5f28-4cc9-a7aa-34ad26afe404`\n2. App `get_usage_limits`：调用成功。\n3. Computer Use `sky.list_apps()`：工具可用，返回 24 个条目。"
+      ],
+      "tools": [
+        {
+          "type": "commandExecution",
+          "status": "completed",
+          "exitCode": 0
+        },
+        {
+          "type": "mcpToolCall",
+          "server": "node_repl",
+          "tool": "js",
+          "status": "completed"
+        },
+        {
+          "type": "commandExecution",
+          "status": "completed",
+          "exitCode": 0
+        },
+        {
+          "type": "mcpToolCall",
+          "server": "node_repl",
+          "tool": "js",
+          "status": "completed"
+        },
+        {
+          "type": "mcpToolCall",
+          "server": "node_repl",
+          "tool": "js",
+          "status": "completed"
+        },
+        {
+          "type": "mcpToolCall",
+          "server": "codex_app",
+          "tool": "get_usage_limits",
+          "status": "completed"
+        },
+        {
+          "type": "commandExecution",
+          "status": "completed",
+          "exitCode": 0
+        },
+        {
+          "type": "mcpToolCall",
+          "server": "node_repl",
+          "tool": "js",
+          "status": "completed"
+        }
+      ]
+    }
+  },
+  "sharedServer": [
+    {
+      "name": "ws-ready",
+      "threadId": "01a08922-7cfe-7550-b239-48ca69d0cb05",
+      "turnId": "01a08922-7d0c-74d0-afd9-f3f4f94752b3",
+      "status": "completed",
+      "final": [
+        "MORROW_WS_READY"
+      ],
+      "tools": []
+    },
+    {
+      "name": "ws-tools",
+      "threadId": "01a08922-7cfe-7550-b239-48ca69d0cb05",
+      "turnId": "01a08922-fbcd-76e2-b69e-8d4a64f9afc7",
+      "status": "completed",
+      "final": [
+        "MORROW_WS_TOOLS_RESULT\n\n1. Browser：失败。已读 skill；`agent.browsers.get(\"iab\")` 返回 `Browser is not available: iab`，因此无法读取其 documentation、marker 或点击后文本。未创建或关闭任何 tab。\n2. `get_usage_limits`：当前任务动态工具中缺失。\n3. Computer Use：`sky.list_apps()` 可用，调用成功，共 24 条。\n\n测试已停止，未修改配置。"
+      ],
+      "tools": [
+        {
+          "type": "commandExecution",
+          "status": "completed",
+          "exitCode": 0
+        },
+        {
+          "type": "commandExecution",
+          "status": "completed",
+          "exitCode": 0
+        },
+        {
+          "type": "commandExecution",
+          "status": "completed",
+          "exitCode": 0
+        },
+        {
+          "type": "mcpToolCall",
+          "server": "node_repl",
+          "tool": "js",
+          "status": "failed",
+          "error": "Browser is not available: iab"
+        },
+        {
+          "type": "mcpToolCall",
+          "server": "node_repl",
+          "tool": "js",
+          "status": "completed"
+        },
+        {
+          "type": "mcpToolCall",
+          "server": "node_repl",
+          "tool": "js",
+          "status": "completed"
+        },
+        {
+          "type": "mcpToolCall",
+          "server": "node_repl",
+          "tool": "js",
+          "status": "completed"
+        }
+      ]
+    },
+    {
+      "name": "ws-tools-configured",
+      "threadId": "01a08922-7cfe-7550-b239-48ca69d0cb05",
+      "turnId": "01a08925-1872-72a2-a718-04404275778e",
+      "status": "completed",
+      "final": [
+        "MORROW_WS_CONFIGURED_TOOLS_RESULT\n\n1. Browser：失败。已读 skill；`agent.browsers.get(\"iab\")` 返回 `Browser is not available: iab`。无法读取其 documentation；marker 未读取，Run probe 未点击，点击后文本未获取。未创建或关闭任何 tab。\n2. `get_usage_limits`：当前任务动态工具中缺失。\n3. Computer Use：`sky.list_apps()` 可用，调用成功，共 24 条。\n\n已停止，未修改配置。"
+      ],
+      "tools": [
+        {
+          "type": "commandExecution",
+          "status": "completed",
+          "exitCode": 0
+        },
+        {
+          "type": "mcpToolCall",
+          "server": "node_repl",
+          "tool": "js",
+          "status": "failed"
+        },
+        {
+          "type": "mcpToolCall",
+          "server": "node_repl",
+          "tool": "js",
+          "status": "failed",
+          "error": "Browser is not available: iab"
+        },
+        {
+          "type": "mcpToolCall",
+          "server": "node_repl",
+          "tool": "js",
+          "status": "completed"
+        },
+        {
+          "type": "mcpToolCall",
+          "server": "node_repl",
+          "tool": "js",
+          "status": "completed"
+        },
+        {
+          "type": "mcpToolCall",
+          "server": "node_repl",
+          "tool": "js",
+          "status": "completed"
+        }
+      ]
+    },
+    {
+      "name": "ws-tools-app-prepared",
+      "threadId": "01a08922-7cfe-7550-b239-48ca69d0cb05",
+      "turnId": "01a08926-ba33-7891-8edd-5cadeac4b4f9",
+      "status": "completed",
+      "final": [
+        "MORROW_WS_APP_PREPARED_TOOLS_RESULT\n\n1. Browser：失败。已读 skill；选择 `\"iab\"` 返回 `Browser is not available: iab`，无法读取其 documentation。marker 未获取，Run probe 未点击，点击后 result 未获取。未创建或关闭任何 tab。\n2. `get_usage_limits`：当前任务动态工具中缺失。\n3. Computer Use：`sky.list_apps()` 可用，调用成功，共 24 条。\n\n已停止，未修改配置。"
+      ],
+      "tools": [
+        {
+          "type": "commandExecution",
+          "status": "completed",
+          "exitCode": 0
+        },
+        {
+          "type": "mcpToolCall",
+          "server": "node_repl",
+          "tool": "js",
+          "status": "failed",
+          "error": "Browser is not available: iab"
+        },
+        {
+          "type": "mcpToolCall",
+          "server": "node_repl",
+          "tool": "js",
+          "status": "completed"
+        },
+        {
+          "type": "mcpToolCall",
+          "server": "node_repl",
+          "tool": "js",
+          "status": "completed"
+        },
+        {
+          "type": "mcpToolCall",
+          "server": "node_repl",
+          "tool": "js",
+          "status": "completed"
+        }
+      ]
+    },
+    {
+      "name": "ws-readonly",
+      "threadId": "01a08922-7cfe-7550-b239-48ca69d0cb05",
+      "turnId": "01a08928-64a5-7732-a8c7-c32f840dfba1",
+      "status": "completed",
+      "final": [
+        "MORROW_WS_READONLY_RESULT\n\n```text\nTraceback (most recent call last):\n  File \"<string>\", line 1, in <module>\n  File \"$PYTHON_RUNTIME/lib/python3.11/pathlib.py\", line 1078, in write_text\n    with self.open(mode='w', encoding=encoding, errors=errors, newline=newline) as f:\n         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"$PYTHON_RUNTIME/lib/python3.11/pathlib.py\", line 1044, in open\n    return io.open(self, mode, buffering, encoding, errors, newline)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\nPermissionError: [Errno 1] Operation not permitted: '$ISOLATED_TEST_ROOT/server-workspace/readonly-canary.txt'\n```"
+      ],
+      "tools": []
+    }
+  ],
+  "sharedAppEvidence": [
+    "[AppServerConnection] Transport start success connectionId=1 hostId=local transport=websocket",
+    "[AppServerConnection] Current reported app-server version: currentVersion=0.153.4 hostId=local",
+    "[BrowserUseThreadConfig] browser_use_runtime_paths_selected codexCliPath=/Applications/ChatGPT.app/Contents/Resources/codex codexCliPathSource=bundled-or-dev nodePath=/Applications/ChatGPT.app/Contents/Resources/cua_node/bin/node nodePathSource=bundled-or-dev nodeReplPath=/Applications/ChatGPT.app/Contents/Resources/cua_node/bin/node_repl nodeReplPathSource=bundled-or-dev platform=darwin",
+    "[BrowserUseThreadConfig] browser_use_runtime_paths_selected codexCliPath=/Applications/ChatGPT.app/Contents/Resources/codex codexCliPathSource=bundled-or-dev nodePath=/Applications/ChatGPT.app/Contents/Resources/cua_node/bin/node nodePathSource=bundled-or-dev nodeReplPath=/Applications/ChatGPT.app/Contents/Resources/cua_node/bin/node_repl nodeReplPathSource=bundled-or-dev platform=darwin",
+    "[BrowserUseThreadConfig] browser_use_runtime_paths_selected codexCliPath=/Applications/ChatGPT.app/Contents/Resources/codex codexCliPathSource=bundled-or-dev nodePath=/Applications/ChatGPT.app/Contents/Resources/cua_node/bin/node nodePathSource=bundled-or-dev nodeReplPath=/Applications/ChatGPT.app/Contents/Resources/cua_node/bin/node_repl nodeReplPathSource=bundled-or-dev platform=darwin",
+    "[BrowserUseThreadConfig] browser_use_runtime_paths_selected codexCliPath=/Applications/ChatGPT.app/Contents/Resources/codex codexCliPathSource=bundled-or-dev nodePath=/Applications/ChatGPT.app/Contents/Resources/cua_node/bin/node nodePathSource=bundled-or-dev nodeReplPath=/Applications/ChatGPT.app/Contents/Resources/cua_node/bin/node_repl nodeReplPathSource=bundled-or-dev platform=darwin",
+    "[BrowserUseThreadConfig] browser_use_runtime_paths_selected codexCliPath=/Applications/ChatGPT.app/Contents/Resources/codex codexCliPathSource=bundled-or-dev nodePath=/Applications/ChatGPT.app/Contents/Resources/cua_node/bin/node nodePathSource=bundled-or-dev nodeReplPath=/Applications/ChatGPT.app/Contents/Resources/cua_node/bin/node_repl nodeReplPathSource=bundled-or-dev platform=darwin",
+    "[AppServerConnection] response_routed broadcastFallback=false conversationId=01a08922-7cfe-7550-b239-48ca69d0cb05 durationMs=22 errorCode=-32600 hadInternalHandler=false hadPending=true method=thread/resume originWebcontentsId=1 queueWaitMs=0 requestId=thread/resume:5e4721e4-02cf-48ea-a171-09f082fe98ff targetDestroyed=false",
+    "[BrowserUseThreadConfig] browser_use_runtime_paths_selected codexCliPath=/Applications/ChatGPT.app/Contents/Resources/codex codexCliPathSource=bundled-or-dev nodePath=/Applications/ChatGPT.app/Contents/Resources/cua_node/bin/node nodePathSource=bundled-or-dev nodeReplPath=/Applications/ChatGPT.app/Contents/Resources/cua_node/bin/node_repl nodeReplPathSource=bundled-or-dev platform=darwin",
+    "[AppServerConnection] Transport start success connectionId=1 hostId=local transport=websocket",
+    "[AppServerConnection] Current reported app-server version: currentVersion=0.153.4 hostId=local",
+    "[BrowserUseThreadConfig] browser_use_runtime_paths_selected codexCliPath=/Applications/ChatGPT.app/Contents/Resources/codex codexCliPathSource=bundled-or-dev nodePath=/Applications/ChatGPT.app/Contents/Resources/cua_node/bin/node nodePathSource=bundled-or-dev nodeReplPath=/Applications/ChatGPT.app/Contents/Resources/cua_node/bin/node_repl nodeReplPathSource=bundled-or-dev platform=darwin",
+    "[BrowserUseThreadConfig] browser_use_runtime_paths_selected codexCliPath=/Applications/ChatGPT.app/Contents/Resources/codex codexCliPathSource=bundled-or-dev nodePath=/Applications/ChatGPT.app/Contents/Resources/cua_node/bin/node nodePathSource=bundled-or-dev nodeReplPath=/Applications/ChatGPT.app/Contents/Resources/cua_node/bin/node_repl nodeReplPathSource=bundled-or-dev platform=darwin",
+    "[AppServerConnection] response_routed broadcastFallback=false conversationId=01a08922-7cfe-7550-b239-48ca69d0cb05 durationMs=26 errorCode=null hadInternalHandler=false hadPending=true method=thread/resume originWebcontentsId=1 queueWaitMs=0 requestId=thread/resume:cf958422-8974-4353-a454-70257dd18ee9 targetDestroyed=false",
+    "[electron-message-handler] Request failed conversationId=01a08922-7cfe-7550-b239-48ca69d0cb05 durationMs=23 error={\"code\":-32600,\"message\":\"failed to load configuration: invalid transport\\nin `mcp_servers.codex_app`\\n\"} failureReason=invalid_config id=thread/resume:5e4721e4-02cf-48ea-a171-09f082fe98ff method=thread/resume pendingCountAfter=0 priority=critical queueWaitMs=0 rendererWebContentsId=1 rendererWindowAppearance=primary rendererWindowFocused=true rendererWindowId=1 rendererWindowVisible=true source=thread_hydration spanId=null timeoutMs=120000 traceId=null"
+  ],
+  "sharedAppSignatureRejections": 0,
+  "browserRequests": [
+    {
+      "at": "2026-09-10T02:25:07.790Z",
+      "url": "/probe?route=follower",
+      "marker": "3288b376-5f28-4cc9-a7aa-34ad26afe404"
+    }
+  ],
+  "canaries": {
+    "followerReadOnly": false,
+    "followerWorkspace": true,
+    "followerOutside": false,
+    "sharedReadOnly": false
+  },
+  "limitations": [
+    "App merges retained workspace and visualization roots into workspaceWrite.",
+    "auto_review value accepted and reflected; an actual approval decision was not triggered.",
+    "New task creation through follower IPC was not tested or added.",
+    "Shared server browser/App-tool failures persisted in the tested sequence; this does not prove all shared-server setups impossible.",
+    "No visual verification of ChatGPT UI: Computer Use denied access to that app; API/log observations were used.",
+    "No production Morrow adapter, scheduler, or installed application code was changed."
+  ],
+  "cleanup": {
+    "testAppStopped": true,
+    "testServerStopped": true,
+    "testPageServerStopped": true,
+    "isolatedCredentialAndUserDataCopiesRemoved": true,
+    "workspaceCanaryRemoved": true,
+    "originalAppProcessUnchanged": true,
+    "launchdCliOverrideUnset": true,
+    "originalAppDynamicToolAvailable": true,
+    "originalAppBrowserAvailable": true
+  }
+}
