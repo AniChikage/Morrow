@@ -4,7 +4,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { fileURLToPath } from 'node:url';
 import { join } from 'node:path';
 import { sourceVersion } from '../../service/source-version.ts';
-import { qualityChecks, ruleVerdict, scalar, valueAt } from '../../service/measurement.ts';
+import { evidenceData, qualityChecks, ruleVerdict, scalar, valueAt } from '../../service/measurement.ts';
 import type { CallRecord, Labels, TimelineRecord } from './scenario.ts';
 import type { Evidence, FeedbackWatch, Release } from '../../service/autonomy-types.ts';
 import type { Expectation, StrategyDecision } from '../../service/strategy-types.ts';
@@ -521,11 +521,12 @@ function eligibleSample(decision: StrategyDecision, expected: Expectation, row: 
 // Evaluate each observation at its own collection time. Later samples and wall
 // clock passage must not change the first valid violation in an old review.
 function sampleResult(decision: StrategyDecision, expected: Expectation, row: Evidence, evidence: Evidence[]) {
-  let value = pointerValue(row.data, expected.rule!.pointer);
+  const data = evidenceData(row);
+  let value = pointerValue(data, expected.rule!.pointer);
   let usable = scalar(value);
   const plan = expected.measurement;
   if (plan) {
-    usable &&= qualityChecks(plan, row.data, row.observedAt).every((check) => check.status === 'passed');
+    usable &&= qualityChecks(plan, data, row.observedAt).every((check) => check.status === 'passed');
     let baselineValue: unknown;
     if ('evidenceId' in plan.baseline) {
       const baselineId = plan.baseline.evidenceId;
@@ -535,8 +536,8 @@ function sampleResult(decision: StrategyDecision, expected: Expectation, row: Ev
         matchesSource(expected, baseline) &&
         Date.parse(baseline.createdAt) <= Date.parse(decision.createdAt) &&
         Date.parse(baseline.observedAt) <= Date.parse(decision.createdAt) &&
-        qualityChecks(plan, baseline.data, decision.createdAt).every((check) => check.status === 'passed');
-      if (valid) baselineValue = pointerValue(baseline.data, expected.rule!.pointer);
+        qualityChecks(plan, evidenceData(baseline), decision.createdAt).every((check) => check.status === 'passed');
+      if (valid) baselineValue = pointerValue(evidenceData(baseline), expected.rule!.pointer);
       usable &&= !!valid && scalar(baselineValue);
     }
     if (plan.comparison === 'delta') {
@@ -552,13 +553,6 @@ function sampleResult(decision: StrategyDecision, expected: Expectation, row: Ev
 }
 
 export function pointerValue(data: unknown, pointer: string): unknown {
-  if (typeof data === 'string') {
-    try {
-      data = JSON.parse(data);
-    } catch {
-      return undefined;
-    }
-  }
   return valueAt(data, pointer);
 }
 

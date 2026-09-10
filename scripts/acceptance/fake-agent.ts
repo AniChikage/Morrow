@@ -1,5 +1,6 @@
 import { writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { valueAt } from '../../service/measurement.ts';
 import { nextBlock } from '../../tests/harness/scripted-native.ts';
 import type {
   PolicyExpectation,
@@ -297,20 +298,7 @@ async function latestFor(turn: TurnContext, state: Snapshot, decision: any, expe
 }
 
 function pointerValue(data: unknown, pointer: string): unknown {
-  if (typeof data === 'string') {
-    try {
-      data = JSON.parse(data);
-    } catch {
-      return undefined;
-    }
-  }
-  let current: any = data;
-  for (const raw of pointer.split('/').slice(1)) {
-    const key = raw.replaceAll('~1', '/').replaceAll('~0', '~');
-    if (current === null || typeof current !== 'object') return undefined;
-    current = Array.isArray(current) ? current[Number(key)] : current[key];
-  }
-  return current;
+  return valueAt(data, pointer);
 }
 
 function ruleVerdict(rule: { operator: string; expected: unknown }, value: unknown): 'met' | 'not_met' | 'unknown' {

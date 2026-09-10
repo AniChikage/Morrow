@@ -9,6 +9,7 @@ import type { NativeSnapshot, NativeTransport } from './native-conversations.ts'
 import { nativeTurns } from './native-conversations.ts';
 import { now } from './store.ts';
 import { sourceVersion } from './source-version.ts';
+import { evidenceData } from './measurement.ts';
 import type { Verification, Finalization } from './verification-types.ts';
 
 const hash = (v: unknown) =>
@@ -222,7 +223,7 @@ export class WorkVerification {
             `预期 ${expected.id} 尚不能证明达标：${observation.issues.join('；') || '按原基线比较后未达标'}；先补齐观测或修正方法，再请求独立复核`
           );
       } else if (expected.rule) {
-        const value = evaluation.ruleValue(expected, latest.data),
+        const value = evaluation.ruleValue(expected, evidenceData(latest)),
           rule = expected.rule;
         const met =
           rule.operator === 'equals'

@@ -58,6 +58,19 @@ function fixture() {
 }
 const latency = (minutes: number) => ({ reactions: 1, minMinutes: minutes, maxMinutes: minutes, meanMinutes: minutes });
 
+test('encoded objects in parsed observations cannot supply a metric, baseline or quality fields', () => {
+  const f = fixture();
+  for (const evidence of [
+    [f.baseline, { ...f.first, data: JSON.stringify(f.first.data) }],
+    [{ ...f.baseline, data: JSON.stringify(f.baseline.data) }, f.first],
+  ]) {
+    const metrics = f.compute(evidence);
+    assert.notEqual(metrics.goalOutcome, 'unknown');
+    if (metrics.goalOutcome !== 'unknown') assert.equal(metrics.goalOutcome.verdict, 'unknown');
+    assert.equal(metrics.adjustmentLatency, 'unknown');
+  }
+});
+
 test('delta outcomes use the frozen baseline and later evidence cannot rewrite historical latency', () => {
   const f = fixture();
   const original = f.compute([f.baseline, f.first]);

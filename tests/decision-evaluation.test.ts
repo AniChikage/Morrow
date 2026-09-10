@@ -9,6 +9,36 @@ import { startIsolated, type IsolatedService } from './harness/service.ts';
 import { grantFor } from './harness/grant.ts';
 import { startReceiver } from './harness/receiver.ts';
 const future = () => new Date(Date.now() + 3600000).toISOString();
+test('encoded observation objects cannot invent measurement quality fields', async () => {
+  const s = await fixture();
+  const receiver = await startReceiver({ feedback: () => JSON.stringify(sample({ completion: 0.9 })) });
+  try {
+    const watch = await s.call('watch.create', {
+      title: '字符串测量',
+      url: receiver.url + '/metrics',
+      pointer: '',
+      condition: 'changed',
+      deadline: future(),
+    });
+    const d = await s.call('decision.choose', {
+      ...s.input,
+      expectations: [
+        {
+          ...measured(s, { unavailable: '先核对数据形态' }),
+          source: { kind: 'watch', watchId: watch.id },
+        },
+      ],
+    });
+    await s.engine.loop.poll(watch.id);
+    const observation = (await s.call('observation.read', { decisionId: d.id })).observations[0];
+    assert.equal(observation.verdict, 'unknown');
+    assert(observation.checks.every((check: any) => check.status === 'unknown'));
+    await s.call('verification.request', { decisionId: d.id, evidenceIds: [observation.evidenceId] }, 409);
+  } finally {
+    await receiver.close();
+    await s.cleanup();
+  }
+});
 async function fixture() {
   const s = await startIsolated({
     project: { name: '反馈核对隔离夹具', goal: '提高交付完成率，同时保持交付内容完整' },

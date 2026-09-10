@@ -50,6 +50,18 @@ export function ruleVerdict(rule: ScalarRule, value: unknown): 'met' | 'not_met'
     ? 'met'
     : 'not_met';
 }
+/** File captures hold raw bytes as text; watch/HTTP observations already hold the parsed value.
+ * Existing origin/watchId provenance also distinguishes old records without rewriting their data. */
+export function evidenceData(evidence: Pick<Evidence, 'origin' | 'watchId' | 'data'>): unknown {
+  if (evidence.origin === 'file' && !evidence.watchId && typeof evidence.data === 'string') {
+    try {
+      return JSON.parse(evidence.data);
+    } catch {
+      return undefined;
+    }
+  }
+  return evidence.data;
+}
 /** Agent-defined measurement semantics, with bounded mechanical checks on collected data. */
 export function measurementPlan(
   value: unknown,
@@ -98,13 +110,6 @@ export function measurementPlan(
   };
 }
 export function qualityChecks(plan: MeasurementPlan, data: unknown, time: string): MeasurementCheck[] {
-  if (typeof data === 'string') {
-    try {
-      data = JSON.parse(data);
-    } catch {
-      data = undefined;
-    }
-  }
   const timestamp = valueAt(data, plan.freshness.pointer),
     parsed =
       typeof timestamp === 'string' && /^\d{4}-\d\d-\d\dT.*(?:Z|[+-]\d\d:\d\d)$/.test(timestamp)

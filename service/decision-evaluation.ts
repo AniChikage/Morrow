@@ -13,7 +13,15 @@ import type {
   Understanding,
 } from './strategy-types.ts';
 import { sourceVersion } from './source-version.ts';
-import { measurementPlan, qualityChecks, ruleVerdict, scalar, scalarRule, valueAt } from './measurement.ts';
+import {
+  evidenceData,
+  measurementPlan,
+  qualityChecks,
+  ruleVerdict,
+  scalar,
+  scalarRule,
+  valueAt,
+} from './measurement.ts';
 
 const text = (value: unknown, field: string, max = 3000) => string(value, field, max);
 function timestamp(value: unknown, field: string) {
@@ -136,13 +144,6 @@ export class DecisionEvaluation {
     return !!position && position.n > (decision.evidenceCursor ?? 0) && evidence.createdAt >= decision.createdAt;
   }
   ruleValue(expected: Expectation, data: unknown) {
-    if (typeof data === 'string') {
-      try {
-        data = JSON.parse(data);
-      } catch {
-        return undefined;
-      }
-    }
     const value = valueAt(data, expected.rule?.pointer ?? '');
     return scalar(value) ? value : undefined;
   }
@@ -183,9 +184,10 @@ export class DecisionEvaluation {
         : undefined;
     if ('evidenceId' in plan.baseline) result.baselineEvidenceId = plan.baseline.evidenceId;
     if (baseline) {
-      const value = this.ruleValue(expected, baseline.data);
+      const data = evidenceData(baseline);
+      const value = this.ruleValue(expected, data);
       result.baselineValue = value ?? null;
-      const checks = qualityChecks(plan, baseline.data, decision.createdAt);
+      const checks = qualityChecks(plan, data, decision.createdAt);
       if (
         checks.some((c) => c.status !== 'passed') ||
         !scalar(value) ||
@@ -208,9 +210,10 @@ export class DecisionEvaluation {
         result.issues.push(`观测来源不可用：${watch?.error || '观察已停止或缺失'}`);
     }
     if (record) {
+      const data = evidenceData(record);
       result.evidenceId = record.id;
-      result.observedValue = this.ruleValue(expected, record.data) ?? null;
-      result.checks = qualityChecks(plan, record.data, time);
+      result.observedValue = this.ruleValue(expected, data) ?? null;
+      result.checks = qualityChecks(plan, data, time);
       result.issues.push(
         ...result.checks
           .filter((c) => c.status !== 'passed')
@@ -317,7 +320,7 @@ export class DecisionEvaluation {
       }
       if (expected.rule && !expected.measurement) {
         const record = latest || evidence.at(-1)!;
-        const observed = this.ruleValue(expected, record.data),
+        const observed = this.ruleValue(expected, evidenceData(record)),
           r = expected.rule;
         let executionUsable = record.origin !== 'execution';
         if (record.origin === 'execution')
