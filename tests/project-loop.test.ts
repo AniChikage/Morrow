@@ -103,7 +103,8 @@ test('review retains old referenced evidence and native context offers scoped fu
     const view = await s.api('GET', `/api/projects/${s.project.id}/work`);
     assert(view.evidence.some((row: any) => row.id === s.evidence.id));
     assert(view.releases.some((row: any) => row.id === release.id));
-    const original = 'full evidence\n'.repeat(300);
+    // Content alone must exceed 5000: short release TMPDIR paths add less row metadata.
+    const original = 'full evidence\n'.repeat(600);
     writeFileSync(join(s.path, 'long.log'), original);
     const long = await s.call('evidence.capture', { itemId: s.feature.id, summary: '完整证据', path: 'long.log' });
     // The write response is a receipt: provenance, digest and size, never the captured bytes.
