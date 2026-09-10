@@ -5,6 +5,7 @@ import userEvent from '@testing-library/user-event';
 import { RuntimesView } from './RuntimesView';
 import { featureProps, snapshot } from './testFixtures';
 import { formatResetTime } from '../components/format';
+import { previewAPI } from '../state/preview';
 import type { ConnectionInfo, NativeConnectionStatus, Runtime } from '../../shared/types';
 
 afterEach(cleanup);
@@ -108,6 +109,27 @@ test('the checklist marks the first unmet step and names installing, then openin
   expect(step('App 已连接')).toBe('next');
   expect(nextStep().textContent).toBe('下一步打开 Codex App');
   expect(screen.queryByRole('button', { name: /启用后台连接|撤销设置/ })).toBeNull();
+});
+
+test('preview installation status stays unknown and shows the preview explanation', async () => {
+  const { props, api } = runtimeProps();
+  const previewStatus = await previewAPI().getNativeStatus();
+  api.getNativeStatus.mockResolvedValue(previewStatus);
+  render(<RuntimesView {...props} />);
+  await checklist();
+  expect(step('Codex App 安装状态未知')).toBe('next');
+  expect(nextStep().textContent).toContain(previewStatus.detail);
+  expect(screen.queryByText('安装并登录 Codex App')).toBeNull();
+});
+
+test('missing installation metadata does not hide a confirmed App connection', async () => {
+  const { props, api } = runtimeProps();
+  api.getNativeStatus.mockResolvedValue(status({ connected: true, appInstalled: undefined }));
+  render(<RuntimesView {...props} />);
+  await checklist();
+  expect(step('Codex App 已安装')).toBe('done');
+  expect(step('任务已关联')).toBe('next');
+  expect(screen.getByRole('button', { name: '去关联任务' })).toBeTruthy();
 });
 
 test('a connected App guides task association without enabling a launcher', async () => {

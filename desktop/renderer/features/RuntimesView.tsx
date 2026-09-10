@@ -20,10 +20,14 @@ function detection(runtime: Runtime) {
   if (runtime.available) return { label: '已检测到', className: 'detected' };
   return runtime.path ? { label: '需检查', className: 'attention' } : { label: '未检测到', className: '' };
 }
-/** The four facts that must hold, in order, before Morrow can create and resume App tasks by itself. */
+/** The four facts needed to continue work in an associated App task. */
 function connectionSteps(native: NativeConnectionStatus) {
   return [
-    { label: 'Codex App 已安装', done: !!native.appInstalled || native.connected, version: native.appVersion },
+    {
+      label: native.appInstalled === undefined && !native.connected ? 'Codex App 安装状态未知' : 'Codex App 已安装',
+      done: !!native.appInstalled || native.connected,
+      version: native.appVersion,
+    },
     { label: 'App 已连接', done: native.connected },
     { label: '任务已关联', done: (native.boundThreadCount ?? 0) > 0 },
     { label: '关联任务可用', done: (native.readyThreadCount ?? 0) > 0 && !native.restartRequired },
@@ -51,7 +55,14 @@ function AppChecklist({
   const pending = steps.findIndex((step) => !step.done);
   let next: ReactNode;
   if (native.restartRequired) next = <span>旧转接设置已撤销；当前任务结束后重开 Codex App，再重新检测。</span>;
-  else if (pending === 0) next = <span>安装并登录 Codex App</span>;
+  else if (pending === 0)
+    next = (
+      <span>
+        {native.appInstalled === false
+          ? '安装并登录 Codex App'
+          : native.detail || '无法确认安装状态，请在 Morrow 桌面应用中重新检测。'}
+      </span>
+    );
   else if (pending === 1) next = <span>打开 Codex App</span>;
   else if (pending === 2)
     next = (
