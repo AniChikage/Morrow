@@ -1,0 +1,143 @@
+.channel-log-status {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 20px;
+  padding: 12px 24px;
+  border-bottom: 1px solid var(--line);
+  font-size: 11px;
+  color: var(--muted);
+}
+.channel-log-status strong {
+  color: var(--text);
+  font-weight: 550;
+  flex-basis: 100%;
+}
+.channel-log-scroll {
+  padding: 20px 28px 36px;
+}
+.channel-log-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin: 12px 0 4px;
+}
+.channel-log-heading h2,
+.channel-needs h2 {
+  font-size: 13px;
+  font-weight: 600;
+  margin: 0 0 8px;
+}
+.channel-needs {
+  padding-bottom: 18px;
+  border-bottom: 1px solid var(--line);
+}
+.channel-needs .channel-question {
+  margin: 8px 0 12px;
+}
+.channel-log-entry {
+  max-width: 850px;
+  padding: 20px 0;
+  border-bottom: 1px solid var(--line);
+}
+.channel-log-entry > header {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 16px;
+  color: var(--muted);
+  font-size: 11px;
+}
+.channel-log-entry h3 {
+  font-size: 15px;
+  line-height: 1.5;
+  margin: 12px 0 4px;
+  font-weight: 550;
+}
+.channel-log-entry h4 {
+  font-size: 11px;
+  color: var(--muted);
+  font-weight: 550;
+  margin: 12px 0 5px;
+}
+.channel-log-entry p {
+  margin: 4px 0;
+  font-size: 12px;
+  line-height: 1.7;
+  overflow-wrap: anywhere;
+}
+.log-reason {
+  color: var(--muted);
+}
+.log-commands,
+.log-outputs {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  font-size: 11px;
+}
+.log-commands li {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 4px 0;
+}
+.log-commands code {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.log-commands span {
+  flex-shrink: 0;
+  color: var(--muted);
+}
+.log-outputs li {
+  display: flex;
+  gap: 10px;
+  padding: 3px 0;
+}
+.log-outputs li > span:first-child {
+  color: var(--muted);
+  flex-shrink: 0;
+  min-width: 48px;
+}
+.log-outputs button,
+.channel-needs li button {
+  border: 0;
+  background: none;
+  padding: 0;
+  text-align: left;
+  color: inherit;
+  cursor: pointer;
+}
+.log-outputs button:hover,
+.channel-needs li button:hover {
+  text-decoration: underline;
+}
+.channel-log-entry > details {
+  margin-top: 12px;
+  font-size: 11px;
+  color: var(--muted);
+}
+.channel-log summary {
+  cursor: pointer;
+}
+.channel-log pre {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-size: 11px;
+  max-height: 320px;
+  overflow: auto;
+}
+.channel-audit {
+  margin-top: 24px;
+  font-size: 11px;
+}
+.channel-link-task {
+  padding: 10px 24px;
+  font-size: 12px;
+  border-bottom: 1px solid var(--line);
+}
+.channel-link-task select {
+  margin: 8px;
+  max-width: 260px;
+}

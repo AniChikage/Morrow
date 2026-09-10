@@ -592,16 +592,24 @@ describe('native App conversation', () => {
     render(<ChannelView {...props} id="channel-system" />, { wrapper: TestProviders });
     expect(screen.getByText(state.channels[0].goal)).toBeTruthy();
     expect(screen.queryByRole('tab')).toBeNull();
-    expect(screen.queryByText('每日上限')).toBeNull();
     expect(screen.queryByRole('button', { name: '运行一次' })).toBeNull();
-    await screen.findByText('先关联 Codex App 任务');
-    expect((screen.getByRole('button', { name: '开始工作' }) as HTMLButtonElement).disabled).toBe(true);
-    await user.click(screen.getByRole('button', { name: '在 App 中创建任务' }));
+    expect((screen.getByRole('button', { name: '继续工作' }) as HTMLButtonElement).disabled).toBe(true);
+    await user.click(screen.getByRole('button', { name: '在 Codex App 中打开对话' }));
     expect(api.createNativeThread).not.toHaveBeenCalled();
     expect(api.channelAction).not.toHaveBeenCalled();
     expect(api.openNativeApp).toHaveBeenCalledWith('channel-system');
-    await user.click(screen.getByRole('button', { name: '工作详情' }));
-    expect(screen.getByRole('tab', { name: '运行记录 0' })).toBeTruthy();
+    await user.click(screen.getByText('关联 App 任务'));
+    vi.mocked(props.api.listNativeThreads).mockResolvedValue({
+      status: unbound.status,
+      threads: [{ id: 'existing', title: '已创建的任务', cwd: '/tmp/atlas', status: 'idle' }],
+    });
+    api.bindNativeThread.mockResolvedValue(conversation());
+    await user.click(screen.getByRole('button', { name: '读取已有任务' }));
+    await screen.findByRole('option', { name: '已创建的任务' });
+    await user.selectOptions(screen.getByRole('combobox', { name: '已有 App 任务' }), 'existing');
+    await user.click(screen.getByRole('button', { name: '关联选中任务' }));
+    expect(api.bindNativeThread).toHaveBeenCalledWith('channel-system', 'existing');
+    expect(screen.queryByRole('textbox')).toBeNull();
   });
   it('groups tool activity behind one disclosure while keeping Codex progress visible', async () => {
     const tool = (id: string) => ({
@@ -633,78 +641,22 @@ describe('native App conversation', () => {
     await userEvent.setup().click(screen.getByText('继续工作 · 已准备项目上下文'));
     expect(screen.getByText('full context from project')).toBeTruthy();
   });
-  it('shares the native composer across conversation and activity tabs and never submits bound chat as a legacy note', async () => {
-    const user = userEvent.setup();
+  it('keeps linked channels on the work log and hands conversation back to Codex App', async () => {
     const state = snapshot();
     state.projects[0].isDemo = false;
     const { props, api } = featureProps({ snapshot: state });
-    vi.mocked(props.api.getNativeConversation).mockResolvedValue(
-      conversation({ channelId: 'channel-system', lastSyncedAt: undefined })
-    );
-    render(<ChannelView {...props} id="channel-system" />, { wrapper: TestProviders });
-    expect(screen.queryByRole('button', { name: '运行一次' })).toBeNull();
-    await user.click(screen.getByRole('button', { name: '工作详情' }));
-    expect(screen.getByRole('tab', { name: '原生对话' }).getAttribute('aria-selected')).toBe('true');
-    expect((screen.getByRole('button', { name: '开始工作' }) as HTMLButtonElement).disabled).toBe(true);
-    expect(screen.queryByRole('textbox', { name: '向频道补充上下文' })).toBeNull();
-    await screen.findByText('正在同步');
     vi.mocked(props.api.getNativeConversation).mockResolvedValue(conversation());
-    api.sendNativeMessage.mockResolvedValue({ state: 'accepted', requestId: 'native-receipt' });
-    fireEvent.focus(window);
+    render(<ChannelView {...props} id="channel-system" />, { wrapper: TestProviders });
+    expect(screen.getByRole('heading', { name: '工作日志' })).toBeTruthy();
+    expect(screen.queryByRole('textbox')).toBeNull();
+    expect(screen.queryByRole('tab')).toBeNull();
+    expect(screen.queryByText('App 中已有的回复')).toBeNull();
     await waitFor(() =>
-      expect((screen.getByRole('button', { name: '开始工作' }) as HTMLButtonElement).disabled).toBe(false)
+      expect((screen.getByRole('button', { name: '继续工作' }) as HTMLButtonElement).disabled).toBe(false)
     );
-    fireEvent.change(screen.getByRole('textbox', { name: '发送到 Codex App 原生对话' }), {
-      target: { value: '  动态页的指令\n保留原文  ' },
-    });
-    await user.click(screen.getByRole('tab', { name: '动态' }));
-    expect(screen.queryByRole('textbox', { name: '向频道补充上下文' })).toBeNull();
-    const editor = screen.getByRole('textbox', { name: '发送到 Codex App 原生对话' });
-    expect((editor as HTMLTextAreaElement).value).toBe('  动态页的指令\n保留原文  ');
-    expect(screen.getAllByRole('textbox')).toHaveLength(1);
-    fireEvent.keyDown(editor, { key: 'Enter', metaKey: true });
-    await waitFor(() =>
-      expect(api.sendNativeMessage).toHaveBeenCalledWith('channel-system', {
-        text: '  动态页的指令\n保留原文  ',
-        requestId: expect.any(String),
-      })
-    );
-    await waitFor(() =>
-      expect(screen.getByRole('tab', { name: '原生对话' }).getAttribute('aria-selected')).toBe('true')
-    );
-    expect((screen.getByRole('textbox', { name: '发送到 Codex App 原生对话' }) as HTMLTextAreaElement).value).toBe('');
-    expect(api.sendMessage).not.toHaveBeenCalled();
-    expect(screen.queryByRole('button', { name: '在原生 CLI 中继续' })).toBeNull();
-    await user.click(screen.getByRole('button', { name: '在 Codex App 中继续' }));
+    await userEvent.setup().click(screen.getByRole('button', { name: '在 Codex App 中打开对话' }));
     expect(api.openNativeApp).toHaveBeenCalledWith('channel-system');
-  });
-
-  it('retains an uncertain native activity send across tabs and reconciles its original request without a second legacy submission', async () => {
-    const user = userEvent.setup();
-    const state = snapshot();
-    state.projects[0].isDemo = false;
-    const { props, api } = featureProps({ snapshot: state });
-    vi.mocked(props.api.getNativeConversation).mockResolvedValue(conversation());
-    api.sendNativeMessage
-      .mockResolvedValueOnce({ state: 'unknown', requestId: 'pending' })
-      .mockResolvedValueOnce({ state: 'accepted', requestId: 'confirmed' });
-    render(<ChannelView {...props} id="channel-system" />, { wrapper: TestProviders });
-    await user.click(screen.getByRole('button', { name: '工作详情' }));
-    await screen.findByText('已同步');
-    await user.click(screen.getByRole('tab', { name: '动态' }));
-    fireEvent.change(screen.getByRole('textbox', { name: '发送到 Codex App 原生对话' }), {
-      target: { value: '只发送一次' },
-    });
-    await user.click(screen.getByRole('button', { name: '发送到 Codex App' }));
-    await screen.findByText('消息的接收状态尚未确认');
-    await user.click(screen.getByRole('tab', { name: '原生对话' }));
-    await user.click(screen.getByRole('tab', { name: '动态' }));
-    expect((screen.getByRole('textbox', { name: '发送到 Codex App 原生对话' }) as HTMLTextAreaElement).value).toBe(
-      '只发送一次'
-    );
-    await user.click(screen.getByRole('button', { name: '核对发送结果' }));
-    await waitFor(() => expect(api.sendNativeMessage).toHaveBeenCalledTimes(2));
-    expect(api.sendNativeMessage.mock.calls[1]).toEqual(api.sendNativeMessage.mock.calls[0]);
+    expect(api.sendNativeMessage).not.toHaveBeenCalled();
     expect(api.sendMessage).not.toHaveBeenCalled();
   });
 });

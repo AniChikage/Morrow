@@ -32,6 +32,7 @@ import type { Channel, Project, ProjectBriefRevision, Run, WorkItem } from './pr
 import { now, Store } from './store.ts';
 import { Engine } from './engine.ts';
 import { eventHistory, runHistory, runOutput } from './event-history.ts';
+import { runLog } from './run-log.ts';
 import { discoverRuntimes } from './runtimes.ts';
 import { NativeConversations } from './native-conversations.ts';
 import type { NativeTransport } from './native-conversations.ts';
@@ -298,7 +299,7 @@ export async function startServer(
         else {
           const result = store.get('results', run.id);
           respond(res, 200, {
-            run,
+            run: { ...run, log: runLog(store, run, true) },
             prompt: store.runText(run.id, 'prompt'),
             finalOutput: store.runText(run.id, 'final'),
             ...(result ? { report: result.result } : {}),

@@ -1,3 +1,4 @@
+import { runLog } from './run-log.ts';
 import { APIError } from './protocol.ts';
 import type { Event, Run, RunIO, WorkItem } from './protocol.ts';
 import type { Store } from './store.ts';
@@ -67,7 +68,8 @@ export function runHistory(store: Store, params: URLSearchParams) {
     if (!run || (projectId && run.projectId !== projectId) || (channelId && run.channelId !== channelId))
       throw new APIError(404, '运行游标不属于查询范围或不存在');
   }
-  return store.runPage({ projectId, channelId, before, after, limit: queryLimit(params) });
+  const page = store.runPage({ projectId, channelId, before, after, limit: queryLimit(params) });
+  return channelId ? { ...page, runs: page.runs.map((run) => ({ ...run, log: runLog(store, run) })) } : page;
 }
 export function runOutput(store: Store, runId: string, params: URLSearchParams) {
   if (!store.get('runs', runId)) throw new APIError(404, '运行记录不存在');

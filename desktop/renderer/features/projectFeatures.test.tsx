@@ -362,8 +362,8 @@ describe('channels are execution sources, not separate boards', () => {
   it('keeps channel activity and run history and navigates to the single project board', async () => {
     const { props } = featureProps();
     render(<ChannelView {...props} id="channel-system" />, { wrapper: TestProviders });
-    expect(screen.getByRole('tab', { name: '动态' })).toBeTruthy();
-    expect(screen.getByRole('tab', { name: /运行记录/ })).toBeTruthy();
+    expect(screen.getByRole('heading', { name: '工作日志' })).toBeTruthy();
+    expect(screen.queryByRole('tab')).toBeNull();
     expect(screen.queryByRole('tab', { name: /发现|功能/ })).toBeNull();
     await userEvent.setup().click(screen.getByRole('button', { name: '项目功能看板' }));
     expect(props.onNavigate).toHaveBeenCalledWith({ kind: 'project', id: 'project-atlas' });
@@ -401,10 +401,10 @@ describe('channels are execution sources, not separate boards', () => {
     ];
     const { props, api } = featureProps({ snapshot: state });
     render(<ChannelView {...props} id="channel-system" />, { wrapper: TestProviders });
-    const handoff = screen.getByRole('button', { name: '在原生 CLI 中继续' }) as HTMLButtonElement;
+    const handoff = screen.getByRole('button', { name: '在 Codex App 中打开对话' }) as HTMLButtonElement;
     expect(handoff.disabled).toBe(true);
-    expect(handoff.title).toContain('已停止支持');
-    expect(screen.getByRole('tab', { name: '运行记录 1' })).toBeTruthy();
+    expect(screen.getByRole('note').textContent).toContain('已停止支持');
+    expect(screen.getByRole('article', { name: /轮次/ })).toBeTruthy();
     expect(api.openNativeSession).not.toHaveBeenCalled();
   });
 });

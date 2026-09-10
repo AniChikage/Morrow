@@ -162,6 +162,7 @@ export interface WorkItem {
   updatedAt: string;
 }
 export interface Run {
+  log?: import('../../service/run-log').RunLog;
   projectId?: string;
   model?: string;
   permission?: Channel['permission'] | 'native';

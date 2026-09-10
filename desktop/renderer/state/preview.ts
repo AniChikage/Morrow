@@ -5,6 +5,7 @@ import type {
   ConnectionInfo,
   WorkspaceEvent,
   RunOutputChunk,
+  Run,
   Settings,
 } from '../../shared/types';
 const createdAt = '2026-09-06T14:47:00.000Z';
@@ -166,7 +167,7 @@ snapshot.items.forEach((item, index) =>
 );
 snapshot.projects[0].runtime = 'codex';
 snapshot.events.forEach((event) => (event.projectId = 'demo-atlas'));
-const demoRun = {
+const demoRun: Run = {
   id: 'demo-run-001',
   projectId: 'demo-atlas',
   channelId: 'demo-system',
@@ -176,6 +177,38 @@ const demoRun = {
   finishedAt: '2026-09-06T14:49:00.000Z',
   summary: '[示例运行] 已检查空状态的改进方案。',
   sessionId: 'demo-native-session',
+  usage: { attribution: 'estimated', delta: { weekly: 0.1 } },
+  log: {
+    work: channels[0].work,
+    direction: channels[0].goal,
+    files: ['[示例] src/feedback/EmptyState.tsx'],
+    commands: [
+      {
+        id: 'demo-check',
+        command: '[示例] npm run test:ui',
+        status: 'completed',
+        exitCode: 0,
+        sealed: false,
+        output: '[示例] 12 项通过',
+      },
+    ],
+    outputs: [
+      { id: 'demo-001', itemId: 'demo-001', kind: '看板事项', title: '[示例] 空状态缺少下一步指引' },
+      { id: 'demo-evidence', kind: '证据', title: '[示例] 空状态页面截图与入口走查' },
+      { id: 'demo-decision', kind: '判断', title: '[示例] 先确认导入优先级，再验证入口' },
+      { id: 'demo-review', kind: '独立复核', title: '[示例] 尚未申请' },
+    ],
+    activity: [
+      {
+        id: 'demo-tool',
+        type: '[示例] commandExecution',
+        input: 'npm run test:ui',
+        output: '[示例] 12 项通过',
+        text: '',
+      },
+    ],
+    truncated: false,
+  },
   model: '',
   permission: 'read-only' as const,
   trigger: 'manual' as const,

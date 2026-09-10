@@ -146,11 +146,13 @@ describe('a channel held by the usage gate says so wherever its status is shown'
       channel.usageWait = { kind: 'reserve', window: '5h', resetsAt, since: timestamp };
     }
     const demo = render(<ChannelView {...props} id="channel-system" />, { wrapper: TestProviders });
-    expect(within(screen.getByRole('banner')).getByText(label)).toBeTruthy();
+    expect(within(screen.getByRole('heading', { name: '系统完善' }).parentElement!).getByText(label)).toBeTruthy();
     expect(screen.getByText('状态').parentElement!.textContent).toContain(label);
     demo.unmount();
     render(<ChannelView {...props} id="channel-other" />, { wrapper: TestProviders });
-    await waitFor(() => expect(within(screen.getByRole('banner')).getByText(label)).toBeTruthy());
+    await waitFor(() =>
+      expect(within(document.querySelector('.channel-title') as HTMLElement).getByText(label)).toBeTruthy()
+    );
     expect(screen.queryByText('已安排下一步')).toBeNull();
   });
 });

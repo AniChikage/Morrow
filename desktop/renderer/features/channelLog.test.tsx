@@ -1,0 +1,169 @@
+// @vitest-environment jsdom
+import { afterEach, expect, it, vi } from 'vitest';
+import { act, cleanup, render, screen, waitFor, within } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
+import { ChannelView } from './ChannelView';
+import { featureProps, snapshot, TestProviders, timestamp } from './testFixtures';
+import type { Run, RunsPage } from '../../shared/types';
+
+afterEach(() => {
+  cleanup();
+  vi.restoreAllMocks();
+});
+const round = (id: string, patch: Partial<Run> = {}): Run => ({
+  id,
+  channelId: 'channel-system',
+  projectId: 'project-atlas',
+  runtime: 'codex',
+  status: 'completed',
+  startedAt: timestamp,
+  finishedAt: '2026-09-07T02:02:00.000Z',
+  sessionId: 'thread',
+  summary: '原话默认折叠',
+  usage: { attribution: 'estimated', delta: { weekly: 0.2 } },
+  log: {
+    work: { state: 'wait', focus: `关注 ${id}`, reason: '已有证据，等待报告', nextStep: '检查下一份报告' },
+    commands: [{ id: 'check', command: 'npm test', status: 'completed', exitCode: 0, sealed: true, output: 'ok' }],
+    files: ['src/import.ts'],
+    outputs: [{ id: 'finding-import', itemId: 'finding-import', kind: '看板事项', title: '修复导入' }],
+    truncated: false,
+  },
+  ...patch,
+});
+it('renders a structured round and opens raw activity only on expansion for demo and linked channels', async () => {
+  for (const demo of [true, false]) {
+    const state = snapshot();
+    state.projects[0].isDemo = demo;
+    const run = round('one');
+    const { props, api } = featureProps({ snapshot: state });
+    vi.mocked(props.api.getRuns).mockResolvedValue({ runs: [run], hasMore: false });
+    api.getRun.mockResolvedValue({
+      run: {
+        ...run,
+        log: {
+          ...run.log!,
+          activity: [{ id: 'native', type: 'mcpToolCall', input: '工具参数', output: '工具结果', text: '' }],
+        },
+      },
+      prompt: '',
+      finalOutput: '完整的 Codex 原话',
+    });
+    render(<ChannelView {...props} id="channel-system" />, { wrapper: TestProviders });
+    const entry = within(await screen.findByRole('article', { name: /轮次/ }));
+    for (const text of [
+      '关注 one',
+      '已有证据，等待报告',
+      'src/import.ts',
+      'npm test',
+      '退出 0',
+      '修复导入',
+      '检查下一份报告',
+      '120 秒',
+      '每周 估算 0.2%',
+    ])
+      expect(entry.getByText(text)).toBeTruthy();
+    expect(screen.queryByRole('textbox')).toBeNull();
+    expect(screen.queryByRole('tab')).toBeNull();
+    expect(screen.queryByRole('region', { name: '需要你' })).toBeNull();
+    expect(api.getRun).not.toHaveBeenCalled();
+    expect(screen.queryByText('完整的 Codex 原话')).toBeNull();
+    await userEvent.setup().click(entry.getByText('原生工具活动与 Codex 原话'));
+    expect(await screen.findByText('完整的 Codex 原话')).toBeTruthy();
+    await userEvent.setup().click(screen.getByText('mcpToolCall'));
+    expect(screen.getByText('工具结果')).toBeTruthy();
+    await userEvent.setup().click(entry.getByText('修复导入'));
+    expect(props.onNavigate).toHaveBeenCalledWith({ kind: 'finding', id: 'finding-import' });
+    cleanup();
+  }
+});
+it('keeps historical work distinct from the channel current focus and renders honest missing fields', async () => {
+  const state = snapshot();
+  state.channels[0].work = {
+    state: 'continue',
+    focus: '当前关注',
+    reason: '当前理由',
+    nextStep: '继续',
+    runId: 'current',
+    updatedAt: timestamp,
+    awaitingReply: false,
+  };
+  const { props, api } = featureProps({ snapshot: state });
+  vi.mocked(props.api.getRuns).mockResolvedValue({
+    runs: [round('old'), round('missing', { log: undefined, usage: undefined })],
+    hasMore: false,
+  });
+  render(<ChannelView {...props} id="channel-system" />, { wrapper: TestProviders });
+  expect(await screen.findByText('关注 old')).toBeTruthy();
+  expect(screen.getByText('未记录本轮关注点')).toBeTruthy();
+  expect(screen.getByText('额度消耗未记录')).toBeTruthy();
+  for (const entry of screen.getAllByRole('article', { name: /轮次/ }))
+    expect(entry.textContent).not.toContain('当前关注');
+});
+it('merges older run pages once, orders newest first, preserves content after failure and retries the same cursor', async () => {
+  const { props, api } = featureProps();
+  const recent = round('recent', { startedAt: '2026-09-08T00:00:00Z' }),
+    old = round('old');
+  vi.mocked(props.api.getRuns)
+    .mockResolvedValueOnce({ runs: [recent], hasMore: true, cursor: recent.id })
+    .mockRejectedValueOnce(new Error('历史读取失败'))
+    .mockResolvedValueOnce({ runs: [old, recent], hasMore: false });
+  render(<ChannelView {...props} id="channel-system" />, { wrapper: TestProviders });
+  await userEvent.setup().click(await screen.findByRole('button', { name: '加载更早轮次' }));
+  expect((await screen.findByRole('alert')).textContent).toContain('历史读取失败');
+  expect(screen.getByText('关注 recent')).toBeTruthy();
+  await userEvent.setup().click(screen.getByRole('button', { name: '重试轮次' }));
+  await screen.findByText('关注 old');
+  expect(api.getRuns).toHaveBeenLastCalledWith({ channelId: 'channel-system', limit: 20, before: 'recent' });
+  expect(screen.getAllByRole('article', { name: /轮次/ }).map((e) => e.querySelector('h3')!.textContent)).toEqual([
+    '关注 recent',
+    '关注 old',
+  ]);
+});
+it('rejects late run responses across channel changes, including switching away and back', async () => {
+  const { props, api } = featureProps();
+  let resolve!: (value: RunsPage) => void;
+  vi.mocked(props.api.getRuns)
+    .mockImplementationOnce(
+      () =>
+        new Promise((r) => {
+          resolve = r;
+        })
+    )
+    .mockResolvedValueOnce({ runs: [], hasMore: false })
+    .mockResolvedValueOnce({ runs: [round('fresh')], hasMore: false });
+  const view = render(<ChannelView {...props} id="channel-system" />, { wrapper: TestProviders });
+  view.rerender(<ChannelView {...props} id="channel-growth" />);
+  view.rerender(<ChannelView {...props} id="channel-system" />);
+  await screen.findByText('关注 fresh');
+  await act(async () => resolve({ runs: [round('stale')], hasMore: true, cursor: 'stale' }));
+  expect(screen.queryByText('关注 stale')).toBeNull();
+  expect(screen.queryByRole('button', { name: '加载更早轮次' })).toBeNull();
+});
+it('shows only this channel pending releases and blocked items in 需要你', async () => {
+  const state = snapshot();
+  state.items[0].status = 'blocked';
+  state.releases = [
+    {
+      id: 'pending',
+      projectId: 'project-atlas',
+      channelId: 'channel-system',
+      status: 'awaiting_approval',
+      itemIds: [],
+      title: '候选版本',
+    },
+    {
+      id: 'other',
+      projectId: 'project-atlas',
+      channelId: 'channel-growth',
+      status: 'awaiting_approval',
+      itemIds: [],
+      title: '别的频道发布',
+    },
+  ] as any;
+  const { props } = featureProps({ snapshot: state });
+  render(<ChannelView {...props} id="channel-system" />, { wrapper: TestProviders });
+  const needs = within(screen.getByRole('region', { name: '需要你' }));
+  expect(needs.getByText('待批准发布 · 候选版本')).toBeTruthy();
+  expect(needs.getByRole('button', { name: /被阻塞/ })).toBeTruthy();
+  expect(needs.queryByText('待批准发布 · 别的频道发布')).toBeNull();
+});

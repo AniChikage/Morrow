@@ -84,7 +84,7 @@ describe('the Codex question card on the channel page', () => {
     expect(content.getByText('CSV 导入').tagName).toBe('STRONG');
     expect(content.getByText('如果两者都要，先做哪个？')).toBeTruthy();
     expect(content.getByText(formatDate(timestamp))).toBeTruthy();
-    expect(screen.getByText('等你指导')).toBeTruthy();
+    expect(screen.getAllByText('等你回答')[0]).toBeTruthy();
     expect(screen.queryByText('需要你指导')).toBeNull();
     expect(document.querySelector('.channel-next-step')).toBeNull();
     const replied = withChannel(state, {
@@ -117,8 +117,6 @@ describe('the Codex question card on the channel page', () => {
     const user = userEvent.setup();
     const { api } = renderChannel();
     const input = await usableBox();
-    await user.click(screen.getByRole('button', { name: '工作详情' }));
-    await user.click(screen.getByRole('tab', { name: '运行记录 0' }));
     await user.type(input, '  先做 CSV 导入  ');
     await user.click(answerButton());
     await waitFor(() =>
@@ -130,7 +128,7 @@ describe('the Codex question card on the channel page', () => {
     expect(await screen.findByText('已回答，Codex 将继续')).toBeTruthy();
     expect(screen.queryByRole('textbox', { name: boxName })).toBeNull();
     expect(screen.queryByRole('button', { name: '回答' })).toBeNull();
-    expect(screen.getByRole('tab', { name: '运行记录 0' }).getAttribute('aria-selected')).toBe('true');
+    expect(screen.getByRole('heading', { name: '工作日志' })).toBeTruthy();
     expect(api.sendMessage).not.toHaveBeenCalled();
     expect(api.channelAction).not.toHaveBeenCalled();
   });
@@ -241,14 +239,12 @@ describe('the Codex question card on the channel page', () => {
     expect(document.activeElement).not.toBe(input);
   });
 
-  it('switches back to the conversation from 查看完整回复', async () => {
+  it('opens Codex App from 查看完整回复', async () => {
     const user = userEvent.setup();
-    renderChannel();
-    await user.click(screen.getByRole('button', { name: '工作详情' }));
-    await user.click(screen.getByRole('tab', { name: '运行记录 0' }));
-    expect(screen.getByRole('tab', { name: '运行记录 0' }).getAttribute('aria-selected')).toBe('true');
+    const { api } = renderChannel();
+    expect(screen.getByRole('heading', { name: '工作日志' })).toBeTruthy();
     await user.click(screen.getByRole('button', { name: '查看完整回复' }));
-    expect(screen.getByRole('tab', { name: '原生对话' }).getAttribute('aria-selected')).toBe('true');
+    expect(api.openNativeApp).toHaveBeenCalledWith('channel-system');
   });
 });
 

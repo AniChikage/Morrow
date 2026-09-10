@@ -5,6 +5,7 @@ import userEvent from '@testing-library/user-event';
 import { ProjectView } from './ProjectView';
 import { FindingView } from './FindingView';
 import { ChannelView } from './ChannelView';
+import { ChannelAudit } from './ChannelAudit';
 import { ProjectRecords } from './ProjectRecords';
 import { event, featureProps, item, snapshot, TestProviders } from './testFixtures';
 import type { EventsPage } from '../../shared/types';
@@ -101,17 +102,13 @@ describe('full finding view', () => {
 });
 
 describe('channel control and history', () => {
-  it('blocks demo execution but lets the user save a note without launching an agent', async () => {
-    const user = userEvent.setup();
+  it('keeps demo channels read-only without a second conversation composer', async () => {
     const { props, api } = featureProps();
     render(<ChannelView {...props} id="channel-system" />, { wrapper: TestProviders });
-    expect((screen.getByRole('button', { name: '运行一次' }) as HTMLButtonElement).disabled).toBe(true);
-    expect((screen.getByRole('button', { name: '开启持续运行' }) as HTMLButtonElement).disabled).toBe(true);
-    const notes = screen.getByRole('textbox', { name: '向频道补充上下文' });
-    await user.type(notes, '  下一轮先检查导入边界  ');
-    fireEvent.keyDown(notes, { key: 'Enter', metaKey: true });
-    await waitFor(() => expect(api.sendMessage).toHaveBeenCalledWith('channel-system', '下一轮先检查导入边界'));
-    await waitFor(() => expect((notes as HTMLTextAreaElement).value).toBe(''));
+    expect(screen.getByRole('heading', { name: '工作日志' })).toBeTruthy();
+    expect(screen.queryByRole('textbox')).toBeNull();
+    expect((screen.getByRole('button', { name: '在 Codex App 中打开对话' }) as HTMLButtonElement).disabled).toBe(true);
+    expect(api.sendMessage).not.toHaveBeenCalled();
     expect(api.channelAction).not.toHaveBeenCalled();
   });
 
@@ -125,13 +122,13 @@ describe('channel control and history', () => {
     const { props, api } = featureProps({ snapshot: state });
     api.getEvents.mockResolvedValueOnce({ events: [event('legacy-history', '旧运行时留下的记录')], hasMore: false });
     const view = render(<ChannelView {...props} id="channel-system" />, { wrapper: TestProviders });
+    await user.click(screen.getByText('频道审计记录'));
     await screen.findByText('旧运行时留下的记录');
     expect(screen.getByRole('note').textContent).toContain('已停止支持');
     expect(screen.getAllByText('Claude Code（已停止支持）').length).toBeGreaterThan(0);
-    expect((screen.getByRole('button', { name: '运行一次' }) as HTMLButtonElement).disabled).toBe(true);
-    expect((screen.getByRole('button', { name: '在原生 CLI 中继续' }) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByRole('button', { name: '在 Codex App 中打开对话' }) as HTMLButtonElement).disabled).toBe(true);
     expect(screen.queryByRole('textbox', { name: '向频道补充上下文' })).toBeNull();
-    await user.click(screen.getByRole('button', { name: '暂停频道' }));
+    await user.click(screen.getByRole('button', { name: '暂停' }));
     expect(api.channelAction).toHaveBeenLastCalledWith('channel-system', 'pause');
     const pausedState = {
       ...state,
@@ -140,25 +137,10 @@ describe('channel control and history', () => {
       ),
     };
     view.rerender(<ChannelView {...props} snapshot={pausedState} id="channel-system" />);
-    expect((screen.getByRole('button', { name: '开启持续运行' }) as HTMLButtonElement).disabled).toBe(true);
-    expect((screen.getByRole('button', { name: '运行一次' }) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByRole('button', { name: '继续工作' }) as HTMLButtonElement).disabled).toBe(true);
     expect(screen.getByText('旧运行时留下的记录')).toBeTruthy();
     expect(api.channelAction).toHaveBeenCalledTimes(1);
     expect(api.openNativeSession).not.toHaveBeenCalled();
-  });
-
-  it('preserves an unsent note when the mutation fails', async () => {
-    const user = userEvent.setup();
-    const { props, api } = featureProps();
-    api.sendMessage.mockRejectedValueOnce(new Error('服务不可用'));
-    render(<ChannelView {...props} id="channel-system" />, { wrapper: TestProviders });
-    const notes = screen.getByRole('textbox', { name: '向频道补充上下文' });
-    await user.type(notes, '保留这段上下文');
-    await user.click(screen.getByRole('button', { name: /发送消息/ }));
-    await waitFor(() => expect(api.sendMessage).toHaveBeenCalledTimes(1));
-    await waitFor(() => expect(props.onMutate).toHaveResolvedWith(false));
-    expect((notes as HTMLTextAreaElement).value).toBe('保留这段上下文');
-    expect(api.channelAction).not.toHaveBeenCalled();
   });
 
   it('uses an event ID cursor, merges older pages without duplicates, and orders equal timestamps by sequence', async () => {
@@ -178,7 +160,7 @@ describe('channel control and history', () => {
       ],
       hasMore: false,
     });
-    render(<ChannelView {...props} id="channel-system" />, { wrapper: TestProviders });
+    render(<ChannelAudit {...props} id="channel-system" />, { wrapper: TestProviders });
     await userEvent.setup().click(await screen.findByRole('button', { name: '加载更早记录' }));
     await screen.findByText('第一条记录');
     expect(api.getEvents).toHaveBeenNthCalledWith(1, { channelId: 'channel-system', limit: 60 });
@@ -206,7 +188,7 @@ describe('channel control and history', () => {
     api.getEvents
       .mockRejectedValueOnce(new Error('远程历史接口暂不可用'))
       .mockResolvedValueOnce({ events: [event('recovered-old', '重试恢复的历史记录')], hasMore: false });
-    render(<ChannelView {...props} id="channel-system" />, { wrapper: TestProviders });
+    render(<ChannelAudit {...props} id="channel-system" />, { wrapper: TestProviders });
     await userEvent.setup().click(await screen.findByRole('button', { name: '加载更早记录' }));
     expect((await screen.findByRole('alert')).textContent).toContain('远程历史接口暂不可用');
     expect(screen.getByText('已经存在的运行结果')).toBeTruthy();
@@ -235,8 +217,8 @@ describe('channel control and history', () => {
       hasMore: true,
       cursor: 'growth-current',
     });
-    const view = render(<ChannelView {...props} id="channel-system" />, { wrapper: TestProviders });
-    view.rerender(<ChannelView {...props} id="channel-growth" />);
+    const view = render(<ChannelAudit {...props} id="channel-system" />, { wrapper: TestProviders });
+    view.rerender(<ChannelAudit {...props} id="channel-growth" />);
     await act(async () => resolvePage({ events: [event('old-system', '迟到的系统频道记录')], hasMore: false }));
     expect(screen.getByText('运营频道当前记录')).toBeTruthy();
     expect(screen.queryByText('迟到的系统频道记录')).toBeNull();
@@ -248,7 +230,7 @@ describe('channel control and history', () => {
     state.events = [event('unrelated', '其他频道的近期记录', 1, { channelId: 'channel-growth' })];
     const { props, api } = featureProps({ snapshot: state });
     api.getEvents.mockResolvedValueOnce({ events: [event('archived-event', '快照范围外的频道历史')], hasMore: false });
-    render(<ChannelView {...props} id="channel-system" />, { wrapper: TestProviders });
+    render(<ChannelAudit {...props} id="channel-system" />, { wrapper: TestProviders });
     expect(await screen.findByText('快照范围外的频道历史')).toBeTruthy();
     expect(api.getEvents).toHaveBeenCalledWith({ channelId: 'channel-system', limit: 60 });
     expect(screen.queryByText('频道还没有动态')).toBeNull();
@@ -260,7 +242,7 @@ describe('channel control and history', () => {
     api.getEvents
       .mockRejectedValueOnce(new Error('持久化历史读取失败'))
       .mockResolvedValueOnce({ events: [event('recovered', '恢复读取的历史')], hasMore: false });
-    render(<ChannelView {...props} id="channel-system" />, { wrapper: TestProviders });
+    render(<ChannelAudit {...props} id="channel-system" />, { wrapper: TestProviders });
     expect((await screen.findByRole('alert')).textContent).toContain('持久化历史读取失败');
     expect(screen.queryByText('频道还没有动态')).toBeNull();
     await userEvent.setup().click(screen.getByRole('button', { name: '重试' }));
@@ -281,9 +263,9 @@ describe('channel control and history', () => {
       )
       .mockResolvedValueOnce({ events: [], hasMore: false })
       .mockResolvedValueOnce({ events: [event('fresh-generation', '重新进入后的最新记录')], hasMore: false });
-    const view = render(<ChannelView {...props} id="channel-system" />, { wrapper: TestProviders });
-    view.rerender(<ChannelView {...props} id="channel-growth" />);
-    view.rerender(<ChannelView {...props} id="channel-system" />);
+    const view = render(<ChannelAudit {...props} id="channel-system" />, { wrapper: TestProviders });
+    view.rerender(<ChannelAudit {...props} id="channel-growth" />);
+    view.rerender(<ChannelAudit {...props} id="channel-system" />);
     await screen.findByText('重新进入后的最新记录');
     await act(async () =>
       resolveFirst({ events: [event('stale-generation', '上一代迟到记录')], hasMore: true, cursor: 'stale-generation' })
@@ -312,7 +294,7 @@ describe('database history controls the loaded range', () => {
         .mockResolvedValueOnce({ events: nextPage, hasMore: true, cursor: nextPage[0].id });
       const draw = (nextSnapshot = state) =>
         scope === 'channel' ? (
-          <ChannelView {...props} snapshot={nextSnapshot} id="channel-system" />
+          <ChannelAudit {...props} snapshot={nextSnapshot} id="channel-system" />
         ) : (
           <ProjectRecords {...props} snapshot={nextSnapshot} projectId="project-atlas" />
         );
@@ -359,7 +341,7 @@ describe('database history controls the loaded range', () => {
         .mockResolvedValueOnce({ events: [recent], hasMore: true });
       render(
         scope === 'channel' ? (
-          <ChannelView {...props} id="channel-system" />
+          <ChannelAudit {...props} id="channel-system" />
         ) : (
           <ProjectRecords {...props} projectId="project-atlas" />
         ),
