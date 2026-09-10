@@ -115,14 +115,14 @@ export class WorkVerification {
           .slice()
           .reverse()
           .sort((a, b) => b.createdAt.localeCompare(a.createdAt))) {
-          const key =
-            row.kind === 'release'
-              ? `release:${itemIdsOf(row.itemIds).join(',')}`
-              : row.itemId
-                ? `item:${row.itemId}`
-                : row.decisionId
-                  ? `decision:${row.decisionId}`
-                  : `channel:${row.channelId}`;
+          // Recent/pinned release reviews remain selected above and older ones remain pageable.
+          // Their distinct item sets must not consume the extra slots reserved for quiet subjects.
+          if (row.kind === 'release') continue;
+          const key = row.itemId
+            ? `item:${row.itemId}`
+            : row.decisionId
+              ? `decision:${row.decisionId}`
+              : `channel:${row.channelId}`;
           if (!latest.has(key)) latest.set(key, row);
         }
         [...latest.values()].slice(0, 30).forEach((row) => selected.add(row.id));

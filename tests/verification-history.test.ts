@@ -138,3 +138,65 @@ test('more than thirty independent subjects remain reachable beyond the bounded 
     await s.cleanup();
   }
 });
+
+test('release review groups cannot evict quiet item reviews from the first page', async () => {
+  const s = await startIsolated();
+  try {
+    const itemA = randomUUID(),
+      itemB = randomUUID();
+    for (const id of [itemA, itemB])
+      s.store.put('items', { id, projectId: s.project.id, channelId: s.channel.id, title: id, status: 'open' });
+    const quiet = {
+      id: randomUUID(),
+      projectId: s.project.id,
+      channelId: s.channel.id,
+      itemId: itemA,
+      runId: 'run',
+      status: 'passed',
+      summary: '低频事项',
+      evidenceIds: [],
+      subjectHash: 'old',
+      version: { digest: 'old' },
+      findings: [],
+      checks: [],
+      limitations: [],
+      createdAt: '2026-09-10T00:00:00Z',
+    };
+    s.store.put('loop_verifications', quiet);
+    const releases = Array.from({ length: 35 }, (_, i) => ({
+      ...quiet,
+      id: randomUUID(),
+      itemId: undefined,
+      kind: 'release',
+      itemIds: [itemB, randomUUID()],
+      createdAt: new Date(Date.UTC(2026, 8, 10, 0, i + 1)).toISOString(),
+    }));
+    for (const row of releases) s.store.put('loop_verifications', row);
+    let page = await s.api('GET', `/api/projects/${s.project.id}/work`);
+    assert(page.verifications.some((r: any) => r.id === quiet.id));
+    assert.equal(page.verifications.length, 31);
+    const found = new Set(page.verifications.map((r: any) => r.id));
+    while (page.verificationHistory.hasMore) {
+      page = await s.api(
+        'GET',
+        `/api/projects/${s.project.id}/work?verificationBefore=${page.verificationHistory.cursor}`
+      );
+      assert(page.verifications.length <= 30);
+      page.verifications.forEach((r: any) => found.add(r.id));
+    }
+    assert.equal(found.size, 36);
+    const pinned = s.engine.loop.verification.page(s.project.id, undefined, [releases[0].id], { includeLatest: true });
+    assert(pinned.verifications.some((r) => r.id === quiet.id));
+    assert(pinned.verifications.some((r) => r.id === releases[0].id));
+    const scoped = await s.api('GET', `/api/projects/${s.project.id}/work?itemId=${itemA}`);
+    assert.deepEqual(
+      scoped.verifications.map((r: any) => r.id),
+      [quiet.id]
+    );
+    assert.deepEqual(s.store.get('loop_verifications', quiet.id), quiet);
+    for (const row of releases)
+      assert.deepEqual(s.store.get('loop_verifications', row.id), JSON.parse(JSON.stringify(row)));
+  } finally {
+    await s.cleanup();
+  }
+});
