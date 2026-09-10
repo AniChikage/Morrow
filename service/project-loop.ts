@@ -11,6 +11,7 @@ import {
   fstatSync,
   readSync,
   constants,
+  existsSync,
 } from 'node:fs';
 import { basename, join, relative, isAbsolute, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -393,7 +394,7 @@ export class ProjectWorkLoop {
         'learning.upsert':
           '{id?, revision?, itemId?, kind:outcome|hypothesis|experiment, title, rationale, expectedResult, evaluation, conclusion, status:active|supported|refuted|inconclusive|stopped, evidenceIds:[]}；目标成效、竞争解释与尝试都可记录，结论更新引用新证据。',
         'watch.create':
-          '{itemId?, title, kind?:http|file, url?(http), path?(file), pointer, condition:changed|gte|lte|equals, expected?, intervalSeconds:30..86400, deadline:ISO时间, releaseId?, continuous?:boolean}；省略kind兼容HTTP。file仅接受项目内普通文件，拒绝符号链接；不存在时安静等待；JSON保存原数据及pointer取值，非JSON仅支持空pointer，同一错误只审计一次。默认持续监测；HTTP changed首次仅建基线，file首次出现及内容变化会采集并唤醒。deadline为复查期限；continuous:false为一次性，取消或暂停停止轮询。关联releaseId时上线后采样。不支持command观测。',
+          '{itemId?, title, kind?:http|file, url?(http), path?(file), pointer, condition:changed|gte|lte|equals, expected?, intervalSeconds:30..86400, deadline:ISO时间, releaseId?, continuous?:boolean}；省略kind兼容HTTP。file仅接受项目内普通文件，拒绝符号链接；不存在时安静等待；JSON保存原数据及pointer取值，非JSON仅支持空pointer，同一错误只审计一次。默认持续监测；changed首次仅建基线；file注册时缺失则首次出现唤醒，注册时存在则首次只建基线。file带pointer按选定值比较，空pointer按全文摘要比较，证据digest始终为原字节摘要。deadline为复查期限；continuous:false为一次性，取消或暂停停止轮询。关联releaseId时上线后采样。不支持command观测。',
         'watch.cancel': '{id}；停止已不再有价值的观测。',
         wait: '{watchIds:[], releaseIds:[], deadline:ISO时间, reason}；任一条件满足或截止后唤醒，保持自动工作开关；有独立工作可做时不要等待。',
         'release.propose':
@@ -686,6 +687,7 @@ export class ProjectWorkLoop {
         itemId: item?.id,
         title: text(input.title, 'title', 300),
         ...source,
+        ...(source.kind === 'file' ? { initiallyMissing: !existsSync(source.path) } : {}),
         pointer,
         condition,
         ...(input.expected === undefined ? {} : { expected: input.expected }),
@@ -1037,8 +1039,14 @@ export class ProjectWorkLoop {
       const { data, hash } = sample;
       const value = valueAt(data, watch.pointer);
       if (value === undefined) throw new Error('数据中不存在指定字段');
-      const valueHash = watch.kind === 'file' ? hash : digest(JSON.stringify(value));
-      const changed = watch.lastDigest !== valueHash || !!watch.missing;
+      const valueHash = watch.kind === 'file' && !watch.pointer ? hash : digest(JSON.stringify(value));
+      // Older file watches stored a whole-file digest even with a pointer. Use
+      // their saved value so switching comparison methods does not create a wakeup.
+      const previousDigest =
+        watch.kind === 'file' && watch.pointer && watch.lastDigest && watch.lastValue !== undefined
+          ? digest(JSON.stringify(watch.lastValue))
+          : watch.lastDigest;
+      const changed = previousDigest !== valueHash;
       let evidenceId = watch.lastEvidenceId;
       if (changed || watch.error || this.strategy.needsObservation(watch, data)) {
         const e: Evidence = {
@@ -1067,7 +1075,7 @@ export class ProjectWorkLoop {
       }
       const met =
         watch.condition === 'changed'
-          ? (watch.kind === 'file' || !!watch.lastDigest) && changed
+          ? (!!watch.lastDigest || (watch.kind === 'file' && watch.initiallyMissing === true)) && changed
           : watch.condition === 'equals'
             ? value === watch.expected
             : typeof value === 'number' &&

@@ -58,6 +58,10 @@ test('missing files stay quiet, creation and changes wake waits, unchanged sampl
     assert.equal(s.store.get<any>('loop_waits', s.channel.id).status, 'waiting');
     writeFileSync(join(s.path, '.morrow/metrics.json'), JSON.stringify({ count: 2 }));
     await s.engine.loop.poll(w.id);
+    assert.equal(s.store.all('loop_evidence').length, 2);
+    assert.equal(s.store.get<any>('loop_waits', s.channel.id).status, 'waiting');
+    writeFileSync(join(s.path, '.morrow/metrics.json'), JSON.stringify({ count: 3 }));
+    await s.engine.loop.poll(w.id);
     assert.equal(s.store.all('loop_evidence').length, 3);
     assert.equal(s.store.get<any>('loop_waits', s.channel.id).status, 'ready');
     await s.close();
@@ -120,6 +124,77 @@ test('scheduled file polling respects enabled channels, intervals and cancellati
     writeFileSync(join(s.path, 'metrics.json'), '{"count":3}');
     await tick();
     assert.equal(s.store.all('loop_evidence').length, 2);
+  } finally {
+    await s.cleanup();
+  }
+});
+
+for (const existed of [false, true])
+  test(`first file sample uses existence at registration (existed: ${existed})`, async () => {
+    const s = await startIsolated();
+    try {
+      const { call } = grantFor(s, { projectId: s.project.id, channelId: s.channel.id });
+      const path = join(s.path, 'metrics.json');
+      if (existed) writeFileSync(path, '{"count":1}');
+      const w = await call('watch.create', input());
+      await call('wait', { watchIds: [w.id], releaseIds: [], deadline: future(), reason: '等变化' });
+      if (existed) {
+        // Disappearance before the first read must not rewrite registration history.
+        unlinkSync(path);
+        await s.engine.loop.poll(w.id);
+      }
+      writeFileSync(path, '{"count":1}');
+      await s.engine.loop.poll(w.id);
+      assert.equal(s.store.all('loop_evidence').length, 1);
+      assert.equal(s.store.get<any>('loop_waits', s.channel.id).status, existed ? 'waiting' : 'ready');
+    } finally {
+      await s.cleanup();
+    }
+  });
+
+test('file pointers ignore unrelated timing fields, including a saved pre-fix byte digest', async () => {
+  const s = await startIsolated();
+  try {
+    const { call } = grantFor(s, { projectId: s.project.id, channelId: s.channel.id });
+    const path = join(s.path, 'metrics.json'),
+      raw = '{"count":1,"duration":10}';
+    writeFileSync(path, raw);
+    const w = await call('watch.create', input());
+    await s.engine.loop.poll(w.id);
+    const baseline = s.store.get<any>('loop_watches', w.id);
+    // Existing file-watch rows stored raw-byte digests. Preserve their selected-value baseline.
+    s.store.put('loop_watches', { ...baseline, lastDigest: createHash('sha256').update(raw).digest('hex') });
+    await call('wait', { watchIds: [w.id], releaseIds: [], deadline: future(), reason: '等count变化' });
+    writeFileSync(path, '{"count":1,"duration":99}');
+    await s.engine.loop.poll(w.id);
+    assert.equal(s.store.all('loop_evidence').length, 1);
+    assert.equal(s.store.get<any>('loop_waits', s.channel.id).status, 'waiting');
+    const changed = '{"count":2,"duration":99}';
+    writeFileSync(path, changed);
+    await s.engine.loop.poll(w.id);
+    const evidence = s.store.all<any>('loop_evidence').at(-1);
+    assert.equal(evidence.value, 2);
+    assert.equal(evidence.digest, createHash('sha256').update(changed).digest('hex'));
+    assert.equal(s.store.get<any>('loop_waits', s.channel.id).status, 'ready');
+  } finally {
+    await s.cleanup();
+  }
+});
+
+test('empty file pointers compare full bytes after a quiet existing-file baseline', async () => {
+  const s = await startIsolated();
+  try {
+    const { call } = grantFor(s, { projectId: s.project.id, channelId: s.channel.id });
+    const path = join(s.path, 'metrics.json');
+    writeFileSync(path, '{"count":1}');
+    const w = await call('watch.create', input('metrics.json', ''));
+    await call('wait', { watchIds: [w.id], releaseIds: [], deadline: future(), reason: '等文件变化' });
+    await s.engine.loop.poll(w.id);
+    assert.equal(s.store.get<any>('loop_waits', s.channel.id).status, 'waiting');
+    writeFileSync(path, '{ "count": 1 }');
+    await s.engine.loop.poll(w.id);
+    assert.equal(s.store.all('loop_evidence').length, 2);
+    assert.equal(s.store.get<any>('loop_waits', s.channel.id).status, 'ready');
   } finally {
     await s.cleanup();
   }

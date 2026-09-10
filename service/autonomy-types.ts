@@ -54,6 +54,7 @@ export type FeedbackWatch = {
   lastEvidenceId?: string;
   error?: string;
   missing?: boolean;
+  initiallyMissing?: boolean;
   createdAt: string;
   updatedAt: string;
 } & ({ kind?: 'http'; url: string; path?: never } | { kind: 'file'; path: string; url?: never });
