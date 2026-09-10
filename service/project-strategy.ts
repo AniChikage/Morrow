@@ -259,8 +259,8 @@ export class ProjectStrategy {
     return this.active(watch.projectId).some((row) =>
       row.expectations?.some(
         (expected) =>
-          expected.source.kind === 'watch' &&
-          expected.source.watchId === watch.id &&
+          ((expected.source.kind === 'watch' && expected.source.watchId === watch.id) ||
+            (expected.source.kind === 'file' && watch.kind === 'file' && expected.source.path === watch.path)) &&
           expected.notBefore <= now() &&
           expected.deadline >= now() &&
           (!latest ||

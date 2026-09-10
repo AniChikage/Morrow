@@ -83,7 +83,7 @@ export class DecisionEvaluation {
           watch = this.loop.store.get<FeedbackWatch>('loop_watches', watchId);
         if (watch?.projectId !== scope.projectId) throw new APIError(404, '观察条件不属于当前项目');
         if (watch.status === 'cancelled') throw new APIError(409, '不能使用已取消的观察条件');
-        source = { kind: 'watch', watchId, url: watch.url };
+        source = { kind: 'watch', watchId, ...(watch.kind === 'file' ? { path: watch.path } : { url: watch.url }) };
       }
       const notBefore = input.notBefore === undefined ? createdAt : timestamp(input.notBefore, 'notBefore'),
         deadline = timestamp(input.deadline, 'deadline');
@@ -126,9 +126,9 @@ export class DecisionEvaluation {
       ? evidence.origin === 'file' && evidence.source === expected.source.path
       : expected.source.kind === 'execution'
         ? evidence.origin === 'execution' && evidence.source === expected.source.command
-        : evidence.origin === 'http' &&
+        : evidence.origin === (expected.source.path ? 'file' : 'http') &&
           evidence.watchId === expected.source.watchId &&
-          evidence.source === expected.source.url;
+          evidence.source === (expected.source.path ?? expected.source.url);
   }
   isNew(decision: StrategyDecision, evidence: Evidence) {
     const position = this.loop.store.db.prepare('SELECT rowid AS n FROM loop_evidence WHERE id=?').get(evidence.id) as
@@ -201,6 +201,7 @@ export class DecisionEvaluation {
       if (
         !watch ||
         watch.error ||
+        watch.missing ||
         watch.status === 'cancelled' ||
         (watch.status === 'expired' && watch.continuous === false)
       )

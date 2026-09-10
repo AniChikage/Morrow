@@ -425,7 +425,7 @@ function ExpectationReview({ row, data }: { row: DecisionView; data: ProjectLoop
                   ? expected.source.path
                   : expected.source.kind === 'execution'
                     ? expected.source.command
-                    : expected.source.url}
+                    : (expected.source.path ?? expected.source.url)}
               </p>
               {result && (
                 <>

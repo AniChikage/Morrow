@@ -12,6 +12,8 @@ export type Evidence = {
   data: unknown;
   digest?: string;
   watchId?: string;
+  pointer?: string;
+  value?: unknown;
 };
 export type Learning = {
   id: string;
@@ -38,7 +40,6 @@ export type FeedbackWatch = {
   runId: string;
   itemId?: string;
   title: string;
-  url: string;
   pointer: string;
   condition: 'changed' | 'gte' | 'lte' | 'equals';
   expected?: string | number | boolean;
@@ -52,9 +53,10 @@ export type FeedbackWatch = {
   lastValue?: unknown;
   lastEvidenceId?: string;
   error?: string;
+  missing?: boolean;
   createdAt: string;
   updatedAt: string;
-};
+} & ({ kind?: 'http'; url: string; path?: never } | { kind: 'file'; path: string; url?: never });
 export type Release = {
   id: string;
   projectId: string;

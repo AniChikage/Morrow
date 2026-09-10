@@ -80,7 +80,7 @@ export type Expectation = {
   scope: string;
   source:
     | { kind: 'file'; path: string }
-    | { kind: 'watch'; watchId: string; url: string }
+    | { kind: 'watch'; watchId: string; url?: string; path?: string }
     | { kind: 'execution'; command: string };
   verification: string;
   disconfirm: string;

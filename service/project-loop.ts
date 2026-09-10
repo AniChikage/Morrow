@@ -1,6 +1,18 @@
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
-import { mkdirSync, readFileSync, realpathSync, statSync, writeFileSync } from 'node:fs';
-import { basename, join, relative, isAbsolute } from 'node:path';
+import {
+  mkdirSync,
+  readFileSync,
+  realpathSync,
+  statSync,
+  writeFileSync,
+  lstatSync,
+  openSync,
+  closeSync,
+  fstatSync,
+  readSync,
+  constants,
+} from 'node:fs';
+import { basename, join, relative, isAbsolute, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { APIError, choice, integer, keys, object, string, itemKinds, itemStatuses } from './protocol.ts';
 import type { Channel, Project, Run, WorkItem } from './protocol.ts';
@@ -74,6 +86,67 @@ async function jsonRequest(url: string, init: RequestInit = {}) {
     }
   const raw = Buffer.concat(chunks).toString('utf8');
   return { data: JSON.parse(raw), hash: digest(raw) };
+}
+
+// Missing descendants are allowed at registration. Every existing component is
+// checked again on each poll so a later symlink cannot redirect a file watch.
+function fileWatchPath(projectPath: string, path: unknown) {
+  const root = realpathSync(projectPath),
+    actual = resolve(root, text(path, 'path', 4096));
+  const rel = relative(root, actual);
+  if (!rel || rel === '..' || rel.startsWith('../') || isAbsolute(rel))
+    throw new APIError(403, '观察文件必须位于当前项目内');
+  let current = root;
+  for (const part of rel.split('/')) {
+    current = join(current, part);
+    try {
+      const stat = lstatSync(current);
+      if (stat.isSymbolicLink()) throw new APIError(403, '观察文件路径不能包含符号链接');
+      if (current === actual ? !stat.isFile() : !stat.isDirectory())
+        throw new APIError(400, '观察路径必须指向普通文件');
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') break;
+      throw error;
+    }
+  }
+  return actual;
+}
+
+function readWatchFile(projectPath: string, path: string, pointer: string) {
+  const actual = fileWatchPath(projectPath, path);
+  let fd: number;
+  try {
+    fd = openSync(actual, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return undefined;
+    throw error;
+  }
+  try {
+    const stat = fstatSync(fd);
+    if (!stat.isFile() || stat.size > 512 * 1024) throw new Error('观察文件必须是至多512 KB的普通文件');
+    // Reject a replacement between validation and opening, including ancestor links.
+    fileWatchPath(projectPath, path);
+    const current = lstatSync(actual);
+    if (current.dev !== stat.dev || current.ino !== stat.ino) throw new Error('观察文件在读取时被替换');
+    const buffer = Buffer.alloc(512 * 1024 + 1);
+    let length = 0,
+      count: number;
+    while (length < buffer.length && (count = readSync(fd, buffer, length, buffer.length - length, null)) > 0)
+      length += count;
+    if (length > 512 * 1024) throw new Error('观察文件超过512 KB');
+    const bytes = buffer.subarray(0, length),
+      raw = bytes.toString('utf8');
+    let data: unknown;
+    try {
+      data = JSON.parse(raw);
+    } catch {
+      if (pointer) throw new Error('文件不是 JSON，不能使用 pointer');
+      data = raw;
+    }
+    return { data, hash: digest(bytes) };
+  } finally {
+    closeSync(fd);
+  }
 }
 
 export class ProjectWorkLoop {
@@ -320,7 +393,7 @@ export class ProjectWorkLoop {
         'learning.upsert':
           '{id?, revision?, itemId?, kind:outcome|hypothesis|experiment, title, rationale, expectedResult, evaluation, conclusion, status:active|supported|refuted|inconclusive|stopped, evidenceIds:[]}；目标成效、竞争解释与尝试都可记录，结论更新引用新证据。',
         'watch.create':
-          '{itemId?, title, url, pointer, condition:changed|gte|lte|equals, expected?, intervalSeconds:30..86400, deadline:ISO时间, releaseId?, continuous?:boolean}；默认持续监测，条件满足或到期后仍采集同一字段的新变化并唤醒，直到显式取消或频道暂停。deadline 是复查期限；一次性实验可设置 continuous:false。changed 首次采样只建立基线。关联 releaseId 时上线后采样。',
+          '{itemId?, title, kind?:http|file, url?(http), path?(file), pointer, condition:changed|gte|lte|equals, expected?, intervalSeconds:30..86400, deadline:ISO时间, releaseId?, continuous?:boolean}；省略kind兼容HTTP。file仅接受项目内普通文件，拒绝符号链接；不存在时安静等待；JSON保存原数据及pointer取值，非JSON仅支持空pointer，同一错误只审计一次。默认持续监测；HTTP changed首次仅建基线，file首次出现及内容变化会采集并唤醒。deadline为复查期限；continuous:false为一次性，取消或暂停停止轮询。关联releaseId时上线后采样。不支持command观测。',
         'watch.cancel': '{id}；停止已不再有价值的观测。',
         wait: '{watchIds:[], releaseIds:[], deadline:ISO时间, reason}；任一条件满足或截止后唤醒，保持自动工作开关；有独立工作可做时不要等待。',
         'release.propose':
@@ -567,6 +640,8 @@ export class ProjectWorkLoop {
     }
     if (operation === 'watch.create') {
       keys(input, [
+        'kind',
+        'path',
         'itemId',
         'title',
         'url',
@@ -579,6 +654,11 @@ export class ProjectWorkLoop {
         'continuous',
       ]);
       const item = this.item(scope, input.itemId);
+      const kind = choice(input.kind ?? 'http', 'kind', ['http', 'file'] as const);
+      if (kind === 'file' ? input.url !== undefined : input.path !== undefined)
+        throw new APIError(400, 'file 观察只接受 path，http 观察只接受 url');
+      const source =
+        kind === 'file' ? { kind, path: fileWatchPath(project.path, input.path) } : { kind, url: endpoint(input.url) };
       const pointer = string(input.pointer ?? '', 'pointer', 1000, true);
       valueAt({}, pointer);
       if (input.continuous !== undefined && typeof input.continuous !== 'boolean')
@@ -605,7 +685,7 @@ export class ProjectWorkLoop {
         ...base,
         itemId: item?.id,
         title: text(input.title, 'title', 300),
-        url: endpoint(input.url),
+        ...source,
         pointer,
         condition,
         ...(input.expected === undefined ? {} : { expected: input.expected }),
@@ -938,11 +1018,27 @@ export class ProjectWorkLoop {
     if (watch.releaseId && this.release(watch.releaseId).status !== 'published') return;
     this.inFlight.add(id);
     try {
-      const { data, hash } = await jsonRequest(watch.url);
+      const sample =
+        watch.kind === 'file'
+          ? readWatchFile(this.store.get<Project>('projects', watch.projectId)!.path, watch.path, watch.pointer)
+          : await jsonRequest(watch.url);
+      if (!sample) {
+        const current = this.store.get<FeedbackWatch>('loop_watches', id)!;
+        if (current.status !== 'cancelled')
+          this.store.put('loop_watches', {
+            ...current,
+            missing: true,
+            error: undefined,
+            nextPollAt: new Date(Date.now() + watch.intervalSeconds * 1000).toISOString(),
+            updatedAt: now(),
+          });
+        return;
+      }
+      const { data, hash } = sample;
       const value = valueAt(data, watch.pointer);
       if (value === undefined) throw new Error('数据中不存在指定字段');
-      const valueHash = digest(JSON.stringify(value));
-      const changed = watch.lastDigest !== valueHash;
+      const valueHash = watch.kind === 'file' ? hash : digest(JSON.stringify(value));
+      const changed = watch.lastDigest !== valueHash || !!watch.missing;
       let evidenceId = watch.lastEvidenceId;
       if (changed || watch.error || this.strategy.needsObservation(watch, data)) {
         const e: Evidence = {
@@ -953,10 +1049,11 @@ export class ProjectWorkLoop {
           itemId: watch.itemId,
           watchId: id,
           summary: `${watch.title}：收到实际反馈`,
-          source: watch.url,
+          source: watch.kind === 'file' ? watch.path : watch.url,
           observedAt: now(),
           createdAt: now(),
-          origin: 'http',
+          origin: watch.kind === 'file' ? 'file' : 'http',
+          ...(watch.kind === 'file' ? { pointer: watch.pointer, value } : {}),
           data,
           digest: hash,
         };
@@ -970,7 +1067,7 @@ export class ProjectWorkLoop {
       }
       const met =
         watch.condition === 'changed'
-          ? !!watch.lastDigest && changed
+          ? (watch.kind === 'file' || !!watch.lastDigest) && changed
           : watch.condition === 'equals'
             ? value === watch.expected
             : typeof value === 'number' &&
@@ -984,6 +1081,7 @@ export class ProjectWorkLoop {
         lastDigest: valueHash,
         lastEvidenceId: evidenceId,
         error: undefined,
+        missing: false,
         status: current.status === 'watching' ? (met ? 'triggered' : 'watching') : current.status,
         updatedAt: now(),
         nextPollAt: new Date(Date.now() + watch.intervalSeconds * 1000).toISOString(),
