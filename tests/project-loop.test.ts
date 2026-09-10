@@ -1,85 +1,30 @@
+import './harness/env.ts';
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { randomUUID, createHash } from 'node:crypto';
-import { createServer } from 'node:http';
+import { randomUUID } from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { startServer } from '../service/server.ts';
 import { ProjectWorkLoop } from '../service/project-loop.ts';
-import { FakeReviewer } from './fake-reviewer.ts';
-process.env.MORROW_TEST_MODE = '1';
+import { FakeReviewer } from './harness/fake-reviewer.ts';
+import { startIsolated, type IsolatedService } from './harness/service.ts';
+import { grantFor } from './harness/grant.ts';
+import { startReceiver } from './harness/receiver.ts';
 async function setup() {
-  const root = mkdtempSync(join(tmpdir(), 'morrow-loop-'));
-  const home = join(root, 'home'),
-    path = join(root, 'project');
-  mkdirSync(path);
-  let feedback = { activation: 0.2 };
-  let receipt: any = {};
-  let posts = 0;
-  let responseMode = 'normal';
-  let uploaded = '';
-  const remote = createServer(async (req, res) => {
-    res.setHeader('Content-Type', 'application/json');
-    if (req.method === 'POST') {
-      posts++;
-      let raw = '';
-      for await (const chunk of req) raw += chunk;
-      const data = JSON.parse(raw);
-      uploaded = Buffer.from(data.artifact.base64, 'base64').toString('utf8');
-      assert.equal(createHash('sha256').update(uploaded).digest('hex'), data.artifact.sha256);
-      receipt = { releaseId: data.releaseId, artifactSha256: data.artifact.sha256, status: 'published' };
-      if (responseMode === 'disconnect') {
-        req.socket.destroy();
-        return;
-      }
-      res.end(JSON.stringify(responseMode === 'wrong' ? { ...receipt, artifactSha256: 'wrong' } : receipt));
-      return;
-    }
-    res.end(JSON.stringify(req.url === '/feedback' ? feedback : receipt));
-  });
-  await new Promise<void>((r) => remote.listen(0, '127.0.0.1', r));
-  const remoteURL = `http://127.0.0.1:${(remote.address() as any).port}`;
-  const s = await startServer({ home, port: 0 });
-  const token = readFileSync(join(home, 'token'), 'utf8');
-  const api = async (method: string, url: string, data?: unknown, expected = 200, bearer = token) => {
-    const response = await fetch(`http://127.0.0.1:${s.port}${url}`, {
-      method,
-      headers: { Authorization: `Bearer ${bearer}`, 'Content-Type': 'application/json' },
-      ...(data === undefined ? {} : { body: JSON.stringify(data) }),
-    });
-    const value = await response.json();
-    assert.equal(response.status, expected, JSON.stringify(value));
-    return value;
-  };
-  const project = await api('POST', '/api/projects', { name: '闭环验收', path, goal: '持续改善首次使用体验' }, 201);
-  const channel = s.store.all<any>('channels')[0];
-  await api(
+  const receiver = await startReceiver({ feedback: { activation: 0.2 } });
+  const remoteURL = receiver.url;
+  const s = await startIsolated({ project: { name: '闭环验收', goal: '持续改善首次使用体验' } });
+  await s.api(
     'POST',
     '/api/channels',
-    { projectId: project.id, name: '共享观察验收', goal: '独立验证跨频道反馈', runtime: 'codex' },
+    { projectId: s.project.id, name: '共享观察验收', goal: '独立验证跨频道反馈', runtime: 'codex' },
     201
   );
-  const run = {
-    id: randomUUID(),
-    projectId: project.id,
-    channelId: channel.id,
-    runtime: 'codex',
-    status: 'running',
-    source: 'morrow-schedule',
-    executionOwner: 'codex-app',
-    startedAt: new Date().toISOString(),
-    finishedAt: '',
-    summary: '',
-    sessionId: 'isolated-native',
-  };
-  s.store.put('runs', run);
-  s.engine.loop.prepare(run as any);
-  const context = JSON.parse(readFileSync(join(home, 'runs', run.id, 'agent-context.json'), 'utf8'));
+  const grant = grantFor(s, { projectId: s.project.id, channelId: s.channel.id });
+  const { run, context } = grant;
   const call = (operation: string, input: unknown, requestId = randomUUID(), expected = 200) =>
-    api('POST', '/api/agent', { operation, input, requestId }, expected, context.token);
+    grant.call(operation, input, expected, requestId);
   const feature = await call('feature.upsert', {
     title: '改善首次使用',
     summary: '追踪实际体验',
@@ -88,9 +33,9 @@ async function setup() {
     evidenceIds: [],
     nextStep: '建立反馈',
   });
-  writeFileSync(join(path, 'checks.log'), '2 tests passed\n');
+  writeFileSync(join(s.path, 'checks.log'), '2 tests passed\n');
   const evidence = await call('evidence.capture', { itemId: feature.id, summary: '隔离测试日志', path: 'checks.log' });
-  writeFileSync(join(path, 'release.txt'), 'immutable build one');
+  writeFileSync(join(s.path, 'release.txt'), 'immutable build one');
   // Release transport tests now cross the independent native gate with an explicit
   // protocol double; they do not claim that a real model verified this fixture.
   const reviewer = new FakeReviewer();
@@ -126,31 +71,25 @@ async function setup() {
   };
   return {
     ...s,
-    root,
-    home,
-    path,
-    api,
     call,
     context,
-    project,
-    channel,
     run,
     feature,
     evidence,
     releaseInput,
     remoteURL,
     get posts() {
-      return posts;
+      return receiver.posts;
     },
     get uploaded() {
-      return uploaded;
+      return receiver.uploaded;
     },
-    setFeedback: (value: any) => (feedback = value),
-    setMode: (value: string) => (responseMode = value),
+    setFeedback: receiver.setFeedback,
+    setMode: receiver.setMode,
     cleanup: async () => {
       await s.close();
-      await new Promise<void>((r) => remote.close(() => r()));
-      rmSync(root, { recursive: true, force: true });
+      await receiver.close();
+      await s.cleanup();
     },
   };
 }
@@ -421,7 +360,7 @@ test('feedback failures wake investigation once and expired observations never i
 });
 test('SQLite restart retains sealed releases, observations, waits and existing channel preferences', async () => {
   const s = await setup();
-  let restarted: Awaited<ReturnType<typeof startServer>> | undefined;
+  let restarted: IsolatedService | undefined;
   try {
     const release = await s.call('release.propose', s.releaseInput);
     await s.call('wait', {
@@ -433,7 +372,7 @@ test('SQLite restart retains sealed releases, observations, waits and existing c
     s.store.put('runs', { ...s.run, status: 'completed' });
     const before = s.store.get<any>('channels', s.channel.id);
     await s.close();
-    restarted = await startServer({ home: s.home, port: 0 });
+    restarted = await s.restart();
     assert.deepEqual(restarted.store.get('channels', s.channel.id), before);
     assert.equal(restarted.engine.loop.release(release.id).reviewHash, release.reviewHash);
     assert.equal(restarted.store.get<any>('loop_waits', s.channel.id).status, 'waiting');

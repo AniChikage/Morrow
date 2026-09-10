@@ -1,60 +1,27 @@
+import './harness/env.ts';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
-import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync, symlinkSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, rmSync, symlinkSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { startServer } from '../service/server.ts';
 import { sourceVersion } from '../service/source-version.ts';
 import { executionCommand } from '../service/execution-evidence.ts';
-import { FakeReviewer } from './fake-reviewer.ts';
-process.env.MORROW_TEST_MODE = '1';
+import { FakeReviewer } from './harness/fake-reviewer.ts';
+import { startIsolated, type IsolatedService } from './harness/service.ts';
+import { grantFor } from './harness/grant.ts';
 const future = () => new Date(Date.now() + 3600000).toISOString();
 async function fixture() {
-  const root = mkdtempSync(join(tmpdir(), 'morrow-v09-')),
-    path = join(root, 'project'),
-    home = join(root, 'home');
-  mkdirSync(path);
-  writeFileSync(join(path, 'source.js'), 'export const value=1;\n');
-  const native = new FakeReviewer(),
-    s = await startServer({ home, port: 0, nativeTransport: native }),
-    token = readFileSync(join(home, 'token'), 'utf8');
-  const request = async (route: string, input: unknown, auth = token, status = 200) => {
-    const r = await fetch(`http://127.0.0.1:${s.port}${route}`, {
-      method: 'POST',
-      headers: { Authorization: `Bearer ${auth}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify(input),
-    });
-    const data = await r.json();
-    assert.equal(r.status, status, JSON.stringify(data));
-    return data;
-  };
-  const project = await request(
-      '/api/projects',
-      { name: '独立复核夹具', path, goal: '保留完整结果且可复现' },
-      token,
-      201
-    ),
-    channel = s.store.all<any>('channels')[0];
-  const run = {
-    id: randomUUID(),
-    projectId: project.id,
-    channelId: channel.id,
-    runtime: 'codex',
-    status: 'running',
-    source: 'morrow-schedule',
-    executionOwner: 'codex-app',
-    startedAt: new Date().toISOString(),
-    finishedAt: '',
-    summary: '',
-    sessionId: 'implementer-thread',
-    nativeTurnId: 'implementer-turn',
-  };
-  s.store.put('runs', run);
-  s.engine.loop.prepare(run as any);
-  const grant = JSON.parse(readFileSync(join(home, 'runs', run.id, 'agent-context.json'), 'utf8'));
-  const call = (operation: string, input: unknown = {}, status = 200, requestId = randomUUID()) =>
-    request('/api/agent', { operation, input, requestId }, grant.token, status);
+  const native = new FakeReviewer();
+  const s = await startIsolated({
+    nativeTransport: native,
+    project: { name: '独立复核夹具', goal: '保留完整结果且可复现', files: { 'source.js': 'export const value=1;\n' } },
+  });
+  const { run, call } = grantFor(s, {
+    projectId: s.project.id,
+    channelId: s.channel.id,
+    overrides: { sessionId: 'implementer-thread', nativeTurnId: 'implementer-turn' },
+  });
   const itemInput = {
     title: '完整结果',
     summary: '修复并追踪返回值',
@@ -64,7 +31,7 @@ async function fixture() {
     nextStep: '验证反例',
   };
   const item = await call('feature.upsert', itemInput);
-  writeFileSync(join(path, 'result.json'), JSON.stringify({ value: 1 }));
+  writeFileSync(join(s.path, 'result.json'), JSON.stringify({ value: 1 }));
   const evidence = await call('evidence.capture', { summary: '实际文件内容，执行真实性尚未证明', path: 'result.json' });
   const command = 'node --test source.js';
   const emitCommand = (id: string, status: string, patch: Record<string, unknown> = {}) => {
@@ -72,7 +39,7 @@ async function fixture() {
       id,
       type: 'commandExecution',
       command,
-      cwd: path,
+      cwd: s.path,
       status,
       aggregatedOutput: status === 'inProgress' ? '' : '1 test passed',
       ...(status === 'inProgress' ? {} : { exitCode: 0 }),
@@ -155,28 +122,7 @@ async function fixture() {
       },
       status
     );
-  return {
-    ...s,
-    native,
-    root,
-    path,
-    home,
-    project,
-    channel,
-    run,
-    item,
-    itemInput,
-    evidence,
-    call,
-    choose,
-    review,
-    command,
-    emitCommand,
-    cleanup: async () => {
-      await s.close();
-      rmSync(root, { recursive: true, force: true });
-    },
-  };
+  return { ...s, native, run, item, itemInput, evidence, call, choose, review, command, emitCommand };
 }
 
 test('native execution seals real command fields and rejects stale or forged evidence', async () => {
@@ -434,7 +380,7 @@ test('unknown reviews can be retried once with preserved history, while streamin
 });
 test('SQLite restart retains execution seals, failure history and reviewer interruption intent without replay', async () => {
   const f = await fixture();
-  let reopened: Awaited<ReturnType<typeof startServer>> | undefined;
+  let reopened: IsolatedService | undefined;
   try {
     const p = await f.call('execution.prepare', { command: f.command });
     f.emitCommand('persisted-command', 'inProgress');
@@ -443,7 +389,7 @@ test('SQLite restart retains execution seals, failure history and reviewer inter
     const job = await f.call('verification.request', { itemId: f.item.id, evidenceIds: [evidence.id] });
     await f.engine.loop.verification.start(job.id);
     await f.close();
-    reopened = await startServer({ home: f.home, port: 0, nativeTransport: f.native });
+    reopened = await f.restart();
     assert.deepEqual(reopened.store.get<any>('loop_evidence', evidence.id), evidence);
     assert.equal(reopened.store.get<any>('loop_verifications', job.id).status, 'unknown');
     assert.equal(reopened.store.get<any>('loop_executions', p.id).status, 'captured');
@@ -703,7 +649,7 @@ test('automatic feature completion preserves concurrent human changes and never 
 
 test('persisted successful completion intent recovers once after restart even though the originating turn ended', async () => {
   const f = await fixture();
-  let reopened: Awaited<ReturnType<typeof startServer>> | undefined;
+  let reopened: IsolatedService | undefined;
   try {
     const pending = await f.call('feature.upsert', {
       ...f.itemInput,
@@ -717,7 +663,7 @@ test('persisted successful completion intent recovers once after restart even th
     f.store.put('loop_verifications', { ...job, status: 'passed', finishedAt: new Date().toISOString() });
     f.store.put('runs', { ...f.run, status: 'completed' });
     await f.close();
-    reopened = await startServer({ home: f.home, port: 0, nativeTransport: new FakeReviewer() });
+    reopened = await f.restart({ nativeTransport: new FakeReviewer() });
     reopened.engine.loop.verification.tick();
     assert.equal(reopened.store.get<any>('items', f.item.id).status, 'verified');
     assert.equal(reopened.store.get<any>('loop_finalizations', pending.finalizationId).status, 'applied');

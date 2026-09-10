@@ -1,15 +1,13 @@
+import './harness/env.ts';
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, realpathSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { readFileSync, realpathSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
-import { startServer } from '../service/server.ts';
 import { NativeConversations } from '../service/native-conversations.ts';
 import { applyDesktopPatches } from '../service/codex-desktop-transport.ts';
 import type { NativeTransport, NativeSnapshot, NativeWorkOptions } from '../service/native-conversations.ts';
-process.env.MORROW_TEST_MODE = '1';
-process.env.MORROW_TEST_CODEX_PATH = resolve('tests/fixtures/runtime.mjs');
+import { startIsolated, type IsolatedService } from './harness/service.ts';
 class FakeNative implements NativeTransport {
   connected = true;
   cwd = '';
@@ -109,38 +107,12 @@ class FakeNative implements NativeTransport {
   }
 }
 async function setup() {
-  const root = mkdtempSync(join(tmpdir(), 'morrow-native-'));
-  const home = join(root, 'home');
-  const path = join(root, 'project');
-  mkdirSync(path);
   const transport = new FakeNative();
-  transport.cwd = path;
-  const service = await startServer({ home, port: 0, nativeTransport: transport });
-  const token = readFileSync(join(home, 'token'), 'utf8');
-  const api = async (method: string, path: string, data?: unknown, status = 200) => {
-    const response = await fetch(`http://127.0.0.1:${service.port}${path}`, {
-      method,
-      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-      ...(data === undefined ? {} : { body: JSON.stringify(data) }),
-    });
-    const result = await response.json();
-    assert.equal(response.status, status, JSON.stringify(result));
-    return result;
-  };
-  const project = await api('POST', '/api/projects', { name: 'Native', path, goal: 'Continue native work' }, 201);
-  const channel = service.store.all<any>('channels').find((row) => row.projectId === project.id);
-  return {
-    ...service,
-    root,
-    transport,
-    api,
-    project,
-    channel,
-    cleanup: async () => {
-      await service.close();
-      rmSync(root, { recursive: true, force: true });
-    },
-  };
+  const s = await startIsolated({
+    nativeTransport: ({ path }) => Object.assign(transport, { cwd: path }),
+    project: { name: 'Native', goal: 'Continue native work' },
+  });
+  return { ...s, transport };
 }
 test('shared background creates one native task per channel and records creation before sending', async () => {
   const s = await setup();
@@ -683,7 +655,7 @@ test('per-thread disconnect disables sending, same-revision reconnect clears err
 });
 test('daemon restart observes external native work without taking ownership or interrupting App, while definitive scheduler rejection settles', async () => {
   const s = await setup();
-  let restarted: Awaited<ReturnType<typeof startServer>> | undefined;
+  let restarted: IsolatedService | undefined;
   try {
     await s.api('POST', `/api/channels/${s.channel.id}/native/bind`, { threadId: s.transport.threadId });
     const receipt = await s.api('POST', `/api/channels/${s.channel.id}/native/messages`, {
@@ -694,7 +666,7 @@ test('daemon restart observes external native work without taking ownership or i
     await s.close();
     assert.equal(s.transport.interruptions.length, 0);
     s.transport.connected = true;
-    restarted = await startServer({ home: s.home, port: 0, nativeTransport: s.transport });
+    restarted = await s.restart();
     await restarted.native.conversation(s.channel.id, {});
     assert.equal(restarted.native.scheduled.size, 0);
     assert.equal(restarted.store.get<any>('runs', run.id).status, 'running');
@@ -950,7 +922,7 @@ test('unflushed native deltas recover from the durable journal before App reconn
 
 test('renamed service recovers a legacy responsibility run without resending or resetting its budget', async () => {
   const s = await setup();
-  let restarted: Awaited<ReturnType<typeof startServer>> | undefined;
+  let restarted: IsolatedService | undefined;
   try {
     await s.native.bind(s.channel.id, s.transport.threadId);
     await s.engine.action(s.channel.id, 'run');
@@ -960,7 +932,7 @@ test('renamed service recovers a legacy responsibility run without resending or 
     await s.close();
     assert.equal(s.transport.interruptions.length, 0);
     s.transport.connected = true;
-    restarted = await startServer({ home: s.home, port: 0, nativeTransport: s.transport });
+    restarted = await s.restart();
     await restarted.native.conversation(s.channel.id, {});
     assert.equal(restarted.native.scheduled.get(s.channel.id)?.run.id, run.id);
     assert.equal(restarted.engine.budgetCount(s.channel.id), 1);

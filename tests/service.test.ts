@@ -1,3 +1,4 @@
+import './harness/env.ts';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync, statSync, existsSync } from 'node:fs';
@@ -10,56 +11,21 @@ import { eventHistory } from '../service/event-history.ts';
 import { startServer } from '../service/server.ts';
 import { invocation, diagnoseFailure } from '../service/runtimes.ts';
 import { validateResult } from '../service/protocol.ts';
+import { startIsolated } from './harness/service.ts';
+import { until } from './harness/wait.ts';
 const fixture = resolve('tests/fixtures/runtime.mjs');
-process.env.MORROW_TEST_MODE = '1';
-process.env.MORROW_TEST_CODEX_PATH = fixture;
-const pause = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
-async function until(predicate: () => any, timeout = 5000) {
-  const end = Date.now() + timeout;
-  while (Date.now() < end) {
-    const value = await predicate();
-    if (value) return value;
-    await pause(25);
-  }
-  throw new Error('Timed out');
-}
 async function setup() {
-  const root = mkdtempSync(join(tmpdir(), 'morrow-test-'));
-  const home = join(root, 'home');
-  const projectPath = join(root, 'project');
-  mkdirSync(projectPath);
-  const service = await startServer({ home, port: 0 });
-  const token = readFileSync(join(home, 'token'), 'utf8');
-  const base = `http://127.0.0.1:${service.port}`;
-  const api = async (method: string, path: string, data?: any, expected = 200) => {
-    const res = await fetch(base + path, {
-      method,
-      headers: {
-        Authorization: `Bearer ${token}`,
-        'Content-Type': 'application/json',
-      },
-      ...(data === undefined ? {} : { body: JSON.stringify(data) }),
-    });
-    const value = await res.json();
-    assert.equal(res.status, expected, JSON.stringify(value));
-    return value;
-  };
-  const project = await api(
-    'POST',
-    '/api/projects',
-    { name: 'Test Project', path: projectPath, goal: '验证完整项目循环' },
-    201
-  );
-  const state = await api('GET', '/api/state');
+  const s = await startIsolated({ project: { name: 'Test Project', goal: '验证完整项目循环' } });
+  const state = await s.api('GET', '/api/state');
   const channels = state.channels;
   assert.equal(channels.length, 1);
   assert.equal(channels[0].name, '自主推进');
   channels.push(
-    await api(
+    await s.api(
       'POST',
       '/api/channels',
       {
-        projectId: project.id,
+        projectId: s.project.id,
         name: '独立验收职责',
         goal: '验证共享项目上下文',
         runtime: 'codex',
@@ -68,23 +34,8 @@ async function setup() {
       201
     )
   );
-  const config = (value: any) => writeFileSync(join(projectPath, '.fixture.json'), JSON.stringify(value));
-  return {
-    ...service,
-    root,
-    home,
-    base,
-    token,
-    api,
-    project,
-    projectPath,
-    channels,
-    config,
-    cleanup: async () => {
-      await service.close();
-      rmSync(root, { recursive: true, force: true });
-    },
-  };
+  const config = (value: any) => writeFileSync(join(s.path, '.fixture.json'), JSON.stringify(value));
+  return { ...s, projectPath: s.path, channels, config };
 }
 test('local auth, schema validation, paused defaults and idempotent explicit demo', async () => {
   const s = await setup();

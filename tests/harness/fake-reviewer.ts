@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import type { NativeTransport, NativeSnapshot, NativeWorkOptions } from '../service/native-conversations.ts';
+import type { NativeTransport, NativeSnapshot, NativeWorkOptions } from '../../service/native-conversations.ts';
 
 /** Explicit native protocol double: no model, user repository or network is run. */
 export class FakeReviewer implements NativeTransport {

@@ -1,60 +1,21 @@
+import './harness/env.ts';
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
-import { startServer } from '../service/server.ts';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
-process.env.MORROW_TEST_MODE = '1';
+import { startIsolated, type IsolatedService } from './harness/service.ts';
+import { grantFor } from './harness/grant.ts';
 const future = () => new Date(Date.now() + 3600000).toISOString();
 async function setup() {
-  const root = mkdtempSync(join(tmpdir(), 'morrow-strategy-'));
-  const home = join(root, 'home'),
-    path = join(root, 'project');
-  mkdirSync(path);
-  const s = await startServer({ home, port: 0 });
-  const token = readFileSync(join(home, 'token'), 'utf8');
-  const api = async (method: string, url: string, input?: unknown, status = 200, auth = token) => {
-    const res = await fetch(`http://127.0.0.1:${s.port}${url}`, {
-      method,
-      headers: { Authorization: `Bearer ${auth}`, 'Content-Type': 'application/json' },
-      ...(input === undefined ? {} : { body: JSON.stringify(input) }),
-    });
-    const value = await res.json();
-    assert.equal(res.status, status, JSON.stringify(value));
-    return value;
-  };
-  const project = await api(
-    'POST',
-    '/api/projects',
-    { name: '目标接管验收', path, goal: '让目标用户成功完成首次使用' },
-    201
-  );
-  const channel = s.store.all<any>('channels')[0];
-  const run = {
-    id: randomUUID(),
-    projectId: project.id,
-    channelId: channel.id,
-    runtime: 'codex',
-    status: 'running',
-    source: 'morrow-schedule',
-    executionOwner: 'codex-app',
-    startedAt: new Date().toISOString(),
-    finishedAt: '',
-    summary: '',
-    sessionId: 'isolated-test',
-    workDirection: channel.goal,
-  };
-  s.store.put('runs', run);
-  s.engine.loop.prepare(run as any);
-  const grant = JSON.parse(readFileSync(join(home, 'runs', run.id, 'agent-context.json'), 'utf8'));
-  const call = (operation: string, input: unknown = {}, status = 200, requestId = randomUUID()) =>
-    api('POST', '/api/agent', { operation, input, requestId }, status, grant.token);
+  const s = await startIsolated({ project: { name: '目标接管验收', goal: '让目标用户成功完成首次使用' } });
+  const grant = grantFor(s, { projectId: s.project.id, channelId: s.channel.id });
+  const { run, call } = grant;
   writeFileSync(
-    join(path, 'observations.json'),
+    join(s.path, 'observations.json'),
     JSON.stringify({ attempts: 100, completed: 20, source: 'isolated fixture' })
   );
   const evidence = await call('evidence.capture', { summary: '初始观察', path: 'observations.json' });
@@ -123,26 +84,7 @@ async function setup() {
     reviewAt: future(),
     maxRuns: 2,
   };
-  return {
-    ...s,
-    root,
-    home,
-    path,
-    project,
-    channel,
-    run,
-    grant,
-    api,
-    call,
-    evidence,
-    understandingInput,
-    decisionInput,
-    reviewInput,
-    cleanup: async () => {
-      await s.close();
-      rmSync(root, { recursive: true, force: true });
-    },
-  };
+  return { ...s, run, grant, call, evidence, understandingInput, decisionInput, reviewInput };
 }
 test('a new project has one open responsibility and scoped tools preserve decisions, alternatives and revision history', async () => {
   const s = await setup();
@@ -490,14 +432,14 @@ test('old lessons stay searchable beyond context limits with cross-project isola
 });
 test('database restart retains project understanding, decision references, original expectations and manual settings', async () => {
   const s = await setup();
-  let restarted: Awaited<ReturnType<typeof startServer>> | undefined;
+  let restarted: IsolatedService | undefined;
   try {
     const u = await s.call('understanding.upsert', s.understandingInput);
     const d = await s.call('decision.choose', { ...s.decisionInput, understandingRefs: [{ id: u.id, revision: 1 }] });
     s.store.put('runs', { ...s.run, status: 'completed' });
     const channel = s.store.get('channels', s.channel.id);
     await s.close();
-    restarted = await startServer({ home: s.home, port: 0 });
+    restarted = await s.restart();
     assert.deepEqual(restarted.store.get('channels', s.channel.id), channel);
     const view = restarted.engine.loop.view(s.project.id);
     assert.equal(view.strategy?.decisions[0].id, d.id);
@@ -795,7 +737,7 @@ test('revised learning wakes its dependent channel, preserves full versions and 
 
 test('memory references survive restart and legacy learning gains versions only from its available state', async () => {
   const s = await setup();
-  let restarted: Awaited<ReturnType<typeof startServer>> | undefined;
+  let restarted: IsolatedService | undefined;
   try {
     const input = {
       kind: 'experiment',
@@ -842,7 +784,7 @@ test('memory references survive restart and legacy learning gains versions only 
     );
     s.store.put('runs', { ...s.run, status: 'completed' });
     await s.close();
-    restarted = await startServer({ home: s.home, port: 0 });
+    restarted = await s.restart();
     assert.deepEqual(restarted.store.get<any>('strategy_decisions', d.id).memoryRefs, d.memoryRefs);
     assert.equal(
       restarted.store.get<any>('strategy_revisions', 'learning:legacy-lesson:7').data.conclusion,

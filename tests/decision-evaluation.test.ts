@@ -1,58 +1,19 @@
+import './harness/env.ts';
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync, symlinkSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { writeFileSync, symlinkSync } from 'node:fs';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
-import { createServer } from 'node:http';
-import { startServer } from '../service/server.ts';
-import { FakeReviewer } from './fake-reviewer.ts';
-process.env.MORROW_TEST_MODE = '1';
+import { FakeReviewer } from './harness/fake-reviewer.ts';
+import { startIsolated, type IsolatedService } from './harness/service.ts';
+import { grantFor } from './harness/grant.ts';
+import { startReceiver } from './harness/receiver.ts';
 const future = () => new Date(Date.now() + 3600000).toISOString();
 async function fixture() {
-  const root = mkdtempSync(join(tmpdir(), 'morrow-evaluation-')),
-    home = join(root, 'home'),
-    path = join(root, 'project');
-  mkdirSync(path);
-  const s = await startServer({ home, port: 0 }),
-    token = readFileSync(join(home, 'token'), 'utf8');
-  const request = async (method: string, route: string, input: unknown, auth = token, status = 200) => {
-    const res = await fetch(`http://127.0.0.1:${s.port}${route}`, {
-      method,
-      headers: { Authorization: `Bearer ${auth}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify(input),
-    });
-    const data = await res.json();
-    assert.equal(res.status, status, JSON.stringify(data));
-    return data;
-  };
-  const project = await request(
-      'POST',
-      '/api/projects',
-      { name: '反馈核对隔离夹具', path, goal: '提高交付完成率，同时保持交付内容完整' },
-      token,
-      201
-    ),
-    channel = s.store.all<any>('channels')[0];
-  const run = {
-    id: randomUUID(),
-    projectId: project.id,
-    channelId: channel.id,
-    runtime: 'codex',
-    status: 'running',
-    source: 'morrow-schedule',
-    executionOwner: 'codex-app',
-    startedAt: new Date().toISOString(),
-    finishedAt: '',
-    summary: '',
-    sessionId: 'evaluation-fixture',
-    workDirection: channel.goal,
-  };
-  s.store.put('runs', run);
-  s.engine.loop.prepare(run as any);
-  const grant = JSON.parse(readFileSync(join(home, 'runs', run.id, 'agent-context.json'), 'utf8'));
-  const call = (operation: string, input: unknown = {}, status = 200, requestId = randomUUID()) =>
-    request('POST', '/api/agent', { operation, input, requestId }, grant.token, status);
+  const s = await startIsolated({
+    project: { name: '反馈核对隔离夹具', goal: '提高交付完成率，同时保持交付内容完整' },
+  });
+  const { run, call } = grantFor(s, { projectId: s.project.id, channelId: s.channel.id });
   const context = await call('context');
   const expectation = {
     id: 'completion',
@@ -98,7 +59,7 @@ async function fixture() {
     expectations: [expectation, guardrail],
   };
   const capture = async (data: unknown, file = 'result.json') => {
-    writeFileSync(join(path, file), typeof data === 'string' ? data : JSON.stringify(data));
+    writeFileSync(join(s.path, file), typeof data === 'string' ? data : JSON.stringify(data));
     return call('evidence.capture', { summary: '隔离夹具实际采集', path: file });
   };
   const assessment = (evidenceId?: string) => ({
@@ -133,31 +94,12 @@ async function fixture() {
       status,
       requestId
     );
-  return {
-    ...s,
-    root,
-    home,
-    path,
-    project,
-    channel,
-    run,
-    call,
-    input,
-    expectation,
-    guardrail,
-    capture,
-    assessment,
-    review,
-    cleanup: async () => {
-      await s.close();
-      rmSync(root, { recursive: true, force: true });
-    },
-  };
+  return { ...s, run, call, input, expectation, guardrail, capture, assessment, review };
 }
 
 test('numeric expectations cannot report success over a violated guardrail, and review remains immutable across restart', async () => {
   const s = await fixture();
-  let reopened: Awaited<ReturnType<typeof startServer>> | undefined;
+  let reopened: IsolatedService | undefined;
   try {
     const d = await s.call('decision.choose', s.input);
     const e = await s.capture({ completion: 0.95, missing: 2 });
@@ -185,7 +127,7 @@ test('numeric expectations cannot report success over a violated guardrail, and 
     assert.equal(history.history[1].review, undefined);
     s.store.put('runs', { ...s.run, status: 'completed' });
     await s.close();
-    reopened = await startServer({ home: s.home, port: 0 });
+    reopened = await s.restart();
     assert.deepEqual(reopened.store.get<any>('strategy_decisions', d.id).review.assessment, reviewed.review.assessment);
     assert.equal(reopened.engine.control(s.channel.id).enabled, false);
   } finally {
@@ -409,13 +351,9 @@ test('new choices require an observation contract, reject foreign sources, and l
 test('unchanged HTTP data is freshly sampled for a new contract and changes to another expected field also wake dependent work', async () => {
   const s = await fixture();
   let data = { completion: 0.9, missing: 0 };
-  const server = createServer((_req, res) => {
-    res.setHeader('Content-Type', 'application/json');
-    res.end(JSON.stringify(data));
-  });
-  await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
+  const receiver = await startReceiver({ feedback: () => data });
   try {
-    const url = `http://127.0.0.1:${(server.address() as any).port}/metrics`;
+    const url = `${receiver.url}/metrics`;
     const watch = await s.call('watch.create', {
       title: '隔离交付观察',
       url,
@@ -454,21 +392,17 @@ test('unchanged HTTP data is freshly sampled for a new contract and changes to a
     await s.review(d, a, 'not_improved');
     assert.equal(s.store.get<any>('channels', s.channel.id).nextRunAt, '');
   } finally {
-    await new Promise<void>((r) => server.close(() => r()));
+    await receiver.close();
     await s.cleanup();
   }
 });
 test('an invalid object field remains unknown without continuously creating identical HTTP evidence', async () => {
   const s = await fixture();
-  const server = createServer((_req, res) => {
-    res.setHeader('Content-Type', 'application/json');
-    res.end(JSON.stringify({ completion: { invalid: true }, missing: 0 }));
-  });
-  await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
+  const receiver = await startReceiver({ feedback: { completion: { invalid: true }, missing: 0 } });
   try {
     const watch = await s.call('watch.create', {
       title: '错误类型夹具',
-      url: `http://127.0.0.1:${(server.address() as any).port}/metrics`,
+      url: `${receiver.url}/metrics`,
       pointer: '/missing',
       condition: 'changed',
       intervalSeconds: 30,
@@ -494,7 +428,7 @@ test('an invalid object field remains unknown without continuously creating iden
     const result = await s.review(d, a, 'inconclusive');
     assert.equal(result.review.assessment.results[0].observedValue, null);
   } finally {
-    await new Promise<void>((r) => server.close(() => r()));
+    await receiver.close();
     await s.cleanup();
   }
 });
@@ -556,7 +490,7 @@ function measuredAssessment(s: Awaited<ReturnType<typeof fixture>>, evidenceId: 
 }
 test('measurement loop rejects attractive numbers with insufficient samples, then applies an independently reviewed baseline comparison and preserves it on restart', async () => {
   const s = await fixture();
-  let reopened: Awaited<ReturnType<typeof startServer>> | undefined;
+  let reopened: IsolatedService | undefined;
   try {
     const baseline = await s.capture(sample()),
       expectation = measured(s, { evidenceId: baseline.id });
@@ -597,7 +531,7 @@ test('measurement loop rejects attractive numbers with insufficient samples, the
     assert.equal(read.observations[0].verdict, 'met');
     s.store.put('runs', { ...s.run, status: 'completed' });
     await s.close();
-    reopened = await startServer({ home: s.home, port: 0 });
+    reopened = await s.restart();
     assert.deepEqual(reopened.store.get<any>('strategy_decisions', d.id), final);
     assert.equal(reopened.store.get<any>('loop_evidence', baseline.id).data, baseline.data);
     assert.equal(reopened.engine.control(s.channel.id).enabled, false);
@@ -723,18 +657,12 @@ test('baseline and quality contracts reject substituted sources, selective histo
 });
 test('HTTP quality changes wake linked work, identical bad samples stay quiet, and a recovered source replaces cached success', async () => {
   const s = await fixture();
-  let data = sample(),
-    failure = false;
-  const server = createServer((_req, res) => {
-    res.statusCode = failure ? 503 : 200;
-    res.setHeader('Content-Type', 'application/json');
-    res.end(JSON.stringify(data));
-  });
-  await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
+  let data = sample();
+  const receiver = await startReceiver({ feedback: () => data });
   try {
     const watch = await s.call('watch.create', {
       title: '观测质量验收',
-      url: `http://127.0.0.1:${(server.address() as any).port}/metrics`,
+      url: `${receiver.url}/metrics`,
       pointer: '/completion',
       condition: 'changed',
       intervalSeconds: 30,
@@ -760,7 +688,7 @@ test('HTTP quality changes wake linked work, identical bad samples stay quiet, a
     const good = s.store.get<any>('loop_watches', watch.id).lastEvidenceId;
     assert.notEqual(bad, good);
     assert.equal((await s.call('observation.read', { decisionId: d.id })).observations[0].verdict, 'met');
-    failure = true;
+    receiver.setMode('unavailable');
     await s.engine.loop.poll(watch.id);
     assert.match(
       (await s.call('observation.read', { decisionId: d.id })).observations[0].issues.join(' '),
@@ -771,7 +699,7 @@ test('HTTP quality changes wake linked work, identical bad samples stay quiet, a
     const faultSignals = s.store.all('strategy_signals').length;
     await s.engine.loop.poll(watch.id);
     assert.equal(s.store.all('strategy_signals').length, faultSignals);
-    failure = false;
+    receiver.setMode('normal');
     await s.engine.loop.poll(watch.id);
     const recovered = s.store.get<any>('loop_watches', watch.id);
     assert.equal(recovered.error, undefined);
@@ -780,7 +708,7 @@ test('HTTP quality changes wake linked work, identical bad samples stay quiet, a
     assert(s.store.all('strategy_signals').length > faultSignals);
     assert.equal(s.engine.control(s.channel.id).enabled, false);
   } finally {
-    await new Promise<void>((r) => server.close(() => r()));
+    await receiver.close();
     await s.cleanup();
   }
 });
@@ -788,15 +716,11 @@ test('HTTP metrics that stop updating become unknown once, and a fresh sample re
   const s = await fixture();
   t.mock.timers.enable({ apis: ['Date'], now: Date.now() });
   let data = sample();
-  const server = createServer((_req, res) => {
-    res.setHeader('Content-Type', 'application/json');
-    res.end(JSON.stringify(data));
-  });
-  await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
+  const receiver = await startReceiver({ feedback: () => data });
   try {
     const watch = await s.call('watch.create', {
       title: '采集停滞验收',
-      url: `http://127.0.0.1:${(server.address() as any).port}/metrics`,
+      url: `${receiver.url}/metrics`,
       pointer: '/completion',
       condition: 'changed',
       intervalSeconds: 30,
@@ -826,7 +750,7 @@ test('HTTP metrics that stop updating become unknown once, and a fresh sample re
     assert.equal(s.store.all('loop_evidence').length, count + 2);
   } finally {
     t.mock.timers.reset();
-    await new Promise<void>((r) => server.close(() => r()));
+    await receiver.close();
     await s.cleanup();
   }
 });

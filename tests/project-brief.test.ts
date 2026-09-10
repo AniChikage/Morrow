@@ -1,76 +1,28 @@
+import './harness/env.ts';
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, readFileSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
-import { randomUUID } from 'node:crypto';
-import { startServer } from '../service/server.ts';
 import { autonomousPrompt, projectBriefBlock } from '../service/channel-work.ts';
-process.env.MORROW_TEST_MODE = '1';
+import { startIsolated } from './harness/service.ts';
+import { grantFor as workGrant } from './harness/grant.ts';
 const brief = '## 目标与成功标准\n\n首月留存提升到 40%。\n\n## 约束与红线\n\n不得改动计费逻辑。';
 async function setup() {
-  const root = mkdtempSync(join(tmpdir(), 'morrow-brief-'));
-  const home = join(root, 'home');
-  const paths = { withBrief: join(root, 'with-brief'), plain: join(root, 'plain') };
+  const s = await startIsolated({ project: false });
+  const paths = { withBrief: join(s.root, 'with-brief'), plain: join(s.root, 'plain') };
   mkdirSync(paths.withBrief);
   mkdirSync(paths.plain);
-  const s = await startServer({ home, port: 0 });
-  const token = readFileSync(join(home, 'token'), 'utf8');
-  const api = async (method: string, url: string, input?: unknown, status = 200, auth = token) => {
-    const res = await fetch(`http://127.0.0.1:${s.port}${url}`, {
-      method,
-      headers: { Authorization: `Bearer ${auth}`, 'Content-Type': 'application/json' },
-      ...(input === undefined ? {} : { body: JSON.stringify(input) }),
-    });
-    const value = await res.json();
-    assert.equal(res.status, status, JSON.stringify(value));
-    return value;
-  };
-  const withBrief = await api(
+  const withBrief = await s.api(
     'POST',
     '/api/projects',
     { name: '有说明', path: paths.withBrief, goal: '让目标用户完成首次使用', brief: `  ${brief}\n` },
     201
   );
-  const plain = await api('POST', '/api/projects', { name: '无说明', path: paths.plain, goal: '保持服务稳定' }, 201);
+  const plain = await s.api('POST', '/api/projects', { name: '无说明', path: paths.plain, goal: '保持服务稳定' }, 201);
   const channelOf = (projectId: string) => s.store.all<any>('channels').find((c) => c.projectId === projectId);
   /** A running run plus its work grant, so `context` can be read the way a native turn reads it. */
-  const grantFor = (projectId: string) => {
-    const channel = channelOf(projectId);
-    const run = {
-      id: randomUUID(),
-      projectId,
-      channelId: channel.id,
-      runtime: 'codex',
-      status: 'running',
-      source: 'morrow-schedule',
-      executionOwner: 'codex-app',
-      startedAt: new Date().toISOString(),
-      finishedAt: '',
-      summary: '',
-      sessionId: 'isolated-test',
-      workDirection: channel.goal,
-    };
-    s.store.put('runs', run);
-    s.engine.loop.prepare(run as any);
-    const grant = JSON.parse(readFileSync(join(home, 'runs', run.id, 'agent-context.json'), 'utf8'));
-    const call = (operation: string, input: unknown = {}, status = 200) =>
-      api('POST', '/api/agent', { operation, input, requestId: randomUUID() }, status, grant.token);
-    return { call, token: grant.token as string };
-  };
-  return {
-    ...s,
-    api,
-    paths,
-    withBrief,
-    plain,
-    channelOf,
-    grantFor,
-    cleanup: async () => {
-      await s.close();
-      rmSync(root, { recursive: true, force: true });
-    },
-  };
+  const grantFor = (projectId: string) => workGrant(s, { projectId, channelId: channelOf(projectId).id });
+  return { ...s, paths, withBrief, plain, channelOf, grantFor };
 }
 test('a brief written at creation becomes revision 1, is read through its own route and stays out of the polled snapshot', async () => {
   const s = await setup();

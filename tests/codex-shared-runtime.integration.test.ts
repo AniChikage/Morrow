@@ -6,15 +6,11 @@ import { createInterface } from 'node:readline';
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { CodexSharedTransport, findSharedHost } from '../service/codex-shared-transport.ts';
+import { until as waitUntil } from './harness/wait.ts';
 
 const binary = process.env.MORROW_TEST_CODEX_BINARY;
-async function until(check: () => boolean) {
-  for (let count = 0; count < 400; count++) {
-    if (check()) return;
-    await new Promise((done) => setTimeout(done, 25));
-  }
-  assert.fail('shared runtime timed out');
-}
+/** A real Codex binary talks to the local model fixture here, so waits are bounded at 10 s. */
+const until = (check: () => boolean) => waitUntil(check, 10_000, 25);
 
 test(
   'App launch bridge and Morrow share cold tasks, active steering, external replies and runtime recovery',

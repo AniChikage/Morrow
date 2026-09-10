@@ -1,24 +1,15 @@
+import './harness/env.ts';
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { realpathSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
-import { startServer } from '../service/server.ts';
 import { usageFreshnessMs } from '../service/usage.ts';
 import type { UsageReading, UsageWindow } from '../service/protocol.ts';
-import { FakeReviewer } from './fake-reviewer.ts';
-process.env.MORROW_TEST_MODE = '1';
-const pause = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
-async function until(predicate: () => any, timeout = 5000) {
-  const end = Date.now() + timeout;
-  while (Date.now() < end) {
-    const value = await predicate();
-    if (value) return value;
-    await pause(20);
-  }
-  throw new Error('Timed out');
-}
+import { FakeReviewer } from './harness/fake-reviewer.ts';
+import { startIsolated } from './harness/service.ts';
+import { grantFor } from './harness/grant.ts';
+import { pause, until } from './harness/wait.ts';
 const iso = (offsetMs: number) => new Date(Date.now() + offsetMs).toISOString();
 const reading = (usedPercent: number, resetsAt?: string, window: UsageWindow = '5h'): UsageReading => ({
   at: new Date().toISOString(),
@@ -62,28 +53,16 @@ class UsageNative extends FakeReviewer {
   }
 }
 async function setup() {
-  const root = mkdtempSync(join(tmpdir(), 'morrow-usage-'));
-  const home = join(root, 'home');
-  const path = join(root, 'project');
-  mkdirSync(path);
-  writeFileSync(join(path, 'source.js'), 'export const value=1;\n');
   const transport = new UsageNative();
-  transport.bindTo(path);
-  const s = await startServer({ home, port: 0, nativeTransport: transport });
-  const token = readFileSync(join(home, 'token'), 'utf8');
-  const api = async (method: string, url: string, input?: unknown, status = 200, auth = token) => {
-    const response = await fetch(`http://127.0.0.1:${s.port}${url}`, {
-      method,
-      headers: { Authorization: `Bearer ${auth}`, 'Content-Type': 'application/json' },
-      ...(input === undefined ? {} : { body: JSON.stringify(input) }),
-    });
-    const value = await response.json();
-    assert.equal(response.status, status, JSON.stringify(value));
-    return value;
-  };
-  const project = await api('POST', '/api/projects', { name: '额度项目', path, goal: '在额度内持续推进' }, 201);
-  const channel = s.store.all<any>('channels').find((row) => row.projectId === project.id);
-  await api('POST', `/api/channels/${channel.id}/native/bind`, { threadId: transport.threadId });
+  const s = await startIsolated({
+    nativeTransport: ({ path }) => {
+      transport.bindTo(path);
+      return transport;
+    },
+    project: { name: '额度项目', goal: '在额度内持续推进', files: { 'source.js': 'export const value=1;\n' } },
+  });
+  const { project, channel } = s;
+  await s.api('POST', `/api/channels/${channel.id}/native/bind`, { threadId: transport.threadId });
   const channelRow = () => s.store.get<any>('channels', channel.id);
   const projectRow = () => s.store.get<any>('projects', project.id);
   const systemEvents = (needle: string) =>
@@ -93,47 +72,13 @@ async function setup() {
   /** Makes the scheduler consider the channel due right now. */
   const due = () => s.store.put('channels', { ...channelRow(), nextRunAt: iso(-1000) });
   /** A running run with its work grant, so `context` can be read the way a native turn reads it. */
-  const grant = () => {
-    const run = {
-      id: randomUUID(),
+  const grant = () =>
+    grantFor(s, {
       projectId: project.id,
       channelId: channel.id,
-      runtime: 'codex',
-      status: 'running',
-      source: 'morrow-schedule',
-      executionOwner: 'codex-app',
-      startedAt: new Date().toISOString(),
-      finishedAt: '',
-      summary: '',
-      sessionId: transport.threadId,
-      nativeTurnId: 'implementer-turn',
-      workDirection: channel.goal,
-    };
-    s.store.put('runs', run);
-    s.engine.loop.prepare(run as any);
-    const secret = JSON.parse(readFileSync(join(home, 'runs', run.id, 'agent-context.json'), 'utf8')).token as string;
-    const call = (operation: string, input: unknown = {}, status = 200) =>
-      api('POST', '/api/agent', { operation, input, requestId: randomUUID() }, status, secret);
-    return { run, call, secret };
-  };
-  return {
-    ...s,
-    root,
-    path,
-    transport,
-    api,
-    project,
-    channel,
-    channelRow,
-    projectRow,
-    systemEvents,
-    due,
-    grant,
-    cleanup: async () => {
-      await s.close();
-      rmSync(root, { recursive: true, force: true });
-    },
-  };
+      overrides: { sessionId: transport.threadId, nativeTurnId: 'implementer-turn' },
+    });
+  return { ...s, transport, channelRow, projectRow, systemEvents, due, grant };
 }
 test('a reached reserve line parks scheduled work until the reset with one event, and refuses manual runs', async () => {
   const s = await setup();
@@ -473,7 +418,7 @@ test('settings and budget routes validate input, refuse demo projects and work g
       { usageBudget: { window: '5h', limitPercent: 10 } },
       409
     );
-    const { secret } = s.grant();
+    const { token: secret } = s.grant();
     await s.api('GET', '/api/settings', undefined, 401, secret);
     await s.api('PATCH', '/api/settings', { stopWhenUsageUnknown: false }, 401, secret);
     await s.api('PATCH', `/api/projects/${s.project.id}/usage-budget`, { usageBudget: null }, 401, secret);

@@ -157,4 +157,6 @@ npm run build:app
 
 默认服务测试使用隔离数据库、假 CLI、模拟 IPC/共享后台及本地反馈与发布端，不运行用户项目或调用模型服务。测试开关为 `MORROW_TEST_MODE=1`，可通过 `MORROW_TEST_CODEX_PATH` 注入夹具，`MORROW_TEST_TIMEOUT_MS` 缩短超时。
 
+服务测试的公共骨架在 `tests/harness/`：`env.ts` 设置测试开关与夹具运行时（必须最先导入），`service.ts` 的 `startIsolated()` 在临时数据目录里启动服务并创建项目（含 `api`、`restart`、`cleanup`），`grant.ts` 的 `grantFor()` 生成一次运行的工作授权，`receiver.ts` 的 `startReceiver()` 提供带故障模式的本地反馈与发布接收端，`wait.ts` 提供 `until`/`pause`，`fake-reviewer.ts` 是原生协议替身。新的服务测试一律基于这套骨架，不再复制 `setup()`；`npm test` 只匹配 `tests/*.test.ts`，不会把骨架模块当作测试运行。
+
 可选真实 Codex 二进制测试使用独立原生目录和本地模型夹具，入口见 [codex-shared-runtime.integration.test.ts](../tests/codex-shared-runtime.integration.test.ts)。它验证原生协议链路，不代表真实模型的自主决策能力或线上收益。原生窗口交互、实际远端主机和真实项目反馈需要分别验收。

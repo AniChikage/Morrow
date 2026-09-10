@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { CodexDesktopTransport, applyDesktopPatches, encodeDesktopFrame } from '../service/codex-desktop-transport.ts';
+import { until as waitUntil } from './harness/wait.ts';
 
 const threadId = 'native-thread-fixture';
 const state = {
@@ -133,13 +134,8 @@ async function fixture(options: { dropMutation?: boolean; rejectMutation?: boole
     },
   };
 }
-const until = async (predicate: () => boolean) => {
-  for (let i = 0; i < 50; i++) {
-    if (predicate()) return;
-    await new Promise((resolve) => setTimeout(resolve, 10));
-  }
-  assert.fail('fixture update timed out');
-};
+/** The in-process IPC fixture answers within a few frames, so waits stay bounded at 500 ms. */
+const until = (predicate: () => boolean) => waitUntil(predicate, 500, 10);
 
 test('desktop follower attaches to the real owner protocol and applies ordered patches', async () => {
   const f = await fixture();

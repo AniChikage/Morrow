@@ -10,17 +10,13 @@ import type { Engine } from '../service/engine.ts';
 import { WebSocketServer } from 'ws';
 import { CodexSharedTransport, parseUsageReading, usageReadMethod } from '../service/codex-shared-transport.ts';
 import { sharedRuntimeArgs } from '../service/codex-app-host-bridge.ts';
+import { until as waitUntil } from './harness/wait.ts';
 import type { UsageReading } from '../service/protocol.ts';
 
 const id = 'shared-thread-fixture',
   turnId = 'shared-turn-fixture';
-const until = async (check: () => boolean) => {
-  for (let i = 0; i < 100; i++) {
-    if (check()) return;
-    await new Promise((done) => setTimeout(done, 10));
-  }
-  assert.fail('native update timed out');
-};
+/** The in-process WebSocket fixture answers quickly, so waits stay bounded at 1 s. */
+const until = (check: () => boolean) => waitUntil(check, 1000, 10);
 async function fixture(
   options: {
     loseSend?: boolean;
