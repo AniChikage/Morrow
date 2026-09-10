@@ -143,8 +143,10 @@ export class ExecutionEvidence {
           continue;
         }
         const output = typeof raw.aggregatedOutput === 'string' ? raw.aggregatedOutput : '';
+        // Native completed commands use explicit null for empty output. An absent
+        // field still means output was not supplied; captured history is immutable.
         const outputComplete =
-          typeof raw.aggregatedOutput === 'string' &&
+          (typeof raw.aggregatedOutput === 'string' || raw.aggregatedOutput === null) &&
           !raw.outputTruncated &&
           !raw.truncated &&
           !/output (?:was )?truncated|tokens truncated/i.test(output) &&

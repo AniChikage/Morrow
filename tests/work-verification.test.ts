@@ -1,7 +1,7 @@
 import './harness/env.ts';
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { mkdtempSync, writeFileSync, rmSync, symlinkSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -178,6 +178,53 @@ test('native execution seals real command fields and rejects stale or forged evi
     await f.cleanup();
   }
 });
+test('native null is complete empty output, while missing, invalid and truncated output stay incomplete', async () => {
+  const f = await fixture();
+  try {
+    const cases = [
+      { id: 'null', patch: { aggregatedOutput: null }, complete: true },
+      { id: 'empty', patch: { aggregatedOutput: '' }, complete: true },
+      { id: 'missing', patch: { aggregatedOutput: undefined }, complete: false },
+      { id: 'invalid', patch: { aggregatedOutput: 0 }, complete: false },
+      { id: 'truncated-null', patch: { aggregatedOutput: null, outputTruncated: true }, complete: false },
+      { id: 'truncated-empty', patch: { aggregatedOutput: '', truncated: true }, complete: false },
+      { id: 'failed-null', patch: { aggregatedOutput: null, exitCode: 9 }, complete: true },
+    ];
+    for (const { id, patch, complete } of cases) {
+      const prepared = await f.call('execution.prepare', { command: f.command });
+      f.emitCommand(id, 'inProgress', { aggregatedOutput: null });
+      assert.equal((await f.call('execution.read', { id: prepared.id })).status, 'running');
+      f.emitCommand(id, 'completed', patch);
+      const { evidence } = await f.call('execution.read', { id: prepared.id });
+      assert.equal(evidence.data.output, '');
+      assert.equal(evidence.data.outputComplete, complete, id);
+      assert.equal(evidence.data.boundVersion, true);
+      assert.equal(evidence.data.exitCode, id === 'failed-null' ? 9 : 0);
+    }
+  } finally {
+    await f.cleanup();
+  }
+});
+
+test('previously captured incomplete null evidence is not reclassified by recovery or later observations', async () => {
+  const f = await fixture();
+  try {
+    const prepared = await f.call('execution.prepare', { command: f.command });
+    f.emitCommand('legacy-null', 'inProgress');
+    f.emitCommand('legacy-null', 'completed', { aggregatedOutput: null });
+    const captured = await f.call('execution.read', { id: prepared.id });
+    // Model a persisted pre-fix record; its content and digest are historical evidence.
+    const data = { ...captured.evidence.data, outputComplete: false };
+    const legacy = { ...captured.evidence, data, digest: createHash('sha256').update(JSON.stringify(data)).digest('hex') };
+    f.store.put('loop_evidence', legacy);
+    f.engine.loop.executions.recover();
+    f.emitCommand('legacy-null', 'completed', { aggregatedOutput: null });
+    assert.deepEqual((await f.call('execution.read', { id: prepared.id })).evidence, legacy);
+  } finally {
+    await f.cleanup();
+  }
+});
+
 test('missing start, changed source, wrong directory, failed command and truncated output stay inspectable without false success', async () => {
   const f = await fixture();
   try {
