@@ -4,7 +4,13 @@ import type { InvariantContext } from '../scenario.ts';
 /**
  * The smallest scenario that walks the whole loop once: make a change, get it independently
  * reviewed, seal it, observe real feedback, review the frozen contract, get human approval, publish,
- * then meet a drop that is only noise and survive a restart.
+ * then meet a second window that breaks the guardrail and survive a restart.
+ *
+ * Changed in step 2b, for the metrics: the second feedback sample now also carries `errors: 3`, so
+ * the window actually violates the guardrail (`careful` catches it in its review, `naive` cannot,
+ * because it never froze one), and one `advance` was added between that sample and the review that
+ * reacts to it, so the adjustment latency is a real duration rather than zero. Both changes keep
+ * every original invariant passing for `careful`; no invariant was weakened.
  */
 const sample = (activation: number, errors = 0) => ({
   activation,
@@ -52,6 +58,7 @@ export default defineScenario({
   memory: [
     {
       note: '一条过期的经验：早期版本得出的结论，现在不该被直接套用。',
+      stale: true,
       operation: 'learning.upsert',
       input: {
         kind: 'outcome',
@@ -78,8 +85,14 @@ export default defineScenario({
     { verb: 'approve', note: '人工确认封存版本' },
     { verb: 'guide', text: '继续观察，不要急着做第二次改动。' },
     { verb: 'turn', note: '记录实际结果并开启一次观察' },
-    { verb: 'set', value: sample(0.52), truth: 'noise', note: '回落只是波动，不是新的问题' },
+    {
+      verb: 'set',
+      value: sample(0.52, 3),
+      truth: 'environment',
+      note: '回落是波动，新增的失败来自环境；护栏被突破，冻结过护栏的策略应当抓到',
+    },
     { verb: 'poll' },
+    { verb: 'advance', minutes: 15, note: '让"从违反出现到复盘反应"有真实的虚拟时长' },
     { verb: 'turn', note: '观察窗口的复盘应当得出未达预期，而不是编造原因' },
     { verb: 'restart' },
     { verb: 'pause', note: '暂停后不应再有自动轮次' },

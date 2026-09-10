@@ -28,6 +28,6 @@ Electron / React 界面
 
 原生任务的权威历史由 Codex 管理。SQLite 保存已绑定任务的同步镜像和 Morrow 编排记录；不会导入未关联任务的私有历史。早期版本留下的 Claude Code / Trae 频道、运行和事件仍按原样保存并可读，但不再执行。
 
-同一套服务、调度器和工作接口还支撑仓库内的可重复验收 harness（[`scripts/acceptance/`](../scripts/acceptance/README.md)）。fixture 模式下 `startServer({nativeTransport})` 收到的是一个脚本化的原生后台替身，外部世界是本机接收端，时钟是虚拟的：`npm run acceptance -- run <场景>` 会在临时数据目录上把一个场景从建立观察、冻结预期、独立复核、人工上线确认一直跑到重启后的记录一致性，并写出 `timeline.jsonl`、`calls.jsonl` 与 `summary.md`。fixture 结果验证框架机制，不验证模型自主性。
+同一套服务、调度器和工作接口还支撑仓库内的可重复验收 harness（[`scripts/acceptance/`](../scripts/acceptance/README.md)）。fixture 模式下 `startServer({nativeTransport})` 收到的是一个脚本化的原生后台替身，外部世界是本机接收端，时钟是虚拟的：`npm run acceptance -- run <场景>` 会在临时数据目录上把一个场景从建立观察、冻结预期、独立复核、人工上线确认一直跑到重启后的记录一致性，并写出 `timeline.jsonl`、`calls.jsonl` 与 `summary.md`。同一条命令还从这份 SQLite 算出一套指标（`metrics.json`）：轮次与复核用量、预期核对、护栏与抓到的违反、发布与人工介入、重复失败、过期经验的沿用、调整延迟、重启一致性；算不出来的一律是 `unknown` 而不是 0。`npm run acceptance:fixture` 用 `careful` 和故意用错协议的 `naive` 两种确定性策略跑全部场景，并检查指标确实把两者分开；`compare --ignore-volatile` 用于确认同一份源码下两次运行零差异；`metrics <数据目录>` 可以只读地对任意 Morrow 数据目录算同一套指标。fixture 结果验证框架机制，不验证模型自主性。
 
 进一步阅读：[项目工作协议](PROJECT-WORK-CONTRACT.md)、[执行服务与恢复](../service/README.md)、[升级与数据迁移](UPGRADING.md)。

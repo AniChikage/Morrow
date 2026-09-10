@@ -10,9 +10,12 @@ import { grantFor } from '../../tests/harness/grant.ts';
 import { ScriptedNativeTransport } from '../../tests/harness/scripted-native.ts';
 import { policies } from './fake-agent.ts';
 import { policyScenario } from './scenario.ts';
+import { computeMetrics } from './metrics.ts';
+import { metricsSection, writeMetrics } from './report.ts';
 import { drain, runStep, stopScheduler } from './timeline.ts';
 import type { Runner } from './timeline.ts';
-import type { CallRecord, InvariantResult, Scenario, TimelineRecord } from './scenario.ts';
+import type { CallRecord, InvariantResult, Labels, Scenario, TimelineRecord } from './scenario.ts';
+import type { Metrics } from './metrics.ts';
 import type { IsolatedService } from '../../tests/harness/service.ts';
 import type { Run } from '../../service/protocol.ts';
 
@@ -43,9 +46,24 @@ export type RunResult = {
   reviews: number;
   calls: CallRecord[];
   timeline: TimelineRecord[];
+  labels: Labels;
+  /** Undefined only when the run failed before a data directory existed. */
+  metrics?: Metrics;
   invariants: InvariantReport[];
   failures: string[];
   summary: string;
+};
+
+/** The run identity `metrics <runDir>` reads back, since no table records it. */
+export type RunFacts = {
+  runId: string;
+  mode: 'fixture';
+  scenario: string;
+  scenarioVersion: string;
+  policy: string;
+  seed?: number;
+  budget: { turns: number; reviews?: number };
+  wallMs: number;
 };
 
 const repoRoot = fileURLToPath(new URL('../../', import.meta.url));
@@ -66,9 +84,13 @@ export async function runScenario(scenario: Scenario, options: RunOptions = {}):
   const out = resolve(options.out || join(repoRoot, 'artifacts', 'acceptance', runId));
   mkdirSync(out, { recursive: true });
 
+  const startedAt = performance.now();
   const failures: string[] = [];
   const timeline: TimelineRecord[] = [];
+  const labels: Labels = { staleMemoryIds: [], truth: [], planted: scenario.planted };
   let invariants: InvariantReport[] = [];
+  let metrics: Metrics | undefined;
+  let runFacts: RunFacts | undefined;
   let service: IsolatedService | undefined;
   let transport: ScriptedNativeTransport | undefined;
   const cleanup = {
@@ -99,7 +121,7 @@ export async function runScenario(scenario: Scenario, options: RunOptions = {}):
     stopScheduler(service);
     transport!.attach(service);
     await service.api('POST', `/api/channels/${service.channel.id}/native/bind`, { threadId: transport!.threadId });
-    await seedMemory(service, scenario);
+    labels.staleMemoryIds = await seedMemory(service, scenario);
     // Reviews share the channel's UTC daily budget with turns, so the cap has to cover both.
     await service.api('PATCH', `/api/channels/${service.channel.id}`, {
       maxRunsPerDay: scenario.budget.turns + (scenario.budget.reviews || 0),
@@ -121,7 +143,10 @@ export async function runScenario(scenario: Scenario, options: RunOptions = {}):
     };
     for (const [index, step] of scenario.timeline.entries()) {
       try {
-        timeline.push(await runStep(runner, step, index));
+        const record = await runStep(runner, step, index);
+        timeline.push(record);
+        if (step.verb === 'set' && step.truth)
+          labels.truth.push({ stepIndex: index, truth: step.truth, virtualTime: record.virtualTime });
       } catch (error) {
         timeline.push({
           index,
@@ -146,8 +171,23 @@ export async function runScenario(scenario: Scenario, options: RunOptions = {}):
   } catch (error) {
     failures.push(message(error));
   } finally {
+    if (service) cleanup.channelsPaused = await pauseChannels(service);
+    runFacts = facts(scenario, runId, policyName, options, startedAt);
     if (service) {
-      cleanup.channelsPaused = await pauseChannels(service);
+      // Measured on the still open store, after the run's own last act, so the numbers describe
+      // exactly the database the report directory carries.
+      try {
+        metrics = computeMetrics({
+          home: service.home,
+          store: service.store,
+          labels,
+          calls: transport?.calls || [],
+          timeline,
+          run: runFacts,
+        });
+      } catch (error) {
+        failures.push(`metrics failed: ${message(error)}`);
+      }
       await service.close().catch(() => {});
       cleanup.serviceClosed = true;
       // Copying after the close so the SQLite file in the report is a checkpointed, readable copy.
@@ -171,6 +211,8 @@ export async function runScenario(scenario: Scenario, options: RunOptions = {}):
     reviews: transport?.reviews || 0,
     calls: transport?.calls || [],
     timeline,
+    labels,
+    ...(metrics ? { metrics } : {}),
     invariants,
     failures,
     summary: '',
@@ -179,8 +221,28 @@ export async function runScenario(scenario: Scenario, options: RunOptions = {}):
   writeFileSync(join(out, 'timeline.jsonl'), lines(timeline));
   writeFileSync(join(out, 'calls.jsonl'), lines(result.calls));
   writeFileSync(join(out, 'cleanup.json'), JSON.stringify(cleanup, null, 2) + '\n');
+  writeFileSync(join(out, 'labels.json'), JSON.stringify(labels, null, 2) + '\n');
+  writeFileSync(join(out, 'run.json'), JSON.stringify(runFacts, null, 2) + '\n');
+  if (metrics) writeMetrics(out, metrics);
   writeFileSync(join(out, 'summary.md'), result.summary);
   return result;
+}
+
+/** The run identity the report carries, so `metrics <runDir>` reproduces the same `config`. */
+function facts(scenario: Scenario, runId: string, policy: string, options: RunOptions, startedAt: number): RunFacts {
+  return {
+    runId,
+    mode: 'fixture',
+    scenario: scenario.id,
+    scenarioVersion: scenario.version,
+    policy,
+    ...(options.seed === undefined ? {} : { seed: options.seed }),
+    budget: {
+      turns: scenario.budget.turns,
+      ...(scenario.budget.reviews === undefined ? {} : { reviews: scenario.budget.reviews }),
+    },
+    wallMs: Math.round(performance.now() - startedAt),
+  };
 }
 
 function seedFiles(scenario: Scenario): Record<string, string> {
@@ -203,21 +265,30 @@ function readSeedDir(dir: string): Record<string, string> {
   return files;
 }
 
-/** Writes the scenario's planted memory through the real work interface, before any turn runs. */
-async function seedMemory(service: IsolatedService, scenario: Scenario) {
-  if (!scenario.memory.length) return;
+/**
+ * Writes the scenario's planted memory through the real work interface, before any turn runs, and
+ * returns the ids of the records the scenario marked stale — the labels the metrics need. A policy
+ * only ever sees the records themselves, in `context`.
+ */
+async function seedMemory(service: IsolatedService, scenario: Scenario): Promise<string[]> {
+  if (!scenario.memory.length) return [];
   // `native-app` keeps this preparation run out of the channel's daily scheduling budget.
   const grant = grantFor(service, {
     projectId: service.project.id,
     channelId: service.channel.id,
     overrides: { source: 'native-app', summary: '场景预置记忆' },
   });
-  for (const seed of scenario.memory) await grant.call(seed.operation, seed.input);
+  const stale: string[] = [];
+  for (const seed of scenario.memory) {
+    const row = await grant.call(seed.operation, seed.input);
+    if (seed.stale && typeof row?.id === 'string') stale.push(row.id);
+  }
   service.store.put('runs', {
     ...(service.store.get<Run>('runs', grant.run.id) as Run),
     status: 'completed',
     finishedAt: new Date().toISOString(),
   });
+  return stale;
 }
 
 async function pauseChannels(service: IsolatedService) {
@@ -271,6 +342,7 @@ function summaryMarkdown(scenario: Scenario, result: RunResult, options: RunOpti
       ? result.invariants.map((row) => `- ${row.ok ? 'PASS' : 'FAIL'} ${row.name} — ${row.detail}`)
       : ['- 未执行（运行提前失败）']),
     '',
+    ...metricsSection(result.metrics),
     ...(result.failures.length ? ['## 失败原因', '', ...result.failures.map((row) => `- ${row}`), ''] : []),
   ].join('\n');
 }

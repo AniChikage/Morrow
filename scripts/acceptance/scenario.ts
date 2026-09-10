@@ -66,10 +66,29 @@ export type MemorySeed = {
   input: Record<string, unknown>;
   /** Free-text note explaining why this record is planted (stale experience, noise, …). */
   note?: string;
+  /**
+   * This record is the stale experience the scenario plants. The runner writes the ids it created
+   * into `labels.json`, and the metrics count them as followed, avoided or ignored. A policy never
+   * sees the flag — it only sees the record itself in `context`.
+   */
+  stale?: boolean;
 };
 
 /** A problem deliberately built into the seed project, for a later step's discovery metrics. */
 export type PlantedProblem = { id: string; where: string; description: string; shouldFix: boolean };
+
+/**
+ * The scenario's own labels, written to `labels.json`. They are the only input the metrics read that
+ * does not come from SQLite: which seeded records are stale, what each feedback change really was,
+ * and which problems were planted. Nothing in the service or in a policy is allowed to see them.
+ */
+export type Labels = {
+  /** Record ids created by the seeds marked `stale: true`. */
+  staleMemoryIds: string[];
+  /** Every `set` step that carried a `truth` label, with the virtual time it took effect. */
+  truth: Array<{ stepIndex: number; truth: Truth; virtualTime: string }>;
+  planted: PlantedProblem[];
+};
 
 export type ProjectSpec = {
   /** Seed files written into the isolated project directory. */

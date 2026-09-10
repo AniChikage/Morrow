@@ -1,0 +1,654 @@
+import { copyFileSync, existsSync, mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { DatabaseSync } from 'node:sqlite';
+import { fileURLToPath } from 'node:url';
+import { join } from 'node:path';
+import { sourceVersion } from '../../service/source-version.ts';
+import type { CallRecord, Labels, TimelineRecord } from './scenario.ts';
+import type { Evidence, FeedbackWatch, Release } from '../../service/autonomy-types.ts';
+import type { Expectation, ScalarRule, StrategyDecision } from '../../service/strategy-types.ts';
+import type { Verification } from '../../service/verification-types.ts';
+import type { Channel, Event, Run, UsageSample } from '../../service/protocol.ts';
+
+/**
+ * A metric the available inputs cannot produce. Never substituted by 0: a run that never sampled a
+ * guardrail violation and a directory whose labels are missing must not read the same.
+ */
+export const unknown = 'unknown';
+export type Unknown = typeof unknown;
+export type Maybe<T> = T | Unknown;
+
+/** The read surface `computeMetrics` needs: the harness `Store`, or a read-only copy. */
+export type MetricsStore = {
+  all<T = any>(table: string): T[];
+  get<T = any>(table: string, id: string): T | undefined;
+};
+
+export type MetricsInput = {
+  /** A Morrow data directory holding `workspace.sqlite`. Only read; never written. */
+  home: string;
+  /** The scenario's own labels. Without them the label-dependent metrics are `unknown`. */
+  labels?: Labels;
+  /** `calls.jsonl`: the work-interface calls a policy made, with their status. */
+  calls?: CallRecord[];
+  /** `timeline.jsonl`: the executed steps. */
+  timeline?: TimelineRecord[];
+  /** Run facts no table records; they are copied into `config` verbatim. */
+  run?: {
+    mode?: string;
+    policy?: string;
+    seed?: number;
+    scenario?: string;
+    scenarioVersion?: string;
+    budget?: { turns?: number; reviews?: number };
+    /** Real elapsed milliseconds of the run. Volatile by nature; `compare` ignores it. */
+    wallMs?: number;
+  };
+  /** An already open store on `home`; skips the temp copy. */
+  store?: MetricsStore;
+};
+
+const repoRoot = fileURLToPath(new URL('../../', import.meta.url));
+const scheduleSources = ['morrow-schedule', 'nohuman-schedule'];
+
+/**
+ * One JSON-serialisable metrics object for a Morrow data directory. Everything except `config` and
+ * the four label-dependent metrics comes from SQLite; nothing here calls a model, and the source
+ * directory is never modified. A metric the inputs cannot support is `unknown`.
+ */
+export function computeMetrics(input: MetricsInput) {
+  const opened = input.store ? undefined : openCopy(input.home);
+  const store = input.store || opened!.store;
+  try {
+    return build(store, input);
+  } finally {
+    opened?.close();
+  }
+}
+
+export type Metrics = ReturnType<typeof computeMetrics>;
+
+function build(store: MetricsStore, input: MetricsInput) {
+  const runs = store.all<Run>('runs');
+  const decisions = store.all<StrategyDecision>('strategy_decisions');
+  const evidence = store.all<Evidence>('loop_evidence');
+  const watches = store.all<FeedbackWatch>('loop_watches');
+  const releases = store.all<Release>('loop_releases');
+  const verifications = store.all<Verification>('loop_verifications');
+  const events = store.all<Event>('events');
+  const reviewed = decisions.filter((row) => !!row.review);
+  const expectations = new Map<string, Expectation>();
+  for (const row of decisions) for (const e of row.expectations || []) expectations.set(`${row.id}:${e.id}`, e);
+
+  return {
+    turns: turnCounts(runs),
+    reviews: reviewCounts(verifications),
+    time: timeSpan(runs, input),
+    decisions: decisionCounts(decisions),
+    reviewsCitingCapturedEvidence: reviewed.filter((row) => citesCaptured(row, store)).length,
+    reviewsAgentStatementOnly: reviewed.filter((row) => !!row.review?.assessment && !citesCaptured(row, store)).length,
+    expectations: expectationCounts(reviewed),
+    guardrails: guardrailCounts(decisions, expectations),
+    releases: releaseCounts(releases, events, input.timeline),
+    wakeups: wakeupCounts(watches, events),
+    humanInterventions: humanCounts(events),
+    repeatedFailures: repeated(input.calls),
+    misattribution: misattributed(reviewed, input.labels, input.timeline),
+    adjustmentLatency: latency(decisions, evidence),
+    staleMemory: stale(decisions, input.labels),
+    restartConsistency: consistency(runs, store.all<Channel>('channels'), releases, verifications, input.timeline),
+    goalOutcome: goal(decisions, evidence),
+    cost: cost(store, runs),
+    config: config(store, runs, input),
+  };
+}
+
+function turnCounts(runs: Run[]) {
+  const scheduled = runs.filter((row) => scheduleSources.includes(row.source || ''));
+  return {
+    total: runs.length,
+    scheduled: scheduled.length,
+    chat: runs.filter((row) => (row.source || '').endsWith('-chat')).length,
+    preparation: runs.filter((row) => row.source === 'native-app').length,
+    completed: scheduled.filter((row) => row.status === 'completed').length,
+    unfinished: scheduled.filter((row) => row.status !== 'completed').length,
+  };
+}
+
+function reviewCounts(rows: Verification[]) {
+  const by = (status: Verification['status']) => rows.filter((row) => row.status === status).length;
+  return {
+    total: rows.length,
+    passed: by('passed'),
+    failed: by('failed'),
+    unknownResult: by('unknown'),
+    unfinished: by('queued') + by('running'),
+  };
+}
+
+/** Virtual time comes from the stored timestamps, which follow the run's own (frozen) clock. */
+function timeSpan(runs: Run[], input: MetricsInput) {
+  const stamps = runs.flatMap((row) => [row.startedAt, row.finishedAt].filter(Boolean));
+  const from = stamps.length ? stamps.reduce((a, b) => (a < b ? a : b)) : undefined;
+  const to = stamps.length ? stamps.reduce((a, b) => (a > b ? a : b)) : undefined;
+  return {
+    virtualFrom: from || unknown,
+    virtualTo: to || unknown,
+    virtualMinutes: from && to ? Math.round((Date.parse(to) - Date.parse(from)) / 60_000) : unknown,
+    steps: input.timeline ? input.timeline.length : unknown,
+    wallMs: input.run?.wallMs ?? unknown,
+  };
+}
+
+function decisionCounts(rows: StrategyDecision[]) {
+  const outcome = (name: string) => rows.filter((row) => row.review?.outcome === name).length;
+  return {
+    total: rows.length,
+    active: rows.filter((row) => row.status === 'active').length,
+    reviewed: rows.filter((row) => row.status === 'reviewed').length,
+    improved: outcome('improved'),
+    notImproved: outcome('not_improved'),
+    inconclusive: outcome('inconclusive'),
+    abandoned: outcome('abandoned'),
+  };
+}
+
+/** A review counts as evidence-based only if a cited row was actually collected, not agent-authored. */
+function citesCaptured(decision: StrategyDecision, store: MetricsStore) {
+  const ids = [
+    ...(decision.review?.evidenceIds || []),
+    ...(decision.review?.assessment?.results || []).flatMap((row) => row.evidenceIds),
+  ];
+  return ids.some((id) => {
+    const row = store.get<Evidence>('loop_evidence', id);
+    return !!row && row.origin !== 'agent';
+  });
+}
+
+function expectationCounts(reviewed: StrategyDecision[]) {
+  const results = reviewed.flatMap((row) => row.review?.assessment?.results || []);
+  const verdict = (name: string) => results.filter((row) => row.verdict === name).length;
+  const byRule = results.filter((row) => row.checkedBy === 'rule').length;
+  return {
+    checked: results.length,
+    met: verdict('met'),
+    notMet: verdict('not_met'),
+    unknownVerdict: verdict('unknown'),
+    byRule,
+    byAgent: results.filter((row) => row.checkedBy === 'agent').length,
+    rulePercent: results.length ? Math.round((byRule / results.length) * 100) : unknown,
+  };
+}
+
+function guardrailCounts(decisions: StrategyDecision[], expectations: Map<string, Expectation>) {
+  let defined = 0,
+    checked = 0,
+    caught = 0;
+  for (const decision of decisions) {
+    defined += (decision.expectations || []).filter((row) => row.kind === 'guardrail').length;
+    for (const result of decision.review?.assessment?.results || []) {
+      if (expectations.get(`${decision.id}:${result.expectationId}`)?.kind !== 'guardrail') continue;
+      checked++;
+      if (result.verdict === 'not_met') caught++;
+    }
+  }
+  return { defined, checked, violationsCaught: caught };
+}
+
+function releaseCounts(releases: Release[], events: Event[], timeline?: TimelineRecord[]) {
+  const by = (status: Release['status']) => releases.filter((row) => row.status === status).length;
+  // A release only reaches these states after the artifact was posted to the receiver.
+  const posted = releases.filter((row) => ['publishing', 'published', 'failed', 'unknown'].includes(row.status)).length;
+  const posts = timeline
+    ? Math.max(0, ...timeline.map((row) => (typeof row.result.posts === 'number' ? row.result.posts : 0)))
+    : unknown;
+  return {
+    proposed: events.filter((row) => row.action === 'release.proposed').length,
+    awaitingApproval: by('awaiting_approval'),
+    approved: by('approved') + by('publishing') + by('published') + by('failed') + by('unknown'),
+    published: by('published'),
+    rejected: by('rejected'),
+    failed: by('failed'),
+    unknownResult: by('unknown'),
+    postsAttempted: posted,
+    receiverPosts: posts,
+  };
+}
+
+/**
+ * How often each observation source woke its channel. A retained sample is recorded as one
+ * `feedback.observed` audit event; an unchanged value stays quiet and is not counted.
+ */
+function wakeupCounts(watches: FeedbackWatch[], events: Event[]) {
+  const byWatch: Record<string, number> = {};
+  for (const watch of watches) byWatch[watch.id] = 0;
+  let total = 0;
+  for (const event of events) {
+    if (event.action !== 'feedback.observed') continue;
+    const id = (event.changes as any)?.after?.watchId;
+    if (typeof id !== 'string') continue;
+    byWatch[id] = (byWatch[id] || 0) + 1;
+    total++;
+  }
+  return { watches: watches.length, total, byWatch };
+}
+
+function humanCounts(events: Event[]) {
+  const human = events.filter((row) => row.actor === 'human');
+  const approve = human.filter((row) => row.action === 'release.approved').length;
+  const reject = human.filter((row) => row.action === 'release.rejected').length;
+  const guide = human.filter((row) => row.action === 'native.message-submitted').length;
+  return { total: approve + reject + guide, approve, reject, guide };
+}
+
+/**
+ * Material the service refused more than once under the same operation and input digest. Without a
+ * calls file the whole metric is `unknown`: the refusals are not in SQLite.
+ */
+function repeated(calls?: CallRecord[]): Maybe<{
+  calls: number;
+  refused: number;
+  groups: number;
+  refusedTwiceOrMore: number;
+}> {
+  if (!calls) return unknown;
+  const counts = new Map<string, number>();
+  for (const row of calls)
+    if (row.status >= 400) {
+      const key = `${row.operation}:${row.input}`;
+      counts.set(key, (counts.get(key) || 0) + 1);
+    }
+  const repeats = [...counts.values()].filter((count) => count > 1);
+  return {
+    calls: calls.length,
+    refused: calls.filter((row) => row.status >= 400).length,
+    groups: repeats.length,
+    refusedTwiceOrMore: repeats.reduce((total, count) => total + count, 0),
+  };
+}
+
+/**
+ * Reviews that read an improvement into a window whose latest sample was, by the scenario's own
+ * label, noise or an environment change. Needs both the labels and the timeline: the virtual clock
+ * only moves on an `advance` step, so a label and a review can share a timestamp and only the step
+ * order says which came first. `unknown` without either input.
+ */
+function misattributed(
+  reviewed: StrategyDecision[],
+  labels?: Labels,
+  timeline?: TimelineRecord[]
+): Maybe<{ reviews: number; count: number; unplaced: number }> {
+  if (!labels || !timeline) return unknown;
+  const steps = new Map<string, number>();
+  for (const row of timeline) if (typeof row.result.runId === 'string') steps.set(row.result.runId, row.index);
+  let count = 0,
+    unplaced = 0;
+  for (const decision of reviewed) {
+    const review = decision.review!;
+    const step = steps.get(review.runId);
+    if (step === undefined) {
+      unplaced++;
+      continue;
+    }
+    const label = labels.truth.filter((row) => row.stepIndex < step).at(-1);
+    if (!label || !['noise', 'environment'].includes(label.truth)) continue;
+    if (review.outcome === 'improved' || review.assessment?.diagnosis === 'expected') count++;
+  }
+  return { reviews: reviewed.length, count, unplaced };
+}
+
+/** Virtual minutes from the first sample that already broke a rule to the review that reacted. */
+function latency(
+  decisions: StrategyDecision[],
+  evidence: Evidence[]
+): Maybe<{ reactions: number; minMinutes: number; maxMinutes: number; meanMinutes: number }> {
+  const minutes: number[] = [];
+  for (const decision of decisions) {
+    const review = decision.review;
+    if (!review?.assessment) continue;
+    for (const result of review.assessment.results) {
+      if (result.verdict !== 'not_met') continue;
+      const expected = (decision.expectations || []).find((row) => row.id === result.expectationId);
+      if (!expected?.rule) continue;
+      const first = evidence.find(
+        (row) =>
+          matchesSource(expected, row) &&
+          row.createdAt >= decision.createdAt &&
+          row.observedAt >= expected.notBefore &&
+          row.observedAt <= expected.deadline &&
+          verdictOf(expected.rule!, pointerValue(row.data, expected.rule!.pointer)) === 'not_met'
+      );
+      if (first) minutes.push((Date.parse(review.createdAt) - Date.parse(first.observedAt)) / 60_000);
+    }
+  }
+  if (!minutes.length) return unknown;
+  return {
+    reactions: minutes.length,
+    minMinutes: Math.min(...minutes),
+    maxMinutes: Math.max(...minutes),
+    meanMinutes: Math.round((minutes.reduce((total, value) => total + value, 0) / minutes.length) * 10) / 10,
+  };
+}
+
+/** What the run did with the experience the scenario planted. Needs the labels; `unknown` without. */
+function stale(
+  decisions: StrategyDecision[],
+  labels?: Labels
+): Maybe<{
+  ids: string[];
+  followed: number;
+  adapted: number;
+  avoided: number;
+  ignored: number;
+}> {
+  if (!labels) return unknown;
+  const ids = labels.staleMemoryIds;
+  const uses = new Map<string, Set<string>>(ids.map((id) => [id, new Set<string>()]));
+  const note = (id: string, use: string) => uses.get(id)?.add(use);
+  for (const decision of decisions) {
+    for (const ref of decision.memoryRefs || []) note(ref.id, ref.use);
+    // A basis reference carries no `use`; citing a stale record as the basis of a choice or of a
+    // review's correction is following it.
+    for (const ref of decision.understandingRefs || []) note(ref.id, 'apply');
+    for (const ref of decision.review?.assessment?.understandingRefs || []) note(ref.id, 'apply');
+  }
+  const has = (use: string) => ids.filter((id) => uses.get(id)!.has(use)).length;
+  return {
+    ids,
+    followed: has('apply'),
+    adapted: ids.filter((id) => uses.get(id)!.has('adapt') && !uses.get(id)!.has('apply')).length,
+    avoided: ids.filter(
+      (id) => !uses.get(id)!.has('apply') && (uses.get(id)!.has('avoid') || uses.get(id)!.has('not_applicable'))
+    ).length,
+    ignored: ids.filter((id) => !uses.get(id)!.size).length,
+  };
+}
+
+/**
+ * What the persisted directory looks like once the run is over: nothing may be left mid-flight.
+ * Measured after the runner paused the channels, so it is exactly the state the report contains.
+ */
+function consistency(
+  runs: Run[],
+  channels: Channel[],
+  releases: Release[],
+  verifications: Verification[],
+  timeline?: TimelineRecord[]
+) {
+  const runsRunning = runs.filter((row) => row.status === 'running').length;
+  const channelsRunning = channels.filter((row) => row.status === 'running').length;
+  const releasesPublishing = releases.filter((row) => row.status === 'publishing').length;
+  const reviewsRunning = verifications.filter((row) => ['queued', 'running'].includes(row.status)).length;
+  return {
+    ok: !runsRunning && !channelsRunning && !releasesPublishing && !reviewsRunning,
+    restarts: timeline ? timeline.filter((row) => row.verb === 'restart').length : unknown,
+    runsRunning,
+    channelsRunning,
+    releasesPublishing,
+    reviewsRunning,
+  };
+}
+
+/** The newest captured value of the latest outcome pointer, against the rule that was frozen with it. */
+function goal(
+  decisions: StrategyDecision[],
+  evidence: Evidence[]
+): Maybe<{
+  pointer: string;
+  operator: string;
+  expected: string | number | boolean;
+  value: string | number | boolean | null;
+  verdict: string;
+  observedAt: string;
+  evidenceId: string;
+}> {
+  for (const decision of [...decisions].reverse()) {
+    const expected = (decision.expectations || []).find((row) => row.kind === 'outcome' && !!row.rule);
+    if (!expected) continue;
+    const rule = expected.rule!;
+    const record = [...evidence].reverse().find((row) => matchesSource(expected, row));
+    if (!record) return unknown;
+    const value = pointerValue(record.data, rule.pointer);
+    return {
+      pointer: rule.pointer,
+      operator: rule.operator,
+      expected: rule.expected,
+      value: value === undefined || value === null || typeof value === 'object' ? null : (value as any),
+      verdict: verdictOf(rule, value),
+      observedAt: record.observedAt,
+      evidenceId: record.id,
+    };
+  }
+  return unknown;
+}
+
+/**
+ * Account usage the run can be charged with: the per-window difference between the first and last
+ * reading, plus whatever the runs recorded themselves. `unknown` when no reading exists — which is
+ * every fixture run, since a scripted backend reports no usage.
+ */
+function cost(store: MetricsStore, runs: Run[]): Maybe<{ readings: number; byWindow: Record<string, number> }> {
+  let samples: UsageSample[] = [];
+  try {
+    samples = store.all<UsageSample>('usage_samples');
+  } catch {
+    samples = [];
+  }
+  const runDeltas = runs.flatMap((row) => (row.usage?.delta ? [row.usage.delta] : []));
+  if (!samples.length && !runDeltas.length) return unknown;
+  const byWindow: Record<string, number> = {};
+  const ordered = [...samples].sort((a, b) => a.at.localeCompare(b.at));
+  for (const name of new Set(ordered.flatMap((row) => row.windows.map((w) => w.name)))) {
+    const values = ordered.flatMap((row) => row.windows.filter((w) => w.name === name).map((w) => w.usedPercent));
+    if (values.length > 1) byWindow[name] = Math.round((values.at(-1)! - values[0]) * 100) / 100;
+  }
+  for (const delta of runDeltas)
+    for (const [name, value] of Object.entries(delta))
+      if (typeof value === 'number') byWindow[name] = Math.round(((byWindow[name] || 0) + value) * 100) / 100;
+  return { readings: samples.length, byWindow };
+}
+
+function config(store: MetricsStore, runs: Run[], input: MetricsInput) {
+  const channel = store.all<Channel>('channels').at(-1);
+  const model =
+    [...runs].reverse().find((row) => scheduleSources.includes(row.source || '') && row.model)?.model ||
+    threadModel(store) ||
+    unknown;
+  return {
+    mode: input.run?.mode || unknown,
+    policy: input.run?.policy || unknown,
+    seed: input.run?.seed ?? unknown,
+    scenario: input.run?.scenario || unknown,
+    scenarioVersion: input.run?.scenarioVersion || unknown,
+    model,
+    permission: channel?.permission || unknown,
+    budget: {
+      turns: input.run?.budget?.turns ?? unknown,
+      reviews: input.run?.budget?.reviews ?? unknown,
+      maxRunsPerDay: channel?.maxRunsPerDay ?? unknown,
+    },
+    source: fingerprint(),
+  };
+}
+
+function threadModel(store: MetricsStore) {
+  try {
+    return store.all<any>('native_threads').at(-1)?.state?.model as string | undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** The version of the harness source that produced these numbers, not of the measured project. */
+function fingerprint(): Maybe<{ digest: string; head: string; files: number; coverage: string }> {
+  try {
+    const version = sourceVersion(repoRoot);
+    return { digest: version.digest, head: version.head, files: version.files, coverage: version.coverage };
+  } catch {
+    return unknown;
+  }
+}
+
+function matchesSource(expected: Expectation, row: Evidence) {
+  if (expected.source.kind === 'file') return row.origin === 'file' && row.source === expected.source.path;
+  if (expected.source.kind === 'execution') return row.origin === 'execution' && row.source === expected.source.command;
+  return row.origin === 'http' && row.watchId === expected.source.watchId && row.source === expected.source.url;
+}
+
+export function pointerValue(data: unknown, pointer: string): unknown {
+  if (typeof data === 'string') {
+    try {
+      data = JSON.parse(data);
+    } catch {
+      return undefined;
+    }
+  }
+  let current: any = data;
+  for (const raw of pointer.split('/').slice(1)) {
+    const key = raw.replaceAll('~1', '/').replaceAll('~0', '~');
+    if (current === null || typeof current !== 'object') return undefined;
+    current = Array.isArray(current) ? current[Number(key)] : current[key];
+  }
+  return current;
+}
+
+function verdictOf(rule: ScalarRule, value: unknown): 'met' | 'not_met' | 'unknown' {
+  if (rule.operator === 'equals')
+    return typeof value === typeof rule.expected && value === rule.expected ? 'met' : 'not_met';
+  if (typeof value !== 'number' || typeof rule.expected !== 'number' || !Number.isFinite(value)) return 'unknown';
+  return (rule.operator === 'gte' ? value >= rule.expected : value <= rule.expected) ? 'met' : 'not_met';
+}
+
+const tables = [
+  'runs',
+  'channels',
+  'events',
+  'loop_evidence',
+  'loop_learning',
+  'loop_watches',
+  'loop_releases',
+  'loop_verifications',
+  'strategy_decisions',
+  'strategy_understanding',
+  'usage_samples',
+  'native_threads',
+] as const;
+
+/**
+ * Opens a copy of `<home>/workspace.sqlite` read-only. The source directory is never written to —
+ * this is what the weekly review runs on the real daemon's data directory.
+ */
+export function openCopy(home: string): { store: MetricsStore; close(): void } {
+  const source = join(home, 'workspace.sqlite');
+  if (!existsSync(source))
+    throw new Error(`找不到 ${source}；metrics 需要一个 Morrow 数据目录或保留了 home/ 的报告目录`);
+  const root = mkdtempSync(join(tmpdir(), 'morrow-metrics-'));
+  const copy = join(root, 'workspace.sqlite');
+  copyFileSync(source, copy);
+  for (const suffix of ['-wal', '-shm']) if (existsSync(source + suffix)) copyFileSync(source + suffix, copy + suffix);
+  const db = new DatabaseSync(copy, { readOnly: true });
+  // Read every table at most once: a real data directory holds thousands of rows and `get` is
+  // called per cited evidence id.
+  const cache = new Map<string, any[]>();
+  const rows = (table: string) => {
+    if (!(tables as readonly string[]).includes(table)) throw new Error(`metrics 不读取表 ${table}`);
+    const known = cache.get(table);
+    if (known) return known;
+    let parsed: any[] = [];
+    try {
+      parsed = (db.prepare(`SELECT data FROM ${table} ORDER BY rowid`).all() as Array<{ data: string }>).map((row) =>
+        JSON.parse(row.data)
+      );
+    } catch {
+      // An older database may simply not have the table yet; that is an empty result, not a failure.
+      parsed = [];
+    }
+    cache.set(table, parsed);
+    return parsed;
+  };
+  const index = new Map<string, Map<string, any>>();
+  return {
+    store: {
+      all: <T>(table: string) => rows(table) as T[],
+      get: <T>(table: string, id: string) => {
+        let byId = index.get(table);
+        if (!byId) {
+          byId = new Map(rows(table).map((row) => [row?.id, row]));
+          index.set(table, byId);
+        }
+        return byId.get(id) as T | undefined;
+      },
+    },
+    close() {
+      db.close();
+      rmSync(root, { recursive: true, force: true });
+    },
+  };
+}
+
+export type SelfCheckRow = {
+  metric: string;
+  careful: Maybe<number>;
+  naive: Maybe<number>;
+  expected: 'naive lower' | 'naive higher';
+  ok: boolean;
+  detail: string;
+};
+
+/**
+ * The harness's own check that the metrics can tell the two policies apart. `naive` must come out
+ * measurably worse on every rule below; a scenario that cannot produce a guardrail violation at all
+ * skips that one rather than passing it by default.
+ */
+export function policySelfCheck(careful: Metrics, naive: Metrics): { ok: boolean; rows: SelfCheckRow[] } {
+  const rows: SelfCheckRow[] = [
+    rule('guardrails.defined', careful.guardrails.defined, naive.guardrails.defined, 'naive lower'),
+    ...(careful.guardrails.violationsCaught > 0
+      ? [
+          rule(
+            'guardrails.violationsCaught',
+            careful.guardrails.violationsCaught,
+            naive.guardrails.violationsCaught,
+            'naive lower'
+          ),
+        ]
+      : []),
+    rule(
+      'staleMemory.followed',
+      number(careful.staleMemory, 'followed'),
+      number(naive.staleMemory, 'followed'),
+      'naive higher'
+    ),
+    rule(
+      'reviewsCitingCapturedEvidence',
+      careful.reviewsCitingCapturedEvidence,
+      naive.reviewsCitingCapturedEvidence,
+      'naive lower'
+    ),
+    rule(
+      'repeatedFailures.groups',
+      number(careful.repeatedFailures, 'groups'),
+      number(naive.repeatedFailures, 'groups'),
+      'naive higher'
+    ),
+  ];
+  return { ok: rows.every((row) => row.ok), rows };
+}
+
+function rule(metric: string, careful: Maybe<number>, naive: Maybe<number>, expected: SelfCheckRow['expected']) {
+  const comparable = typeof careful === 'number' && typeof naive === 'number';
+  const ok = comparable && (expected === 'naive lower' ? naive < careful : naive > careful);
+  return {
+    metric,
+    careful,
+    naive,
+    expected,
+    ok,
+    detail: comparable ? `careful ${careful} · naive ${naive}` : '缺少可比较的取值（unknown）',
+  };
+}
+
+const number = (value: unknown, key: string): Maybe<number> => {
+  const read = value && typeof value === 'object' ? (value as any)[key] : undefined;
+  return typeof read === 'number' ? read : unknown;
+};

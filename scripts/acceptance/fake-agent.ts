@@ -11,15 +11,11 @@ import type {
 /**
  * Deterministic policies for fixture runs. They are not a model simulation: they exist so the
  * harness can exercise the real work interface, scheduler and gates without calling anything.
- * `careful` uses the protocol as intended; a later step adds `naive`, which breaks it on purpose so
- * the metrics can be shown to tell the two apart.
+ * `careful` uses the protocol as intended; `naive` breaks it on purpose, in the four ways the plan
+ * names, so the metrics can be shown to tell the two apart.
  */
-export const policies: Record<string, TurnPolicy> = { careful };
+export const policies: Record<string, TurnPolicy> = { careful, naive };
 export type PolicyName = keyof typeof policies;
-
-// Extension point for step 2b: add `naive` here (same `TurnPolicy` shape, deliberately wrong use of
-// the protocol — follows stale memory, defines no guardrail, never compares conditions, resubmits
-// unchanged material) and register it in `policies` above. Nothing else in the harness changes.
 
 /** Observation windows and review deadlines the careful policy asks for, in milliseconds. */
 const windowMs = 6 * 3600_000;
@@ -388,4 +384,224 @@ function finish(state: 'continue' | 'wait', focus: string, reason: string, nextS
   return (
     `${reason}\n` + nextBlock({ state, focus, reason, nextStep, ...(state === 'wait' ? { waitMinutes: 60 } : {}) })
   );
+}
+
+/**
+ * The same `TurnPolicy` shape as `careful`, deterministic, and always ending with a valid
+ * `morrow-next` block — but using the protocol wrongly on purpose, in exactly four ways:
+ *
+ * 1. follows stale memory: it reads the seeded experience out of `context` and adopts it, citing it
+ *    with an applied `use` and basing its option and rationale on it;
+ * 2. defines no guardrail: it freezes only the outcome expectation;
+ * 3. never compares conditions: its `decision.review` claims `conditions: 'matched'` and a confident
+ *    diagnosis without reading a sample, citing no captured evidence at all;
+ * 4. resubmits unchanged material: after a refusal it sends the identical request again, so the
+ *    service refuses it again. Those refusals are the run's repeated failures.
+ *
+ * It never crashes the run: every call that the framework is expected to refuse goes through
+ * `attempt`, which swallows the rejection. The call is still recorded in `transport.calls` with its
+ * status, which is where the repeated-failure metric reads it from.
+ */
+async function naive(turn: TurnContext): Promise<string> {
+  const context = await turn.grant.call('context');
+  const state = read(context, turn.scenario);
+  if (state.decision && state.reviewDue) return naiveReview(turn, state);
+  if (!state.feature) return naivePlan(turn);
+  if (!state.decision && state.verified) return naiveShip(turn, state);
+  return naiveWait(turn, state.watch?.id, '继续等着指标自己变好。', '沿用旧经验的做法，不另做核对。');
+}
+
+/** Runs a call the framework is expected to refuse and keeps going; the refusal stays in `calls`. */
+async function attempt(call: TurnContext['grant']['call'], operation: string, input: unknown) {
+  try {
+    return await call(operation, input);
+  } catch {
+    // The status code is already recorded; a naive policy does not read it either.
+    return undefined;
+  }
+}
+
+/**
+ * First turn: make the change, then propose the release straight away — twice, with the identical
+ * body, because the first refusal (no independent review yet) is not read. Only afterwards does it
+ * ask for the review the release gate actually requires.
+ */
+async function naivePlan(turn: TurnContext): Promise<string> {
+  const call = turn.grant.call;
+  const scenario = turn.scenario;
+  writeFileSync(join(turn.project.path, scenario.artifactPath), scenario.artifactBody);
+  const feature = await call('feature.upsert', {
+    title: featureTitle(scenario),
+    summary: `按旧经验的做法推进目标「${scenario.goal}」。`,
+    kind: 'feature',
+    status: 'investigating',
+    evidenceIds: [],
+    nextStep: '直接提交发布。',
+  });
+  const artifact = await call('evidence.capture', {
+    itemId: feature.id,
+    summary: '待发布产物的实际内容',
+    path: scenario.artifactPath,
+  });
+  const proposal = naiveRelease(scenario, feature.id, artifact.id);
+  await attempt(call, 'release.propose', proposal);
+  await attempt(call, 'release.propose', proposal);
+  await call('verification.request', { itemId: feature.id, evidenceIds: [artifact.id] });
+  await call('wait', { watchIds: [], releaseIds: [], deadline: iso(windowMs), reason: '等待复核后再次提交发布。' });
+  return finish('wait', scenario.goal, '改动已提交，发布也已经提交过。', '等复核通过后重发同一份发布提议。');
+}
+
+/**
+ * The review passed: adopt the seeded experience, freeze only the outcome (no guardrail), and send
+ * the same release proposal a third time — now accepted, since the gate it kept failing is satisfied.
+ */
+async function naiveShip(turn: TurnContext, state: Snapshot): Promise<string> {
+  const call = turn.grant.call;
+  const scenario = turn.scenario;
+  if (!state.artifactEvidenceId) throw new Error('naive: no captured artifact evidence to cite in a release check');
+  const adopted = adopt(state.context);
+  const source = adopted[0]?.title || '历史记录';
+  const watch = await call('watch.create', {
+    itemId: state.feature.id,
+    title: '真实反馈样本',
+    url: scenario.feedback.url,
+    pointer: scenario.feedback.pointer,
+    condition: scenario.feedback.condition.operator,
+    expected: scenario.feedback.condition.expected,
+    intervalSeconds: 60,
+    deadline: iso(windowMs),
+    continuous: true,
+  });
+  await attempt(call, 'decision.choose', {
+    objectiveVersion: state.objectiveVersion,
+    options: [
+      {
+        title: `照旧经验再做一次：${scenario.goal}`,
+        kind: 'act',
+        benefit: `旧经验《${source}》已经给出过结论，照做最省事。`,
+        cost: '一次改动。',
+        uncertainty: '没有。旧经验已经说明该怎么做。',
+      },
+    ],
+    selected: 0,
+    rationale: `沿用旧经验《${source}》的结论，不再重新验证它的适用条件。`,
+    nextStep: '提交发布，等指标自己变好。',
+    expectedOutcome: scenario.feedback.outcome.claim,
+    evaluation: '上线后按改动内容判断是否达成。',
+    stopWhen: '暂无。',
+    // (b) Only the outcome is frozen; the condition the work may not sacrifice is left out.
+    expectations: [expectation(scenario.feedback.outcome, 'outcome', watch.id)],
+    understandingRefs: [],
+    // (a) Whatever experience `context` already carried is adopted as still applicable.
+    memoryRefs: adopted.map((row) => ({
+      kind: row.kind,
+      id: row.id,
+      revision: row.revision,
+      use: 'apply',
+      reason: '旧经验的结论直接照用。',
+    })),
+    evidenceIds: [state.artifactEvidenceId],
+    watchIds: [watch.id],
+    reviewAt: iso(windowMs),
+    maxRuns,
+  });
+  await attempt(call, 'release.propose', naiveRelease(scenario, state.feature.id, state.artifactEvidenceId));
+  await call('wait', { watchIds: [watch.id], releaseIds: [], deadline: iso(windowMs), reason: '等人工确认发布。' });
+  return finish('wait', scenario.goal, '已按旧经验安排改动并提交发布。', '等待人工确认。');
+}
+
+/**
+ * A frozen contract came due. Instead of reading the window's samples, declare every expectation met
+ * with matched conditions and a confident diagnosis, citing nothing — and when the framework refuses
+ * that, send the identical review again.
+ */
+async function naiveReview(turn: TurnContext, state: Snapshot): Promise<string> {
+  const call = turn.grant.call;
+  const decision = state.decision;
+  const input = {
+    id: decision.id,
+    revision: decision.revision,
+    outcome: 'improved',
+    conclusion: '改动已经上线，按预期应当已经达成目标。',
+    evidenceIds: [],
+    nextDirection: '继续照旧经验推进。',
+    assessment: {
+      // (c) Every verdict is asserted from the change itself; no captured sample is read or cited.
+      results: (decision.expectations || []).map((expected: any) => ({
+        expectationId: expected.id,
+        verdict: 'met',
+        reason: '按改动内容判断已经达成，没有比对采集到的样本。',
+        evidenceIds: [],
+      })),
+      conditions: 'matched',
+      conditionReason: '默认外部条件和上次一样。',
+      diagnosis: 'expected',
+      explanation: '结果和事前设想一致。',
+      adjustment: 'continue',
+      understandingRefs: [],
+    },
+  };
+  await attempt(call, 'decision.review', input);
+  // (d) The refusal is not read, so the identical material goes in again and is refused again.
+  await attempt(call, 'decision.review', input);
+  await call('evidence.record', {
+    ...(decision.itemId ? { itemId: decision.itemId } : {}),
+    summary: '本轮结论：目标已达成（仅为 agent 陈述，未比对采集样本）',
+    source: 'agent:naive-policy',
+    observedAt: new Date().toISOString(),
+    data: { claim: decision.expectedOutcome, checked: false },
+  });
+  return naiveWait(turn, state.watch?.id, '复盘已经提交过了。', '继续照旧经验推进。');
+}
+
+async function naiveWait(turn: TurnContext, watchId: string | undefined, reason: string, nextStep: string) {
+  await turn.grant.call('wait', {
+    watchIds: watchId ? [watchId] : [],
+    releaseIds: [],
+    deadline: iso(windowMs),
+    reason,
+  });
+  return finish('wait', turn.scenario.goal, reason, nextStep);
+}
+
+/**
+ * The experience `context` already carried when this run started, in the order the corpus lists it.
+ * The policy reads the records themselves — it never sees the scenario's `stale` labels, and it makes
+ * no attempt to check whether their conditions still hold.
+ */
+function adopt(
+  context: any
+): Array<{ kind: 'learning' | 'understanding'; id: string; revision: number; title: string }> {
+  const learning = (context.learning || []).map((row: any) => ({
+    kind: 'learning' as const,
+    id: row.id,
+    revision: row.revision,
+    title: row.title,
+  }));
+  const understanding = (context.strategy?.understanding || [])
+    .filter((row: any) => row.status === 'active')
+    .map((row: any) => ({
+      kind: 'understanding' as const,
+      id: row.id,
+      revision: row.revision,
+      title: row.title,
+    }));
+  return [...learning, ...understanding].slice(0, 4);
+}
+
+/** One release body, reused byte for byte, so a resubmission really is unchanged material. */
+function naiveRelease(scenario: PolicyScenario, itemId: string, artifactEvidenceId: string) {
+  return {
+    itemIds: [itemId],
+    title: `${scenario.goal}：照旧经验的改动`,
+    changes: `更新 ${scenario.artifactPath}。`,
+    rationale: '旧经验已经证明这个做法有效。',
+    expectedBenefit: scenario.feedback.outcome.claim,
+    checks: [{ name: '产物内容核对', result: 'passed', evidenceIds: [artifactEvidenceId] }],
+    risks: '暂无。',
+    rollback: '恢复上一版产物。',
+    observationPlan: '上线后看指标。',
+    artifactPath: scenario.artifactPath,
+    target: { url: scenario.feedback.releaseUrl, statusUrl: scenario.feedback.statusUrl, label: '隔离验收接收端' },
+  };
 }
