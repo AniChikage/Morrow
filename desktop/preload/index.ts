@@ -3,7 +3,7 @@ import type { DesktopAPI } from '../shared/types';
 
 // Expose business operations only. Neither ipcRenderer nor the bearer token crosses the bridge.
 const api: DesktopAPI = {
-  getProjectWork: (id, itemId) => ipcRenderer.invoke('morrow:get-project-work', id, itemId || ''),
+  getProjectWork: (id, itemId, before) => ipcRenderer.invoke('morrow:get-project-work', id, itemId || '', before || ''),
   getProjectBrief: (id) => ipcRenderer.invoke('morrow:get-project-brief', id),
   updateProject: (id, data) => ipcRenderer.invoke('morrow:update-project', id, data),
   getSettings: () => ipcRenderer.invoke('morrow:get-settings'),

@@ -271,7 +271,11 @@ export class ProjectWorkLoop {
       .all(projectId)
       .map((r: any) => JSON.parse(r.data));
   }
-  view(projectId: string, itemId?: string): ProjectLoop {
+  view(
+    projectId: string,
+    itemId?: string,
+    verificationOptions: { before?: string; includeLatest?: boolean } = {}
+  ): ProjectLoop {
     const linked = (r: any) => !itemId || r.itemId === itemId || r.itemIds?.includes(itemId);
     const learning = this.rows<Learning>('loop_learning', projectId).filter(linked).slice(-150);
     const allReleases = this.rows<Release>('loop_releases', projectId).filter(linked);
@@ -292,11 +296,13 @@ export class ProjectWorkLoop {
         ...(row.memoryRefs || []).flatMap((ref) => ref.snapshot.evidenceIds),
       ]),
     ]);
-    const verifications = this.verification.view(
+    const verificationPage = this.verification.page(
       projectId,
       itemId,
-      releases.flatMap((row) => row.verificationIds || [])
+      releases.flatMap((row) => row.verificationIds || []),
+      verificationOptions
     );
+    const verifications = verificationPage.verifications;
     for (const row of verifications) for (const id of row.evidenceIds) references.add(id);
     const allEvidence = this.rows<Evidence>('loop_evidence', projectId);
     const recent = new Set(
@@ -312,6 +318,15 @@ export class ProjectWorkLoop {
       releases,
       strategy,
       verifications,
+      ...(verificationOptions.includeLatest
+        ? {
+            verificationHistory: {
+              hasMore: verificationPage.hasMore,
+              cursor: verificationPage.cursor,
+              revision: verificationPage.revision,
+            },
+          }
+        : {}),
       finalizations: this.verification.finalizations(projectId, itemId),
     };
   }

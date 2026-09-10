@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { ArrowLeft, ArrowUpRight, CheckCircle2, Clock3 } from 'lucide-react';
 import type { ProjectLoop, Release, ReleaseScript, DesktopAPI, DecisionView } from '../../shared/types';
 import type { FeatureProps } from './types';
@@ -26,22 +26,95 @@ const conclusionLabels = {
 function useProjectWork(api: DesktopAPI, projectId: string, itemId?: string) {
   const [data, setData] = useState<ProjectLoop>();
   const [error, setError] = useState('');
+  const [historyError, setHistoryError] = useState('');
+  const [loadingHistory, setLoadingHistory] = useState(false);
+  const [moreHistory, setMoreHistory] = useState(false);
+  const generation = useRef(0),
+    historyBusy = useRef(false),
+    historyStarted = useRef(false);
+  const historyRequest = useRef(0);
+  const cursor = useRef<string | undefined>(undefined);
+  const base = useRef<ProjectLoop | undefined>(undefined);
+  const older = useRef<Pick<ProjectLoop, 'verifications' | 'evidence'>>({ verifications: [], evidence: [] });
+  const merge = <T extends { id: string }>(a: T[], b: T[]) => [
+    ...new Map([...a, ...b].map((row) => [row.id, row])).values(),
+  ];
+  const combined = (value: ProjectLoop): ProjectLoop => ({
+    ...value,
+    verifications: merge(older.current.verifications || [], value.verifications || []),
+    evidence: merge(older.current.evidence, value.evidence),
+  });
+  async function loadHistory() {
+    if (historyBusy.current || !cursor.current || !api.getProjectWork) return;
+    const before = cursor.current,
+      gen = generation.current,
+      request = ++historyRequest.current;
+    historyBusy.current = true;
+    historyStarted.current = true;
+    setLoadingHistory(true);
+    setHistoryError('');
+    try {
+      const page = await api.getProjectWork(projectId, itemId, before);
+      if (gen !== generation.current || request !== historyRequest.current) return;
+      if (page.verificationHistory?.revision !== base.current?.verificationHistory?.revision)
+        throw new Error('项目记录已更新，请稍后重新加载历史。');
+      if (!page.verificationHistory || page.verificationHistory.cursor === before)
+        throw new Error('服务未提供更早复核，请更新服务后重试。');
+      older.current = {
+        verifications: merge(older.current.verifications || [], page.verifications || []),
+        evidence: merge(older.current.evidence, page.evidence),
+      };
+      cursor.current = page.verificationHistory.cursor;
+      setMoreHistory(page.verificationHistory.hasMore);
+      if (base.current) setData(combined(base.current));
+    } catch (e) {
+      if (gen === generation.current && request === historyRequest.current)
+        setHistoryError(e instanceof Error ? e.message : '历史复核读取失败');
+    } finally {
+      if (gen === generation.current && request === historyRequest.current) {
+        historyBusy.current = false;
+        setLoadingHistory(false);
+      }
+    }
+  }
   useEffect(() => {
-    let cancelled = false;
+    const gen = ++generation.current;
     let pending = false;
+    historyRequest.current++;
+    base.current = undefined;
+    older.current = { verifications: [], evidence: [] };
+    cursor.current = undefined;
+    historyBusy.current = false;
+    historyStarted.current = false;
     setData(undefined);
     setError('');
+    setHistoryError('');
+    setLoadingHistory(false);
+    setMoreHistory(false);
     const load = async () => {
       if (pending || !api.getProjectWork) return;
       pending = true;
       try {
         const result = await api.getProjectWork(projectId, itemId);
-        if (!cancelled) {
-          setData(result);
+        if (gen === generation.current) {
+          if (base.current && base.current.verificationHistory?.revision !== result.verificationHistory?.revision) {
+            historyRequest.current++;
+            older.current = { verifications: [], evidence: [] };
+            historyStarted.current = false;
+            historyBusy.current = false;
+            setLoadingHistory(false);
+            setHistoryError('');
+          }
+          base.current = result;
+          setData(combined(result));
+          if (!historyStarted.current) {
+            cursor.current = result.verificationHistory?.cursor;
+            setMoreHistory(!!result.verificationHistory?.hasMore);
+          }
           setError('');
         }
       } catch (e) {
-        if (!cancelled) setError(e instanceof Error ? e.message : '工作记录加载失败');
+        if (gen === generation.current) setError(e instanceof Error ? e.message : '工作记录加载失败');
       } finally {
         pending = false;
       }
@@ -51,11 +124,11 @@ function useProjectWork(api: DesktopAPI, projectId: string, itemId?: string) {
       if (document.visibilityState !== 'hidden') void load();
     }, 5000);
     return () => {
-      cancelled = true;
+      generation.current++;
       clearInterval(timer);
     };
   }, [api, projectId, itemId]);
-  return { data, error };
+  return { data, error, historyError, moreHistory, loadingHistory, loadHistory };
 }
 export function FeatureWork({ api, projectId, itemId }: { api: DesktopAPI; projectId: string; itemId: string }) {
   const { data, error } = useProjectWork(api, projectId, itemId);
@@ -272,7 +345,15 @@ function VerificationRecord({
     </details>
   );
 }
-function VerificationRecords({ data, compact = false }: { data: ProjectLoop; compact?: boolean }) {
+function VerificationRecords({
+  data,
+  compact = false,
+  history,
+}: {
+  data: ProjectLoop;
+  compact?: boolean;
+  history?: { more: boolean; loading: boolean; error: string; load: () => void };
+}) {
   if (!data.verifications?.length) return null;
   const rows = data.verifications.slice().reverse();
   if (!compact)
@@ -293,20 +374,21 @@ function VerificationRecords({ data, compact = false }: { data: ProjectLoop; com
   // presentation, never its stored verdict. Unscoped decisions/channels stay distinct.
   rows.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
   const latest = new Map<string, VerificationRow>();
-  const history: VerificationRow[] = [];
+  const previous: VerificationRow[] = [];
   for (const row of rows) {
     const key = row.itemId
       ? `item:${row.itemId}`
       : row.decisionId
         ? `decision:${row.decisionId}`
         : `channel:${row.channelId}`;
-    if (latest.has(key)) history.push(row);
+    if (latest.has(key)) previous.push(row);
     else latest.set(key, row);
   }
   const active = data.strategy?.decisions.filter((row) => row.status === 'active') || [];
   return (
     <section className="finding-section" aria-label="最近复核">
       <h2>最近复核</h2>
+      {history?.more && <p className="subtle">更早的复核尚未全部载入，可在历史中继续读取。</p>}
       {[...latest.values()].map((row) => (
         <VerificationRecord
           key={row.id}
@@ -320,14 +402,24 @@ function VerificationRecords({ data, compact = false }: { data: ProjectLoop; com
           }
         />
       ))}
-      {!!history.length && (
+      {(!!previous.length || history?.more || history?.error) && (
         <details className="work-record verification-history">
           <summary>
-            历史复核 <span className="subtle">{history.length}</span>
+            历史复核{' '}
+            <span className="subtle">
+              {previous.length}
+              {history?.more ? ' 已载入' : ''}
+            </span>
           </summary>
-          {history.map((row) => (
+          {previous.map((row) => (
             <VerificationRecord key={row.id} row={row} data={data} compact expanded={false} />
           ))}
+          {history?.error && <p role="alert">{history.error}</p>}
+          {(history?.more || history?.error) && (
+            <Button disabled={history.loading} onClick={history.load}>
+              {history.loading ? '正在读取…' : history.error ? '重试历史复核' : '加载更早复核'}
+            </Button>
+          )}
         </details>
       )}
     </section>
@@ -649,7 +741,7 @@ export function ProjectThinking({
   projectId,
   onNavigate,
 }: Pick<FeatureProps, 'api' | 'onNavigate'> & { projectId: string }) {
-  const { data, error } = useProjectWork(api, projectId);
+  const { data, error, moreHistory, loadingHistory, historyError, loadHistory } = useProjectWork(api, projectId);
   if (error)
     return (
       <div className="feature-scroll">
@@ -697,7 +789,11 @@ export function ProjectThinking({
             onChannel={() => onNavigate({ kind: 'channel', id: row.channelId })}
           />
         ))}
-        <VerificationRecords data={data} compact />
+        <VerificationRecords
+          data={data}
+          compact
+          history={{ more: moreHistory, loading: loadingHistory, error: historyError, load: () => void loadHistory() }}
+        />
         {!!strategy?.understanding.length && (
           <section className="finding-section">
             <h2>对项目的认识</h2>

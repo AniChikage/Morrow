@@ -31,7 +31,7 @@ import {
 import type { Channel, Project, ProjectBriefRevision, Run, WorkItem } from './protocol.ts';
 import { now, Store } from './store.ts';
 import { Engine } from './engine.ts';
-import { eventHistory, runHistory, runOutput } from './event-history.ts';
+import { eventHistory, runHistory, runOutput, queryID } from './event-history.ts';
 import { runLog } from './run-log.ts';
 import { discoverRuntimes } from './runtimes.ts';
 import { NativeConversations } from './native-conversations.ts';
@@ -269,7 +269,9 @@ export async function startServer(
         const itemId = url.searchParams.get('itemId') || undefined;
         if (itemId && store.get<WorkItem>('items', itemId)?.projectId !== loopMatch[1])
           throw new APIError(404, 'feature 不属于该项目');
-        respond(res, 200, engine.loop.view(loopMatch[1], itemId));
+        if (url.searchParams.getAll('verificationBefore').length > 1) throw new APIError(400, '复核游标重复');
+        const before = queryID(url.searchParams, 'verificationBefore');
+        respond(res, 200, engine.loop.view(loopMatch[1], itemId, { before, includeLatest: true }));
         return;
       }
       const briefMatch = path.match(/^\/api\/projects\/([^/]+)\/brief$/);

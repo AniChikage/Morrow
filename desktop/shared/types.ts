@@ -425,7 +425,7 @@ export interface NativeHistoryQuery {
   limit?: number;
 }
 export interface DesktopAPI {
-  getProjectWork?(projectId: string, itemId?: string): Promise<ProjectLoop>;
+  getProjectWork?(projectId: string, itemId?: string, verificationBefore?: string): Promise<ProjectLoop>;
   getProjectBrief?(projectId: string): Promise<ProjectBrief>;
   updateProject?(id: string, data: ProjectPatch): Promise<Project>;
   getSettings?(): Promise<Settings>;

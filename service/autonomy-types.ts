@@ -116,6 +116,7 @@ export type ReleaseScript = {
   statusScript?: { path: string; sha256: string; bytes: number; text: string };
 };
 export type ProjectLoop = {
+  verificationHistory?: { hasMore: boolean; cursor?: string; revision?: string };
   evidence: Evidence[];
   learning: Learning[];
   watches: FeedbackWatch[];

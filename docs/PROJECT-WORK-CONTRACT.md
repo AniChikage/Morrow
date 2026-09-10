@@ -104,3 +104,7 @@ Parsed file JSON must contain only finite numeric values, including nested or un
 ### Unknown-review retries
 
 An explicit retry carries the latest unchanged completion intent into the new review, preserving the original rejected intent and original run reference. Concurrent target changes or newer intents prevent carrying it. Bounded successful tool observations from the prior attempt may guide the retry; they never count as this attempt’s independent check or a passing verdict. The same-material daily retry limit and review timeout remain unchanged.
+
+### Desktop review history
+
+`GET /api/projects/:id/work` includes `verificationHistory:{hasMore,cursor,revision}`. Its initial review selection contains the most recent 30 records, up to 30 distinct subjects' latest reviews (feature, otherwise decision, otherwise channel), and existing release references. `?verificationBefore=<id>` reads the previous 30 records in durable insertion order with their referenced evidence; foreign project/item cursors are rejected. The cursor follows the recent page, not the additional pinned rows, so pinned older reviews cannot make intervening history unreachable. The desktop merges pages by ID and invalidates cached pages when the project/source revision changes. This is a read-only display path: original verdicts, prompts and evidence are not rewritten, prompts stay out of the response, and the agent `context` retains its previous review limit.

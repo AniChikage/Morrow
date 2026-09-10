@@ -50,8 +50,50 @@ export class WorkVerification {
       .filter((row) => !itemId || row.itemId === itemId);
   }
   view(projectId: string, itemId?: string, referenced: string[] = []) {
-    const all = this.rows(projectId, itemId),
-      rows = all.filter((row, index) => index >= all.length - 30 || referenced.includes(row.id));
+    return this.page(projectId, itemId, referenced).verifications;
+  }
+  page(
+    projectId: string,
+    itemId?: string,
+    referenced: string[] = [],
+    options: { before?: string; includeLatest?: boolean } = {}
+  ) {
+    const all = this.loop.store.db
+      .prepare(
+        `SELECT id, json_extract(data,'$.createdAt') createdAt,
+      json_extract(data,'$.itemId') itemId, json_extract(data,'$.decisionId') decisionId,
+      json_extract(data,'$.channelId') channelId FROM loop_verifications
+      WHERE json_extract(data,'$.projectId')=?${itemId ? " AND json_extract(data,'$.itemId')=?" : ''} ORDER BY rowid`
+      )
+      .all(...(itemId ? [projectId, itemId] : [projectId])) as Pick<
+      Verification,
+      'id' | 'createdAt' | 'itemId' | 'decisionId' | 'channelId'
+    >[];
+    const end = options.before ? all.findIndex((row) => row.id === options.before) : all.length;
+    if (end < 0) throw new APIError(404, '复核游标不属于该项目或事项');
+    const recent = all.slice(Math.max(0, end - 30), end);
+    const selected = new Set(recent.map((row) => row.id));
+    if (!options.before) {
+      referenced.forEach((id) => selected.add(id));
+      if (options.includeLatest) {
+        const latest = new Map<string, (typeof all)[number]>();
+        for (const row of all
+          .slice()
+          .reverse()
+          .sort((a, b) => b.createdAt.localeCompare(a.createdAt))) {
+          const key = row.itemId
+            ? `item:${row.itemId}`
+            : row.decisionId
+              ? `decision:${row.decisionId}`
+              : `channel:${row.channelId}`;
+          if (!latest.has(key)) latest.set(key, row);
+        }
+        [...latest.values()].slice(0, 30).forEach((row) => selected.add(row.id));
+      }
+    }
+    const rows = all
+      .filter((row) => selected.has(row.id))
+      .map((row) => this.loop.store.get<Verification>('loop_verifications', row.id)!);
     let digest = '';
     if (rows.length)
       try {
@@ -59,7 +101,20 @@ export class WorkVerification {
       } catch {
         /* Unreadable versions cannot pass. */
       }
-    return rows.map(({ prompt, ...row }) => ({ ...row, current: this.materialCurrent(row, digest) }));
+    return {
+      verifications: rows.map(({ prompt, ...row }) => ({ ...row, current: this.materialCurrent(row, digest) })),
+      // Invalidate cached UI pages after a project mutation or source change.
+      revision:
+        digest +
+        ':' +
+        (
+          this.loop.store.db
+            .prepare("SELECT MAX(rowid) AS n FROM events WHERE json_extract(data,'$.projectId')=?")
+            .get(projectId) as any
+        )?.n,
+      hasMore: end > 30,
+      cursor: recent[0]?.id,
+    };
   }
   subject(projectId: string, itemId?: string, decisionId?: string, stable = false) {
     const project = this.loop.store.get<Project>('projects', projectId)!;

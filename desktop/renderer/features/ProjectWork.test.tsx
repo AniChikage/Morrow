@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { cleanup, render, screen, waitFor, within } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ProjectLoop, Release, DecisionView } from '../../shared/types';
@@ -69,6 +69,28 @@ function fixture() {
   Object.assign(api, { getProjectWork, reviewRelease, reconcileRelease });
   props.snapshot.releases = [release];
   return { props, api, release, data, getProjectWork, reviewRelease, reconcileRelease };
+}
+function historyRow(id: string, itemId = 'finding-import'): NonNullable<ProjectLoop['verifications']>[number] {
+  return {
+    id,
+    projectId: 'project-atlas',
+    channelId: 'channel-system',
+    runId: 'run',
+    itemId,
+    evidenceIds: ['evidence-one'],
+    subjectHash: id,
+    version: { digest: 'source', head: 'commit', files: 1, bytes: 1, coverage: 'folder' },
+    status: 'failed',
+    summary: id,
+    findings: [],
+    checks: [],
+    limitations: [],
+    createdAt: timestamp,
+    current: false,
+    bytes: 0,
+    commandCount: 1,
+    timeoutSeconds: 300,
+  };
 }
 function evaluatedDecision(): DecisionView {
   return {
@@ -381,6 +403,115 @@ describe('AI work and release review', () => {
     for (const title of ['current failure', 'other decision', 'channel-only', 'other channel', 'running review']) {
       const row = within(recent).getAllByText(title)[0].closest('details')!;
       expect(row.open).toBe(['current failure', 'running review'].includes(title));
+    }
+  });
+  it('loads older review pages and their evidence, retains current rows on error and retries the same cursor', async () => {
+    const f = fixture();
+    f.data.strategy = { understanding: [], decisions: [], counts: { understanding: 0, decisions: 0 } };
+    f.data.verifications = [historyRow('recent')];
+    f.data.verificationHistory = { hasMore: true, cursor: 'recent', revision: 'v1' };
+    vi.mocked(f.props.api.getProjectWork!)
+      .mockResolvedValueOnce(f.data)
+      .mockRejectedValueOnce(new Error('分页读取失败'))
+      .mockResolvedValueOnce({
+        ...f.data,
+        verifications: [historyRow('older'), historyRow('other item', 'other')],
+        verificationHistory: { hasMore: false, cursor: 'older', revision: 'v1' },
+      });
+    render(<ProjectThinking api={f.props.api} projectId="project-atlas" onNavigate={f.props.onNavigate} />, {
+      wrapper: TestProviders,
+    });
+    await userEvent.setup().click(await screen.findByText('历史复核'));
+    await userEvent.setup().click(screen.getByRole('button', { name: '加载更早复核' }));
+    expect((await screen.findByRole('alert')).textContent).toContain('分页读取失败');
+    expect(screen.getAllByText('recent').length).toBeGreaterThan(0);
+    await userEvent.setup().click(screen.getByRole('button', { name: '重试历史复核' }));
+    await waitFor(() => expect(screen.getAllByText('other item').length).toBeGreaterThan(0));
+    expect(f.getProjectWork).toHaveBeenLastCalledWith('project-atlas', undefined, 'recent');
+    expect(screen.queryByRole('button', { name: '加载更早复核' })).toBeNull();
+    expect(screen.getAllByText('older').length).toBeGreaterThan(0);
+    expect(screen.queryByRole('alert')).toBeNull();
+  });
+  it('rejects delayed history from the previous project', async () => {
+    const f = fixture();
+    f.data.strategy = { understanding: [], decisions: [], counts: { understanding: 0, decisions: 0 } };
+    f.data.verifications = [historyRow('first')];
+    f.data.verificationHistory = { hasMore: true, cursor: 'first', revision: 'v1' };
+    let resolve!: (page: ProjectLoop) => void;
+    vi.mocked(f.props.api.getProjectWork!)
+      .mockResolvedValueOnce(f.data)
+      .mockImplementationOnce(
+        () =>
+          new Promise((r) => {
+            resolve = r;
+          })
+      )
+      .mockResolvedValue({
+        ...f.data,
+        verifications: [{ ...historyRow('new project'), projectId: 'project-other' }],
+        verificationHistory: { hasMore: false, revision: 'v2' },
+      });
+    const view = render(
+      <ProjectThinking api={f.props.api} projectId="project-atlas" onNavigate={f.props.onNavigate} />,
+      { wrapper: TestProviders }
+    );
+    await userEvent.setup().click(await screen.findByText('历史复核'));
+    await userEvent.setup().click(screen.getByRole('button', { name: '加载更早复核' }));
+    view.rerender(<ProjectThinking api={f.props.api} projectId="project-other" onNavigate={f.props.onNavigate} />);
+    await waitFor(() => expect(screen.getAllByText('new project').length).toBeGreaterThan(0));
+    await act(async () =>
+      resolve({
+        ...f.data,
+        verifications: [historyRow('late old project')],
+        verificationHistory: { hasMore: false, cursor: 'late', revision: 'v1' },
+      })
+    );
+    expect(screen.queryByText('late old project')).toBeNull();
+  });
+  it('invalidates an in-flight history page when the project revision changes', async () => {
+    vi.useFakeTimers();
+    try {
+      const f = fixture();
+      f.data.strategy = { understanding: [], decisions: [], counts: { understanding: 0, decisions: 0 } };
+      f.data.verifications = [historyRow('first')];
+      f.data.verificationHistory = { hasMore: true, cursor: 'first', revision: 'v1' };
+      let resolve!: (page: ProjectLoop) => void;
+      vi.mocked(f.props.api.getProjectWork!)
+        .mockResolvedValueOnce(f.data)
+        .mockImplementationOnce(
+          () =>
+            new Promise((r) => {
+              resolve = r;
+            })
+        )
+        .mockResolvedValue({
+          ...f.data,
+          verifications: [historyRow('new revision')],
+          verificationHistory: { hasMore: true, cursor: 'new', revision: 'v2' },
+        });
+      render(<ProjectThinking api={f.props.api} projectId="project-atlas" onNavigate={f.props.onNavigate} />, {
+        wrapper: TestProviders,
+      });
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(0);
+      });
+      fireEvent.click(screen.getByText('历史复核'));
+      fireEvent.click(screen.getByRole('button', { name: '加载更早复核' }));
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(5000);
+      });
+      await act(async () =>
+        resolve({
+          ...f.data,
+          verifications: [historyRow('stale page')],
+          verificationHistory: { hasMore: false, cursor: 'stale', revision: 'v1' },
+        })
+      );
+      expect(screen.queryByText('stale page')).toBeNull();
+      expect(screen.getAllByText('new revision').length).toBeGreaterThan(0);
+      expect((screen.getByRole('button', { name: '加载更早复核' }) as HTMLButtonElement).disabled).toBe(false);
+    } finally {
+      vi.useRealTimers();
     }
   });
   it('shows the saved next direction after review and labels original native execution evidence', async () => {

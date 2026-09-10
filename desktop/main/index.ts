@@ -241,9 +241,12 @@ function registerIPC(): void {
   handle('update-item', 2, (itemId, status) =>
     service.request(`items/${id(itemId)}`, 'PATCH', { status: choice(status, itemStatuses) })
   );
-  handle('get-project-work', 2, (projectId, itemId) =>
-    service.request(`projects/${id(projectId)}/work${itemId ? '?itemId=' + encodeURIComponent(id(itemId)) : ''}`)
-  );
+  handle('get-project-work', 3, (projectId, itemId, before) => {
+    const params = new URLSearchParams();
+    if (itemId) params.set('itemId', id(itemId));
+    if (before) params.set('verificationBefore', id(before));
+    return service.request(`projects/${id(projectId)}/work?${params}`);
+  });
   handle('get-project-brief', 1, (projectId) => service.request(`projects/${id(projectId)}/brief`));
   handle('update-project', 2, (projectId, value) =>
     service.request(`projects/${id(projectId)}`, 'PATCH', projectPatch(value))
