@@ -89,6 +89,8 @@ export type ProjectBriefRevision = {
 export type PromptCharter = { threadId: string; hash: string; sentAt: string; turnsSince: number };
 export type Channel = {
   work?: ChannelWork;
+  /** A bounded latest signal received while this channel's scheduled turn was running. */
+  pendingWake?: { reason: string; at: string };
   promptCharter?: PromptCharter;
   autonomyEnabled?: boolean;
   id: string;

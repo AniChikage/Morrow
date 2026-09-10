@@ -262,6 +262,28 @@ const completeWork = (s: any, text: string) =>
       items: [...turn.items, { id: randomUUID(), type: 'agentMessage', phase: 'final_answer', text }],
     })),
   });
+test('scheduled native turns clear old pending wakes and retain feedback arriving before the final wait', async () => {
+  const s = await setup();
+  try {
+    await s.native.bind(s.channel.id, s.transport.threadId);
+    s.store.put('channels', {
+      ...s.store.get<any>('channels', s.channel.id),
+      pendingWake: { reason: '旧轮次反馈', at: new Date().toISOString() },
+    });
+    await s.engine.action(s.channel.id, 'resume');
+    assert.equal(s.store.get<any>('channels', s.channel.id).pendingWake, undefined);
+    s.engine.loop.wake(s.channel.id, '本轮复核完成');
+    completeWork(s, nextWork('wait', 60));
+    const channel = s.store.get<any>('channels', s.channel.id);
+    assert.equal(channel.status, 'waiting');
+    assert(Date.parse(channel.nextRunAt) <= Date.now() + 5000);
+    assert.match(channel.work.nextStep, /本轮复核完成/);
+    assert.equal(channel.pendingWake, undefined);
+    assert.equal(s.transport.sent.length, 1);
+  } finally {
+    await s.cleanup();
+  }
+});
 test('a reconnected shared projection with a reset counter finishes the same native run and preserves its history', async () => {
   const s = await setup();
   try {

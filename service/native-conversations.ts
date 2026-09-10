@@ -1404,6 +1404,7 @@ export class NativeConversations {
         lastRunAt: run.startedAt,
         nextRunAt: '',
         usageWait: undefined,
+        pendingWake: undefined,
       });
       const receipt = await this.send(id, prompt, randomUUID(), 'schedule', run.id);
       const active = this.scheduled.get(id);

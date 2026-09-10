@@ -1335,7 +1335,14 @@ export class ProjectWorkLoop {
   }
   wake(channelId: string, reason: string) {
     const channel = this.store.get<Channel>('channels', channelId);
-    if (!channel || !this.store.get<any>('controls', channelId)?.enabled || channel.status === 'running') return;
+    if (!channel || !this.store.get<any>('controls', channelId)?.enabled) return;
+    if (channel.status === 'running') {
+      this.store.put('channels', {
+        ...channel,
+        pendingWake: { reason: this.redact(reason).slice(0, 1000), at: now() },
+      });
+      return;
+    }
     this.store.put('channels', { ...channel, status: 'waiting', nextRunAt: new Date(Date.now() + 5000).toISOString() });
   }
   finish(run: Run) {
