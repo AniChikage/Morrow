@@ -113,7 +113,7 @@ test('review retains old referenced evidence and native context offers scoped fu
     assert.equal(typeof long.digest, 'string');
     assert(JSON.stringify(long).length < 1000);
     // The stored row is what the response used to be, so the saving is the content it no longer echoes.
-    assert(JSON.stringify(s.store.get<any>('loop_evidence', long.id)).length > 5000);
+    assert.equal(s.store.get<any>('loop_evidence', long.id).data, original);
     // An agent statement is echoed the same way: the payload it just sent does not come back.
     const payload = { claim: '首次完成率已回到基线以上', checked: false, sample: 'x'.repeat(4000) };
     const recorded = await s.call('evidence.record', {

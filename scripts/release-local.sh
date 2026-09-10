@@ -5,8 +5,8 @@
 # `release.propose`; Morrow copies it at proposal time, binds its SHA-256 into the review hash, and
 # runs the sealed copy only after a human approves that exact version in 上线确认.
 #
-# Morrow supplies exactly these variables (plus PATH, HOME and NO_COLOR=1), never its own token or
-# the rest of its environment:
+# Morrow supplies exactly these variables (plus PATH, HOME, NO_COLOR=1 and, only when the service
+# itself has one, TMPDIR), never its own token or the rest of its environment:
 #   MORROW_RELEASE_ID       the release this run belongs to
 #   MORROW_ARTIFACT_PATH    sealed copy of the proposed artifact, here a release-manifest.json
 #   MORROW_ARTIFACT_SHA256  its digest, echoed back in the receipt

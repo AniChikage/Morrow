@@ -239,7 +239,7 @@ const workContract = {
       '{itemIds:[], title, changes, rationale, expectedBenefit, checks:[{name,result:passed|not_verified,evidenceIds:[]}], risks, rollback, observationPlan, artifactPath, target:{kind:"http",url,statusUrl,label} 或 {kind:"local-script",label,script,args?:[],timeoutSeconds:30..3600,statusScript?}}；准备好的文件复制封存，变更内容不可修改。至少一项通过的检查须引用实际采集证据。人批准后由发布接口发送封存产物或执行封存脚本。kind 省略时按 http 处理。local-script 的 script/statusScript 是项目内的相对路径，必须是已经提交在项目里的普通文件（≤256 KiB）；args 最多 16 项、每项 ≤1000 字符，作为参数数组传给脚本，不经过 shell；label ≤100 字。脚本内容在提议时被复制封存并计入 reviewHash，之后修改项目里的原文件不会改变将要执行的内容。你不能提供或修改脚本摘要，也不能自己执行发布。',
   },
   releaseAdapter:
-    'http 目标：发布端接收 POST {releaseId,reviewHash,artifact:{name,sha256,base64}}，Idempotency-Key 为 releaseId；仅在响应 {releaseId,artifactSha256,status:"published",url?} 匹配时认定已上线。statusUrl 的 GET 返回同一回执用于重启/超时后核对。local-script 目标：人批准后，Morrow 在项目根目录以固定最小环境执行封存脚本，只有 PATH、HOME、NO_COLOR=1、MORROW_RELEASE_ID、MORROW_ARTIFACT_PATH（封存产物副本）、MORROW_ARTIFACT_SHA256、MORROW_REVIEW_HASH、MORROW_PROJECT_PATH、MORROW_RECEIPT_PATH、MORROW_RUNTIME_CACHE，不含服务凭据和其余环境变量；退出码 0 且最后一行 stdout 是 {releaseId,artifactSha256,status:"published"|"failed",...} 才认定结果，非零退出、非 JSON 或超时保持 unknown，由回执文件（MORROW_RECEIPT_PATH）或 statusScript 事后核对，不会自动重跑。输出合计保留最后 1 MiB 作为 log。先在已有授权内准备真实接收端或已提交的脚本与产物，不能编造地址、脚本路径或摘要；缺部署能力时继续准备工作并明确缺口。',
+    'http 目标：发布端接收 POST {releaseId,reviewHash,artifact:{name,sha256,base64}}，Idempotency-Key 为 releaseId；仅在响应 {releaseId,artifactSha256,status:"published",url?} 匹配时认定已上线。statusUrl 的 GET 返回同一回执用于重启/超时后核对。local-script 目标：人批准后，Morrow 在项目根目录以固定最小环境执行封存脚本，只有 PATH、HOME、NO_COLOR=1、TMPDIR（可选，仅当服务自身有该变量时透传）、MORROW_RELEASE_ID、MORROW_ARTIFACT_PATH（封存产物副本）、MORROW_ARTIFACT_SHA256、MORROW_REVIEW_HASH、MORROW_PROJECT_PATH、MORROW_RECEIPT_PATH、MORROW_RUNTIME_CACHE，不含服务凭据和其余环境变量；退出码 0 且最后一行 stdout 是 {releaseId,artifactSha256,status:"published"|"failed",...} 才认定结果，非零退出、非 JSON 或超时保持 unknown，由回执文件（MORROW_RECEIPT_PATH）或 statusScript 事后核对，不会自动重跑。输出合计保留最后 1 MiB 作为 log。先在已有授权内准备真实接收端或已提交的脚本与产物，不能编造地址、脚本路径或摘要；缺部署能力时继续准备工作并明确缺口。',
   principles:
     '主动选择服务目标的工作，必要时先建立反馈。证据、解释和预期收益分开；效果未知时保留未知。人只在发布前批准已准备好的明确版本，AI 没有批准接口。所有频道共享此处记录；失败尝试应更新判断，避免机械重复。先读 strategy 的认识、选择与复查信号，具体工作方法由你判断；工程与运营只是可能方向。评估直接改进、获取信息、建设能力、观察或停止的价值，用 decision.choose 记录依据、验证与止损条件再推进；reviewReasons 出现时先复盘。复盘保留原预期，结果未知时可以继续观察。需要历史经验时使用 memory.search/read；失效认识只能作为历史教训。不要通过增加事项、文档或技能数量证明进展。',
 };
@@ -1131,8 +1131,11 @@ export class ProjectWorkLoop {
   /**
    * Runs one sealed script and returns the receipt JSON parsed from its last non-empty stdout line.
    * The environment holds only the fixed keys below: never the service token, never the rest of
-   * `process.env`. A non-zero exit, unparsable output or the timeout throws, so the caller records an
-   * unconfirmed outcome exactly like a lost HTTP response instead of running anything again.
+   * `process.env`. `TMPDIR` is the single optional key, forwarded only when the service itself has
+   * one, so build tools and tests under the script write their temporary files where the service
+   * does instead of falling back to `/tmp`. A non-zero exit, unparsable output or the timeout
+   * throws, so the caller records an unconfirmed outcome exactly like a lost HTTP response instead
+   * of running anything again.
    */
   async runSealed(
     row: Release,
@@ -1150,6 +1153,7 @@ export class ProjectWorkLoop {
         PATH: process.env.PATH || '/usr/bin:/bin:/usr/sbin:/sbin',
         HOME: process.env.HOME || homedir(),
         NO_COLOR: '1',
+        ...(process.env.TMPDIR ? { TMPDIR: process.env.TMPDIR } : {}),
         MORROW_RELEASE_ID: row.id,
         MORROW_ARTIFACT_PATH: this.artifactPath(row.id),
         MORROW_ARTIFACT_SHA256: row.artifact.sha256,
