@@ -8,8 +8,16 @@ export type ChannelWork = {
   updatedAt: string;
   awaitingReply: boolean;
 };
-import type { ProjectLoop, Release } from '../../service/autonomy-types';
-export type { ProjectLoop, Release, Evidence, Learning, FeedbackWatch } from '../../service/autonomy-types';
+import type { ProjectLoop, Release, ReleaseScript } from '../../service/autonomy-types';
+export type {
+  ProjectLoop,
+  Release,
+  ReleaseTarget,
+  ReleaseScript,
+  Evidence,
+  Learning,
+  FeedbackWatch,
+} from '../../service/autonomy-types';
 export type { Understanding, StrategyDecision, DecisionView, StrategyView } from '../../service/strategy-types';
 export type RuntimeID = 'codex';
 /** Runtimes that older records may still reference. Their records stay readable but never execute. */
@@ -415,6 +423,8 @@ export interface DesktopAPI {
   getProjectUsage?(id: string): Promise<ProjectUsage>;
   reviewRelease?(id: string, reviewHash: string, decision: 'approve' | 'reject', feedback: string): Promise<Release>;
   reconcileRelease?(id: string): Promise<Release>;
+  /** The sealed script text of a `local-script` release, so a human can read it before approving. */
+  getReleaseScript?(id: string): Promise<ReleaseScript>;
   getState(): Promise<Snapshot>;
   getConnection(): Promise<ConnectionInfo>;
   connect(config: ConnectionConfig): Promise<ConnectionInfo>;

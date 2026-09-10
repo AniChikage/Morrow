@@ -14,6 +14,7 @@ const api: DesktopAPI = {
   reviewRelease: (id, hash, decision, feedback) =>
     ipcRenderer.invoke('morrow:review-release', id, hash, decision, feedback),
   reconcileRelease: (id) => ipcRenderer.invoke('morrow:reconcile-release', id),
+  getReleaseScript: (id) => ipcRenderer.invoke('morrow:get-release-script', id),
   getState: () => ipcRenderer.invoke('morrow:get-state'),
   getConnection: () => ipcRenderer.invoke('morrow:get-connection'),
   connect: (config) => ipcRenderer.invoke('morrow:connect', config),

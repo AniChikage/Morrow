@@ -2,30 +2,41 @@
 set -euo pipefail
 
 MORROW_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+# electron-builder.yml reads the packaged runtime from this path, so it stays inside the checkout.
 MORROW_CACHE="$MORROW_ROOT/.build/runtime-cache"
+# Optional shared download cache (Morrow's `local-script` releases pass MORROW_RUNTIME_CACHE) so a
+# fresh worktree reuses one verified Node 24 instead of fetching it again. Unset keeps the default.
+MORROW_NODE_CACHE="${MORROW_RUNTIME_CACHE:-$MORROW_CACHE}"
 MORROW_APP="$MORROW_ROOT/dist/Morrow.app"
 MORROW_ARCH="$(uname -m)"
 if [ "$MORROW_ARCH" = arm64 ]; then MORROW_ELECTRON_ARCH=arm64; else MORROW_ELECTRON_ARCH=x64; fi
 
 cd "$MORROW_ROOT"
-mkdir -p "$MORROW_CACHE" "$MORROW_ROOT/dist"
+mkdir -p "$MORROW_CACHE" "$MORROW_NODE_CACHE" "$MORROW_ROOT/dist"
 # Fetch an official Node 24 binary on a fresh checkout and verify it before extraction.
 if [ ! -x "$MORROW_CACHE/node/bin/node" ]; then
-  curl --fail --silent --show-error --location "https://nodejs.org/dist/latest-v24.x/SHASUMS256.txt" -o "$MORROW_CACHE/SHASUMS256.txt"
-  MORROW_NODE_FILE="$(awk -v arch="$MORROW_ELECTRON_ARCH" '$2 ~ ("-darwin-" arch "\\.tar\\.gz$") {print $2}' "$MORROW_CACHE/SHASUMS256.txt")"
-  if [[ ! "$MORROW_NODE_FILE" =~ ^node-v24\.[0-9]+\.[0-9]+-darwin-(arm64|x64)\.tar\.gz$ ]]; then
-    echo "Official Node 24 release for $MORROW_ELECTRON_ARCH not found." >&2
-    exit 1
+  if [ ! -x "$MORROW_NODE_CACHE/node/bin/node" ]; then
+    curl --fail --silent --show-error --location "https://nodejs.org/dist/latest-v24.x/SHASUMS256.txt" -o "$MORROW_NODE_CACHE/SHASUMS256.txt"
+    MORROW_NODE_FILE="$(awk -v arch="$MORROW_ELECTRON_ARCH" '$2 ~ ("-darwin-" arch "\\.tar\\.gz$") {print $2}' "$MORROW_NODE_CACHE/SHASUMS256.txt")"
+    if [[ ! "$MORROW_NODE_FILE" =~ ^node-v24\.[0-9]+\.[0-9]+-darwin-(arm64|x64)\.tar\.gz$ ]]; then
+      echo "Official Node 24 release for $MORROW_ELECTRON_ARCH not found." >&2
+      exit 1
+    fi
+    curl --fail --silent --show-error --location "https://nodejs.org/dist/latest-v24.x/$MORROW_NODE_FILE" -o "$MORROW_NODE_CACHE/$MORROW_NODE_FILE"
+    (cd "$MORROW_NODE_CACHE" && awk -v file="$MORROW_NODE_FILE" '$2 == file' SHASUMS256.txt | shasum -a 256 -c -)
+    MORROW_NODE_TEMP="$(mktemp -d "$MORROW_NODE_CACHE/node-download.XXXXXX")"
+    trap 'rm -rf "$MORROW_NODE_TEMP"' EXIT
+    tar -xzf "$MORROW_NODE_CACHE/$MORROW_NODE_FILE" -C "$MORROW_NODE_TEMP" --strip-components=1
+    "$MORROW_NODE_TEMP/bin/node" --version
+    if [ -d "$MORROW_NODE_CACHE/node" ]; then rm -rf "$MORROW_NODE_CACHE/node"; fi
+    mv "$MORROW_NODE_TEMP" "$MORROW_NODE_CACHE/node"
+    trap - EXIT
   fi
-  curl --fail --silent --show-error --location "https://nodejs.org/dist/latest-v24.x/$MORROW_NODE_FILE" -o "$MORROW_CACHE/$MORROW_NODE_FILE"
-  (cd "$MORROW_CACHE" && awk -v file="$MORROW_NODE_FILE" '$2 == file' SHASUMS256.txt | shasum -a 256 -c -)
-  MORROW_NODE_TEMP="$(mktemp -d "$MORROW_CACHE/node-download.XXXXXX")"
-  trap 'rm -rf "$MORROW_NODE_TEMP"' EXIT
-  tar -xzf "$MORROW_CACHE/$MORROW_NODE_FILE" -C "$MORROW_NODE_TEMP" --strip-components=1
-  "$MORROW_NODE_TEMP/bin/node" --version
-  if [ -d "$MORROW_CACHE/node" ]; then rm -rf "$MORROW_CACHE/node"; fi
-  mv "$MORROW_NODE_TEMP" "$MORROW_CACHE/node"
-  trap - EXIT
+  if [ "$MORROW_NODE_CACHE" != "$MORROW_CACHE" ]; then
+    rm -rf "$MORROW_CACHE/node"
+    ditto "$MORROW_NODE_CACHE/node" "$MORROW_CACHE/node"
+    "$MORROW_CACHE/node/bin/node" --version
+  fi
 fi
 swift "$MORROW_ROOT/scripts/make-icon.swift" "$MORROW_ROOT/assets/brand/morrow-icon.png" "$MORROW_CACHE/AppIcon.iconset"
 iconutil -c icns "$MORROW_CACHE/AppIcon.iconset" -o "$MORROW_CACHE/Morrow.icns"

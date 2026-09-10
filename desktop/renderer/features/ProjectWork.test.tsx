@@ -625,6 +625,62 @@ describe('AI work and release review', () => {
     expect((await screen.findByRole('alert')).textContent).toContain('证据服务不可用');
     expect((screen.getByRole('button', { name: '确认这个版本上线' }) as HTMLButtonElement).disabled).toBe(true);
   });
+  it('shows an http release target by its endpoint and offers no sealed script to read', async () => {
+    const f = fixture();
+    render(
+      <TestProviders>
+        <ProjectReleases {...f.props} projectId="project-atlas" />
+      </TestProviders>
+    );
+    await userEvent.setup().click(screen.getByRole('button', { name: /导入失败恢复/ }));
+    expect(screen.getByText('测试发布环境')).not.toBeNull();
+    expect(screen.getByText('https://deploy.example.test/releases')).not.toBeNull();
+    expect(screen.queryByRole('button', { name: '查看将要执行的脚本' })).toBeNull();
+    expect(screen.queryByText(/发布脚本输出/)).toBeNull();
+  });
+  it('shows a local-script target by kind, reads the sealed script on request and keeps the publish log', async () => {
+    const f = fixture();
+    const sha = 'abcdef0123456789'.repeat(4);
+    f.release.target = {
+      kind: 'local-script',
+      label: '本机安装',
+      script: 'scripts/release-local.sh',
+      scriptSha256: sha,
+      args: ['--install'],
+      timeoutSeconds: 1800,
+      statusScript: 'scripts/release-status.sh',
+      statusScriptSha256: 'f'.repeat(64),
+    };
+    f.release.status = 'published';
+    f.release.log = 'npm test 通过\n已安装 ~/Applications/Morrow.app\n';
+    const getReleaseScript = vi.fn(async () => ({
+      releaseId: 'release-one',
+      label: '本机安装',
+      args: ['--install'],
+      timeoutSeconds: 1800,
+      script: { path: 'scripts/release-local.sh', sha256: sha, bytes: 28, text: '#!/usr/bin/env bash\nexit 0\n' },
+    }));
+    Object.assign(f.api, { getReleaseScript });
+    render(
+      <TestProviders>
+        <ProjectReleases {...f.props} projectId="project-atlas" />
+      </TestProviders>
+    );
+    const user = userEvent.setup();
+    await user.click(screen.getByRole('button', { name: /导入失败恢复/ }));
+    expect(screen.getByText('脚本 scripts/release-local.sh')).not.toBeNull();
+    expect(screen.getByText(/参数 --install · 超时 1800 秒/)).not.toBeNull();
+    expect(screen.getByText(`脚本 SHA256 ${sha.slice(0, 12)}…`)).not.toBeNull();
+    expect(screen.getByText('状态脚本 scripts/release-status.sh')).not.toBeNull();
+    expect(screen.queryByText('https://deploy.example.test/releases')).toBeNull();
+    expect(screen.getByText(/发布脚本输出/)).not.toBeNull();
+    expect(screen.getByText(/已安装 ~\/Applications\/Morrow\.app/)).not.toBeNull();
+    expect(screen.queryByRole('button', { name: '确认这个版本上线' })).toBeNull();
+    await user.click(screen.getByRole('button', { name: '查看将要执行的脚本' }));
+    await waitFor(() => expect(getReleaseScript).toHaveBeenCalledWith('release-one'));
+    expect(await screen.findByText(/#!\/usr\/bin\/env bash/)).not.toBeNull();
+    expect(screen.queryByRole('button', { name: '查看将要执行的脚本' })).toBeNull();
+  });
   it('requires every cited check to remain reviewable before approval', async () => {
     const f = fixture();
     f.data.evidence = [];
