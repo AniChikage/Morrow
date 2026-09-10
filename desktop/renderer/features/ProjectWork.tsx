@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { ArrowLeft, ArrowUpRight, CheckCircle2, Clock3 } from 'lucide-react';
-import type { ProjectLoop, Release, DesktopAPI, DecisionView } from '../../shared/types';
+import type { ProjectLoop, Release, ReleaseScript, DesktopAPI, DecisionView } from '../../shared/types';
 import type { FeatureProps } from './types';
 import { Button, EmptyState, Markdown } from '../components/ui';
 import { formatDate } from '../components/format';
@@ -689,6 +689,52 @@ export function ProjectThinking({
     </div>
   );
 }
+/** Reads the sealed script on demand, so a human sees the exact text that will run before approving. */
+function ReleaseScriptText({ api, releaseId }: { api: DesktopAPI; releaseId: string }) {
+  const [script, setScript] = useState<ReleaseScript>();
+  const [error, setError] = useState('');
+  const [loading, setLoading] = useState(false);
+  if (!api.getReleaseScript) return null;
+  const load = async () => {
+    setLoading(true);
+    setError('');
+    try {
+      setScript(await api.getReleaseScript!(releaseId));
+    } catch (e) {
+      setError(e instanceof Error ? e.message : '封存脚本读取失败');
+    } finally {
+      setLoading(false);
+    }
+  };
+  return (
+    <div className="release-script">
+      {!script && (
+        <Button variant="ghost" disabled={loading} onClick={() => void load()}>
+          {loading ? '正在读取…' : '查看将要执行的脚本'}
+        </Button>
+      )}
+      {error && (
+        <p role="alert" className="form-error">
+          {error}
+        </p>
+      )}
+      {script && (
+        <>
+          <p className="work-source">
+            {script.script.path} · {script.script.bytes.toLocaleString()} 字节
+          </p>
+          <pre className="release-log">{script.script.text}</pre>
+          {script.statusScript && (
+            <>
+              <p className="work-source">{script.statusScript.path}（核对状态时执行）</p>
+              <pre className="release-log">{script.statusScript.text}</pre>
+            </>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
 export function ProjectReleases(props: FeatureProps & { projectId: string }) {
   const { snapshot, api, projectId, busy, onMutate, onNavigate } = props;
   const releases = (snapshot.releases || [])
@@ -816,7 +862,24 @@ export function ProjectReleases(props: FeatureProps & { projectId: string }) {
         <section className="finding-section">
           <h2>发布到哪里</h2>
           <p>{row.target.label}</p>
-          <p className="work-source">{row.target.url}</p>
+          {row.target.kind === 'local-script' ? (
+            <>
+              <p className="work-source">脚本 {row.target.script}</p>
+              <p className="work-source">
+                参数 {row.target.args.length ? row.target.args.join(' ') : '（无）'} · 超时 {row.target.timeoutSeconds}{' '}
+                秒
+              </p>
+              <p className="work-source">脚本 SHA256 {row.target.scriptSha256.slice(0, 12)}…</p>
+              {row.target.statusScript && <p className="work-source">状态脚本 {row.target.statusScript}</p>}
+              <p className="subtle">
+                确认后 Morrow 在项目目录执行这份封存脚本，只传入固定的 MORROW_*
+                变量，不含服务凭据；脚本本身由你编写并已提交在项目里。
+              </p>
+              <ReleaseScriptText api={api} releaseId={row.id} />
+            </>
+          ) : (
+            <p className="work-source">{row.target.url}</p>
+          )}
           <details className="work-record">
             <summary>本次确认的版本</summary>
             <p className="work-source">
@@ -831,6 +894,15 @@ export function ProjectReleases(props: FeatureProps & { projectId: string }) {
             <h2>你的指导</h2>
             <Markdown>{row.feedback}</Markdown>
           </section>
+        )}
+        {!!row.log && (
+          <details className="work-record">
+            <summary>
+              发布脚本输出{' '}
+              <span className="subtle">保留最后 {Math.min(row.log.length, 4000).toLocaleString()} 字符</span>
+            </summary>
+            <pre className="release-log">{row.log.slice(-4000)}</pre>
+          </details>
         )}
         {row.error && (
           <p role="alert" className="form-error">

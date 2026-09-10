@@ -55,6 +55,25 @@ export type FeedbackWatch = {
   createdAt: string;
   updatedAt: string;
 };
+/**
+ * Where an approved release is delivered. `http` posts the sealed artifact to a project-supplied
+ * endpoint. `local-script` runs a script the human wrote and committed inside the project: Morrow
+ * seals a copy at proposal time, binds its digest into `reviewHash`, and executes it only after a
+ * human approval. `script`/`statusScript` are project-relative paths; the digests are computed by
+ * the service, never supplied by the agent.
+ */
+export type ReleaseTarget =
+  | { kind?: 'http'; url: string; statusUrl: string; label: string }
+  | {
+      kind: 'local-script';
+      label: string;
+      script: string;
+      scriptSha256: string;
+      args: string[];
+      timeoutSeconds: number;
+      statusScript?: string;
+      statusScriptSha256?: string;
+    };
 export type Release = {
   id: string;
   projectId: string;
@@ -71,7 +90,7 @@ export type Release = {
   rollback: string;
   observationPlan: string;
   artifact: { name: string; sha256: string; bytes: number };
-  target: { url: string; statusUrl: string; label: string };
+  target: ReleaseTarget;
   reviewHash: string;
   status: 'awaiting_approval' | 'approved' | 'publishing' | 'published' | 'rejected' | 'unknown' | 'failed';
   createdAt: string;
@@ -81,6 +100,17 @@ export type Release = {
   feedback?: string;
   error?: string;
   publishedUrl?: string;
+  /** Combined stdout/stderr tail of a `local-script` publication, bounded to 1 MiB and redacted. */
+  log?: string;
+};
+/** The sealed script a human can read before approving a `local-script` release. */
+export type ReleaseScript = {
+  releaseId: string;
+  label: string;
+  args: string[];
+  timeoutSeconds: number;
+  script: { path: string; sha256: string; bytes: number; text: string };
+  statusScript?: { path: string; sha256: string; bytes: number; text: string };
 };
 export type ProjectLoop = {
   evidence: Evidence[];

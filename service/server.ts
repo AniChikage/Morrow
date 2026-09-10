@@ -354,6 +354,12 @@ export async function startServer(
         respond(res, 200, updated);
         return;
       }
+      // Only the desktop credential reaches this: the agent proposes a script path, a human reads what will run.
+      const scriptMatch = path.match(/^\/api\/releases\/([^/]+)\/script$/);
+      if (req.method === 'GET' && scriptMatch) {
+        respond(res, 200, engine.loop.scriptText(scriptMatch[1]));
+        return;
+      }
       const reviewMatch = path.match(/^\/api\/releases\/([^/]+)\/(review|reconcile)$/);
       if (req.method === 'POST' && reviewMatch) {
         if (reviewMatch[2] === 'reconcile') {

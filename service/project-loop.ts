@@ -1,10 +1,12 @@
+import { spawn } from 'node:child_process';
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
-import { mkdirSync, readFileSync, realpathSync, statSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, readFileSync, realpathSync, statSync, writeFileSync } from 'node:fs';
+import { homedir } from 'node:os';
 import { basename, join, relative, isAbsolute } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { APIError, choice, integer, keys, object, string, itemKinds, itemStatuses } from './protocol.ts';
 import type { Channel, Project, Run, WorkItem } from './protocol.ts';
-import type { Evidence, Learning, FeedbackWatch, Release, ProjectLoop } from './autonomy-types.ts';
+import type { Evidence, Learning, FeedbackWatch, Release, ReleaseScript, ProjectLoop } from './autonomy-types.ts';
 import { nativeCapabilities } from './native-capabilities.ts';
 import { Store, now } from './store.ts';
 import { ProjectStrategy } from './project-strategy.ts';
@@ -61,6 +63,20 @@ function valueAt(data: unknown, pointer: string): unknown {
       data
     );
 }
+/** Sealed local-script limits: the human-owned script itself, its argv, and the output kept as `log`. */
+const scriptLimit = 256 * 1024;
+const logLimit = 1024 * 1024;
+const receiptLimit = 512 * 1024;
+/** The argv of a sealed script. Values are passed to `spawn` as an array, never through a shell. */
+function scriptArgs(value: unknown): string[] {
+  if (value === undefined) return [];
+  if (!Array.isArray(value) || value.length > 16) throw new APIError(400, 'args 必须为数组，最多 16 项');
+  return value.map((entry) => {
+    if (typeof entry !== 'string' || entry.length > 1000 || entry.includes('\0'))
+      throw new APIError(400, 'args 每项必须是不含空字符、最多 1000 字符的字符串');
+    return entry;
+  });
+}
 async function jsonRequest(url: string, init: RequestInit = {}) {
   const response = await fetch(url, { ...init, redirect: 'error', signal: AbortSignal.timeout(10000) });
   if (!response.ok) throw new Error(`HTTP ${response.status}`);
@@ -88,6 +104,8 @@ export class ProjectWorkLoop {
   executions: ExecutionEvidence;
   /** Attached by the engine; the reviewer gate and `context.budget` read through it. */
   usage?: UsageMonitor;
+  /** Attached by the engine so a sealed script's own output can never carry the desktop token. */
+  redact: (text: string) => string = (text) => text;
   constructor(store: Store, home: string) {
     this.store = store;
     this.home = home;
@@ -282,7 +300,10 @@ export class ProjectWorkLoop {
       learning,
       evidence,
       watches: view.watches,
-      releases: view.releases,
+      // A local publication's log can reach 1 MiB; the agent reads a bounded tail and the full text stays in SQLite.
+      releases: view.releases.map((row) =>
+        row.log && row.log.length > 2000 ? { ...row, log: row.log.slice(-2000), logTruncated: true } : row
+      ),
       verifications: view.verifications,
       finalizations: view.finalizations,
       executions: this.rows<any>('loop_executions', project.id).slice(-12),
@@ -324,10 +345,10 @@ export class ProjectWorkLoop {
         'watch.cancel': '{id}；停止已不再有价值的观测。',
         wait: '{watchIds:[], releaseIds:[], deadline:ISO时间, reason}；任一条件满足或截止后唤醒，保持自动工作开关；有独立工作可做时不要等待。',
         'release.propose':
-          '{itemIds:[], title, changes, rationale, expectedBenefit, checks:[{name,result:passed|not_verified,evidenceIds:[]}], risks, rollback, observationPlan, artifactPath, target:{url,statusUrl,label}}；准备好的文件复制封存，变更内容不可修改。至少一项通过的检查须引用实际采集证据。人批准后由发布接口发送封存产物。',
+          '{itemIds:[], title, changes, rationale, expectedBenefit, checks:[{name,result:passed|not_verified,evidenceIds:[]}], risks, rollback, observationPlan, artifactPath, target:{kind:"http",url,statusUrl,label} 或 {kind:"local-script",label,script,args?:[],timeoutSeconds:30..3600,statusScript?}}；准备好的文件复制封存，变更内容不可修改。至少一项通过的检查须引用实际采集证据。人批准后由发布接口发送封存产物或执行封存脚本。kind 省略时按 http 处理。local-script 的 script/statusScript 是项目内的相对路径，必须是已经提交在项目里的普通文件（≤256 KiB）；args 最多 16 项、每项 ≤1000 字符，作为参数数组传给脚本，不经过 shell；label ≤100 字。脚本内容在提议时被复制封存并计入 reviewHash，之后修改项目里的原文件不会改变将要执行的内容。你不能提供或修改脚本摘要，也不能自己执行发布。',
       },
       releaseAdapter:
-        '发布端接收 POST {releaseId,reviewHash,artifact:{name,sha256,base64}}，Idempotency-Key 为 releaseId；仅在响应 {releaseId,artifactSha256,status:"published",url?} 匹配时认定已上线。statusUrl 的 GET 返回同一回执用于重启/超时后核对。先在已有授权内准备真实接收端与产物，不能编造地址；缺部署能力时继续准备工作并明确缺口。',
+        'http 目标：发布端接收 POST {releaseId,reviewHash,artifact:{name,sha256,base64}}，Idempotency-Key 为 releaseId；仅在响应 {releaseId,artifactSha256,status:"published",url?} 匹配时认定已上线。statusUrl 的 GET 返回同一回执用于重启/超时后核对。local-script 目标：人批准后，Morrow 在项目根目录以固定最小环境执行封存脚本，只有 PATH、HOME、NO_COLOR=1、MORROW_RELEASE_ID、MORROW_ARTIFACT_PATH（封存产物副本）、MORROW_ARTIFACT_SHA256、MORROW_REVIEW_HASH、MORROW_PROJECT_PATH、MORROW_RECEIPT_PATH、MORROW_RUNTIME_CACHE，不含服务凭据和其余环境变量；退出码 0 且最后一行 stdout 是 {releaseId,artifactSha256,status:"published"|"failed",...} 才认定结果，非零退出、非 JSON 或超时保持 unknown，由回执文件（MORROW_RECEIPT_PATH）或 statusScript 事后核对，不会自动重跑。输出合计保留最后 1 MiB 作为 log。先在已有授权内准备真实接收端或已提交的脚本与产物，不能编造地址、脚本路径或摘要；缺部署能力时继续准备工作并明确缺口。',
       principles:
         '主动选择服务目标的工作，必要时先建立反馈。证据、解释和预期收益分开；效果未知时保留未知。人只在发布前批准已准备好的明确版本，AI 没有批准接口。所有频道共享此处记录；失败尝试应更新判断，避免机械重复。先读 strategy 的认识、选择与复查信号，具体工作方法由你判断；工程与运营只是可能方向。评估直接改进、获取信息、建设能力、观察或停止的价值，用 decision.choose 记录依据、验证与止损条件再推进；reviewReasons 出现时先复盘。复盘保留原预期，结果未知时可以继续观察。需要历史经验时使用 memory.search/read；失效认识只能作为历史教训。不要通过增加事项、文档或技能数量证明进展。',
     };
@@ -666,6 +687,77 @@ export class ProjectWorkLoop {
   artifactPath(id: string) {
     return join(this.home, 'releases', id, 'artifact');
   }
+  /** The sealed copy of the human-written script; the project's own file is never executed. */
+  scriptPath(id: string) {
+    return join(this.home, 'releases', id, 'script');
+  }
+  statusScriptPath(id: string) {
+    return join(this.home, 'releases', id, 'status-script');
+  }
+  /** Fixed receipt location a `local-script` release writes and reconciliation reads. */
+  receiptPath(id: string) {
+    return join(this.home, 'releases', id, 'receipt.json');
+  }
+  /**
+   * A project-relative path to a regular file inside the project, small enough for a human to read
+   * before approving. `file()` resolves symlinks first, so a link pointing outside is rejected.
+   */
+  projectScript(scope: Scope, value: unknown, field: string) {
+    const { project } = this.scope(scope);
+    const file = this.file(scope, value, scriptLimit);
+    const path = relative(realpathSync(project.path), file.actual);
+    if (!path || path.startsWith('..') || isAbsolute(path)) throw new APIError(403, `${field} 必须是项目内的脚本文件`);
+    return { path, bytes: file.bytes, sha256: digest(file.bytes) };
+  }
+  /** Compares one sealed file with the digest bound into `reviewHash`; a mismatch executes nothing. */
+  sealedDigest(path: string, expected: string, label: string) {
+    let actual: string;
+    try {
+      actual = digest(readFileSync(path));
+    } catch {
+      return `${label}已丢失，需要重新准备发布`;
+    }
+    return actual === expected ? undefined : `${label}校验失败，需要重新准备发布`;
+  }
+  sealedScriptError(row: Release) {
+    if (row.target.kind !== 'local-script') return undefined;
+    return (
+      this.sealedDigest(this.scriptPath(row.id), row.target.scriptSha256, '封存发布脚本') ||
+      (row.target.statusScriptSha256
+        ? this.sealedDigest(this.statusScriptPath(row.id), row.target.statusScriptSha256, '封存状态脚本')
+        : undefined)
+    );
+  }
+  /** The sealed script text a human reads before approving; the agent grant cannot reach this route. */
+  scriptText(id: string): ReleaseScript {
+    const row = this.release(id);
+    if (row.target.kind !== 'local-script') throw new APIError(409, '该发布不使用本地脚本目标');
+    const read = (path: string, relativePath: string, expected: string, label: string) => {
+      const mismatch = this.sealedDigest(path, expected, label);
+      if (mismatch) throw new APIError(409, mismatch);
+      const bytes = readFileSync(path);
+      if (bytes.length > scriptLimit) throw new APIError(409, `${label}超过 ${scriptLimit} 字节`);
+      return { path: relativePath, sha256: expected, bytes: bytes.length, text: bytes.toString('utf8') };
+    };
+    const target = row.target;
+    return {
+      releaseId: row.id,
+      label: target.label,
+      args: target.args,
+      timeoutSeconds: target.timeoutSeconds,
+      script: read(this.scriptPath(id), target.script, target.scriptSha256, '封存发布脚本'),
+      ...(target.statusScript && target.statusScriptSha256
+        ? {
+            statusScript: read(
+              this.statusScriptPath(id),
+              target.statusScript,
+              target.statusScriptSha256,
+              '封存状态脚本'
+            ),
+          }
+        : {}),
+    };
+  }
   propose(scope: Scope, input: Record<string, any>, key: string): Release {
     keys(input, [
       'itemIds',
@@ -704,7 +796,42 @@ export class ProjectWorkLoop {
     )
       throw new APIError(400, '至少一项通过的检查需要实际文件或 HTTP 采集证据');
     const target = object(input.target);
-    keys(target, ['url', 'statusUrl', 'label']);
+    const kind =
+      target.kind === undefined ? 'http' : choice(target.kind, 'target.kind', ['http', 'local-script'] as const);
+    // Sealed copies are written after the release id exists; nothing runs at proposal time.
+    const sealedScripts: Array<{ status: boolean; bytes: Buffer }> = [];
+    let stored: Release['target'];
+    if (kind === 'local-script') {
+      keys(target, ['kind', 'label', 'script', 'args', 'timeoutSeconds', 'statusScript']);
+      const script = this.projectScript(scope, target.script, 'script');
+      const status =
+        target.statusScript === undefined ? undefined : this.projectScript(scope, target.statusScript, 'statusScript');
+      sealedScripts.push({ status: false, bytes: script.bytes });
+      if (status) sealedScripts.push({ status: true, bytes: status.bytes });
+      stored = {
+        kind: 'local-script',
+        label: text(target.label, 'label', 100),
+        script: script.path,
+        scriptSha256: script.sha256,
+        args: scriptArgs(target.args),
+        // A short cap keeps the timeout test fast; the sealed contract keeps whatever the agent set.
+        timeoutSeconds: integer(
+          target.timeoutSeconds,
+          'timeoutSeconds',
+          process.env.MORROW_TEST_MODE === '1' ? 1 : 30,
+          3600
+        ),
+        ...(status ? { statusScript: status.path, statusScriptSha256: status.sha256 } : {}),
+      };
+    } else {
+      keys(target, ['kind', 'url', 'statusUrl', 'label']);
+      stored = {
+        ...(target.kind === undefined ? {} : { kind: 'http' as const }),
+        url: endpoint(target.url),
+        statusUrl: endpoint(target.statusUrl),
+        label: text(target.label, 'label', 200),
+      };
+    }
     const file = this.file(scope, input.artifactPath, 8 * 1024 * 1024);
     const id = digest(key).slice(0, 32);
     const existing = this.store.get<Release>('loop_releases', id);
@@ -724,15 +851,16 @@ export class ProjectWorkLoop {
       rollback: text(input.rollback, 'rollback'),
       observationPlan: text(input.observationPlan, 'observationPlan'),
       artifact: { name: basename(file.actual), sha256: digest(file.bytes), bytes: file.bytes.length },
-      target: {
-        url: endpoint(target.url),
-        statusUrl: endpoint(target.statusUrl),
-        label: text(target.label, 'label', 200),
-      },
+      target: stored,
     };
     const directory = join(this.home, 'releases', id);
     mkdirSync(directory, { recursive: true, mode: 0o700 });
     writeFileSync(this.artifactPath(id), file.bytes, { mode: 0o600 });
+    for (const entry of sealedScripts) {
+      const path = entry.status ? this.statusScriptPath(id) : this.scriptPath(id);
+      writeFileSync(path, entry.bytes, { mode: 0o700 });
+      chmodSync(path, 0o700);
+    }
     const row: Release = {
       id,
       ...contents,
@@ -757,8 +885,12 @@ export class ProjectWorkLoop {
     if (decision === 'approve' && ['approved', 'publishing', 'published', 'unknown'].includes(row.status)) return row;
     if (decision === 'reject' && row.status === 'rejected') return row;
     if (row.status !== 'awaiting_approval') throw new APIError(409, '该版本已经处理');
-    if (decision === 'approve' && digest(readFileSync(this.artifactPath(id))) !== row.artifact.sha256)
-      throw new APIError(409, '封存产物校验失败，需要重新准备发布');
+    if (decision === 'approve') {
+      if (digest(readFileSync(this.artifactPath(id))) !== row.artifact.sha256)
+        throw new APIError(409, '封存产物校验失败，需要重新准备发布');
+      const mismatch = this.sealedScriptError(row);
+      if (mismatch) throw new APIError(409, mismatch);
+    }
     const updated: Release = {
       ...row,
       status: decision === 'approve' ? 'approved' : 'rejected',
@@ -793,16 +925,36 @@ export class ProjectWorkLoop {
     this.inFlight.add(id);
     try {
       const bytes = readFileSync(this.artifactPath(id));
-      if (digest(bytes) !== row.artifact.sha256) {
-        this.store.put('loop_releases', {
-          ...row,
-          status: 'failed',
-          error: '封存产物校验失败，未发送发布请求',
-          updatedAt: now(),
-        });
+      const sealError =
+        digest(bytes) !== row.artifact.sha256 ? '封存产物校验失败，未发送发布请求' : this.sealedScriptError(row);
+      if (sealError) {
+        this.store.put('loop_releases', { ...row, status: 'failed', error: sealError, updatedAt: now() });
+        for (const itemId of row.itemIds)
+          this.audit(row, 'release.failed', `未执行上线：${sealError}`, itemId, { releaseId: id }, 'system');
         return;
       }
       this.store.put('loop_releases', { ...row, status: 'publishing', updatedAt: now() });
+      if (row.target.kind === 'local-script') {
+        for (const itemId of row.itemIds)
+          this.audit(
+            row,
+            'release.publishing',
+            `开始执行封存的发布脚本：${row.target.script}`,
+            itemId,
+            { releaseId: id, script: row.target.script, args: row.target.args },
+            'system'
+          );
+        this.receipt(
+          id,
+          await this.runSealed(row, {
+            script: this.scriptPath(id),
+            args: row.target.args,
+            timeoutSeconds: row.target.timeoutSeconds,
+            storeLog: true,
+          })
+        );
+        return;
+      }
       const { data } = await jsonRequest(row.target.url, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'Idempotency-Key': row.id },
@@ -824,6 +976,145 @@ export class ProjectWorkLoop {
     } finally {
       this.inFlight.delete(id);
     }
+  }
+  /**
+   * Runs one sealed script and returns the receipt JSON parsed from its last non-empty stdout line.
+   * The environment holds only the fixed keys below: never the service token, never the rest of
+   * `process.env`. A non-zero exit, unparsable output or the timeout throws, so the caller records an
+   * unconfirmed outcome exactly like a lost HTTP response instead of running anything again.
+   */
+  async runSealed(
+    row: Release,
+    options: { script: string; args: string[]; timeoutSeconds: number; storeLog: boolean }
+  ): Promise<unknown> {
+    const project = this.store.get<Project>('projects', row.projectId);
+    if (!project) throw new Error('项目已不存在，未执行发布脚本');
+    const cache = join(this.home, 'runtime-cache');
+    mkdirSync(cache, { recursive: true, mode: 0o700 });
+    const child = spawn(options.script, options.args, {
+      cwd: project.path,
+      detached: true,
+      stdio: ['ignore', 'pipe', 'pipe'],
+      env: {
+        PATH: process.env.PATH || '/usr/bin:/bin:/usr/sbin:/sbin',
+        HOME: process.env.HOME || homedir(),
+        NO_COLOR: '1',
+        MORROW_RELEASE_ID: row.id,
+        MORROW_ARTIFACT_PATH: this.artifactPath(row.id),
+        MORROW_ARTIFACT_SHA256: row.artifact.sha256,
+        MORROW_REVIEW_HASH: row.reviewHash,
+        MORROW_PROJECT_PATH: project.path,
+        MORROW_RECEIPT_PATH: this.receiptPath(row.id),
+        MORROW_RUNTIME_CACHE: cache,
+      },
+    });
+    // Combined output, capped at 1 MiB with the tail kept; stdout is re-read separately for the receipt.
+    const chunks: Array<{ out: boolean; data: Buffer }> = [];
+    let bytes = 0;
+    const collect = (out: boolean) => (data: Buffer) => {
+      chunks.push({ out, data });
+      bytes += data.length;
+      while (bytes > logLimit && chunks.length) {
+        const excess = bytes - logLimit;
+        if (chunks[0].data.length <= excess) {
+          bytes -= chunks[0].data.length;
+          chunks.shift();
+        } else {
+          chunks[0] = { out: chunks[0].out, data: chunks[0].data.subarray(excess) };
+          bytes -= excess;
+        }
+      }
+    };
+    child.stdout.on('data', collect(true));
+    child.stderr.on('data', collect(false));
+    let timedOut = false;
+    const stop = (signal: 'SIGTERM' | 'SIGKILL') => {
+      try {
+        if (child.pid) process.kill(-child.pid, signal);
+      } catch {}
+    };
+    let escalation: NodeJS.Timeout | undefined;
+    const timer = setTimeout(() => {
+      timedOut = true;
+      stop('SIGTERM');
+      escalation = setTimeout(() => stop('SIGKILL'), 5000);
+      escalation.unref();
+    }, options.timeoutSeconds * 1000);
+    timer.unref();
+    type Outcome = { code: number | null; signal: string | null; failure?: string; abandoned?: boolean };
+    const outcome = await new Promise<Outcome>((resolve) => {
+      let settled = false;
+      // The script is detached on purpose: a service shutdown stops waiting for it and leaves the
+      // release unconfirmed, so a restart reconciles instead of publishing anything a second time.
+      const shutdown = setInterval(() => {
+        if (this.closed) settle({ code: null, signal: null, failure: '服务已关闭，发布结果待核对', abandoned: true });
+      }, 200);
+      shutdown.unref();
+      const settle = (value: Outcome) => {
+        if (settled) return;
+        settled = true;
+        clearInterval(shutdown);
+        resolve(value);
+      };
+      child.once('error', (e) => settle({ code: null, signal: null, failure: `发布脚本未能启动：${e.message}` }));
+      child.once('close', (code, signal) => settle({ code, signal }));
+      // A stray grandchild outside the group can hold the pipes open after the script itself exited;
+      // prefer the complete output, but never wait for it indefinitely.
+      child.once('exit', (code, signal) => setTimeout(() => settle({ code, signal }), 2000).unref());
+    });
+    clearTimeout(timer);
+    if (escalation) clearTimeout(escalation);
+    const pipes = [child.stdout, child.stderr] as unknown as Array<{ unref?: () => void; destroy(): void }>;
+    // A script that outlives the service keeps its pipes so it does not take a SIGPIPE; either way
+    // they stop holding this event loop open.
+    for (const pipe of pipes)
+      if (outcome.abandoned) pipe.unref?.();
+      else pipe.destroy();
+    child.unref();
+    const log = this.redact(Buffer.concat(chunks.map((entry) => entry.data)).toString('utf8'));
+    if (options.storeLog) this.store.put('loop_releases', { ...this.release(row.id), log, updatedAt: now() });
+    if (outcome.failure) throw new Error(outcome.failure);
+    if (timedOut) throw new Error(`发布脚本超过 ${options.timeoutSeconds} 秒未结束，已停止其进程组`);
+    if (outcome.code !== 0)
+      throw new Error(`发布脚本退出码 ${outcome.code ?? '未知'}${outcome.signal ? `（${outcome.signal}）` : ''}`);
+    const line = this.redact(Buffer.concat(chunks.filter((e) => e.out).map((e) => e.data)).toString('utf8'))
+      .split('\n')
+      .map((value) => value.trim())
+      .filter(Boolean)
+      .at(-1);
+    if (!line) throw new Error('发布脚本没有输出回执 JSON');
+    try {
+      return JSON.parse(line);
+    } catch {
+      throw new Error('发布脚本最后一行不是有效的回执 JSON');
+    }
+  }
+  /**
+   * How a local publication reports itself: the fixed receipt file first, then the sealed status
+   * script (60 s, the same fixed environment and no argv). Neither available keeps the outcome unknown.
+   */
+  async localOutcome(row: Release): Promise<unknown> {
+    if (row.target.kind !== 'local-script') throw new Error('该发布不是本地脚本目标');
+    const path = this.receiptPath(row.id);
+    if (existsSync(path)) {
+      const stat = statSync(path);
+      if (!stat.isFile() || stat.size > receiptLimit) throw new Error('回执文件不是有界的普通文件');
+      try {
+        return JSON.parse(readFileSync(path, 'utf8'));
+      } catch {
+        throw new Error('回执文件不是有效的 JSON');
+      }
+    }
+    if (!row.target.statusScript || !row.target.statusScriptSha256)
+      throw new Error('尚无回执文件，也没有可核对的状态脚本');
+    const mismatch = this.sealedDigest(this.statusScriptPath(row.id), row.target.statusScriptSha256, '封存状态脚本');
+    if (mismatch) throw new Error(mismatch);
+    return this.runSealed(row, {
+      script: this.statusScriptPath(row.id),
+      args: [],
+      timeoutSeconds: 60,
+      storeLog: false,
+    });
   }
   receipt(id: string, data: any) {
     const row = this.release(id);
@@ -863,6 +1154,7 @@ export class ProjectWorkLoop {
     if (!['unknown', 'publishing'].includes(row.status) || this.inFlight.has(id)) return row;
     this.inFlight.add(id);
     try {
+      if (row.target.kind === 'local-script') return this.receipt(id, await this.localOutcome(row));
       const url = new URL(row.target.statusUrl);
       url.searchParams.set('releaseId', id);
       const { data } = await jsonRequest(url.href);

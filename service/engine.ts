@@ -56,6 +56,7 @@ export class Engine {
     this.loop = new ProjectWorkLoop(store, home);
     this.usage = new UsageMonitor(store);
     this.usage.redact = (value) => this.redact(value);
+    this.loop.redact = (value) => this.redact(value);
     this.loop.usage = this.usage;
   }
   control(id: string): Control {

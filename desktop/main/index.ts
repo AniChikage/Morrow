@@ -262,6 +262,7 @@ function registerIPC(): void {
     })
   );
   handle('reconcile-release', 1, (releaseId) => service.request(`releases/${id(releaseId)}/reconcile`, 'POST', {}));
+  handle('get-release-script', 1, (releaseId) => service.request(`releases/${id(releaseId)}/script`));
   handle('create-item', 1, (value) => {
     const { projectId, ...data } = itemInput(value);
     return service.request(`projects/${projectId}/items`, 'POST', data);

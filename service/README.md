@@ -112,17 +112,31 @@ MORROW_HOME="$HOME/.local/share/morrow" npm start
 
 `release.propose` 要求关联事项、具体改动、预期收益、检查证据、影响、回退和观察计划，并封存项目内的产物文件及审阅摘要。当前产物上限为 8 MiB，大型发布可以提交不可变的部署清单。
 
-项目需提供以下 HTTP 适配接口及必要的发布授权：
+发布目标有两种形状：`target.kind` 为 `http`（省略时同）或 `local-script`。
 
-| 请求 | 约定 |
+| 适配 | 约定 |
 | --- | --- |
-| POST 发布 URL | Header `Idempotency-Key: <releaseId>`；JSON 为 `{releaseId, reviewHash, artifact:{name, sha256, bytes, base64}}`。 |
-| GET 状态 URL | 带 `releaseId` 查询参数，只查询该次发布。 |
-| 回执 | `{releaseId, artifactSha256, status:"published", url?}`；只有确实发布匹配产物后才能返回 `published`，明确失败可返回 `failed`。 |
+| `http` · POST 发布 URL | Header `Idempotency-Key: <releaseId>`；JSON 为 `{releaseId, reviewHash, artifact:{name, sha256, bytes, base64}}`。 |
+| `http` · GET 状态 URL | 带 `releaseId` 查询参数，只查询该次发布。 |
+| `local-script` · 执行 | `target:{kind:"local-script", label, script, args, timeoutSeconds, statusScript?}`。`script`/`statusScript` 是项目内的相对路径，必须是人写好并已提交在项目里的普通文件（≤256 KiB，符号链接不得指向项目外）；`args` ≤16 项、每项 ≤1000 字符，作为参数数组传给进程，不经过 shell；`timeoutSeconds` 为 30–3600 的整数；`label` ≤100 字。提议时脚本被复制封存，摘要写入 `target.scriptSha256`/`statusScriptSha256` 并因此进入 `reviewHash`；agent 不能提供或修改摘要。人确认后在项目根目录执行封存副本（关闭标准输入），退出码 0 且最后一行非空 stdout 为回执 JSON 才算确认。 |
+| `local-script` · 核对 | 优先读固定位置的 `<数据目录>/releases/<id>/receipt.json`，其次以 60 秒上限、同一环境、不带参数执行封存的 `statusScript`，否则保持 `unknown`。 |
+| 回执 | `{releaseId, artifactSha256, status:"published", url?}`；只有确实发布匹配产物后才能返回 `published`，明确失败可返回 `failed`。两种适配使用同一回执形状与校验。 |
 
-桌面人工审阅提交当前 `reviewHash` 与决定。确认后只发送封存产物，源文件后来修改不会更换被批准的内容。发布超时或回执不明时标记 `unknown`，通过 GET 核对，不自动重复 POST；ID、摘要和发布状态必须一致。响应上限为 512 KiB，不跟随重定向。
+`local-script` 执行时的环境是固定的最小集合，不含服务 token，也不含服务自身的其余环境变量：
 
-发布门禁约束 Morrow 的发布接口。原生工具、网络和外部凭据受各原生运行时权限约束；提示中的行为要求不能等同于独立的系统权限隔离。
+| 变量 | 内容 |
+| --- | --- |
+| `PATH`、`HOME`、`NO_COLOR=1` | 基本执行环境；`NO_COLOR` 让输出便于留存。 |
+| `MORROW_RELEASE_ID` | 本次发布 ID，回执必须回报同一个值。 |
+| `MORROW_ARTIFACT_PATH`、`MORROW_ARTIFACT_SHA256` | 封存产物副本的路径与摘要（dogfood 中是发布清单）。 |
+| `MORROW_REVIEW_HASH` | 人已确认的审阅摘要。 |
+| `MORROW_PROJECT_PATH` | 项目目录，同时是脚本的工作目录。 |
+| `MORROW_RECEIPT_PATH` | 固定为 `<数据目录>/releases/<id>/receipt.json`，脚本写入同一份回执 JSON。 |
+| `MORROW_RUNTIME_CACHE` | `<数据目录>/runtime-cache`，可复用的缓存目录；`scripts/build-electron.sh` 用它复用已校验的 Node 24 下载。 |
+
+桌面人工审阅提交当前 `reviewHash` 与决定。确认后只发送封存产物或执行封存脚本，源文件后来修改不会更换被批准的内容；封存脚本摘要不符时批准返回 409，发布阶段发现不符则记 `failed` 且不执行任何命令。发布超时或回执不明时标记 `unknown`：`http` 通过 GET 核对，不自动重复 POST；`local-script` 超时先向进程组发 SIGTERM、5 秒后 SIGKILL，之后只按上表核对，不自动重跑。ID、摘要和发布状态必须一致。HTTP 响应上限为 512 KiB，不跟随重定向；脚本 stdout/stderr 合计保留最后 1 MiB 作为 `log`（已脱敏，`context` 只给尾部）。
+
+发布门禁约束 Morrow 的发布接口。`local-script` 是服务唯一会执行「工作接口记录所指向的命令」的地方：脚本由人编写并提交，提议时封存，只在人确认该确切版本后执行一次；这是有人把关的安装步骤，不是通用命令通道，也不声称脚本自身的行为被沙箱隔离。原生工具、网络和外部凭据受各原生运行时权限约束；提示中的行为要求不能等同于独立的系统权限隔离。
 
 ### 桌面 API 导航
 
@@ -140,6 +154,7 @@ MORROW_HOME="$HOME/.local/share/morrow" npm start
 | `GET /api/projects/:id/usage` | 最近账户读数与是否过期、是否尝试过读取（`attempted`）与最近一次失败原因（`lastError`，已脱敏、最多 200 字）、适用的保留线与项目上限、本项目在窗口内的估算用量，以及当前门禁判断。 |
 | `POST /api/agent` | 运行范围内的 AI 工作操作。 |
 | `POST /api/releases/:id/review` | 桌面人工发布决定，工作凭据不能调用。 |
+| `GET /api/releases/:id/script` | `local-script` 发布的封存脚本原文与摘要（≤256 KiB），供人确认前逐字阅读；工作凭据不能调用，`http` 目标返回 409。 |
 
 请求方法、参数校验和其余路由以 [server.ts](server.ts) 为准；领域字段与操作规则见 [项目工作协议](../docs/PROJECT-WORK-CONTRACT.md)。
 
