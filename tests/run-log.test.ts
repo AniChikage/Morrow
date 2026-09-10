@@ -77,6 +77,7 @@ test('channel run logs join durable records by run and native turn, leave origin
     });
     s.store.put('native_items', {
       id: 'native-one',
+      present: true,
       threadId: run.sessionId,
       turnId: run.nativeTurnId,
       type: 'commandExecution',
@@ -85,6 +86,7 @@ test('channel run logs join durable records by run and native turn, leave origin
     });
     s.store.put('native_items', {
       id: 'native-file',
+      present: true,
       threadId: run.sessionId,
       turnId: run.nativeTurnId,
       type: 'fileChange',
@@ -92,6 +94,7 @@ test('channel run logs join durable records by run and native turn, leave origin
     });
     s.store.put('native_items', {
       id: 'native-other',
+      present: true,
       threadId: run.sessionId,
       turnId: 'other-turn',
       type: 'commandExecution',
@@ -146,6 +149,7 @@ test('run summaries bound native output and counts and never invent missing outc
     for (let i = 0; i < 105; i++)
       s.store.put('native_items', {
         id: `item-${i}`,
+        present: true,
         threadId: 'thread',
         turnId: 'turn',
         type: 'commandExecution',
@@ -163,6 +167,131 @@ test('run summaries bound native output and counts and never invent missing outc
     const details = await s.api('GET', `/api/runs/${run.id}`);
     assert.equal(details.run.log.activity.length, 100);
     assert.ok(details.run.log.activity.every((a: any) => a.text.length <= 4001));
+  } finally {
+    await s.cleanup();
+  }
+});
+
+test('native removal and restoration update every log surface while sealed execution evidence stays immutable', async () => {
+  const s = await startIsolated();
+  try {
+    const run: Run = {
+      id: randomUUID(),
+      projectId: s.project.id,
+      channelId: s.channel.id,
+      runtime: 'codex',
+      status: 'completed',
+      startedAt: '2026-09-10T00:00:00Z',
+      finishedAt: '2026-09-10T00:01:00Z',
+      sessionId: 'revision-thread',
+      nativeTurnId: 'revision-turn',
+      summary: '',
+    };
+    s.store.put('runs', run);
+    const rows = [
+      {
+        id: 'withdrawn-command',
+        type: 'commandExecution',
+        raw: { command: 'withdrawn command', status: 'completed', exitCode: 0 },
+      },
+      { id: 'withdrawn-file', type: 'fileChange', raw: { changes: [{ path: 'withdrawn.ts' }] } },
+      { id: 'withdrawn-mcp', type: 'mcpToolCall', raw: {}, text: 'withdrawn MCP output' },
+      {
+        id: 'captured-command',
+        type: 'commandExecution',
+        raw: { command: 'sealed check', status: 'completed', exitCode: 0 },
+      },
+    ].map((row, ordinal) => ({ ...row, threadId: run.sessionId, turnId: run.nativeTurnId, present: true, ordinal }));
+    for (const row of rows) s.store.put('native_items', row);
+    const evidence = {
+      id: 'sealed-evidence',
+      projectId: run.projectId,
+      channelId: run.channelId,
+      runId: run.id,
+      origin: 'execution',
+      summary: '封存检查',
+      source: 'sealed check',
+      digest: 'immutable-original-digest',
+      data: {
+        command: 'sealed check',
+        nativeItemId: 'captured-command',
+        status: 'completed',
+        exitCode: 0,
+        output: 'ok',
+        outputComplete: true,
+        boundVersion: true,
+      },
+    };
+    s.store.put('loop_evidence', evidence);
+    const detail = async () => (await s.api('GET', `/api/runs/${run.id}`)).run.log;
+    const before = await detail();
+    assert.equal(before.commands.length, 2);
+    assert.deepEqual(before.files, ['withdrawn.ts']);
+    assert.equal(before.activity.length, 4);
+    // This is the production representation used when an item leaves the native snapshot.
+    for (const row of rows) s.store.put('native_items', { ...row, present: false });
+    const removed = await detail();
+    assert.deepEqual(
+      removed.commands.map((c: any) => c.id),
+      ['sealed-evidence']
+    );
+    assert.equal(removed.commands[0].sealed, true);
+    assert.deepEqual(removed.files, []);
+    assert.deepEqual(removed.activity, []);
+    const list = (await s.api('GET', `/api/runs?channelId=${run.channelId}`)).runs[0].log;
+    assert.deepEqual(list.commands, removed.commands);
+    assert.deepEqual(list.files, []);
+    assert.deepEqual(s.store.get('loop_evidence', evidence.id), evidence);
+    for (const row of rows) assert.deepEqual(s.store.get('native_items', row.id), { ...row, present: false });
+    await s.restart();
+    assert.deepEqual((await detail()).activity, []);
+    for (const row of rows.slice(0, 3)) s.store.put('native_items', row);
+    const restored = await detail();
+    assert.equal(restored.commands.length, 2);
+    assert.deepEqual(restored.files, ['withdrawn.ts']);
+    assert.deepEqual(
+      restored.activity.map((i: any) => i.id),
+      rows.slice(0, 3).map((row) => row.id)
+    );
+    assert.deepEqual(s.store.get('loop_evidence', evidence.id), evidence);
+  } finally {
+    await s.cleanup();
+  }
+});
+
+test('removed native items cannot consume the command, activity or file summary limits', async () => {
+  const s = await startIsolated();
+  try {
+    const run = {
+      id: randomUUID(),
+      projectId: s.project.id,
+      channelId: s.channel.id,
+      runtime: 'codex',
+      status: 'completed',
+      startedAt: '2026-09-10T00:00:00Z',
+      sessionId: 'limited-thread',
+      nativeTurnId: 'turn',
+      summary: '',
+    };
+    s.store.put('runs', run);
+    const put = (id: string, present: boolean, type: string, raw: unknown) =>
+      s.store.put('native_items', { id, threadId: run.sessionId, turnId: run.nativeTurnId, present, type, raw });
+    for (let i = 0; i < 105; i++) put(`removed-command-${i}`, false, 'commandExecution', { command: 'removed' });
+    for (let i = 0; i < 25; i++)
+      put(`removed-file-${i}`, false, 'fileChange', { changes: [{ path: `removed-${i}.ts` }] });
+    put('visible-command', true, 'commandExecution', { command: 'visible command', status: 'completed', exitCode: 0 });
+    put('visible-file', true, 'fileChange', { changes: [{ path: 'visible.ts' }] });
+    const log = (await s.api('GET', `/api/runs/${run.id}`)).run.log;
+    assert.deepEqual(
+      log.commands.map((c: any) => c.id),
+      ['visible-command']
+    );
+    assert.deepEqual(log.files, ['visible.ts']);
+    assert.deepEqual(
+      log.activity.map((a: any) => a.id),
+      ['visible-command', 'visible-file']
+    );
+    assert.equal(log.truncated, false);
   } finally {
     await s.cleanup();
   }

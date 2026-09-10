@@ -49,6 +49,8 @@ export function runLog(store: Store, run: Run, detailed = false): RunLog {
           nextStep: savedWork.nextStep || '',
         } as WorkDecision)
       : undefined;
+  // Only the current native projection contributes unsealed activity. Previously
+  // sealed execution evidence below remains an immutable historical observation.
   const items: any[] =
     run.sessionId && run.nativeTurnId
       ? (store.db
@@ -59,6 +61,7 @@ export function runLog(store: Store, run: Run, detailed = false): RunLog {
         json_extract(data,'$.raw.status') status, json_extract(data,'$.raw.exitCode') exitCode,
         substr(json_extract(data,'$.raw.aggregatedOutput'),1,4000) aggregatedOutput
         FROM native_items WHERE json_extract(data,'$.threadId')=? AND json_extract(data,'$.turnId')=?
+        AND json_extract(data,'$.present')=1
         ORDER BY rowid LIMIT 101`
           )
           .all(run.sessionId, run.nativeTurnId) as any[])
@@ -98,6 +101,7 @@ export function runLog(store: Store, run: Run, detailed = false): RunLog {
                   `SELECT substr(json_extract(change.value,'$.path'),1,1000) path
         FROM native_items n, json_each(n.data,'$.raw.changes') change
         WHERE json_extract(n.data,'$.threadId')=? AND json_extract(n.data,'$.turnId')=?
+        AND json_extract(n.data,'$.present')=1
         AND json_extract(n.data,'$.type')='fileChange' AND change.type='object' LIMIT 21`
                 )
                 .all(run.sessionId, run.nativeTurnId) as any[]
