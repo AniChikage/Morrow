@@ -427,12 +427,9 @@ function ChannelDialog({
   const { api, mutate, busy, error, clearError, snapshot } = useWorkspace();
   const [name, setName] = useState(channel?.name || '');
   const [goal, setGoal] = useState(channel?.goal || '');
-  const [model, setModel] = useState(channel?.model || '');
-  // New channels inherit the App task's existing permissions and approval settings.
-  const [permission, setPermission] = useState<Channel['permission']>(channel?.permission || 'native');
   const [interval, setInterval] = useState(channel?.intervalMinutes || 60);
   const [budget, setBudget] = useState(channel?.maxRunsPerDay || 32);
-  const running = channel && snapshot.channels.find((c) => c.id === channel.id)?.status === 'running';
+  const demo = !!snapshot.projects.find((p) => p.id === projectId)?.isDemo;
   // Channels from retired runtimes keep their records; only their name and direction remain editable.
   const legacy = !!channel && isLegacyRuntime(channel.runtime);
   useEffect(() => clearError(), []);
@@ -446,10 +443,6 @@ function ChannelDialog({
           intervalMinutes: interval,
           maxRunsPerDay: budget,
         };
-        if (!running && !legacy) {
-          if (model !== channel.model) data.model = model.trim();
-          if (permission !== channel.permission) data.permission = permission;
-        }
         await api.updateChannel(channel.id, data);
       } else {
         const c = await api.createChannel({
@@ -457,8 +450,8 @@ function ChannelDialog({
           name: name.trim(),
           goal: goal.trim(),
           runtime: 'codex',
-          model: model.trim(),
-          permission,
+          model: '',
+          permission: 'native',
           intervalMinutes: interval,
           maxRunsPerDay: budget,
         });
@@ -493,30 +486,26 @@ function ChannelDialog({
             required
           />
         </Field>
+        {!legacy && (
+          <div className="form-note">
+            <p>模型、工具与任务权限在 Codex App 中管理。</p>
+            {channel ? (
+              <Button disabled={busy || demo} onClick={() => void mutate(() => api.openNativeApp(channel.id))}>
+                <ArrowUpRight size={13} />在 Codex App 中打开对话
+              </Button>
+            ) : (
+              <p>创建频道后，在频道页关联已有的 App 任务。</p>
+            )}
+            {channel && ['read-only', 'workspace-write'].includes(channel.permission) && (
+              <p>
+                此频道还保留此前的自动执行范围：{channel.permission === 'read-only' ? '只读工作空间' : '允许工作区写入'}
+                。保存方向会保留该范围。
+              </p>
+            )}
+          </div>
+        )}
         <details className="feature-form-details">
           <summary>工作设置</summary>
-          <Field title="模型">
-            <input
-              value={model}
-              onChange={(e) => setModel(e.target.value)}
-              placeholder="Codex App 默认模型"
-              disabled={running || legacy}
-            />
-          </Field>
-          <Field
-            title="执行权限"
-            hint="默认沿用 Codex App 中此任务的权限与审批设置；如需完整访问，请在 App 中设置。需要收紧时可选择只读或工作区写入，最终可写目录包含 App 保留的工作区。"
-          >
-            <select
-              value={permission}
-              onChange={(e) => setPermission(e.target.value as Channel['permission'])}
-              disabled={running || legacy}
-            >
-              <option value="read-only">只读工作空间</option>
-              <option value="workspace-write">允许工作区写入</option>
-              {!legacy && <option value="native">沿用 App 设置</option>}
-            </select>
-          </Field>
           <div className="form-row">
             <Field title="复查间隔（分钟）">
               <input
@@ -543,9 +532,7 @@ function ChannelDialog({
         <p className="form-note">
           {legacy
             ? '此频道使用的运行时已停止支持，只能调整名称与方向；历史记录保持可读，新工作请新建 Codex 频道。'
-            : running
-              ? '暂停频道后可以更换模型或执行权限。'
-              : '保存后可在频道开始工作。已有对话和进展会保留。'}
+            : '保存后可在频道开始工作。已有对话和进展会保留。'}
         </p>
         {error && (
           <p className="form-error" role="alert">

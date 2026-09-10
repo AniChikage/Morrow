@@ -314,6 +314,94 @@ it('edits a channel direction without making scheduling fields the primary form 
   expect(context.current.api.channelAction).not.toHaveBeenCalled();
 });
 
+it.each([
+  ['read-only', 'paused'],
+  ['workspace-write', 'running'],
+  ['native', 'paused'],
+  ['native', 'running'],
+] as const)(
+  'keeps existing %s settings while editing a %s channel and links to App without saving',
+  async (permission, status) => {
+    const user = userEvent.setup();
+    const channel = {
+      ...context.current.snapshot.channels[0],
+      permission,
+      status,
+      model: 'historical-model',
+      intervalMinutes: 120,
+      maxRunsPerDay: 9,
+    };
+    context.current.snapshot.channels[0] = channel;
+    context.current.snapshot.projects[0].isDemo = false;
+    const onClose = vi.fn();
+    render(
+      <Dialogs
+        modal={{ kind: 'channel', projectId: channel.projectId, channel }}
+        onClose={onClose}
+        onNavigate={() => {}}
+      />,
+      { wrapper: TestProviders }
+    );
+    await user.click(screen.getByText('工作设置'));
+    expect(screen.queryByRole('textbox', { name: '模型' })).toBeNull();
+    expect(screen.queryByRole('combobox', { name: /执行权限/ })).toBeNull();
+    if (permission === 'native') expect(screen.queryByText(/此频道还保留此前/)).toBeNull();
+    else
+      expect(screen.getByText(/此频道还保留此前/).textContent).toContain(
+        permission === 'read-only' ? '只读工作空间' : '允许工作区写入'
+      );
+    await user.clear(screen.getByRole('textbox', { name: '工作方向' }));
+    await user.type(screen.getByRole('textbox', { name: '工作方向' }), '只调整后续关注点');
+    await user.click(screen.getByRole('button', { name: '在 Codex App 中打开对话' }));
+    expect(context.current.api.openNativeApp).toHaveBeenCalledWith(channel.id);
+    expect(context.current.api.updateChannel).not.toHaveBeenCalled();
+    expect(onClose).not.toHaveBeenCalled();
+    await user.click(screen.getByRole('button', { name: '保存方向' }));
+    await waitFor(() =>
+      expect(context.current.api.updateChannel).toHaveBeenCalledWith(channel.id, {
+        name: channel.name,
+        goal: '只调整后续关注点',
+        intervalMinutes: 120,
+        maxRunsPerDay: 9,
+      })
+    );
+    expect(channel.model).toBe('historical-model');
+    expect(channel.permission).toBe(permission);
+    expect(context.current.api.channelAction).not.toHaveBeenCalled();
+  }
+);
+it('keeps the direction draft when opening App fails and disables that entry in previews', async () => {
+  const user = userEvent.setup();
+  const channel = context.current.snapshot.channels[0];
+  context.current.snapshot.projects[0].isDemo = false;
+  context.current.api.openNativeApp.mockRejectedValueOnce(new Error('App未连接'));
+  const onClose = vi.fn();
+  const view = render(
+    <Dialogs
+      modal={{ kind: 'channel', projectId: channel.projectId, channel }}
+      onClose={onClose}
+      onNavigate={() => {}}
+    />,
+    { wrapper: TestProviders }
+  );
+  await user.clear(screen.getByRole('textbox', { name: '工作方向' }));
+  await user.type(screen.getByRole('textbox', { name: '工作方向' }), '保留方向草稿');
+  await user.click(screen.getByRole('button', { name: '在 Codex App 中打开对话' }));
+  await waitFor(() => expect(context.current.mutate).toHaveResolvedWith(false));
+  expect((screen.getByRole('textbox', { name: '工作方向' }) as HTMLTextAreaElement).value).toBe('保留方向草稿');
+  expect(onClose).not.toHaveBeenCalled();
+  expect(context.current.api.updateChannel).not.toHaveBeenCalled();
+  context.current.snapshot.projects[0].isDemo = true;
+  view.rerender(
+    <Dialogs
+      modal={{ kind: 'channel', projectId: channel.projectId, channel }}
+      onClose={onClose}
+      onNavigate={() => {}}
+    />
+  );
+  expect((screen.getByRole('button', { name: '在 Codex App 中打开对话' }) as HTMLButtonElement).disabled).toBe(true);
+});
+
 it('creates a Codex channel that follows the App permissions by default and never offers another runtime', async () => {
   const user = userEvent.setup(),
     onClose = vi.fn(),
@@ -329,13 +417,8 @@ it('creates a Codex channel that follows the App permissions by default and neve
   await user.type(screen.getByRole('textbox', { name: '频道名称' }), '性能与稳定性');
   await user.type(screen.getByRole('textbox', { name: '工作方向' }), '持续改善性能');
   await user.click(screen.getByText('工作设置'));
-  const permission = screen.getByRole('combobox', { name: /执行权限/ }) as HTMLSelectElement;
-  expect(permission.value).toBe('native');
-  expect(Array.from(permission.options).map((option) => option.value)).toEqual([
-    'read-only',
-    'workspace-write',
-    'native',
-  ]);
+  expect(screen.queryByRole('combobox', { name: /执行权限/ })).toBeNull();
+  expect(screen.queryByRole('textbox', { name: '模型' })).toBeNull();
   await user.click(screen.getByRole('button', { name: '创建频道' }));
   await waitFor(() =>
     expect(context.current.api.createChannel).toHaveBeenCalledWith({
@@ -371,11 +454,8 @@ it('keeps a retired-runtime channel editable in name and direction only, without
   );
   expect(screen.getByText(/已停止支持/)).toBeTruthy();
   await user.click(screen.getByText('工作设置'));
-  const permission = screen.getByRole('combobox', { name: /执行权限/ }) as HTMLSelectElement;
-  expect(permission.disabled).toBe(true);
-  expect(permission.value).toBe('read-only');
-  expect(Array.from(permission.options).map((option) => option.value)).toEqual(['read-only', 'workspace-write']);
-  expect((screen.getByRole('textbox', { name: '模型' }) as HTMLInputElement).disabled).toBe(true);
+  expect(screen.queryByRole('combobox', { name: /执行权限/ })).toBeNull();
+  expect(screen.queryByRole('textbox', { name: '模型' })).toBeNull();
   await user.clear(screen.getByRole('textbox', { name: '频道名称' }));
   await user.type(screen.getByRole('textbox', { name: '频道名称' }), '归档的系统完善');
   await user.click(screen.getByRole('button', { name: '保存方向' }));
