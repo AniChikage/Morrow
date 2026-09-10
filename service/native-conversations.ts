@@ -8,8 +8,7 @@ import type { Engine } from './engine.ts';
 import { extractReport } from './reports.ts';
 import { applyDesktopPatches } from './codex-desktop-transport.ts';
 import { CodexNativeTransport } from './codex-native-transport.ts';
-import { CodexSharedTransport } from './codex-shared-transport.ts';
-import { configureCodexBridge, restoreCodexBridge } from './codex-bridge-setup.ts';
+import { restoreCodexBridge } from './codex-bridge-setup.ts';
 import { resolveNativeAttachments } from './native-media.ts';
 
 export type NativeSnapshot = {threadId:string;ownerClientId:string;revision:number;syncedAt:string;state:Record<string,any>};
@@ -20,8 +19,10 @@ export type NativeWorkOptions = {
 };
 type NativeChange = {type:'patches';baseRevision:number;revision:number;patches:unknown[]} | {type:'snapshot';revision:number;conversationState:Record<string,any>};
 export interface NativeTransport {
+  readonly executionBackend?: 'cli';
   readonly backgroundReady?: boolean;
   createThread?(cwd:string):Promise<NativeSnapshot>;
+  forkThread?(threadId:string,cwd:string):Promise<NativeSnapshot>;
   connect():Promise<void>;
   status():{connected:boolean;socketPath:string;lastError:string|null};
   threadStatus?(threadId:string):{ready:boolean;detail:string;lastSyncedAt?:string};
@@ -35,7 +36,7 @@ export interface NativeTransport {
   respond(threadId:string,requestId:string|number,kind:'command'|'file'|'permissions'|'userInput'|'mcp',response:unknown):Promise<unknown>;
   close():void;
 }
-type Binding = {id:string;projectId:string;threadId:string;cwd:string;createdAt:string;lastSyncedAt?:string;syncError?:string;createdByMorrow?:boolean;createdByNoHuman?:boolean};
+type Binding = {id:string;projectId:string;threadId:string;cwd:string;createdAt:string;lastSyncedAt?:string;syncError?:string;createdByMorrow?:boolean;createdByNoHuman?:boolean;executionBackend?:'cli';previousThreadId?:string;inheritedTurnIds?:string[]};
 type StoredThread = NativeSnapshot & {id:string;summary:NativeThreadSummary;hash:string;projectionVersion?:number};
 type StoredItem = NativeItem & {threadId:string;ordinal:number;present:boolean};
 type Outbox = NativeMessageReceipt & {id:string;channelId:string;projectId:string;threadId:string;text:string;textHash?:string;attachmentIds?:string[];createdAt:string;source:'chat'|'schedule';runId?:string};
@@ -88,6 +89,7 @@ export class NativeConversations {
   scheduled=new Map<string,{run:Run;revisions:Map<string,number>;runDir:string}>();
   starting=new Set<string>();
   creating=new Map<string,Promise<NativeConversation>>();
+  handingOff=new Map<string,Promise<Binding>>();
   observed=new Map<string,{owner:string;revision:number;syncedAt:string}>();
   threadCache=new Map<string,StoredThread>();
   itemCache=new Map<string,Map<string,StoredItem>>();
@@ -103,7 +105,7 @@ export class NativeConversations {
   closed=false;
   store:Store;
   engine:Engine;
-  constructor(store:Store,engine:Engine,transport?:NativeTransport) { this.store=store;this.engine=engine;this.transport=transport || new CodexNativeTransport(undefined,new CodexSharedTransport({directory:join(engine.home,'codex-bridge'),preferredLaunchId:()=>store.get<any>('migrations','native-host-affinity')?.launchId,preferredThreadIds:()=>store.all<Binding>('native_bindings').map(row=>row.threadId),onConnected:host=>store.put('migrations',{id:'native-host-affinity',launchId:host.launchId,connectedAt:now()})})); }
+  constructor(store:Store,engine:Engine,transport?:NativeTransport) { this.store=store;this.engine=engine;this.transport=transport || new CodexNativeTransport(); }
   safe<T>(value:T):T {
     if(typeof value==='string')return this.engine.redact(value) as T;
     if(!value||typeof value!=='object')return value;
@@ -142,21 +144,25 @@ export class NativeConversations {
   channel(id:string) { const channel=this.store.get<Channel>('channels',id);if(!channel)throw new APIError(404,'频道不存在');if(channel.runtime!=='codex')throw new APIError(409,'此频道不使用 Codex');const project=this.store.get<Project>('projects',channel.projectId)!;if(project.isDemo)throw new APIError(409,'示例项目没有原生会话');return {channel,project}; }
   get backgroundReady(){return !!this.transport.backgroundReady;}
   binding(id:string) { return this.store.get<Binding>('native_bindings',id); }
-  bound(id:string) { const binding=this.binding(id);if(!binding)throw new APIError(409,'请先绑定 Codex App 中同一项目的任务');return binding; }
+  bound(id:string) { const binding=this.binding(id);if(!binding)throw new APIError(409,'请先绑定 Codex CLI 中同一项目的任务');return binding; }
   async status():Promise<NativeConnectionStatus> {
     let connectionError='';try{await this.transport.connect();}catch(error){connectionError=errorText(error);}
     const value=this.transport.status(),connected=value.connected&&!connectionError;
     const backgroundReady=connected&&!!this.transport.backgroundReady;
-    const backgroundConfigured=this.store.get<any>('migrations','codex-background-bridge')?.enabled===true;
-    const detail=connectionError||(!connected?value.lastError||'请启动 Codex App 后重新连接。':backgroundReady?'已连接 Codex App 的同一原生后台，可直接新建和恢复对话。':backgroundConfigured?'后台桥接已配置，等待 Codex App 重新打开一次。':'已连接 Codex App 已加载的任务；后台连接尚未设置。');
+    const backgroundConfigured=false;
+    const detail=connectionError||(!connected?value.lastError||'Codex CLI 尚未连接，请检查安装。':'已连接 Codex CLI，可直接新建和恢复对话；登录、模型和工具沿用 CLI 配置。');
     return {available:connected,connected,backgroundReady,backgroundConfigured,detail,capabilities:{list:connected,read:connected,send:connected,create:backgroundReady&&!!this.transport.createThread,interrupt:connected,respond:connected}};
   }
-  configureBackground() { const result=configureCodexBridge(this.engine.home);this.store.transaction(()=>{this.store.put('migrations',{id:'codex-background-bridge',enabled:true,configuredAt:now(),launcher:result.launcher});this.engine.audit({projectId:'',actor:'human',action:'native.background-configured',text:'已配置 Codex App 原生后台桥接，等待 App 下次启动生效。',after:{launcher:result.launcher}});});return result; }
-  restoreBackground() { const result=restoreCodexBridge(this.engine.home);this.store.transaction(()=>{this.store.put('migrations',{id:'codex-background-bridge',enabled:false,restoredAt:now()});this.engine.audit({projectId:'',actor:'human',action:'native.background-restored',text:'已恢复 Codex App 原始启动设置，当前会话未中断。'});});return result; }
+  configureBackground() { throw new APIError(410,'Morrow 已改为直接使用 Codex CLI，无需设置 App 桥接。'); }
+  restoreBackground() { const result=restoreCodexBridge(this.engine.home);this.store.transaction(()=>{this.store.put('migrations',{id:'codex-background-bridge',enabled:false,restoredAt:now()});this.engine.audit({projectId:'',actor:'human',action:'native.background-restored',text:'已恢复 Codex CLI 原始启动设置，当前会话未中断。'});});return result; }
   async start() {
+    if(process.platform==='darwin'&&process.env.MORROW_TEST_MODE!=='1'&&this.store.get<any>('migrations','codex-background-bridge')?.enabled){
+      try { this.restoreBackground(); }
+      catch(error) { this.engine.audit({projectId:'',actor:'system',action:'native.bridge-retirement-failed',text:`旧桥接启动设置未能撤销：${errorText(error)}。CLI 接入不依赖此设置，当前 App 未被中断。`}); }
+    }
     for(const entry of this.store.all<Outbox>('native_outbox').filter(entry=>entry.state==='pending'))this.store.put('native_outbox',{...entry,state:'unknown',error:'服务重新连接，正在核对原生任务；不会自动重发。'});
-    for(const run of this.store.all<Run>('runs').filter(run=>run.status==='running'&&run.executionOwner==='codex-app'&&['morrow-schedule','nohuman-schedule'].includes(run.source||'')))this.scheduled.set(run.channelId,{run,revisions:new Map(Object.entries(run.nativeItemRevisions || {})),runDir:join(this.engine.home,'runs',run.id)});
-    for(const binding of this.store.all<Binding>('native_bindings')) {try{this.recoverCheckpoint(binding.threadId);}catch(error){this.recordError(binding.threadId,error);}void this.attach(binding.threadId).catch(error=>this.recordError(binding.threadId,error));}
+    for(const run of this.store.all<Run>('runs').filter(run=>run.status==='running'&&['codex-app','codex-cli'].includes(run.executionOwner||'')&&['morrow-schedule','nohuman-schedule'].includes(run.source||'')))this.scheduled.set(run.channelId,{run,revisions:new Map(Object.entries(run.nativeItemRevisions || {})),runDir:join(this.engine.home,'runs',run.id)});
+    for(const binding of this.store.all<Binding>('native_bindings')) {try{this.recoverCheckpoint(binding.threadId);}catch(error){this.recordError(binding.threadId,error);}if(this.scheduled.has(binding.id)||this.engine.control(binding.id).enabled)void this.attach(binding.threadId).catch(error=>this.recordError(binding.threadId,error));}
   }
   recordError(threadId:string,error:unknown) { if(this.closed)return;for(const binding of this.store.all<Binding>('native_bindings').filter(row=>row.threadId===threadId))this.store.put('native_bindings',{...binding,syncError:errorText(error)}); }
   async attach(threadId:string) {
@@ -166,6 +172,47 @@ export class NativeConversations {
     this.attaching.set(threadId,pending);try{await pending;}finally{this.attaching.delete(threadId);}
   }
   async sync(threadId:string) { await this.attach(threadId);this.flushPending(threadId);const cached=this.threadCache.get(threadId);if(cached&&this.transport.threadStatus?.(threadId).ready)return cached;const snapshot=await this.transport.readThread(threadId);this.ingest(snapshot);return snapshot; }
+  async prepareBinding(id:string):Promise<Binding> {
+    const binding=this.bound(id);
+    try {
+      await this.sync(binding.threadId);
+      const current=this.bound(id);
+      if(this.transport.executionBackend==='cli'&&!current.executionBackend)this.store.put('native_bindings',{...current,executionBackend:'cli'});
+      return this.bound(id);
+    }
+    catch(error) {
+      if(binding.executionBackend==='cli'||!this.transport.forkThread||!/already has an active writer/i.test(errorText(error)))throw error;
+      if(this.handingOff.has(id))return this.handingOff.get(id)!;
+      const operation=this.handoffToCli(binding);this.handingOff.set(id,operation);
+      try{return await operation;}finally{this.handingOff.delete(id);}
+    }
+  }
+  private async handoffToCli(previous:Binding):Promise<Binding> {
+    const {channel,project}=this.channel(previous.id),key=`cli-handoff:${previous.id}:${previous.threadId}`;
+    if(this.scheduled.has(previous.id)||this.store.nativeRows<Outbox>('native_outbox',previous.threadId).some(row=>row.state==='pending'||row.state==='unknown'))throw new APIError(409,'旧任务还有未确认的执行回执，保留历史等待核对后再接续 CLI。');
+    const existing=this.store.get<any>('migrations',key);
+    if(existing&&!existing.snapshot)throw new APIError(409,'CLI 接续的创建结果尚未确认；已保留旧任务，不会重复创建。');
+    let snapshot:NativeSnapshot=existing?.snapshot;
+    if(!snapshot){
+      this.store.put('migrations',{id:key,state:'pending',previousThreadId:previous.threadId,createdAt:now()});
+      this.engine.audit({projectId:project.id,channelId:channel.id,actor:'system',action:'native.cli-handoff-requested',text:'旧 App 持有任务写入锁；保留旧任务，通过 CLI 原生 fork 接续历史，不操作或重启 App。',before:previous});
+      try{snapshot=await this.transport.forkThread!(previous.threadId,project.path);}
+      catch(error){this.store.put('migrations',{id:key,state:'unknown',previousThreadId:previous.threadId,error:errorText(error),createdAt:now()});throw error;}
+      // Save the native receipt before changing the active binding. Recovery can
+      // apply this exact receipt, but must never blindly send another fork.
+      this.store.put('migrations',{id:key,state:'created',previousThreadId:previous.threadId,snapshot:this.safe(snapshot),createdAt:now()});
+    }
+    if(!sameFolder(summary(snapshot).cwd,project.path))throw new APIError(409,'CLI 接续任务目录不匹配，旧绑定保持不变。');
+    if(this.bound(channel.id).threadId!==previous.threadId)throw new APIError(409,'频道绑定已变化，旧接续结果未覆盖当前任务。');
+    const binding:Binding={...previous,threadId:snapshot.threadId,previousThreadId:previous.threadId,executionBackend:'cli',inheritedTurnIds:nativeTurns(snapshot.state).map(turn=>turn.turnId||turn.id),syncError:'',lastSyncedAt:undefined};
+    this.store.transaction(()=>{
+      this.store.put('native_bindings',binding);this.store.put('channels',{...this.store.get<Channel>('channels',channel.id)!,sessionId:snapshot.threadId});
+      this.store.put('migrations',{id:key,state:'complete',previousThreadId:previous.threadId,threadId:snapshot.threadId,completedAt:now()});
+      this.engine.audit({projectId:project.id,channelId:channel.id,actor:'system',action:'native.cli-handoff-completed',text:'已在独立 CLI 任务中接续旧对话；旧任务、运行和证据保留原 ID，后续工作持续使用此 CLI 任务。',before:previous,after:binding});
+    });
+    this.subscriptions.get(previous.threadId)?.();this.subscriptions.delete(previous.threadId);
+    this.ingest(snapshot);await this.attach(snapshot.threadId);return this.bound(channel.id);
+  }
   ingest(snapshot:NativeSnapshot,forceCheckpoint=false) {
     if(this.closed || !this.store.all<Binding>('native_bindings').some(binding=>binding.threadId===snapshot.threadId))return;
     const observed=this.observed.get(snapshot.threadId);
@@ -229,13 +276,13 @@ export class NativeConversations {
       const previous=this.binding(id);
       if(previous){await this.conversation(id,{});if(!this.canRecreateEmpty(this.bound(id)))return this.conversation(id,{});}
       if(this.engine.active.has(id)||this.starting.has(id)||this.engine.control(id).enabled)throw new APIError(409,'请先暂停频道并等待本轮完成');
-      const status=await this.status();if(!status.capabilities.create||!this.transport.createThread)throw new APIError(409,'完成一次 Codex 后台连接设置后，即可在 Morrow 新建对话。');
-      this.engine.audit({projectId:project.id,channelId:id,actor:'human',action:'native.creation-requested',text:'请求 Codex App 后台创建原生任务。'});
+      const status=await this.status();if(!status.capabilities.create||!this.transport.createThread)throw new APIError(409,'Codex CLI 尚未就绪，请检查运行时安装与连接。');
+      this.engine.audit({projectId:project.id,channelId:id,actor:'human',action:'native.creation-requested',text:'请求 Codex CLI创建原生任务。'});
       let snapshot:NativeSnapshot;
       try{snapshot=await this.transport.createThread(project.path);}catch(error){this.engine.audit({projectId:project.id,channelId:id,actor:'system',action:'native.creation-failed',text:this.engine.redact(errorText(error))});throw error;}
       if(!sameFolder(summary(snapshot).cwd,project.path))throw new APIError(409,'原生任务目录与项目不一致');
-      const binding={id,projectId:project.id,threadId:snapshot.threadId,cwd:project.path,createdAt:now(),createdByMorrow:true};
-      this.store.transaction(()=>{this.store.put('native_bindings',binding);this.store.put('channels',{...channel,sessionId:snapshot.threadId});this.engine.audit({projectId:project.id,channelId:id,actor:'human',action:previous?'native.empty-recreated':'native.created',text:previous?'原生后台未保留尚未发送消息的空白任务，已按用户请求重新创建。':'已在 Codex App 共享后台创建原生任务。',...(previous?{before:previous}:{}),after:binding});});
+      const binding={id,projectId:project.id,threadId:snapshot.threadId,cwd:project.path,createdAt:now(),createdByMorrow:true,executionBackend:'cli' as const};
+      this.store.transaction(()=>{this.store.put('native_bindings',binding);this.store.put('channels',{...channel,sessionId:snapshot.threadId});this.engine.audit({projectId:project.id,channelId:id,actor:'human',action:previous?'native.empty-recreated':'native.created',text:previous?'原生后台未保留尚未发送消息的空白任务，已按用户请求重新创建。':'已在 Codex CLI创建原生任务。',...(previous?{before:previous}:{}),after:binding});});
       if(previous){this.subscriptions.get(previous.threadId)?.();this.subscriptions.delete(previous.threadId);}
       this.ingest(snapshot);await this.attach(snapshot.threadId);return this.conversation(id,{});
     })();this.creating.set(id,operation);try{return await operation;}finally{this.creating.delete(id);}
@@ -244,40 +291,42 @@ export class NativeConversations {
     const {channel,project}=this.channel(id);
     if(this.engine.active.has(id)||this.starting.has(id)||this.scheduled.has(id)||this.engine.control(id).enabled)throw new APIError(409,'请先暂停频道并等待本轮完成，再绑定原生任务');
     if(this.store.all<Binding>('native_bindings').some(row=>row.threadId===threadId&&row.id!==id))throw new APIError(409,'该原生任务已经绑定到另一个频道');
+    if(this.binding(id)?.threadId===threadId)return this.conversation(id,{});
     const listed=await this.transport.listThreads(project.path);const thread=listed.find(row=>row.id===threadId && sameFolder(row.cwd,project.path));if(!thread)throw new APIError(404,'原生任务不属于此项目目录或不存在');
     let snapshot:NativeSnapshot|undefined;let syncError='';try{snapshot=await this.transport.readThread(threadId);}catch(error){syncError=errorText(error);}const cwd=snapshot?summary(snapshot).cwd:'';if(cwd && realpathSync(cwd)!==realpathSync(project.path))throw new APIError(409,'原生任务目录与项目不一致');
     const before=this.binding(id);const binding={id,projectId:project.id,threadId,cwd:project.path,createdAt:now()};
     if(before?.threadId!==threadId && before && this.store.get<StoredThread>('native_threads',before.threadId)?.summary.status==='running')throw new APIError(409,'原生任务仍在执行，请等待它完成后再切换绑定');
-    this.store.transaction(()=>{this.store.put('native_bindings',binding);this.store.put('channels',{...channel,sessionId:threadId});this.engine.audit({projectId:project.id,channelId:id,actor:'human',action:'native.bound',text:'已绑定 Codex App 原生任务。',before,after:binding});});
+    this.store.transaction(()=>{this.store.put('native_bindings',binding);this.store.put('channels',{...channel,sessionId:threadId});this.engine.audit({projectId:project.id,channelId:id,actor:'human',action:'native.bound',text:'已绑定 Codex CLI 原生任务。',before,after:binding});});
     if(before&&before.threadId!==threadId&&!this.store.all<Binding>('native_bindings').some(row=>row.threadId===before.threadId)){this.subscriptions.get(before.threadId)?.();this.subscriptions.delete(before.threadId);}
     if(snapshot)this.ingest(snapshot);if(syncError)this.recordError(threadId,syncError);else try{await this.attach(threadId);}catch(error){this.recordError(threadId,error);}return this.conversation(id,{});
   }
   async conversation(id:string,query:{before?:string;limit?:number}):Promise<NativeConversation> {
-    this.channel(id);const status=await this.status();const binding=this.binding(id);
+    this.channel(id);const status=await this.status();let binding=this.binding(id);
     if(!binding)return {channelId:id,status,items:[],requests:[],hasMore:false};
-    if(status.connected)try{await this.sync(binding.threadId);}catch(error){this.recordError(binding.threadId,error);}
+    if(status.connected)try{binding=await this.prepareBinding(id);}catch(error){this.recordError(binding.threadId,error);binding=this.bound(id);}
     const latest=this.bound(id);const stored=this.cachedThread(binding.threadId);
     let cachedItems=this.itemCache.get(binding.threadId);if(!cachedItems){cachedItems=new Map(this.store.nativeRows<StoredItem>('native_items',binding.threadId).map(item=>[item.id,item]));this.itemCache.set(binding.threadId,cachedItems);}
     const all=[...cachedItems.values()].filter(item=>item.present).sort((a,b)=>a.ordinal-b.ordinal);
     const index=query.before ? all.findIndex(item=>item.id===query.before) : all.length;
     if(index<0)throw new APIError(404,'消息游标不属于此原生任务');
-    const scheduledTurns=new Set(this.store.nativeRows<Outbox>('native_outbox',binding.threadId).filter(entry=>entry.source==='schedule').map(entry=>entry.turnId));
-    const limit=query.limit||80;const page=all.slice(Math.max(0,index-limit),index).map(({threadId,ordinal,present,...item})=>({...item,...(item.role==='user'&&scheduledTurns.has(item.turnId)&&this.store.nativeRows<Outbox>('native_outbox',binding.threadId).some(entry=>entry.source==='schedule'&&entry.turnId===item.turnId&&(itemMatchesRequest(item.raw,entry.requestId)||item.text===entry.text))?{autonomousContext:true}:{})}));
+    const contextOutbox=[...this.store.nativeRows<Outbox>('native_outbox',binding.threadId),...(binding.previousThreadId?this.store.nativeRows<Outbox>('native_outbox',binding.previousThreadId):[])];
+    const scheduledTurns=new Set(contextOutbox.filter(entry=>entry.source==='schedule').map(entry=>entry.turnId));
+    const limit=query.limit||80;const page=all.slice(Math.max(0,index-limit),index).map(({threadId,ordinal,present,...item})=>({...item,...(item.role==='user'&&scheduledTurns.has(item.turnId)&&contextOutbox.some(entry=>entry.source==='schedule'&&entry.turnId===item.turnId&&(itemMatchesRequest(item.raw,entry.requestId)||item.text===entry.text))?{autonomousContext:true}:{})}));
     const requests=this.store.all<any>('native_requests').filter(row=>row.threadId===binding.threadId&&row.status==='pending').map(({nativeId,threadId,...row})=>({...row,id:nativeId}));
     const readiness=this.transport.threadStatus?.(binding.threadId);const syncError=latest.syncError || (readiness&&!readiness.ready?readiness.detail:!stored?'尚未取得原生任务快照':'');
     const threadStatus=syncError?{...status,connected:false,detail:syncError,capabilities:{...status.capabilities,read:false,send:false,interrupt:false,respond:false}}:status;
-    return {channelId:id,threadId:binding.threadId,status:threadStatus,canRecreateEmpty:this.canRecreateEmpty(latest),...(stored ? {thread:{...stored.summary,cwd:stored.summary.cwd||binding.cwd}} : {}),items:page,requests,hasMore:index>limit,...(page[0]?{cursor:page[0].id}:{}),lastSyncedAt:latest.lastSyncedAt,...(syncError?{syncError}:{})};
+    return {channelId:id,threadId:binding.threadId,...(binding.previousThreadId?{previousThreadId:binding.previousThreadId}:{}),status:threadStatus,canRecreateEmpty:this.canRecreateEmpty(latest),...(stored ? {thread:{...stored.summary,cwd:stored.summary.cwd||binding.cwd}} : {}),items:page,requests,hasMore:index>limit,...(page[0]?{cursor:page[0].id}:{}),lastSyncedAt:latest.lastSyncedAt,...(syncError?{syncError}:{})};
   }
   async send(id:string,text:string,requestId:string,source:'chat'|'schedule'='chat',runId?:string,attachments:Array<{id:string}>=[]):Promise<NativeMessageReceipt> {
-    const {project,channel}=this.channel(id);if(!this.binding(id))await this.create(id);const binding=this.bound(id);const key=`${id}:${requestId}`;
+    const {project,channel}=this.channel(id);if(!this.binding(id))await this.create(id);const binding=await this.prepareBinding(id);const key=`${id}:${requestId}`;
     const workOptions:NativeWorkOptions|undefined=source==='schedule'?{approvalPolicy:'on-request',approvalsReviewer:'auto_review',...(channel.permission==='native'?{}:{sandboxPolicy:channel.permission==='read-only'?{type:'readOnly',networkAccess:false}:{type:'workspaceWrite',writableRoots:[project.path],networkAccess:false,excludeTmpdirEnvVar:true,excludeSlashTmp:true}})}:undefined;
     const images=resolveNativeAttachments(this.store,id,attachments);const attachmentIds=attachments.map(item=>item.id);const textHash=createHash('sha256').update(text).digest('hex');
-    const old=this.store.get<Outbox>('native_outbox',key);if(old){if((old.textHash?old.textHash!==textHash:old.text!==text)||old.threadId!==binding.threadId||JSON.stringify(old.attachmentIds||[])!==JSON.stringify(attachmentIds))throw new APIError(409,'同一请求 ID 已用于其他消息');return this.receipt(old);}
+    const old=this.store.get<Outbox>('native_outbox',key);if(old){if((old.textHash?old.textHash!==textHash:old.text!==text)||(old.threadId!==binding.threadId&&old.threadId!==binding.previousThreadId)||JSON.stringify(old.attachmentIds||[])!==JSON.stringify(attachmentIds))throw new APIError(409,'同一请求 ID 已用于其他消息');return this.receipt(old);}
     if(this.sending.has(key))return this.sending.get(key)!;
     const operation=(async()=>{
       await this.sync(binding.threadId);
       const entry:Outbox={id:key,requestId,channelId:id,projectId:project.id,threadId:binding.threadId,text:this.engine.redact(text),textHash,attachmentIds,state:'pending',source,createdAt:now(),...(runId?{runId}:{})};
-      this.store.transaction(()=>{this.store.put('native_outbox',entry);this.engine.audit({projectId:project.id,channelId:id,runId,actor:source==='chat'?'human':'system',action:'native.message-submitted',text:source==='chat'?'向 Codex App 原生任务发送消息。':'向 Codex App 原生任务提交持续职责轮次。',after:{requestId,threadId:binding.threadId}});});
+      this.store.transaction(()=>{this.store.put('native_outbox',entry);this.engine.audit({projectId:project.id,channelId:id,runId,actor:source==='chat'?'human':'system',action:'native.message-submitted',text:source==='chat'?'向 Codex CLI 原生任务发送消息。':'向 Codex CLI 原生任务提交持续职责轮次。',after:{requestId,threadId:binding.threadId}});});
       try {const response=await this.transport.sendMessage(binding.threadId,text,requestId,images,workOptions) as any;const turnId=response?.turn?.id || response?.turnId;const result={...entry,...this.store.get<Outbox>('native_outbox',key),state:'accepted' as const,...(typeof turnId==='string'?{turnId}:{}),response:JSON.parse(this.engine.redact(JSON.stringify(response??null)))};this.store.put('native_outbox',result);try{await this.sync(binding.threadId);}catch(error){this.recordError(binding.threadId,error);}return this.receipt(this.store.get<Outbox>('native_outbox',key)!);}
       catch(error){const current=this.store.get<Outbox>('native_outbox',key)!;if(current.state==='accepted')return this.receipt(current);const definitive=(error as any)?.outcomeUnknown===false;const result={...entry,state:definitive?'failed' as const:'unknown' as const,error:definitive?errorText(error):`发送结果尚未确认：${errorText(error)}。不会自动重发，请核对原生任务。`};this.store.put('native_outbox',result);return this.receipt(result);}
     })();this.sending.set(key,operation);try{return await operation;}finally{this.sending.delete(key);}
@@ -287,7 +336,7 @@ export class NativeConversations {
     const binding=this.store.all<Binding>('native_bindings').find(row=>row.threadId===snapshot.threadId);if(!binding)return;
     const outbox=this.store.nativeRows<Outbox>('native_outbox',snapshot.threadId);
     for(const turn of nativeTurns(snapshot.state)) {
-      const turnId=turn.turnId || turn.id;if(typeof turnId!=='string'||!turnId)continue;
+      const turnId=turn.turnId || turn.id;if(typeof turnId!=='string'||!turnId||binding.inheritedTurnIds?.includes(turnId))continue;
       const key=stable(snapshot.threadId,`turn:${turnId}`);const cached=this.turnCache.get(key);if(cached&&cached.raw===turn){if(checkpoint&&this.dirtyTurns.has(key)){this.store.put('native_turns',cached.row);this.dirtyTurns.delete(key);}continue;}
       const previous=cached?.row||this.store.get<any>('native_turns',key);const ended=!['inProgress','running'].includes(turn.status);
       const rawHash=ended?createHash('sha256').update(JSON.stringify(turn)).digest('hex'):stable(key,`${snapshot.ownerClientId}:${snapshot.revision}`);
@@ -302,7 +351,7 @@ export class NativeConversations {
       const row={id:key,threadId:snapshot.threadId,nativeTurnId:turnId,channelId:binding.id,projectId:binding.projectId,runId,hash:rawHash,projectionVersion:PROJECTION_VERSION,raw:turn,promptItemIds,firstObservedAt:previous?.firstObservedAt||now(),updatedAt:now(),...(ended?{finalHash:rawHash}:{})};
       this.store.transaction(()=>{
         if(!ownerScheduled) {
-          const run:Run={id:runId,projectId:binding.projectId,channelId:binding.id,runtime:'codex',model:snapshot.state.latestThreadSettings?.model||snapshot.state.latestModel||'',permission:'native',executionOwner:'codex-app',source:request?'morrow-chat':'native-app',trigger:'manual',resumedFromSessionId:snapshot.threadId,nativeTurnId:turnId,reportStatus:'missing',reportError:'此轮是原生对话，未作为持续职责报告自动更新看板。',status:ended?(turn.status==='completed'?'completed':turn.status==='interrupted'?'interrupted':'failed'):'running',startedAt,finishedAt,summary:(final || (ended?turn.error?.message || '原生轮次已结束':'原生任务正在执行。')).slice(0,20000),sessionId:snapshot.threadId};
+          const run:Run={id:runId,projectId:binding.projectId,channelId:binding.id,runtime:'codex',model:snapshot.state.latestThreadSettings?.model||snapshot.state.latestModel||'',permission:'native',executionOwner:existing?.executionOwner||'codex-cli',source:existing?.source||(request?'morrow-chat':'native-cli'),trigger:'manual',resumedFromSessionId:snapshot.threadId,nativeTurnId:turnId,reportStatus:'missing',reportError:'此轮是原生对话，未作为持续职责报告自动更新看板。',status:ended?(turn.status==='completed'?'completed':turn.status==='interrupted'?'interrupted':'failed'):'running',startedAt,finishedAt,summary:(final || (ended?turn.error?.message || '原生轮次已结束':'原生任务正在执行。')).slice(0,20000),sessionId:snapshot.threadId};
           this.store.put('runs',run);
           for(const [index,item] of (turn.items||[]).entries())if(isUserItem(item)) {const aliases=[item.serverUserMessageId,item.id,item.clientId,item.clientUserMessageId,item.restoreMessage?.id].filter(value=>typeof value==='string');if(!aliases.length)aliases.push(String(index));if(aliases.some(value=>promptItemIds.includes(value))){for(const alias of aliases)if(!promptItemIds.includes(alias))promptItemIds.push(alias);continue;}const text=userText(item);if(text)this.store.io(runId,'prompt',this.engine.redact(text));promptItemIds.push(...aliases);}
           if(ended&&previous?.finalHash!==rawHash){this.store.io(runId,'stdout',JSON.stringify(turn));if(final)this.store.io(runId,'final',final);}
@@ -313,20 +362,20 @@ export class NativeConversations {
     }
   }
   async interrupt(id:string,turnId:string) { this.channel(id);const binding=this.bound(id);const snapshot=await this.sync(binding.threadId);if(activeTurn(snapshot.state)?.turnId!==turnId)throw new APIError(409,'该原生轮次已结束或不是当前轮次');const result=await this.transport.interrupt(binding.threadId,turnId);this.engine.audit({projectId:binding.projectId,channelId:id,actor:'human',action:'native.interrupt',text:'已向原生任务请求停止当前轮次。',after:{threadId:binding.threadId,turnId}});return result; }
-  async respond(id:string,requestId:string,response:unknown) { this.channel(id);const binding=this.bound(id);await this.sync(binding.threadId);const request=this.store.get<any>('native_requests',stable(binding.threadId,`request:${requestId}`));if(!request || request.status!=='pending')throw new APIError(409,'原生请求已经处理或已失效');if(request.type==='unsupported')throw new APIError(409,'请在 Codex App 中处理此类原生请求');const result=await this.transport.respond(binding.threadId,request.raw.id,request.type,response);this.store.put('native_requests',{...request,status:'responded',response});this.engine.audit({projectId:binding.projectId,channelId:id,actor:'human',action:'native.responded',text:'已向原生任务提交审批或问题答复。',after:{requestId,type:request.type,response}});return result; }
+  async respond(id:string,requestId:string,response:unknown) { this.channel(id);const binding=this.bound(id);await this.sync(binding.threadId);const request=this.store.get<any>('native_requests',stable(binding.threadId,`request:${requestId}`));if(!request || request.status!=='pending')throw new APIError(409,'原生请求已经处理或已失效');if(request.type==='unsupported')throw new APIError(409,'当前 CLI 协议请求尚不受支持，请停止本轮并检查请求详情');const result=await this.transport.respond(binding.threadId,request.raw.id,request.type,response);this.store.put('native_requests',{...request,status:'responded',response});this.engine.audit({projectId:binding.projectId,channelId:id,actor:'human',action:'native.responded',text:'已向原生任务提交审批或问题答复。',after:{requestId,type:request.type,response}});return result; }
   async startScheduled(id:string,scheduled:boolean) {
-    const {channel,project}=this.channel(id);const binding=this.bound(id);if(this.starting.has(id)||this.scheduled.has(id))throw new APIError(409,'该频道正在执行原生轮次');this.starting.add(id);
+    const binding=await this.prepareBinding(id);const {channel,project}=this.channel(id);if(this.starting.has(id)||this.scheduled.has(id))throw new APIError(409,'该频道正在执行原生轮次');this.starting.add(id);
     try {
       const snapshot=await this.sync(binding.threadId);
-      if(activeTurn(snapshot.state)||snapshot.state.threadRuntimeStatus?.type==='active') {if(scheduled){this.store.put('channels',{...channel,status:'waiting',nextRunAt:new Date(Date.now()+5000).toISOString()});return;}throw new APIError(409,'Codex App 正在执行此任务，请等待当前轮次完成');}
+      if(activeTurn(snapshot.state)||snapshot.state.threadRuntimeStatus?.type==='active') {if(scheduled){this.store.put('channels',{...channel,status:'waiting',nextRunAt:new Date(Date.now()+5000).toISOString()});return;}throw new APIError(409,'Codex CLI 正在执行此任务，请等待当前轮次完成');}
       // Native interactive settings remain authoritative. A scheduler may only
       // inherit settings whose sandbox we can verify against its saved scope.
       const sandbox=snapshot.state.currentPermissions?.sandboxPolicy?.type || snapshot.state.latestThreadSettings?.sandboxPolicy?.type || snapshot.state.sandboxPolicy?.type;
       const allowed=channel.permission==='native'?['readOnly','read-only','workspaceWrite','workspace-write','dangerFullAccess','danger-full-access','externalSandbox','external-sandbox']:channel.permission==='read-only' ? ['readOnly','read-only'] : ['readOnly','read-only','workspaceWrite','workspace-write'];
-      if(!allowed.includes(sandbox))throw new APIError(409,'原生任务权限尚无法确认符合频道的自动执行范围；请在 Codex App 中设置只读或工作区权限后重试。普通对话可直接继续。');
-      const run:Run={id:randomUUID(),projectId:project.id,channelId:id,runtime:'codex',model:snapshot.state.model || snapshot.state.latestThreadSettings?.model || '',permission:'native',executionOwner:'codex-app',source:'morrow-schedule',trigger:scheduled?'schedule':'manual',resumedFromSessionId:binding.threadId,workDirection:channel.goal,reportStatus:'pending',reportError:'',status:'running',startedAt:now(),finishedAt:'',summary:'',sessionId:binding.threadId,nativeItemRevisions:Object.fromEntries(this.store.projectItems(project.id).map(item=>[item.id,item.revision]))};
+      if((!this.backgroundReady||channel.permission==='native')&&!allowed.includes(sandbox))throw new APIError(409,'原生任务权限尚无法确认符合频道的自动执行范围；请在 Codex CLI 中设置只读或工作区权限后重试。普通对话可直接继续。');
+      const run:Run={id:randomUUID(),projectId:project.id,channelId:id,runtime:'codex',model:snapshot.state.model || snapshot.state.latestThreadSettings?.model || '',permission:'native',executionOwner:'codex-cli',source:'morrow-schedule',trigger:scheduled?'schedule':'manual',resumedFromSessionId:binding.threadId,workDirection:channel.goal,reportStatus:'pending',reportError:'',status:'running',startedAt:now(),finishedAt:'',summary:'',sessionId:binding.threadId,nativeItemRevisions:Object.fromEntries(this.store.projectItems(project.id).map(item=>[item.id,item.revision]))};
       const runDir=join(this.engine.home,'runs',run.id);mkdirSync(runDir,{recursive:true,mode:0o700});const prompt=this.engine.prompt(project,channel,run);this.store.put('runs',run);this.engine.persistIO(run.id,'prompt',prompt);this.scheduled.set(id,{run,revisions:new Map(this.store.projectItems(project.id).map(item=>[item.id,item.revision])),runDir});this.store.put('channels',{...channel,status:'running',lastRunAt:run.startedAt,nextRunAt:''});
-      const receipt=await this.send(id,prompt,randomUUID(),'schedule',run.id);const active=this.scheduled.get(id);if(active){active.run.nativeTurnId=receipt.turnId;this.store.put('runs',active.run);if(receipt.state==='failed'){this.engine.finishFailure(active.run,'failed',receipt.error||'原生 App 拒绝了本轮请求');this.scheduled.delete(id);}else if(receipt.state!=='accepted'){this.engine.setControl(id,{enabled:false});this.store.put('channels',{...this.store.get<Channel>('channels',id)!,status:'blocked',nextRunAt:''});this.engine.event(id,run.id,'system',receipt.error||'原生发送结果待确认；已停止自动调度，避免重复执行。');}}
+      const receipt=await this.send(id,prompt,randomUUID(),'schedule',run.id);const active=this.scheduled.get(id);if(active){active.run.nativeTurnId=receipt.turnId;this.store.put('runs',active.run);if(receipt.state==='failed'){this.engine.finishFailure(active.run,'failed',receipt.error||'Codex CLI 拒绝了本轮请求');this.scheduled.delete(id);}else if(receipt.state!=='accepted'){this.engine.setControl(id,{enabled:false});this.store.put('channels',{...this.store.get<Channel>('channels',id)!,status:'blocked',nextRunAt:''});this.engine.event(id,run.id,'system',receipt.error||'原生发送结果待确认；已停止自动调度，避免重复执行。');}}
       const stored=this.cachedThread(binding.threadId);if(stored)this.finishScheduled(stored);
     }finally{this.starting.delete(id);}
   }

@@ -69,8 +69,8 @@ export function readNativeImage(store: Store, channelId: string, itemId: string,
     if (!match || match[1].length > Math.ceil(MAX_IMAGE / 3) * 4) throw new APIError(413, '图片内容格式无效或超过 10 MB');
     bytes = Buffer.from(match[1], 'base64');
   } else if (part.type === 'localImage' && typeof source === 'string') {
-    try { bytes = readImage(source); } catch (error) { if (error instanceof APIError) throw error; throw new APIError(404, '原生图片文件暂时不可用，请在 Codex App 中查看'); }
-  } else throw new APIError(409, '此图片由 Codex App 托管，请在 App 中查看');
+    try { bytes = readImage(source); } catch (error) { if (error instanceof APIError) throw error; throw new APIError(404, '原生图片文件暂时不可用，请重新添加图片'); }
+  } else throw new APIError(409, '历史图片未提供可读取的本地文件，请重新添加图片');
   const type = imageType(bytes), dataUrl = `data:${type.mime};base64,${bytes.toString('base64')}`;
   store.put('native_attachments', { id: key, channelId, name: '原生图片', mimeType: type.mime, path: '', dataUrl, sha256: createHash('sha256').update(bytes).digest('hex'), createdAt: new Date().toISOString(), source: 'native' });
   return { dataUrl };

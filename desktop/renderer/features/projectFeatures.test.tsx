@@ -104,7 +104,7 @@ describe('manual feature details and audit', () => {
 });
 
 describe('channels are execution sources, not separate boards', () => {
-  it('opens real Codex projects in the native App, including while a shared native turn is running', async () => {
+  it('opens the CLI conversation inside Morrow while a turn is running', async () => {
     const state = snapshot(); state.projects[0].isDemo = false; state.projects[0].runtime = 'codex';
     state.channels[0].status = 'running';
     state.channels[0].nextRunAt = '2026-09-08T12:00:00Z';
@@ -112,23 +112,25 @@ describe('channels are execution sources, not separate boards', () => {
     const { props, api } = featureProps({ snapshot: state });
     render(<ProjectView {...props} id="project-atlas" />, { wrapper: TestProviders });
     expect(screen.queryByRole('button', { name: '在原生 CLI 中继续' })).toBeNull();
-    const button = screen.getByRole('button', { name: '在 Codex App 中继续此项目' });
+    const button = screen.getByRole('button', { name: '在 Morrow 中继续此项目' });
     expect((button as HTMLButtonElement).disabled).toBe(false);
     await userEvent.setup().click(button);
-    expect(api.openNativeApp).toHaveBeenCalledWith('channel-system');
+    expect(props.onNavigate).toHaveBeenCalledWith({ kind: 'channel', id: 'channel-system' });
+    expect(api.openNativeApp).not.toHaveBeenCalled();
     expect(api.openNativeSession).not.toHaveBeenCalled();
     expect(api.channelAction).not.toHaveBeenCalled();
   });
 
-  it('uses the App entry for legacy Codex projects without a stored default runtime and never falls back to another CLI', async () => {
+  it('uses the internal conversation entry for legacy Codex projects without a stored default runtime and never falls back to another CLI', async () => {
     const state = snapshot(); state.projects[0].isDemo = false;
     const { props, api } = featureProps({ snapshot: state });
     const view = render(<ProjectView {...props} id="project-atlas" />, { wrapper: TestProviders });
-    await userEvent.setup().click(screen.getByRole('button', { name: '在 Codex App 中继续此项目' }));
-    expect(api.openNativeApp).toHaveBeenCalledWith('channel-system');
+    await userEvent.setup().click(screen.getByRole('button', { name: '在 Morrow 中继续此项目' }));
+    expect(props.onNavigate).toHaveBeenCalledWith({ kind: 'channel', id: 'channel-system' });
+    expect(api.openNativeApp).not.toHaveBeenCalled();
     const noCodex = { ...state, projects: state.projects.map(project => project.id === 'project-atlas' ? { ...project, runtime: 'codex' as const } : project), channels: state.channels.filter(channel => channel.id !== 'channel-system') };
     view.rerender(<ProjectView {...props} snapshot={noCodex} id="project-atlas" />);
-    expect((screen.getByRole('button', { name: '在 Codex App 中继续此项目' }) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByRole('button', { name: '在 Morrow 中继续此项目' }) as HTMLButtonElement).disabled).toBe(true);
     expect(screen.queryByRole('button', { name: '在原生 CLI 中继续' })).toBeNull();
     expect(api.openNativeSession).not.toHaveBeenCalled();
   });

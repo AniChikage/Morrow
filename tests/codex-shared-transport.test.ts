@@ -109,21 +109,18 @@ test('native rejections remain definitive and creating a task does not start a t
 });
 
 // A renamed installation may retain its old state directory or use MORROW_HOME.
-// Discover through the production constructor, then recover an actual task from
-// the isolated socket; selecting a default directory would miss this receipt.
-test('native task discovery follows the service home after a rename',async()=>{
-  const f=await fixture({codexHome:process.env.CODEX_HOME||join(homedir(),'.codex')});
+test('the production transport ignores retired App host receipts',async()=>{
+  const f=await fixture();
   const home=join(f.dir,'NoHuman'),directory=join(home,'codex-bridge');mkdirSync(directory,{recursive:true,mode:0o700});
   writeFileSync(join(directory,`host-${process.pid}.json`),JSON.stringify(f.client.options.host),{mode:0o600});
   const store=new Store(join(home,'workspace.sqlite'));
+  const oldMode=process.env.MORROW_TEST_MODE,oldPath=process.env.MORROW_TEST_CODEX_PATH;
+  process.env.MORROW_TEST_MODE='1';delete process.env.MORROW_TEST_CODEX_PATH;
   const native=new NativeConversations(store,{home} as Engine);
   try{
-    const snapshot=await native.transport.readThread(id);
-    assert.equal(native.transport.backgroundReady,true);
-    assert.equal(snapshot.threadId,id);
-    assert.equal(snapshot.state.turns[0].items[0].text,'original');
-    assert.equal(store.get<any>('migrations','native-host-affinity')?.launchId,'fixture-launch');
-    assert.equal(f.messages.filter(message=>message.method==='thread/resume').length,1);
-    assert.equal(f.messages.some(message=>message.method==='thread/start'||message.method==='turn/start'),false);
-  }finally{native.close();store.close();await f.close();}
+    await assert.rejects(native.transport.connect(),/未找到 Codex CLI/);
+    assert.equal(f.messages.length,0);
+    assert.equal(store.get('migrations','native-host-affinity'),undefined);
+    assert.throws(()=>native.configureBackground(),/无需设置 App 桥接/);
+  }finally{native.close();store.close();await f.close();if(oldMode===undefined)delete process.env.MORROW_TEST_MODE;else process.env.MORROW_TEST_MODE=oldMode;if(oldPath===undefined)delete process.env.MORROW_TEST_CODEX_PATH;else process.env.MORROW_TEST_CODEX_PATH=oldPath;}
 });

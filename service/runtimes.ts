@@ -46,12 +46,12 @@ export async function discoverRuntimes(): Promise<Runtime[]> {
       try {
         const [version, help] = await Promise.all([
           execute(path, ["--version"], { timeout: 8000, maxBuffer: 64 * 1024 }),
-          execute(path, id === "claude" ? ["--help"] : ["exec", "--help"], {
+          execute(path, id === "claude" ? ["--help"] : [id === "codex" ? "app-server" : "exec", "--help"], {
             timeout: 8000,
             maxBuffer: 256 * 1024,
           }),
         ]);
-        const required =
+        const required = id === "codex" ? ["--listen"] :
           id === "claude"
             ? [
                 "--restricted",

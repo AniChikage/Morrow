@@ -4,7 +4,7 @@
 
 ## 从源码安装
 
-需要 macOS 14+、Node.js 24+、npm 和 Xcode Command Line Tools。使用 Codex 时，还需安装并登录 Codex Mac App；Morrow 不要求另填模型 API Key。
+需要 macOS 14+、Node.js 24+、npm 和 Xcode Command Line Tools。使用 Codex 时，还需安装 Codex CLI，并在终端运行 `codex login`；Morrow 不要求另填模型 API Key。
 
 ```bash
 git clone https://github.com/AniChikage/Morrow.git
@@ -20,7 +20,7 @@ open "$HOME/Applications/Morrow.app"
 ## 第一个项目
 
 1. **打开项目文件夹**，选择现有目录，写下持续目标。新项目会准备一个暂停的「自主推进」频道，默认允许工作区编辑，每日最多 32 轮；接入本身不会启动执行。
-2. **设置 Codex 后台连接**。首次配置后，在当前任务结束时重新打开一次 Codex App。之后可直接在 Morrow 创建原生任务，或关联同一项目已有任务；无需每次在 Codex App 中打开对应页面。
+2. **确认 Codex CLI 可用**。运行时页显示 CLI 路径、版本和连接状态；Morrow 自动启动自己的 CLI 通信进程，直接创建或恢复本项目任务，无需设置桥接或打开 Codex App。
 3. **点击「开始工作」**。Codex 结合项目目标与现状选择下一步，通过项目工作接口维护判断、看板和证据。
 4. **在同一对话中指导**。可发送文字和图片，运行中追加指导，处理受支持的原生审批与提问，也可随时暂停。
 5. **审阅上线材料**。需要发布时，到项目「上线确认」查看具体改动、预期收益、证据、回退方案和发布后的观察计划，再决定是否发布。

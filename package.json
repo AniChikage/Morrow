@@ -1,7 +1,7 @@
 {
   "name": "morrow",
   "productName": "Morrow",
-  "version": "0.9.5",
+  "version": "0.10.0",
   "private": true,
   "type": "module",
   "description": "A local-first Mac app that lets Codex take continuing responsibility for project goals.",

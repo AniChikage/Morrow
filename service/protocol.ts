@@ -60,10 +60,10 @@ export type Run = {
   runtime: RuntimeID;
   model: string;
   permission: "read-only" | "workspace-write" | "native";
-  executionOwner?: "cli" | "codex-app";
+  executionOwner?: "cli" | "codex-app" | "codex-cli";
   nativeTurnId?: string;
   nativeItemRevisions?: Record<string,number>;
-  source?: "morrow-schedule" | "morrow-chat" | "nohuman-schedule" | "nohuman-chat" | "native-app";
+  source?: "morrow-schedule" | "morrow-chat" | "nohuman-schedule" | "nohuman-chat" | "native-app" | "native-cli";
   trigger: "manual" | "schedule";
   resumedFromSessionId: string;
   reportStatus: "pending" | "valid" | "missing" | "invalid" | "conflict";
@@ -80,7 +80,7 @@ export type NativeConnectionStatus = { available: boolean; connected: boolean; d
 export type NativeThreadSummary = { id:string;title:string;cwd:string;status:string;updatedAt?:string;activeTurnId?:string;model?:string };
 export type NativeItem = { autonomousContext?:boolean; id:string;turnId:string;type:string;role?:'user'|'assistant'|'system'|'tool';text:string;status?:string;createdAt?:string;input?:unknown;output?:unknown;raw:Record<string,unknown> };
 export type NativeRequest = { id:string;type:string;turnId?:string;status:string;title?:string;raw:Record<string,unknown> };
-export type NativeConversation = { canRecreateEmpty?:boolean;channelId:string;threadId?:string;status:NativeConnectionStatus;thread?:NativeThreadSummary;items:NativeItem[];requests:NativeRequest[];hasMore:boolean;cursor?:string;lastSyncedAt?:string;syncError?:string };
+export type NativeConversation = { canRecreateEmpty?:boolean;previousThreadId?:string;channelId:string;threadId?:string;status:NativeConnectionStatus;thread?:NativeThreadSummary;items:NativeItem[];requests:NativeRequest[];hasMore:boolean;cursor?:string;lastSyncedAt?:string;syncError?:string };
 export type NativeMessageReceipt = { requestId:string;state:'pending'|'accepted'|'unknown'|'failed';turnId?:string;error?:string };
 export type EventDetail = {
   type: string;

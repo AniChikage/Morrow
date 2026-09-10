@@ -29,7 +29,14 @@ function findSharedHosts(directory: string, codexHome: string): SharedHost[] {
 }
 export function findSharedHost(directory:string,codexHome:string):SharedHost|null {const hosts=findSharedHosts(directory,codexHome);if(hosts.length>1)throw new NativeDesktopError('发现多个 Codex 后台，尚无法确认原生任务所属后台。','ambiguous_host');return hosts[0]||null;}
 
-interface Options { directory?: string; codexHome?: string; host?: SharedHost; timeoutMs?: number; preferredLaunchId?:()=>string|undefined; preferredThreadIds?:()=>string[]; onConnected?:(host:SharedHost)=>void }
+export interface RpcSocket {
+  readyState: number;
+  on(event: string, listener: (...args: any[]) => void): unknown;
+  once(event: string, listener: (...args: any[]) => void): unknown;
+  send(data: string, callback?: (error?: Error | null) => void): void;
+  terminate(): void;
+}
+interface Options { directory?: string; codexHome?: string; host?: SharedHost; timeoutMs?: number; preferredLaunchId?:()=>string|undefined; preferredThreadIds?:()=>string[]; onConnected?:(host:SharedHost)=>void; createSocket?:()=>RpcSocket }
 type ChangeListener = (snapshot: NativeThreadSnapshot, change: NativeThreadChange) => void;
 const userInput = (text: string, images: Array<{ path: string }>) => {
   if (!text.trim() && !images.length) throw new NativeDesktopError('请输入消息或添加图片。', 'invalid_message');
@@ -40,7 +47,7 @@ const userInput = (text: string, images: Array<{ path: string }>) => {
 /** A second client of the exact runtime started by Codex App, never another server. */
 export class CodexSharedTransport {
   options: Options;
-  socket: WebSocket | null = null;
+  socket: RpcSocket | null = null;
   host: SharedHost | null = null;
   initialized = false;
   disposed = false;
@@ -84,26 +91,26 @@ export class CodexSharedTransport {
     return ids;
   }
   private async open() {
-    this.host = await this.selectHost();
-    if (!this.host) throw new NativeDesktopError('Codex App 尚未连接共享后台。', 'shared_host_unavailable');
+    this.host = this.options.createSocket ? null : await this.selectHost();
+    if (!this.host && !this.options.createSocket) throw new NativeDesktopError('Codex App 尚未连接共享后台。', 'shared_host_unavailable');
     // Revisions belong to this client's connection, not the long-lived host.
     // A daemon reconnect starts at zero and must not be dropped as stale.
-    this.projectionOwner=`shared:${this.host.launchId}:${randomUUID()}`;
-    const socket = new WebSocket('ws://localhost/rpc', { createConnection: () => createConnection(this.host!.socketPath), perMessageDeflate: false, maxPayload: 256 * 1024 * 1024, handshakeTimeout: this.options.timeoutMs || 15_000 });
+    this.projectionOwner=`${this.options.createSocket ? 'cli' : 'shared'}:${this.host?.launchId || ''}:${randomUUID()}`;
+    const socket = this.options.createSocket?.() || new WebSocket('ws://localhost/rpc', { createConnection: () => createConnection(this.host!.socketPath), perMessageDeflate: false, maxPayload: 256 * 1024 * 1024, handshakeTimeout: this.options.timeoutMs || 15_000 });
     this.socket = socket;
     socket.on('message', data => { try { this.receive(JSON.parse(data.toString())); } catch (error) { this.error = String(error); socket.terminate(); } });
     socket.on('error', error => { this.error = error.message; });
     socket.on('close', () => {
       if (this.socket !== socket) return;
       this.initialized = false; this.socket = null; this.snapshots.clear();
-      for (const pending of this.pending.values()) { clearTimeout(pending.timer); pending.reject(new NativeDesktopError('Codex App 后台已断开。', pending.mutation ? 'delivery_unknown' : 'desktop_unavailable', pending.mutation)); }
+      for (const pending of this.pending.values()) { clearTimeout(pending.timer); pending.reject(new NativeDesktopError('Codex 连接已断开。', pending.mutation ? 'delivery_unknown' : 'desktop_unavailable', pending.mutation)); }
       this.pending.clear();
     });
     try {
-      await new Promise<void>((done, reject) => { socket.once('open', done); socket.once('error', reject); });
+      await new Promise<void>((done, reject) => { socket.once('open', done); socket.once('error', reject); socket.once('close', () => reject(new NativeDesktopError('Codex 在初始化前退出。'))); });
       const result = await this.request('initialize', { clientInfo: { name: 'morrow', title: 'Morrow', version: '0.4.3' }, capabilities: { experimentalApi: true } });
-      if (!samePath(result.codexHome, this.host.codexHome)) throw new NativeDesktopError('原生后台工作目录不匹配。', 'wrong_host');
-      socket.send(JSON.stringify({ method: 'initialized' })); this.initialized = true; this.error = null;this.options.onConnected?.(this.host);
+      if (this.host && !samePath(result.codexHome, this.host.codexHome)) throw new NativeDesktopError('原生后台工作目录不匹配。', 'wrong_host');
+      socket.send(JSON.stringify({ method: 'initialized' })); this.initialized = true; this.error = null;if(this.host)this.options.onConnected?.(this.host);
     } catch (error) { socket.terminate(); throw error; }
   }
   private request(method: string, params: any, mutation = false): Promise<any> {
@@ -199,6 +206,18 @@ export class CodexSharedTransport {
     await this.connect(); const result = await this.request('thread/start', { cwd, ephemeral: false }, true);
     const snapshot: NativeThreadSnapshot = { threadId: result.thread.id, ownerClientId: this.projectionOwner, revision: 0, syncedAt: new Date().toISOString(), state: { id: result.thread.id, cwd: result.cwd, model: result.model, latestThreadSettings: { cwd: result.cwd, model: result.model, approvalPolicy: result.approvalPolicy, sandboxPolicy: result.sandbox }, currentPermissions: { runtimeWorkspaceRoots: [result.cwd], approvalPolicy: result.approvalPolicy, sandboxPolicy: result.sandbox }, threadRuntimeStatus: result.thread.status, turns: [], requests: [] } };
     this.snapshots.set(snapshot.threadId, snapshot); return structuredClone(snapshot);
+  }
+  async forkThread(threadId: string, cwd: string): Promise<NativeThreadSnapshot> {
+    await this.connect();
+    const result = await this.request('thread/fork', { threadId, cwd, excludeTurns: false }, true);
+    const id = result.thread.id;
+    const snapshot: NativeThreadSnapshot = { threadId: id, ownerClientId: this.projectionOwner, revision: 0, syncedAt: new Date().toISOString(), state: {
+      id, name: result.thread.name, cwd: result.cwd, model: result.model,
+      latestThreadSettings: { cwd: result.cwd, model: result.model, approvalPolicy: result.approvalPolicy, sandboxPolicy: result.sandbox },
+      currentPermissions: { runtimeWorkspaceRoots: [result.cwd], approvalPolicy: result.approvalPolicy, sandboxPolicy: result.sandbox },
+      threadRuntimeStatus: result.thread.status, turns: (result.thread.turns || []).map((turn: any) => ({ ...turn, turnId: turn.id })), requests: [],
+    } };
+    this.snapshots.set(id, snapshot); return structuredClone(snapshot);
   }
   async sendMessage(id: string, text: string, requestId = randomUUID(), images: Array<{ path: string }> = [], workOptions?:NativeWorkOptions) {
     const input = userInput(text, images); const snapshot = await this.readThread(id);

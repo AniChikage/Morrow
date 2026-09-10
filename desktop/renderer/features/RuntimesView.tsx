@@ -21,7 +21,7 @@ export function RuntimesView({ snapshot, api, busy, onMutate, onNavigate, connec
   const refreshNative = useCallback(async () => {
     if (typeof api.getNativeStatus !== 'function') return;
     try { setNative(await api.getNativeStatus()); }
-    catch { setNative({ available: false, connected: false, detail: '暂时无法连接 Codex App。', capabilities: { list: false, read: false, send: false, create: false, interrupt: false, respond: false } }); }
+    catch { setNative({ available: false, connected: false, detail: '暂时无法连接 Codex CLI。', capabilities: { list: false, read: false, send: false, create: false, interrupt: false, respond: false } }); }
   }, [api]);
   useEffect(() => { void refreshNative(); }, [refreshNative, connection?.config.mode, connection?.config.host]);
   const availableCount = snapshot.runtimes.filter(runtime => runtime.available).length;
@@ -46,21 +46,21 @@ export function RuntimesView({ snapshot, api, busy, onMutate, onNavigate, connec
             const channels = snapshot.channels.filter(channel => channel.runtime === runtime.id);
             const running = channels.filter(channel => channel.status === 'running').length;
             const appRuntime = runtime.id === 'codex' && native;
-            const status = appRuntime ? { label: native.connected ? 'App 已连接' : 'App 未连接', className: native.connected ? 'detected' : 'attention' } : detection(runtime);
+            const status = appRuntime ? { label: native.connected ? 'CLI 已连接' : 'CLI 未连接', className: native.connected ? 'detected' : 'attention' } : detection(runtime);
             const isExpanded = expanded === runtime.id;
             const detailId = `runtime-details-${runtime.id}`;
             return <div className="runtime-settings-group" key={runtime.id}>
               <button className="runtime-settings-row" aria-label={`${runtime.name}，${status.label}，查看详情`} aria-expanded={isExpanded} aria-controls={detailId} onClick={() => setExpanded(previous => previous === runtime.id ? null : runtime.id)}>
-                <span className="runtime-settings-name"><RuntimeMark runtime={runtime} /><span>{appRuntime ? 'Codex App' : runtime.name}</span></span>
+                <span className="runtime-settings-name"><RuntimeMark runtime={runtime} /><span>{appRuntime ? 'Codex CLI' : runtime.name}</span></span>
                 <span className={`runtime-settings-detection ${status.className}`}><span className="runtime-settings-dot" />{status.label}</span>
-                <span className="runtime-settings-auth">{appRuntime ? '由 App 管理' : runtime.available ? '待验证' : '—'}</span>
+                <span className="runtime-settings-auth">{appRuntime ? '由 CLI 管理' : runtime.available ? '待验证' : '—'}</span>
                 <span className="runtime-settings-usage">{running > 0 ? <><span className="runtime-settings-dot" />{running} 运行中</> : channels.length ? `${channels.length} 个频道` : '未使用'}</span>
-                <code className="runtime-settings-version" title={(appRuntime ? native.appVersion : runtime.version) || undefined}>{(appRuntime ? native.appVersion : runtime.version) || '—'}</code>
+                <code className="runtime-settings-version" title={runtime.version || undefined}>{runtime.version || '—'}</code>
                 <ChevronRight size={13} className="runtime-settings-chevron" />
               </button>
               {isExpanded && <div className="runtime-settings-details" id={detailId} role="region" aria-label={`${runtime.name} 详情`}>
                 <dl>
-                  {appRuntime && <><dt>App 连接</dt><dd>{native.detail}</dd><dt>对话执行</dt><dd>绑定 Codex App 的同一条会话，直接同步消息、回复和运行活动。账号、模型、工具和权限由 App 管理。</dd></>}
+                  {appRuntime && <><dt>CLI 连接</dt><dd>{native.detail}</dd><dt>对话执行</dt><dd>绑定 Codex CLI 的同一条会话，直接同步消息、回复和运行活动。账号、模型、工具和权限由 CLI 管理。</dd></>}
                   <dt>CLI 路径</dt><dd>{runtime.path ? <code>{runtime.path}</code> : '执行主机的命令路径中尚未找到此 CLI。'}</dd>
                   <dt>检测结果</dt><dd>{runtime.detail || '尚无详细检测结果。'}</dd>
                   {!appRuntime && <><dt>账号登录</dt><dd>{runtime.available ? '沿用 CLI 已有账号。检测不会调用模型，登录状态与配额在实际执行时验证。' : '检测到可用 CLI 后，在执行主机终端完成登录。'}</dd><dt>执行权限</dt><dd>{runtime.available ? runtime.canWrite ? '只读 / 工作区编辑，由每个频道单独设置。' : '只读执行' : 'CLI 可用后读取支持的权限。'}</dd></>}
@@ -73,7 +73,7 @@ export function RuntimesView({ snapshot, api, busy, onMutate, onNavigate, connec
             </div>;
           })}
         </section> : <div className="runtime-settings-empty"><EmptyState icon={<Terminal />} title="还没有检测结果" description="连接执行服务后，重新检测主机上可用的运行时。" /></div>}
-        <p className="runtime-settings-note"><Info size={13} /><span>Codex 对话连接 Mac App；终端 CLI 版本仅供查看。其他引擎继续使用原生 CLI。连接检测不会调用模型，也不代表账号或配额已经验证。</span></p>
+        <p className="runtime-settings-note"><Info size={13} /><span>Codex 对话和自动工作直接使用 CLI，无需打开桌面 App。连接检测不会调用模型，也不代表账号或配额已经验证。</span></p>
       </div>
     </div>
   </main>;

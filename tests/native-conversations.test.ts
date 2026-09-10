@@ -117,7 +117,7 @@ test('native external history remains complete, paged, revision safe and availab
   const page=await s.api('GET',`/api/channels/${s.channel.id}/native/conversation?limit=80`);assert.equal(page.items.length,80);assert.equal(page.items.at(-1).text,long);assert.equal(page.hasMore,true);
   const older=await s.api('GET',`/api/channels/${s.channel.id}/native/conversation?limit=80&before=${page.cursor}`);assert.equal(older.items.length,80);assert.equal(new Set([...page.items,...older.items].map(row=>row.id)).size,160);
   s.native.ingest({...s.transport.snapshot,revision:0,state:{turns:[]}});assert.equal(s.store.all<any>('native_items').filter(row=>row.present).length,185);
-  s.transport.connected=false;const cached=await s.api('GET',`/api/channels/${s.channel.id}/native/conversation`);assert.equal(cached.status.connected,false);assert.equal(cached.items.at(-1).text,long);assert.equal(s.store.all('runs').length,185);assert(s.store.all<any>('runs').every(run=>run.source==='native-app'));assert.equal(s.engine.budgetCount(s.channel.id),0);
+  s.transport.connected=false;const cached=await s.api('GET',`/api/channels/${s.channel.id}/native/conversation`);assert.equal(cached.status.connected,false);assert.equal(cached.items.at(-1).text,long);assert.equal(s.store.all('runs').length,185);assert(s.store.all<any>('runs').every(run=>run.source==='native-cli'));assert.equal(s.engine.budgetCount(s.channel.id),0);
 }finally{await s.cleanup();}});
 test('unknown sends are never retried and native approvals and interrupt are scoped to the active turn',async()=>{const s=await setup();try{
   await s.api('POST',`/api/channels/${s.channel.id}/native/bind`,{threadId:s.transport.threadId});s.transport.failure=true;const requestId=randomUUID();const first=await s.api('POST',`/api/channels/${s.channel.id}/native/messages`,{text:'hello',requestId});assert.equal(first.state,'unknown');await s.api('POST',`/api/channels/${s.channel.id}/native/messages`,{text:'hello',requestId});assert.equal(s.transport.sent.length,1);
@@ -129,7 +129,7 @@ test('native bounded scheduling inherits compatible settings, observes completio
   await s.api('POST',`/api/channels/${s.channel.id}/native/bind`,{threadId:s.transport.threadId});
   await s.api('PATCH',`/api/channels/${s.channel.id}`,{permission:'read-only'});
   s.transport.emit({currentPermissions:{sandboxPolicy:{type:'dangerFullAccess'}}});await s.api('POST',`/api/channels/${s.channel.id}/action`,{action:'run'},409);assert.equal(s.transport.sent.length,0);
-  s.transport.emit({currentPermissions:{sandboxPolicy:{type:'readOnly'}}});await s.api('POST',`/api/channels/${s.channel.id}/action`,{action:'run'});assert.equal(s.transport.sent.length,1);assert.equal(s.engine.active.size,0);const run=s.store.all<any>('runs')[0];assert.equal(run.executionOwner,'codex-app');assert.equal(run.permission,'native');assert.deepEqual(s.transport.sent[0].workOptions?.sandboxPolicy,{type:'readOnly',networkAccess:false});
+  s.transport.emit({currentPermissions:{sandboxPolicy:{type:'readOnly'}}});await s.api('POST',`/api/channels/${s.channel.id}/action`,{action:'run'});assert.equal(s.transport.sent.length,1);assert.equal(s.engine.active.size,0);const run=s.store.all<any>('runs')[0];assert.equal(run.executionOwner,'codex-cli');assert.equal(run.permission,'native');assert.deepEqual(s.transport.sent[0].workOptions?.sandboxPolicy,{type:'readOnly',networkAccess:false});
   const turns=s.transport.snapshot.state.turns.map((turn:any)=>({...turn,status:'completed',items:[...turn.items,{id:'native-final',type:'agentMessage',text:'原生 App 中完成的同一轮次。'}]}));s.transport.emit({turns});assert.equal(s.store.get<any>('runs',run.id).status,'completed');assert.match(s.store.runText(run.id,'final'),/同一轮次/);assert.equal(s.store.all('items').length,0);
 }finally{await s.cleanup();}});
 test('per-thread disconnect disables sending, same-revision reconnect clears errors without duplicate writes, and partial history retains older items',async()=>{const s=await setup();try{
@@ -138,7 +138,7 @@ test('per-thread disconnect disables sending, same-revision reconnect clears err
   s.transport.emit({turnHistory:{history:{isComplete:false,islands:[{entries:[{value:'new'}]}],entitiesByKey:{new:s.transport.snapshot.state.turns[1]}}}});const partial=await s.api('GET',`/api/channels/${s.channel.id}/native/conversation`);assert.deepEqual(partial.items.map((item:any)=>item.text),['older','latest']);
 }finally{await s.cleanup();}});
 test('daemon restart observes external native work without taking ownership or interrupting App, while definitive scheduler rejection settles',async()=>{const s=await setup();let restarted:Awaited<ReturnType<typeof startServer>>|undefined;try{
-  await s.api('POST',`/api/channels/${s.channel.id}/native/bind`,{threadId:s.transport.threadId});const receipt=await s.api('POST',`/api/channels/${s.channel.id}/native/messages`,{text:'native chat',requestId:randomUUID()});const run=s.store.all<any>('runs')[0];await s.close();assert.equal(s.transport.interruptions.length,0);s.transport.connected=true;restarted=await startServer({home:s.home,port:0,nativeTransport:s.transport});await restarted.native.conversation(s.channel.id,{});assert.equal(restarted.native.scheduled.size,0);assert.equal(restarted.store.get<any>('runs',run.id).status,'running');s.transport.emit({turns:s.transport.snapshot.state.turns.map((turn:any)=>({...turn,status:'completed',items:[...turn.items,{id:'final',type:'agentMessage',phase:'commentary',text:'not final'},{id:'final-answer',type:'agentMessage',phase:'final_answer',text:'native final'}]}))});assert.equal(restarted.store.get<any>('runs',run.id).status,'completed');assert.equal(restarted.store.runText(run.id,'final'),'native final');assert.equal(restarted.engine.budgetCount(s.channel.id),0);
+  await s.api('POST',`/api/channels/${s.channel.id}/native/bind`,{threadId:s.transport.threadId});const receipt=await s.api('POST',`/api/channels/${s.channel.id}/native/messages`,{text:'native chat',requestId:randomUUID()});const run=s.store.all<any>('runs')[0];s.store.put('runs',{...run,executionOwner:'codex-app',source:'native-app'});await s.close();assert.equal(s.transport.interruptions.length,0);s.transport.connected=true;restarted=await startServer({home:s.home,port:0,nativeTransport:s.transport});await restarted.native.conversation(s.channel.id,{});assert.equal(restarted.native.scheduled.size,0);assert.equal(restarted.store.get<any>('runs',run.id).status,'running');s.transport.emit({turns:s.transport.snapshot.state.turns.map((turn:any)=>({...turn,status:'completed',items:[...turn.items,{id:'final',type:'agentMessage',phase:'commentary',text:'not final'},{id:'final-answer',type:'agentMessage',phase:'final_answer',text:'native final'}]}))});assert.equal(restarted.store.get<any>('runs',run.id).status,'completed');assert.equal(restarted.store.runText(run.id,'final'),'native final');assert.equal(restarted.engine.budgetCount(s.channel.id),0);
   s.transport.definitiveFailure=true;await restarted.engine.action(s.channel.id,'run');const failed=restarted.store.all<any>('runs').find(row=>row.source==='morrow-schedule');assert.equal(failed.status,'failed');assert.equal(restarted.native.scheduled.size,0);assert.equal(s.transport.interruptions.length,0);assert(receipt.turnId);
 }finally{await restarted?.close();await s.cleanup();}});
 test('native image API persists selected bytes and sends opaque attachments once without changing image-only input',async()=>{const s=await setup();try{
@@ -169,7 +169,7 @@ test('renamed service recovers a legacy responsibility run without resending or 
   try{
     await s.native.bind(s.channel.id,s.transport.threadId);await s.engine.action(s.channel.id,'run');
     const run=s.store.all<any>('runs').find(row=>row.source==='morrow-schedule');
-    assert.equal(run.status,'running');s.store.put('runs',{...run,source:'nohuman-schedule'});
+    assert.equal(run.status,'running');s.store.put('runs',{...run,executionOwner:'codex-app',source:'nohuman-schedule'});
     await s.close();assert.equal(s.transport.interruptions.length,0);s.transport.connected=true;
     restarted=await startServer({home:s.home,port:0,nativeTransport:s.transport});
     await restarted.native.conversation(s.channel.id,{});
@@ -183,4 +183,67 @@ test('renamed service recovers a legacy responsibility run without resending or 
     assert.equal(restarted.engine.budgetCount(s.channel.id),1);assert.equal(restarted.native.scheduled.size,0);
     assert.match(restarted.store.runText(run.id,'final'),/完成实际验证/);
   }finally{await restarted?.close();await s.cleanup();}
+});
+
+test('Morrow-owned CLI recovery pauses interrupted work and preserves task, input and budget without resending',async()=>{
+  const s=await setup();let restarted:Awaited<ReturnType<typeof startServer>>|undefined;
+  try{
+    await s.native.bind(s.channel.id,s.transport.threadId);await s.engine.action(s.channel.id,'run');
+    const run=s.store.all<any>('runs').find(row=>row.source==='morrow-schedule');
+    assert.equal(run.executionOwner,'codex-cli');const input=s.store.runText(run.id,'prompt');
+    await s.close();s.transport.connected=true;
+    restarted=await startServer({home:s.home,port:0,nativeTransport:s.transport});
+    assert.equal(restarted.store.get<any>('runs',run.id).status,'interrupted');
+    assert.equal(restarted.store.get<any>('channels',s.channel.id).status,'paused');
+    assert.equal(restarted.native.binding(s.channel.id)?.threadId,s.transport.threadId);
+    assert.equal(restarted.store.runText(run.id,'prompt'),input);
+    assert.equal(restarted.engine.budgetCount(s.channel.id),1);
+    assert.equal(s.transport.sent.length,1);assert.equal(restarted.native.scheduled.size,0);
+  }finally{await restarted?.close();await s.cleanup();}
+});
+
+test('one-time locked App handoff preserves old records, avoids duplicated runs and sends subsequent messages only to the CLI task',async()=>{
+  const s=await setup();
+  try{
+    await s.native.bind(s.channel.id,s.transport.threadId);
+    s.transport.emit({turns:[{turnId:'historical-turn',status:'completed',items:[{id:'historical-answer',type:'agentMessage',text:'已有工作结论'},{id:'historical-prompt',type:'userMessage',content:[{type:'text',text:'自动工作上下文'}]}]}]});
+    s.store.put('native_outbox',{id:'old-schedule',requestId:'old-schedule',threadId:s.transport.threadId,turnId:'historical-turn',channelId:s.channel.id,source:'schedule',state:'accepted',text:'自动工作上下文'});
+    const original=s.transport.threadId,history=s.store.all<any>('runs'),originalRuns=JSON.stringify(history);
+    s.native.subscriptions.get(original)?.();s.native.subscriptions.clear();
+    const read=s.transport.readThread.bind(s.transport);let forks=0;
+    s.transport.readThread=async id=>{if(id===original)throw new Error(`thread ${id} already has an active writer`);return read(id);};
+    Object.assign(s.transport,{forkThread:async(id:string,cwd:string)=>{
+      forks++;assert.equal(id,original);assert.equal(cwd,s.project.path);
+      s.transport.threadId=randomUUID();s.transport.snapshot={...s.transport.snapshot,threadId:s.transport.threadId,ownerClientId:'cli-owner'};
+      return structuredClone(s.transport.snapshot);
+    }});
+    const [first,second]=await Promise.all([s.native.conversation(s.channel.id,{}),s.native.conversation(s.channel.id,{})]);
+    assert.equal(forks,1);assert.equal(first.threadId,second.threadId);assert.notEqual(first.threadId,original);
+    assert.equal(first.previousThreadId,original);assert.equal(first.items[0].text,'已有工作结论');
+    assert.equal(first.items[1].autonomousContext,true);
+    assert.equal(JSON.stringify(s.store.all('runs')),originalRuns);
+    const rebound=await s.native.bind(s.channel.id,first.threadId!);
+    assert.equal(rebound.previousThreadId,original);assert.equal(JSON.stringify(s.store.all('runs')),originalRuns);
+    assert.equal(s.store.get<any>('channels',s.channel.id).sessionId,first.threadId);
+    assert.ok(s.store.get('native_threads',original));
+    await s.native.send(s.channel.id,'继续改进',randomUUID());
+    assert.equal(s.transport.sent.length,1);assert.equal(s.native.binding(s.channel.id)?.threadId,first.threadId);
+    assert.equal(s.store.all<any>('native_outbox').at(-1).threadId,first.threadId);
+    assert.equal(s.engine.budgetCount(s.channel.id),0);
+  }finally{await s.cleanup();}
+});
+
+test('unknown CLI handoff never reforks, while non-lock errors and CLI-owned tasks never trigger migration',async()=>{
+  const s=await setup();
+  try{
+    await s.native.bind(s.channel.id,s.transport.threadId);s.native.subscriptions.get(s.transport.threadId)?.();s.native.subscriptions.clear();
+    let forks=0;s.transport.readThread=async()=>{throw new Error('already has an active writer');};
+    Object.assign(s.transport,{forkThread:async()=>{forks++;throw new Error('ack lost');}});
+    await s.native.conversation(s.channel.id,{});await s.native.conversation(s.channel.id,{});assert.equal(forks,1);
+    assert.equal(s.native.binding(s.channel.id)?.threadId,s.transport.threadId);
+    s.store.put('native_bindings',{...s.native.binding(s.channel.id)!,executionBackend:'cli'});
+    await s.native.conversation(s.channel.id,{});assert.equal(forks,1);
+    s.transport.readThread=async()=>{throw new Error('network unavailable');};
+    await s.native.conversation(s.channel.id,{});assert.equal(forks,1);
+  }finally{await s.cleanup();}
 });

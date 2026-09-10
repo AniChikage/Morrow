@@ -53,7 +53,7 @@ export function featureProps(patch: Partial<FeatureProps> = {}) {
   };
   return { props, api };
 }
-export const nativeStatus = { available: false, connected: false, detail: 'Codex App 未连接', capabilities: { list: false, read: false, send: false, create: false, interrupt: false, respond: false } };
+export const nativeStatus = { available: false, connected: false, detail: 'Codex CLI 未连接', capabilities: { list: false, read: false, send: false, create: false, interrupt: false, respond: false } };
 export function TestProviders({ children }: { children: ReactNode }) {
   return <Tooltip.Provider delayDuration={0}>{children}</Tooltip.Provider>;
 }

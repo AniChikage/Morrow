@@ -13,14 +13,14 @@ Morrow 是一个本地优先的 Mac 应用。打开已有项目，说明想达�
 
 - **围绕目标持续工作**：保留项目认识、行动依据和经验，支持反馈唤醒、等待与预算约束。
 - **一个项目，一份共享看板**：AI 自动维护每个 feature 的来源频道、尝试、证据、发布与后续效果。
-- **原生 Codex 对话**：与 Codex App 使用同一任务；认证、模型、工具和执行由原生运行时管理。
+- **原生 Codex 对话**：直接调用 Codex CLI，持续复用同一任务；认证、模型、工具和执行沿用 CLI。
 - **上线前有据可审**：呈现改动、预期收益、验证结果、风险与回退计划，由人确认对应发布版本。
 
 框架已提供持续工作与反馈闭环的支撑机制；实际项目仍需接入自己的监控和发布能力，长期自主效果需要真实环境验证。详见 [能力边界](docs/RUNTIMES.md)。
 
 ## 快速开始
 
-需要 **macOS 14+、Node.js 24+、npm、Xcode Command Line Tools**。使用 Codex 时，先安装并登录 Codex Mac App。
+需要 **macOS 14+、Node.js 24+、npm、Xcode Command Line Tools**。使用 Codex 时，先安装 Codex CLI，并在终端运行 `codex login`。
 
 ```bash
 git clone https://github.com/AniChikage/Morrow.git
@@ -32,7 +32,7 @@ open "$HOME/Applications/Morrow.app"
 ```
 
 1. 打开已有项目文件夹，写下目标。默认频道处于暂停状态，接入不会立即执行。
-2. 在设置中配置 Codex 后台连接；首次配置后，在当前任务结束时重开一次 Codex App。
+2. 在运行时页确认 Codex CLI 已检测到，无需打开或重启 Codex App。
 3. 点击「开始工作」。之后直接在 Morrow 对话、查看项目看板，并审阅上线确认。
 
 构建输出为 `dist/Morrow.app`，默认安装到 `~/Applications/Morrow.app`，已包含 Node 运行时。当前为本机 ad-hoc 签名构建。完整步骤见 [使用指南](docs/GETTING-STARTED.md)；旧用户见 [从 NoHuman 升级](docs/UPGRADING.md)。

@@ -274,7 +274,7 @@ export class Engine {
       throw new APIError(400, "项目目录不存在或不可访问");
     }
     if (channel.runtime === 'codex' && (process.env.MORROW_TEST_MODE !== '1' || this.native?.binding(id))) {
-      if (!this.native) throw new APIError(409,'请连接并绑定 Codex App 中的原生任务');
+      if (!this.native) throw new APIError(409,'请连接并绑定 Codex CLI 中的原生任务');
       return this.native.startScheduled(id,scheduled);
     }
     const runtime = this.runtimes.find((r) => r.id === channel.runtime);

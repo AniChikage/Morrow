@@ -33,14 +33,15 @@ test('CLI detection stays separate from authentication and details are progressi
   expect(screen.queryByRole('button', { name: /安装|登录|配置/ })).toBeNull();
 });
 
-test('Codex reports the live App connection separately from its unused terminal executable', async () => {
+test('Codex reports the live CLI connection and its actual executable', async () => {
   const { props, api } = runtimeProps();
   const status: NativeConnectionStatus = { available: true, connected: true, detail: '原生会话连接已建立', appVersion: '1.0-test', capabilities: { list: true, read: true, send: true, create: false, interrupt: true, respond: true } };
   api.getNativeStatus.mockResolvedValue(status);
   render(<RuntimesView {...props} />);
-  await userEvent.setup().click(await screen.findByRole('button', { name: 'Codex，App 已连接，查看详情' }));
-  expect(screen.getByText('由 App 管理')).toBeTruthy();
-  expect(screen.getByText('1.0-test')).toBeTruthy();
+  await userEvent.setup().click(await screen.findByRole('button', { name: 'Codex，CLI 已连接，查看详情' }));
+  expect(screen.getByText('由 CLI 管理')).toBeTruthy();
+  expect(screen.getByText(installed.version)).toBeTruthy();
+  expect(screen.queryByText('1.0-test')).toBeNull();
   expect(screen.getByText('原生会话连接已建立')).toBeTruthy();
   expect(screen.queryByText('已登录')).toBeNull();
   expect(screen.getByText(installed.path)).toBeTruthy();

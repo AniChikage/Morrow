@@ -9,7 +9,7 @@ if (args.includes("--version")) {
 }
 if (args.includes("--help")) {
   console.log(
-    "--restricted --tools --safe-mode --json-schema --permission-prompts --permission-mode --strict-mcp-config --mcp-config --allowedTools --name --resume --verbose --output-format --json --sandbox --output-last-message --ignore-user-config",
+    "--listen --restricted --tools --safe-mode --json-schema --permission-prompts --permission-mode --strict-mcp-config --mcp-config --allowedTools --name --resume --verbose --output-format --json --sandbox --output-last-message --ignore-user-config",
   );
   process.exit(0);
 }

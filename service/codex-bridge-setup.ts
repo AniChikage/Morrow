@@ -55,5 +55,5 @@ export function restoreCodexBridge(home: string) {
     }
   }
   // Leave the running App's executable and sockets intact until it exits itself.
-  return { restartRequired: true, detail: '已撤销后台启动设置，当前会话保持运行，下次打开 Codex App 时恢复原连接方式。' };
+  return { restartRequired: false, detail: '已撤销旧桥接的启动设置。Morrow 直接使用 Codex CLI，当前 Codex App 保持运行，无需重启。' };
 }

@@ -331,7 +331,7 @@ export async function startServer(
                   "workspace-write", "native",
                 ] as const),
         };
-        if(c.permission==='native'&&c.runtime!=='codex')throw new APIError(400,'仅 Codex App 支持沿用原生权限');
+        if(c.permission==='native'&&c.runtime!=='codex')throw new APIError(400,'仅 Codex CLI 支持沿用原生权限');
         store.transaction(() => {store.put("channels", c); engine.audit({projectId,channelId:c.id,actor:'human',action:'channel.created',text:'频道已创建，等待手动运行。',after:c});});
         respond(res, 201, c);
         return;
@@ -361,7 +361,7 @@ export async function startServer(
           )
             throw new APIError(409, "请先暂停执行再更改运行时、模型或权限");
           const updated = { ...c };
-          if(native.binding(id)&&data.runtime!==undefined&&data.runtime!==c.runtime)throw new APIError(409,'频道已绑定 Codex App 原生任务；请新建频道使用其他运行时，避免丢失会话关联');
+          if(native.binding(id)&&data.runtime!==undefined&&data.runtime!==c.runtime)throw new APIError(409,'频道已绑定 Codex CLI 原生任务；请新建频道使用其他运行时，避免丢失会话关联');
           if (data.name !== undefined)
             updated.name = string(data.name, "name", 100);
           if (data.goal !== undefined)
@@ -386,7 +386,7 @@ export async function startServer(
               1,
               100,
             );
-          if(updated.permission==='native'&&updated.runtime!=='codex')throw new APIError(400,'仅 Codex App 支持沿用原生权限');
+          if(updated.permission==='native'&&updated.runtime!=='codex')throw new APIError(400,'仅 Codex CLI 支持沿用原生权限');
           if (updated.runtime !== c.runtime) {
             updated.sessionId = "";
             if (data.model === undefined) updated.model = "";
@@ -426,7 +426,6 @@ export async function startServer(
           return;
         }
         if (req.method === 'POST' && channelMatch[2] === 'native-handoff') {
-          if(native.binding(id))throw new APIError(409,'此频道使用 Codex App 共享会话，请在原生 App 中打开');
           keys(data, []);
           const project = store.get<Project>('projects',c.projectId)!;
           if (project.isDemo) throw new APIError(409,'示例项目不能打开原生会话');
