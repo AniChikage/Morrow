@@ -13,10 +13,12 @@ import { startReceiver } from './harness/receiver.ts';
 
 /** Keys bash exports on its own; everything else in the fixture's environment came from Morrow. */
 const shellAdded = ['PWD', 'SHLVL', 'OLDPWD', '_'];
+/** `TMPDIR` is the one optional key: passed through when the service has one, absent when it does not. */
 const allowedEnv = [
   'PATH',
   'HOME',
   'NO_COLOR',
+  ...(process.env.TMPDIR ? ['TMPDIR'] : []),
   'MORROW_RELEASE_ID',
   'MORROW_ARTIFACT_PATH',
   'MORROW_ARTIFACT_SHA256',

@@ -122,11 +122,12 @@ MORROW_HOME="$HOME/.local/share/morrow" npm start
 | `local-script` · 核对 | 优先读固定位置的 `<数据目录>/releases/<id>/receipt.json`，其次以 60 秒上限、同一环境、不带参数执行封存的 `statusScript`，否则保持 `unknown`。 |
 | 回执 | `{releaseId, artifactSha256, status:"published", url?}`；只有确实发布匹配产物后才能返回 `published`，明确失败可返回 `failed`。两种适配使用同一回执形状与校验。 |
 
-`local-script` 执行时的环境是固定的最小集合，不含服务 token，也不含服务自身的其余环境变量：
+`local-script` 执行时的环境是固定的最小集合，不含服务 token；除下表中可选的 `TMPDIR` 外，不透传服务自身的其余环境变量：
 
 | 变量 | 内容 |
 | --- | --- |
 | `PATH`、`HOME`、`NO_COLOR=1` | 基本执行环境；`NO_COLOR` 让输出便于留存。 |
+| `TMPDIR`（可选） | 仅当服务自身有该变量时透传，使脚本下的构建与测试与服务用同一个临时目录，而不是回落到 `/tmp`。 |
 | `MORROW_RELEASE_ID` | 本次发布 ID，回执必须回报同一个值。 |
 | `MORROW_ARTIFACT_PATH`、`MORROW_ARTIFACT_SHA256` | 封存产物副本的路径与摘要（dogfood 中是发布清单）。 |
 | `MORROW_REVIEW_HASH` | 人已确认的审阅摘要。 |
