@@ -50,6 +50,8 @@ it('renders a structured round and opens raw activity only on expansion for demo
     });
     render(<ChannelView {...props} id="channel-system" />, { wrapper: TestProviders });
     const entry = within(await screen.findByRole('article', { name: /轮次/ }));
+    expect(entry.getByRole('button', { name: '修复导入' }).closest('details')!.hasAttribute('open')).toBe(false);
+    await userEvent.setup().click(entry.getByText(/^(本轮详情|查看最新轮次)$/));
     for (const text of [
       '关注 one',
       '已有证据，等待报告',
@@ -75,6 +77,52 @@ it('renders a structured round and opens raw activity only on expansion for demo
     expect(props.onNavigate).toHaveBeenCalledWith({ kind: 'finding', id: 'finding-import' });
     cleanup();
   }
+});
+
+it('prioritizes the current question and keeps direction and duplicate question text out of the default log', async () => {
+  const state = snapshot();
+  const run = round('question');
+  state.channels[0].work = {
+    state: 'needs_input',
+    focus: '等待选择',
+    reason: '两种路径',
+    nextStep: '先做哪一种导入？',
+    runId: run.id,
+    updatedAt: timestamp,
+    awaitingReply: true,
+  };
+  run.log!.work = state.channels[0].work;
+  const { props, api } = featureProps({ snapshot: state });
+  vi.mocked(props.api.getRuns).mockResolvedValue({ runs: [run], hasMore: false });
+  const view = render(<ChannelView {...props} id="channel-system" />, { wrapper: TestProviders });
+  await screen.findByText('需要回答 · 问题见上方');
+  expect(screen.queryByText(state.channels[0].goal)).toBeNull();
+  expect(screen.queryByRole('complementary')).toBeNull();
+  expect(view.container.querySelectorAll('.button-primary')).toHaveLength(1);
+  expect(screen.getByRole('button', { name: '回答' }).classList.contains('button-primary')).toBe(true);
+  expect(screen.queryByRole('button', { name: '继续工作' })).toBeNull();
+  await userEvent.setup().click(screen.getByRole('button', { name: '频道选项' }));
+  await userEvent.setup().click(screen.getByRole('menuitem', { name: '方向与额度' }));
+  const settings = within(screen.getByRole('region', { name: '方向与额度' }));
+  expect(settings.getByText(state.channels[0].goal)).toBeTruthy();
+  expect(settings.getByText(/每日上限/)).toBeTruthy();
+  expect(api.channelAction).not.toHaveBeenCalled();
+});
+
+it('marks only the newest round as the primary action while work is continuing', async () => {
+  const state = snapshot();
+  state.channels[0].autonomyEnabled = true;
+  state.channels[0].status = 'waiting';
+  const { props, api } = featureProps({ snapshot: state });
+  vi.mocked(props.api.getRuns).mockResolvedValue({
+    runs: [round('new'), round('old', { startedAt: '2026-09-06T00:00:00Z' })],
+    hasMore: false,
+  });
+  const view = render(<ChannelView {...props} id="channel-system" />, { wrapper: TestProviders });
+  await screen.findByText('关注 new');
+  expect(view.container.querySelectorAll('.log-primary-action')).toHaveLength(1);
+  expect(screen.getByText('查看最新轮次').closest('article')!.textContent).toContain('关注 new');
+  expect(screen.queryByRole('button', { name: '暂停' })).toBeNull();
 });
 it('keeps historical work distinct from the channel current focus and renders honest missing fields', async () => {
   const state = snapshot();
@@ -161,9 +209,13 @@ it('shows only this channel pending releases and blocked items in 需要你', as
     },
   ] as any;
   const { props } = featureProps({ snapshot: state });
-  render(<ChannelView {...props} id="channel-system" />, { wrapper: TestProviders });
+  const view = render(<ChannelView {...props} id="channel-system" />, { wrapper: TestProviders });
   const needs = within(screen.getByRole('region', { name: '需要你' }));
   expect(needs.getByText('待批准发布 · 候选版本')).toBeTruthy();
+  expect(needs.getByText('待批准发布 · 候选版本').classList.contains('log-primary-action')).toBe(true);
   expect(needs.getByRole('button', { name: /被阻塞/ })).toBeTruthy();
   expect(needs.queryByText('待批准发布 · 别的频道发布')).toBeNull();
+  await userEvent.setup().click(needs.getByText('待批准发布 · 候选版本'));
+  view.rerender(<ChannelView {...props} snapshot={{ ...state, releases: [] }} id="channel-system" />);
+  expect(screen.getByRole('button', { name: /被阻塞/ }).classList.contains('button-primary')).toBe(true);
 });

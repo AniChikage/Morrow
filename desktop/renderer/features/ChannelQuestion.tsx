@@ -28,6 +28,7 @@ interface Props {
   readOnly?: boolean;
   /** Focus the box once it is usable. Only set when the page was opened with this question already waiting. */
   autoFocus?: boolean;
+  primaryAction?: boolean;
   onShowConversation: () => void;
 }
 
@@ -39,6 +40,7 @@ export function ChannelQuestion({
   unavailable = '',
   readOnly = false,
   autoFocus = false,
+  primaryAction = true,
   onShowConversation,
 }: Props) {
   const labelId = useId();
@@ -149,7 +151,11 @@ export function ChannelQuestion({
             )}
             <div className="channel-question-actions">
               <span className="channel-question-hint">{sending ? '正在发送…' : unavailable || '⌘ Enter 回答'}</span>
-              <Button variant="primary" disabled={disabled || !draft.trim()} onClick={() => void submit()}>
+              <Button
+                variant={primaryAction ? 'primary' : 'secondary'}
+                disabled={disabled || !draft.trim()}
+                onClick={() => void submit()}
+              >
                 回答
               </Button>
             </div>

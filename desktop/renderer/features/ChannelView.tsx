@@ -1,12 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { ArrowUpRight, Hash, Pause, Play } from 'lucide-react';
+import { Hash, MoreHorizontal, Play } from 'lucide-react';
 import { isLegacyRuntime } from '../../shared/types';
 import type { NativeConversation, NativeThreadSummary, ProjectUsage, Run, RunDetails } from '../../shared/types';
 import type { FeatureProps } from './types';
-import { Button, EmptyState, Markdown, PropertyPanel } from '../components/ui';
+import { Button, Dropdown, DropdownItem, EmptyState, Markdown } from '../components/ui';
 import { channelStatusLabel, formatDate, runtimeLabel, usageWindowLabel } from '../components/format';
-import { Property } from './ProjectView';
-import { ChannelQuestion } from './ChannelQuestion';
+import { ChannelQuestion, questionExcerpt } from './ChannelQuestion';
 import { ChannelAudit } from './ChannelAudit';
 import { ProjectReleases } from './ProjectWork';
 import './content.css';
@@ -41,7 +40,14 @@ function LogEntry({
   api,
   currentWork,
   onNavigate,
-}: Pick<FeatureProps, 'api' | 'onNavigate'> & { run: Run; currentWork?: import('../../shared/types').ChannelWork }) {
+  primaryAction,
+  questionAbove,
+}: Pick<FeatureProps, 'api' | 'onNavigate'> & {
+  run: Run;
+  currentWork?: import('../../shared/types').ChannelWork;
+  primaryAction?: boolean;
+  questionAbove?: boolean;
+}) {
   const [expanded, setExpanded] = useState(false);
   const [detail, setDetail] = useState<RunDetails>();
   const [error, setError] = useState('');
@@ -78,78 +84,90 @@ function LogEntry({
         <span>{runUsage(run)}</span>
       </header>
       <h3>{work?.focus || log?.direction || '未记录本轮关注点'}</h3>
-      <p className="log-reason">{work?.reason || '未记录选择理由'}</p>
-      <section>
-        <h4>做了什么</h4>
-        {!!log?.files.length && <p className="log-files">{log.files.join(' · ')}</p>}
-        {log?.commands.length ? (
-          <ul className="log-commands">
-            {log.commands.map((command) => (
-              <li key={command.id}>
-                <code>{command.command}</code>
-                <span>
-                  {command.exitCode === undefined ? stateLabel(command.status) : `退出 ${command.exitCode}`}
-                  {!command.sealed && ' · 未封存'}
-                </span>
-              </li>
-            ))}
-          </ul>
-        ) : (
-          <p className="subtle">未记录命令或文件变更</p>
-        )}
-      </section>
-      <section>
-        <h4>产出</h4>
-        {log?.outputs.length ? (
-          <ul className="log-outputs">
-            {log.outputs.map((output) => (
-              <li key={`${output.kind}:${output.id}`}>
-                <span>{output.kind}</span>
-                {output.itemId ? (
-                  <button onClick={() => onNavigate({ kind: 'finding', id: output.itemId! })}>{output.title}</button>
-                ) : (
-                  <span>{output.title}</span>
-                )}
-              </li>
-            ))}
-          </ul>
-        ) : (
-          <p className="subtle">未记录结构化产出</p>
-        )}
-      </section>
-      <section className="log-conclusion">
-        <h4>{work ? stateLabel(work.state) : '结论未记录'}</h4>
-        <Markdown>{work?.nextStep || '展开查看本轮原话；缺少安排不代表执行失败。'}</Markdown>
-      </section>
-      {log?.truncated && <p className="subtle">当前为有界摘要，完整过程可在 Codex App 查看。</p>}
-      <details open={expanded} onToggle={(event) => setExpanded(event.currentTarget.open)}>
-        <summary>原生工具活动与 Codex 原话</summary>
-        {error ? (
-          <p role="alert">
-            {error}
-            <Button onClick={() => setAttempt((value) => value + 1)}>重试详情</Button>
-          </p>
-        ) : !detail ? (
-          <p className="subtle">正在读取详情…</p>
-        ) : (
-          <>
-            {detail.run.log?.activity?.map((item) => (
-              <details key={item.id} className="log-native-item">
-                <summary>{item.type}</summary>
-                <pre>{item.input || item.text}</pre>
-                {item.output && <pre>{item.output}</pre>}
-              </details>
-            ))}
-            <Markdown>{detail.finalOutput || run.summary || '本轮没有原话记录。'}</Markdown>
-          </>
-        )}
+      <p className="log-summary">
+        {questionAbove
+          ? '需要回答 · 问题见上方'
+          : work
+            ? `${stateLabel(work.state)} · ${questionExcerpt(work.nextStep, 100)}`
+            : '结论未记录'}
+      </p>
+      <details className="log-work-details">
+        <summary className={primaryAction ? 'log-primary-action' : undefined}>
+          {primaryAction ? '查看最新轮次' : '本轮详情'}
+        </summary>
+        <p className="log-reason">{work?.reason || '未记录选择理由'}</p>
+        <section>
+          <h4>做了什么</h4>
+          {!!log?.files.length && <p className="log-files">{log.files.join(' · ')}</p>}
+          {log?.commands.length ? (
+            <ul className="log-commands">
+              {log.commands.map((command) => (
+                <li key={command.id}>
+                  <code>{command.command}</code>
+                  <span>
+                    {command.exitCode === undefined ? stateLabel(command.status) : `退出 ${command.exitCode}`}
+                    {!command.sealed && ' · 未封存'}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <p className="subtle">未记录命令或文件变更</p>
+          )}
+        </section>
+        <section>
+          <h4>产出</h4>
+          {log?.outputs.length ? (
+            <ul className="log-outputs">
+              {log.outputs.map((output) => (
+                <li key={`${output.kind}:${output.id}`}>
+                  <span>{output.kind}</span>
+                  {output.itemId ? (
+                    <button onClick={() => onNavigate({ kind: 'finding', id: output.itemId! })}>{output.title}</button>
+                  ) : (
+                    <span>{output.title}</span>
+                  )}
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <p className="subtle">未记录结构化产出</p>
+          )}
+        </section>
+        <section className="log-conclusion">
+          <h4>{work ? stateLabel(work.state) : '结论未记录'}</h4>
+          <Markdown>{work?.nextStep || '展开查看本轮原话；缺少安排不代表执行失败。'}</Markdown>
+        </section>
+        {log?.truncated && <p className="subtle">当前为有界摘要，完整过程可在 Codex App 查看。</p>}
+        <details open={expanded} onToggle={(event) => setExpanded(event.currentTarget.open)}>
+          <summary>原生工具活动与 Codex 原话</summary>
+          {error ? (
+            <p role="alert">
+              {error}
+              <Button onClick={() => setAttempt((value) => value + 1)}>重试详情</Button>
+            </p>
+          ) : !detail ? (
+            <p className="subtle">正在读取详情…</p>
+          ) : (
+            <>
+              {detail.run.log?.activity?.map((item) => (
+                <details key={item.id} className="log-native-item">
+                  <summary>{item.type}</summary>
+                  <pre>{item.input || item.text}</pre>
+                  {item.output && <pre>{item.output}</pre>}
+                </details>
+              ))}
+              <Markdown>{detail.finalOutput || run.summary || '本轮没有原话记录。'}</Markdown>
+            </>
+          )}
+        </details>
       </details>
     </article>
   );
 }
 
 export function ChannelView(props: FeatureProps & { id: string }) {
-  const { id, snapshot, api, busy, onMutate, onNavigate, onEditChannel, showInspector } = props;
+  const { id, snapshot, api, busy, onMutate, onNavigate, onEditChannel } = props;
   const channel = snapshot.channels.find((value) => value.id === id);
   const project = snapshot.projects.find((value) => value.id === channel?.projectId);
   const demo = !!project?.isDemo,
@@ -165,6 +183,9 @@ export function ChannelView(props: FeatureProps & { id: string }) {
   const [nativeError, setNativeError] = useState('');
   const [threads, setThreads] = useState<NativeThreadSummary[]>([]);
   const [threadId, setThreadId] = useState('');
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [linkOpen, setLinkOpen] = useState(false);
+  const [releasesOpen, setReleasesOpen] = useState(false);
   const generation = useRef(0),
     inFlight = useRef(false),
     oldestCursor = useRef<string | undefined>(undefined);
@@ -214,6 +235,9 @@ export function ChannelView(props: FeatureProps & { id: string }) {
     setError('');
     setThreads([]);
     setThreadId('');
+    setSettingsOpen(false);
+    setLinkOpen(false);
+    setReleasesOpen(false);
     void loadRef.current();
     const timer = window.setInterval(() => {
       if (document.visibilityState !== 'hidden') void loadRef.current();
@@ -304,7 +328,24 @@ export function ChannelView(props: FeatureProps & { id: string }) {
       (!item.projectId || item.projectId === project.id) &&
       (item.channelId === id || item.sourceChannelIds?.includes(id))
   );
+  const reviewingRelease = releasesOpen && pendingReleases.length > 0;
   const needs = !!channel.work?.awaitingReply || pendingReleases.length > 0 || blocked.length > 0;
+  const needsLink = native && !!conversation && !conversation.threadId;
+  const primary = needsLink
+    ? 'link'
+    : nativeError || (native && conversation && !ready(conversation))
+      ? 'open'
+      : channel.work?.awaitingReply
+        ? 'answer'
+        : pendingReleases.length
+          ? 'release'
+          : blocked.length
+            ? 'blocked'
+            : paused && !legacy
+              ? 'resume'
+              : runs.length
+                ? 'latest'
+                : 'none';
   const openApp = () => void onMutate(() => api.openNativeApp(id));
   const status = channel.work?.awaitingReply
     ? '等你回答'
@@ -328,58 +369,113 @@ export function ChannelView(props: FeatureProps & { id: string }) {
             {demo && <span className="feature-demo-label">示例数据</span>}
           </div>
           <div className="channel-actions">
-            <Button disabled={busy || demo || legacy} onClick={openApp}>
-              <ArrowUpRight size={13} />在 Codex App 中打开对话
-            </Button>
-            <Button
-              variant="primary"
-              disabled={busy || demo || (paused && (legacy || !ready(conversation) || nativeBusy))}
-              onClick={() => void onMutate(() => api.channelAction(id, paused ? 'resume' : 'pause'))}
+            {primary === 'open' && (
+              <Button variant="primary" disabled={busy} onClick={openApp}>
+                在 Codex App 中打开对话
+              </Button>
+            )}
+            {primary === 'resume' && (
+              <Button
+                variant="primary"
+                disabled={busy || demo || (paused && (legacy || !ready(conversation) || nativeBusy))}
+                onClick={() => void onMutate(() => api.channelAction(id, paused ? 'resume' : 'pause'))}
+              >
+                <Play size={13} /> 继续工作
+              </Button>
+            )}
+            <Dropdown
+              trigger={
+                <Button variant="ghost" aria-label="频道选项">
+                  <MoreHorizontal size={16} />
+                </Button>
+              }
             >
-              {paused ? <Play size={13} /> : <Pause size={13} />} {paused ? '继续工作' : '暂停'}
-            </Button>
+              {primary !== 'open' && (
+                <DropdownItem disabled={busy || demo || legacy} onSelect={openApp}>
+                  在 Codex App 中打开对话
+                </DropdownItem>
+              )}
+              <DropdownItem onSelect={() => onEditChannel(channel)}>调整方向</DropdownItem>
+              <DropdownItem onSelect={() => setSettingsOpen((value) => !value)}>方向与额度</DropdownItem>
+              <DropdownItem onSelect={() => onNavigate({ kind: 'project', id: project.id })}>项目功能看板</DropdownItem>
+              {primary !== 'resume' && (
+                <DropdownItem
+                  disabled={busy || demo || (paused && (legacy || !ready(conversation) || nativeBusy))}
+                  onSelect={() => void onMutate(() => api.channelAction(id, paused ? 'resume' : 'pause'))}
+                >
+                  {paused ? '继续工作' : '暂停'}
+                </DropdownItem>
+              )}
+            </Dropdown>
           </div>
         </header>
-        <div className="channel-direction">
-          <div>
-            <span className="channel-direction-label">工作方向</span>
+        {settingsOpen && (
+          <section className="channel-settings-summary" aria-label="方向与额度">
+            <h2>方向与额度</h2>
             <p>{channel.goal}</p>
-          </div>
-          <Button variant="ghost" onClick={() => onEditChannel(channel)}>
-            调整方向
-          </Button>
-        </div>
-        <div className="channel-log-status">
-          <strong>{channel.work?.focus || '尚未安排关注点'}</strong>
-          <span>
-            {usage?.budget
-              ? `本项目 ${usageWindowLabel(usage.budget.window)} · 估算已用 ${usage.project?.usedPercent ?? '未知'}% / 上限 ${usage.budget.limitPercent}%`
-              : usage
-                ? '本项目未设置额度上限'
-                : '项目额度信息未知'}
-          </span>
-          <span>
-            {usage?.reading && !usage.stale
-              ? usage.reading.windows.map((w) => `账户${usageWindowLabel(w.name)} 已用 ${w.usedPercent}%`).join(' · ')
-              : '账户额度未知'}
-          </span>
-        </div>
+            <span>
+              {usage?.budget
+                ? `本项目 ${usageWindowLabel(usage.budget.window)} · 估算已用 ${usage.project?.usedPercent ?? '未知'}% / 上限 ${usage.budget.limitPercent}%`
+                : usage
+                  ? '本项目未设置额度上限'
+                  : '项目额度信息未知'}
+            </span>
+            <span>
+              {usage?.reading && !usage.stale
+                ? usage.reading.windows.map((w) => `账户${usageWindowLabel(w.name)} 已用 ${w.usedPercent}%`).join(' · ')
+                : '账户额度未知'}
+            </span>
+            <p>
+              复查间隔 {channel.intervalMinutes} 分钟 · 每日上限 {channel.maxRunsPerDay} 轮
+            </p>
+            <Button variant="ghost" onClick={() => setSettingsOpen(false)}>
+              收起
+            </Button>
+          </section>
+        )}
         {!channel.work?.awaitingReply && channel.work && (
           <div className="channel-next-step">
             <span>下一步</span>
-            <p>{channel.work.state === 'needs_input' ? '已回答，等待 Codex 继续' : channel.work.nextStep}</p>
+            <p>
+              {channel.work.state === 'needs_input'
+                ? '已回答，等待 Codex 继续'
+                : questionExcerpt(channel.work.nextStep, 120)}
+            </p>
           </div>
         )}
+        <p className="channel-stage-hint">
+          {channel.work?.focus && <strong>{channel.work.focus} · </strong>}
+          {needsLink
+            ? '先关联在 Codex App 创建的任务。'
+            : primary === 'open'
+              ? '请先在 Codex App 恢复连接。'
+              : channel.work?.awaitingReply
+                ? '请先回答下方问题。'
+                : pendingReleases.length
+                  ? '有待批准版本，请先查看变更与风险。'
+                  : blocked.length
+                    ? '有事项受阻，请查看下一步。'
+                    : paused
+                      ? '准备好后继续工作。'
+                      : '最新进展在下方，更多信息按需展开。'}
+        </p>
         {nativeError && (
           <p className="feature-inline-error" role="alert">
             {nativeError}
           </p>
         )}
-        {native && !conversation?.threadId && (
-          <details className="channel-link-task">
-            <summary>关联 App 任务</summary>
+        {needsLink && (
+          <details
+            className="channel-link-task"
+            open={linkOpen}
+            onToggle={(event) => setLinkOpen(event.currentTarget.open)}
+          >
+            <summary className={!linkOpen && !reviewingRelease ? 'log-primary-action' : undefined}>
+              关联 App 任务
+            </summary>
             <p>在 Codex App 为同一目录创建任务并发送首条消息，再选择关联。</p>
             <Button
+              variant={linkOpen && !threadId && !reviewingRelease ? 'primary' : 'secondary'}
               onClick={() =>
                 void onMutate(async () => {
                   const result = await api.listNativeThreads(id);
@@ -398,6 +494,7 @@ export function ChannelView(props: FeatureProps & { id: string }) {
               ))}
             </select>
             <Button
+              variant={linkOpen && !!threadId && !reviewingRelease ? 'primary' : 'secondary'}
               disabled={busy || !threadId}
               onClick={() =>
                 void onMutate(async () => {
@@ -428,26 +525,34 @@ export function ChannelView(props: FeatureProps & { id: string }) {
                   readOnly={legacy}
                   unavailable={unavailable}
                   autoFocus={entryQuestion.current?.present}
+                  primaryAction={primary === 'answer' && !reviewingRelease}
                   onShowConversation={openApp}
                 />
               )}
               {!!pendingReleases.length && (
-                <details>
-                  <summary>待批准发布 · {pendingReleases.map((row) => row.title).join('、')}</summary>
-                  <ProjectReleases
-                    {...props}
-                    snapshot={{ ...snapshot, releases: pendingReleases }}
-                    projectId={project.id}
-                  />
+                <details open={reviewingRelease} onToggle={(event) => setReleasesOpen(event.currentTarget.open)}>
+                  <summary className={primary === 'release' && !reviewingRelease ? 'log-primary-action' : undefined}>
+                    待批准发布 · {pendingReleases.map((row) => row.title).join('、')}
+                  </summary>
+                  {reviewingRelease && (
+                    <ProjectReleases
+                      {...props}
+                      snapshot={{ ...snapshot, releases: pendingReleases }}
+                      projectId={project.id}
+                    />
+                  )}
                 </details>
               )}
               {!!blocked.length && (
                 <ul>
-                  {blocked.map((item) => (
+                  {blocked.map((item, index) => (
                     <li key={item.id}>
-                      <button onClick={() => onNavigate({ kind: 'finding', id: item.id })}>
+                      <Button
+                        variant={primary === 'blocked' && index === 0 && !reviewingRelease ? 'primary' : 'ghost'}
+                        onClick={() => onNavigate({ kind: 'finding', id: item.id })}
+                      >
                         被阻塞 · {item.title}
-                      </button>
+                      </Button>
                     </li>
                   ))}
                 </ul>
@@ -456,10 +561,6 @@ export function ChannelView(props: FeatureProps & { id: string }) {
           )}
           <div className="channel-log-heading">
             <h2>工作日志</h2>
-            <Button variant="ghost" onClick={() => onNavigate({ kind: 'project', id: project.id })}>
-              项目功能看板
-              <ArrowUpRight size={12} />
-            </Button>
           </div>
           {error && (
             <p role="alert" className="feature-inline-error">
@@ -473,13 +574,15 @@ export function ChannelView(props: FeatureProps & { id: string }) {
           {mergeRuns(
             [],
             runs.filter((run) => run.channelId === id)
-          ).map((run) => (
+          ).map((run, index) => (
             <LogEntry
               key={`${id}:${run.id}`}
               run={run}
               api={api}
               currentWork={channel.work?.runId === run.id ? channel.work : undefined}
               onNavigate={onNavigate}
+              primaryAction={primary === 'latest' && index === 0 && !reviewingRelease}
+              questionAbove={!!channel.work?.awaitingReply && channel.work.runId === run.id}
             />
           ))}
           {hasMore && (
@@ -493,18 +596,6 @@ export function ChannelView(props: FeatureProps & { id: string }) {
           </details>
         </div>
       </main>
-      {showInspector && (
-        <PropertyPanel>
-          <section className="property-section">
-            <h3>工作安排</h3>
-            <Property label="状态">{status}</Property>
-            <Property label="复查间隔">{channel.intervalMinutes} 分钟</Property>
-            <Property label="每日上限">{channel.maxRunsPerDay} 轮</Property>
-            <Property label="下次安排">{channel.nextRunAt ? formatDate(channel.nextRunAt) : '尚未安排'}</Property>
-            <p className="subtle">对话、模型与工具在 Codex App 管理；这里记录持续工作。</p>
-          </section>
-        </PropertyPanel>
-      )}
     </div>
   );
 }

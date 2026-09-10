@@ -136,7 +136,7 @@ describe('a channel held by the usage gate says so wherever its status is shown'
     expect(formatResetTime(resetsAt)).toMatch(/^(今天|明天) \d{2}:\d{2}$/);
   });
 
-  it('shows the wait in the channel heading for demo and native channels and in the inspector status', async () => {
+  it('shows the wait once in the channel heading for demo and native channels', async () => {
     const { props } = featureProps();
     const label = `等待额度重置 · ${formatResetTime(resetsAt)}`;
     for (const channel of props.snapshot.channels) {
@@ -147,7 +147,7 @@ describe('a channel held by the usage gate says so wherever its status is shown'
     }
     const demo = render(<ChannelView {...props} id="channel-system" />, { wrapper: TestProviders });
     expect(within(screen.getByRole('heading', { name: '系统完善' }).parentElement!).getByText(label)).toBeTruthy();
-    expect(screen.getByText('状态').parentElement!.textContent).toContain(label);
+    expect(screen.getAllByText(label)).toHaveLength(1);
     demo.unmount();
     render(<ChannelView {...props} id="channel-other" />, { wrapper: TestProviders });
     await waitFor(() =>

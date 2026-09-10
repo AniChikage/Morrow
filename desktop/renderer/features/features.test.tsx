@@ -107,7 +107,10 @@ describe('channel control and history', () => {
     render(<ChannelView {...props} id="channel-system" />, { wrapper: TestProviders });
     expect(screen.getByRole('heading', { name: '工作日志' })).toBeTruthy();
     expect(screen.queryByRole('textbox')).toBeNull();
-    expect((screen.getByRole('button', { name: '在 Codex App 中打开对话' }) as HTMLButtonElement).disabled).toBe(true);
+    await userEvent.setup().click(screen.getByRole('button', { name: '频道选项' }));
+    expect(screen.getByRole('menuitem', { name: '在 Codex App 中打开对话' }).getAttribute('aria-disabled')).toBe(
+      'true'
+    );
     expect(api.sendMessage).not.toHaveBeenCalled();
     expect(api.channelAction).not.toHaveBeenCalled();
   });
@@ -126,9 +129,12 @@ describe('channel control and history', () => {
     await screen.findByText('旧运行时留下的记录');
     expect(screen.getByRole('note').textContent).toContain('已停止支持');
     expect(screen.getAllByText('Claude Code（已停止支持）').length).toBeGreaterThan(0);
-    expect((screen.getByRole('button', { name: '在 Codex App 中打开对话' }) as HTMLButtonElement).disabled).toBe(true);
+    await user.click(screen.getByRole('button', { name: '频道选项' }));
+    expect(screen.getByRole('menuitem', { name: '在 Codex App 中打开对话' }).getAttribute('aria-disabled')).toBe(
+      'true'
+    );
     expect(screen.queryByRole('textbox', { name: '向频道补充上下文' })).toBeNull();
-    await user.click(screen.getByRole('button', { name: '暂停' }));
+    await user.click(screen.getByRole('menuitem', { name: '暂停' }));
     expect(api.channelAction).toHaveBeenLastCalledWith('channel-system', 'pause');
     const pausedState = {
       ...state,
@@ -137,7 +143,9 @@ describe('channel control and history', () => {
       ),
     };
     view.rerender(<ChannelView {...props} snapshot={pausedState} id="channel-system" />);
-    expect((screen.getByRole('button', { name: '继续工作' }) as HTMLButtonElement).disabled).toBe(true);
+    await user.click(screen.getByRole('button', { name: '频道选项' }));
+    expect(screen.getByRole('menuitem', { name: '继续工作' }).getAttribute('aria-disabled')).toBe('true');
+    await user.keyboard('{Escape}');
     expect(screen.getByText('旧运行时留下的记录')).toBeTruthy();
     expect(api.channelAction).toHaveBeenCalledTimes(1);
     expect(api.openNativeSession).not.toHaveBeenCalled();

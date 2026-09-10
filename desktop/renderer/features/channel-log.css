@@ -1,17 +1,29 @@
-.channel-log-status {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 8px 20px;
-  padding: 12px 24px;
-  border-bottom: 1px solid var(--line);
-  font-size: 11px;
+.channel-stage-hint {
+  margin: 0;
+  padding: 8px 28px 14px;
+  font-size: 12px;
+  line-height: 1.6;
   color: var(--muted);
+  border-bottom: 1px solid var(--line);
 }
-.channel-log-status strong {
+.channel-stage-hint strong {
   color: var(--text);
   font-weight: 550;
-  flex-basis: 100%;
+}
+.channel-settings-summary {
+  margin: 0 28px 12px;
+  padding: 12px 0;
+  border-bottom: 1px solid var(--line);
+  font-size: 12px;
+}
+.channel-settings-summary h2 {
+  font-size: 12px;
+  margin: 0 0 8px;
+}
+.channel-settings-summary > span {
+  display: block;
+  margin: 4px 0;
+  color: var(--muted);
 }
 .channel-log-scroll {
   padding: 20px 28px 36px;
@@ -100,8 +112,7 @@
   flex-shrink: 0;
   min-width: 48px;
 }
-.log-outputs button,
-.channel-needs li button {
+.log-outputs button {
   border: 0;
   background: none;
   padding: 0;
@@ -109,8 +120,7 @@
   color: inherit;
   cursor: pointer;
 }
-.log-outputs button:hover,
-.channel-needs li button:hover {
+.log-outputs button:hover {
   text-decoration: underline;
 }
 .channel-log-entry > details {
@@ -120,6 +130,22 @@
 }
 .channel-log summary {
   cursor: pointer;
+}
+.log-summary {
+  color: var(--muted);
+}
+.log-work-details > summary {
+  width: fit-content;
+  padding: 5px 0;
+}
+.channel-log summary.log-primary-action {
+  display: inline-block;
+  padding: 6px 10px;
+  border-radius: 6px;
+  background: var(--text);
+  color: var(--bg);
+  font-weight: 500;
+  list-style: none;
 }
 .channel-log pre {
   white-space: pre-wrap;

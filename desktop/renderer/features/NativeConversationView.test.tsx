@@ -590,11 +590,15 @@ describe('native App conversation', () => {
     vi.mocked(props.api.getNativeConversation).mockResolvedValue(unbound);
     api.createNativeThread.mockResolvedValue(conversation());
     render(<ChannelView {...props} id="channel-system" />, { wrapper: TestProviders });
+    await screen.findByText('关联 App 任务');
+    await user.click(screen.getByRole('button', { name: '频道选项' }));
+    await user.click(screen.getByRole('menuitem', { name: '方向与额度' }));
     expect(screen.getByText(state.channels[0].goal)).toBeTruthy();
     expect(screen.queryByRole('tab')).toBeNull();
     expect(screen.queryByRole('button', { name: '运行一次' })).toBeNull();
-    expect((screen.getByRole('button', { name: '继续工作' }) as HTMLButtonElement).disabled).toBe(true);
-    await user.click(screen.getByRole('button', { name: '在 Codex App 中打开对话' }));
+    expect(screen.queryByRole('button', { name: '继续工作' })).toBeNull();
+    await user.click(screen.getByRole('button', { name: '频道选项' }));
+    await user.click(screen.getByRole('menuitem', { name: '在 Codex App 中打开对话' }));
     expect(api.createNativeThread).not.toHaveBeenCalled();
     expect(api.channelAction).not.toHaveBeenCalled();
     expect(api.openNativeApp).toHaveBeenCalledWith('channel-system');
@@ -654,7 +658,8 @@ describe('native App conversation', () => {
     await waitFor(() =>
       expect((screen.getByRole('button', { name: '继续工作' }) as HTMLButtonElement).disabled).toBe(false)
     );
-    await userEvent.setup().click(screen.getByRole('button', { name: '在 Codex App 中打开对话' }));
+    await userEvent.setup().click(screen.getByRole('button', { name: '频道选项' }));
+    await userEvent.setup().click(screen.getByRole('menuitem', { name: '在 Codex App 中打开对话' }));
     expect(api.openNativeApp).toHaveBeenCalledWith('channel-system');
     expect(api.sendNativeMessage).not.toHaveBeenCalled();
     expect(api.sendMessage).not.toHaveBeenCalled();
