@@ -4,9 +4,10 @@ import { DatabaseSync } from 'node:sqlite';
 import { fileURLToPath } from 'node:url';
 import { join } from 'node:path';
 import { sourceVersion } from '../../service/source-version.ts';
+import { ruleVerdict, valueAt } from '../../service/measurement.ts';
 import type { CallRecord, Labels, TimelineRecord } from './scenario.ts';
 import type { Evidence, FeedbackWatch, Release } from '../../service/autonomy-types.ts';
-import type { Expectation, ScalarRule, StrategyDecision } from '../../service/strategy-types.ts';
+import type { Expectation, StrategyDecision } from '../../service/strategy-types.ts';
 import type { Verification } from '../../service/verification-types.ts';
 import type { Channel, Event, Run, UsageSample } from '../../service/protocol.ts';
 
@@ -316,7 +317,7 @@ function latency(
           row.createdAt >= decision.createdAt &&
           row.observedAt >= expected.notBefore &&
           row.observedAt <= expected.deadline &&
-          verdictOf(expected.rule!, pointerValue(row.data, expected.rule!.pointer)) === 'not_met'
+          ruleVerdict(expected.rule!, pointerValue(row.data, expected.rule!.pointer)) === 'not_met'
       );
       if (first) minutes.push((Date.parse(review.createdAt) - Date.parse(first.observedAt)) / 60_000);
     }
@@ -414,7 +415,7 @@ function goal(
       operator: rule.operator,
       expected: rule.expected,
       value: value === undefined || value === null || typeof value === 'object' ? null : (value as any),
-      verdict: verdictOf(rule, value),
+      verdict: ruleVerdict(rule, value),
       observedAt: record.observedAt,
       evidenceId: record.id,
     };
@@ -507,20 +508,7 @@ export function pointerValue(data: unknown, pointer: string): unknown {
       return undefined;
     }
   }
-  let current: any = data;
-  for (const raw of pointer.split('/').slice(1)) {
-    const key = raw.replaceAll('~1', '/').replaceAll('~0', '~');
-    if (current === null || typeof current !== 'object') return undefined;
-    current = Array.isArray(current) ? current[Number(key)] : current[key];
-  }
-  return current;
-}
-
-function verdictOf(rule: ScalarRule, value: unknown): 'met' | 'not_met' | 'unknown' {
-  if (rule.operator === 'equals')
-    return typeof value === typeof rule.expected && value === rule.expected ? 'met' : 'not_met';
-  if (typeof value !== 'number' || typeof rule.expected !== 'number' || !Number.isFinite(value)) return 'unknown';
-  return (rule.operator === 'gte' ? value >= rule.expected : value <= rule.expected) ? 'met' : 'not_met';
+  return valueAt(data, pointer);
 }
 
 const tables = [
