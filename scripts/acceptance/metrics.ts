@@ -4,7 +4,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { fileURLToPath } from 'node:url';
 import { join } from 'node:path';
 import { sourceVersion } from '../../service/source-version.ts';
-import { ruleVerdict, valueAt } from '../../service/measurement.ts';
+import { qualityChecks, ruleVerdict, scalar, valueAt } from '../../service/measurement.ts';
 import type { CallRecord, Labels, TimelineRecord } from './scenario.ts';
 import type { Evidence, FeedbackWatch, Release } from '../../service/autonomy-types.ts';
 import type { Expectation, StrategyDecision } from '../../service/strategy-types.ts';
@@ -311,14 +311,10 @@ function latency(
       if (result.verdict !== 'not_met') continue;
       const expected = (decision.expectations || []).find((row) => row.id === result.expectationId);
       if (!expected?.rule) continue;
-      const first = evidence.find(
-        (row) =>
-          matchesSource(expected, row) &&
-          row.createdAt >= decision.createdAt &&
-          row.observedAt >= expected.notBefore &&
-          row.observedAt <= expected.deadline &&
-          ruleVerdict(expected.rule!, pointerValue(row.data, expected.rule!.pointer)) === 'not_met'
-      );
+      const first = evidence
+        .filter((row) => eligibleSample(decision, expected, row, review.createdAt))
+        .sort((a, b) => a.observedAt.localeCompare(b.observedAt) || a.createdAt.localeCompare(b.createdAt))
+        .find((row) => sampleResult(decision, expected, row, evidence).verdict === 'not_met');
       if (first) minutes.push((Date.parse(review.createdAt) - Date.parse(first.observedAt)) / 60_000);
     }
   }
@@ -390,7 +386,7 @@ function consistency(
   };
 }
 
-/** The newest captured value of the latest outcome pointer, against the rule that was frozen with it. */
+/** Latest in-window outcome; delta values use the original frozen baseline. */
 function goal(
   decisions: StrategyDecision[],
   evidence: Evidence[]
@@ -407,15 +403,18 @@ function goal(
     const expected = (decision.expectations || []).find((row) => row.kind === 'outcome' && !!row.rule);
     if (!expected) continue;
     const rule = expected.rule!;
-    const record = [...evidence].reverse().find((row) => matchesSource(expected, row));
+    const record = evidence
+      .filter((row) => eligibleSample(decision, expected, row))
+      .sort((a, b) => a.observedAt.localeCompare(b.observedAt) || a.createdAt.localeCompare(b.createdAt))
+      .at(-1);
     if (!record) return unknown;
-    const value = pointerValue(record.data, rule.pointer);
+    const result = sampleResult(decision, expected, record, evidence);
     return {
       pointer: rule.pointer,
       operator: rule.operator,
       expected: rule.expected,
-      value: value === undefined || value === null || typeof value === 'object' ? null : (value as any),
-      verdict: ruleVerdict(rule, value),
+      value: result.value,
+      verdict: result.verdict,
       observedAt: record.observedAt,
       evidenceId: record.id,
     };
@@ -498,6 +497,58 @@ function matchesSource(expected: Expectation, row: Evidence) {
     row.watchId === expected.source.watchId &&
     row.source === (expected.source.path ?? expected.source.url)
   );
+}
+
+function eligibleSample(decision: StrategyDecision, expected: Expectation, row: Evidence, cutoff?: string) {
+  const created = Date.parse(row.createdAt),
+    observed = Date.parse(row.observedAt);
+  const chosen = Date.parse(decision.createdAt),
+    start = Date.parse(expected.notBefore),
+    end = Date.parse(expected.deadline);
+  const until = cutoff === undefined ? Infinity : Date.parse(cutoff);
+  return (
+    matchesSource(expected, row) &&
+    Number.isFinite(created) &&
+    Number.isFinite(observed) &&
+    created >= chosen &&
+    observed >= start &&
+    observed <= end &&
+    created <= until &&
+    observed <= until
+  );
+}
+
+// Evaluate each observation at its own collection time. Later samples and wall
+// clock passage must not change the first valid violation in an old review.
+function sampleResult(decision: StrategyDecision, expected: Expectation, row: Evidence, evidence: Evidence[]) {
+  let value = pointerValue(row.data, expected.rule!.pointer);
+  let usable = scalar(value);
+  const plan = expected.measurement;
+  if (plan) {
+    usable &&= qualityChecks(plan, row.data, row.observedAt).every((check) => check.status === 'passed');
+    let baselineValue: unknown;
+    if ('evidenceId' in plan.baseline) {
+      const baselineId = plan.baseline.evidenceId;
+      const baseline = evidence.find((candidate) => candidate.id === baselineId);
+      const valid =
+        baseline &&
+        matchesSource(expected, baseline) &&
+        Date.parse(baseline.createdAt) <= Date.parse(decision.createdAt) &&
+        Date.parse(baseline.observedAt) <= Date.parse(decision.createdAt) &&
+        qualityChecks(plan, baseline.data, decision.createdAt).every((check) => check.status === 'passed');
+      if (valid) baselineValue = pointerValue(baseline.data, expected.rule!.pointer);
+      usable &&= !!valid && scalar(baselineValue);
+    }
+    if (plan.comparison === 'delta') {
+      value = typeof value === 'number' && typeof baselineValue === 'number' ? value - baselineValue : undefined;
+      usable &&= typeof value === 'number' && Number.isFinite(value);
+    }
+  }
+  if (row.origin === 'execution') {
+    const data = row.data as Record<string, unknown> | null;
+    usable &&= data?.boundVersion === true && data?.outputComplete === true && Number.isInteger(data?.exitCode);
+  }
+  return { value: scalar(value) ? value : null, verdict: usable ? ruleVerdict(expected.rule!, value) : 'unknown' };
 }
 
 export function pointerValue(data: unknown, pointer: string): unknown {

@@ -128,10 +128,10 @@ invariant 是命名过的谓词，输入 `{ store, service, transport, receiver,
 | `humanInterventions` | `events` 里 `actor==='human'` 且 `action` 为 `release.approved` / `release.rejected` / `native.message-submitted` 的数量。 | 不会。 |
 | `repeatedFailures` | `calls.jsonl` 里按"操作 + 输入摘要"分组，统计被拒（状态 ≥ 400）超过一次的组数与总次数。 | **没有 `calls.jsonl` 时整项为 `unknown`**——拒绝记录不在 SQLite 里。 |
 | `misattribution` | 复盘的 `review.runId` 在 timeline 里定位到它所属的步骤序号，取该序号之前最后一条 `truth` 标签；标签是 `noise`/`environment` 而复盘却 `improved` 或 `diagnosis==='expected'` 时计一次。 | **缺 `labels.json` 或缺 timeline 时为 `unknown`**。虚拟时钟只在 `advance` 时前进，同一时间戳上标签和复盘的先后只有步骤序号能分辨，所以两者都必需。 |
-| `adjustmentLatency` | 每个 `not_met` 核对项：找到该预期来源在窗口内**第一条已经违反规则**的证据，算它的 `observedAt` 到复盘 `createdAt` 的虚拟分钟数，给出次数与 min/max/mean。 | 没有任何 `not_met` 核对项时整项为 `unknown`。 |
+| `adjustmentLatency` | 每个 `not_met` 核对项：按观测时间排序，找到原窗口内、复盘前已采集且已观测的第一条有效违规证据，计算至复盘的虚拟分钟数。measurement 按冻结基线、差值和采集时点质量规则判断；缺失或无效样本不计时。 | 没有有效违规样本时为 `unknown`；后来追加的样本不回写历史延迟。 |
 | `staleMemory` | 用 `labels.staleMemoryIds` 去比对全部选择的 `memoryRefs`（带 `use`）与 `understandingRefs` / 复盘的 `assessment.understandingRefs`（没有 `use`，视为沿用）：`followed`=被 `apply`；`adapted`=只被 `adapt`；`avoided`=只被 `avoid`/`not_applicable`；`ignored`=从未被引用。 | **缺 `labels.json` 时整项为 `unknown`**。 |
 | `restartConsistency` | 还停在 `running` 的运行 / 频道、停在 `publishing` 的发布、还在 queued/running 的复核；四项都是 0 才 `ok`。 | 不会；没有 timeline 时只有 `restarts` 为 `unknown`。 |
-| `goalOutcome` | 最近一个带 `rule` 的 outcome 预期，配上该来源**最新**一条采集证据的实际取值与机械核对结果。 | 没有这样的预期或该来源没有任何证据时为 `unknown`。 |
+| `goalOutcome` | 最近一个带 `rule` 的 outcome 预期，使用选择后、原观察窗口内最新的同来源证据；measurement 核对原基线及采集时点质量，`delta` 的 value 为相对原基线的绝对差值。 | 没有合格来源/窗口的记录时为 `unknown`；记录存在但基线或质量无效时保留 `verdict: unknown`。 |
 | `cost` | `usage_samples` 每个窗口首尾读数的差值，加上 `runs[].usage.delta`。 | **两者都没有时为 `unknown`**——fixture 运行永远如此：脚本化后台不报额度。 |
 | `config` | `source` 用 `service/source-version.ts` 对**仓库根目录**取指纹（即算出这些数字的 harness 版本，不是被测项目）；`model` 取最近一次调度运行的 `model`（回退到脚本化任务快照的 `state.model`）；`permission`、`budget.maxRunsPerDay` 来自频道行；`mode`/`policy`/`seed`/`scenario`/`scenarioVersion`/`budget.turns`/`budget.reviews` 来自 `run.json`。 | 缺 `run.json` 时那几项为 `unknown`；取指纹失败时 `source` 为 `unknown`。 |
 
