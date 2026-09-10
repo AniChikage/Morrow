@@ -124,8 +124,15 @@ function BridgeChecklist({
         ) : (
           <>
             <span className="usage-unknown">额度未知</span>
-            <span>
-              {!native.connected ? '后台未连接' : native.usage?.reading ? '读数已过期' : '协议未返回账户用量'}
+            {/* Never read ≠ read and refused. A service too old to report `attempted` keeps the old reason. */}
+            <span title={native.usage?.lastError}>
+              {!native.connected
+                ? '后台未连接'
+                : native.usage?.reading
+                  ? '读数已过期'
+                  : native.usage?.attempted === false
+                    ? '尚未读取账户用量'
+                    : '协议未返回账户用量'}
             </span>
           </>
         )}
@@ -333,7 +340,7 @@ export function RuntimesView({
                               <dd>
                                 {runtime.available
                                   ? runtime.canWrite
-                                    ? '默认沿用 Codex App 的权限设置；每个频道可单独收紧为只读或工作区编辑。'
+                                    ? '自动轮次默认以完整访问运行（由 Morrow 请求）；每个频道可单独收紧为只读或工作区编辑。'
                                     : '只读执行'
                                   : 'CLI 可用后读取支持的权限。'}
                               </dd>

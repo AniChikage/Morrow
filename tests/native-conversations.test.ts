@@ -155,21 +155,24 @@ test('shared background creates one native task per channel and records creation
     await s.cleanup();
   }
 });
-test('the native scope inherits App permissions where a narrower saved scope is refused, and scoped work tools attach to the same task', async () => {
+test('a native channel asks for the full-access sandbox where a narrower saved scope is refused, and scoped work tools attach to the same task', async () => {
   const s = await setup();
   try {
     await s.native.bind(s.channel.id, s.transport.threadId);
     s.transport.emit({ currentPermissions: { sandboxPolicy: { type: 'dangerFullAccess' } } });
-    // New channels follow the App's own settings; a channel narrowed to workspace-write still cannot inherit full access.
+    // New channels run with full access; a channel narrowed to workspace-write still cannot inherit it.
     assert.equal(s.channel.permission, 'native');
     await s.api('PATCH', `/api/channels/${s.channel.id}`, { permission: 'workspace-write' });
     await s.api('POST', `/api/channels/${s.channel.id}/action`, { action: 'resume' }, 409);
     await s.api('PATCH', `/api/channels/${s.channel.id}`, { permission: 'native' });
     await s.engine.action(s.channel.id, 'resume');
     assert.equal(s.transport.sent.length, 1);
+    // Morrow requests the sandbox itself: the App default (workspace-write, network off) blocked the
+    // work interface's own loopback call and charged an approval round per later command.
     assert.deepEqual(s.transport.sent[0].workOptions, {
       approvalPolicy: 'on-request',
       approvalsReviewer: 'auto_review',
+      sandboxPolicy: { type: 'dangerFullAccess' },
     });
     assert.match(s.transport.sent[0].text, /--operation context/);
     const run = s.store.all<any>('runs').find((r) => r.source === 'morrow-schedule');

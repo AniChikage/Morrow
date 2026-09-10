@@ -8,7 +8,12 @@ import { Store } from '../service/store.ts';
 import { NativeConversations } from '../service/native-conversations.ts';
 import type { Engine } from '../service/engine.ts';
 import { WebSocketServer } from 'ws';
-import { CodexSharedTransport, parseUsageReading, usageReadMethod } from '../service/codex-shared-transport.ts';
+import {
+  CodexSharedTransport,
+  parseUsageReading,
+  turnWorkParams,
+  usageReadMethod,
+} from '../service/codex-shared-transport.ts';
 import { sharedRuntimeArgs } from '../service/codex-app-host-bridge.ts';
 import { until as waitUntil } from './harness/wait.ts';
 import type { UsageReading } from '../service/protocol.ts';
@@ -339,6 +344,15 @@ test('autonomous turns use native automatic review within their saved workspace 
       ...options,
     });
     assert.deepEqual((await f.client.readThread(id)).state.currentPermissions.sandboxPolicy, options.sandboxPolicy);
+    // A narrowed scope carries no extra field; only full access also goes out under the App's own `sandbox` name.
+    assert.equal(turnWorkParams(options).sandbox, undefined);
+    assert.deepEqual(
+      turnWorkParams({ approvalPolicy: 'never', sandboxPolicy: { type: 'readOnly', networkAccess: false } }),
+      {
+        approvalPolicy: 'never',
+        sandboxPolicy: { type: 'readOnly', networkAccess: false },
+      }
+    );
     await assert.rejects(
       () => f.client.sendMessage(id, 'raced work', 'scheduled-next', [], options),
       (error: any) => error.code === 'thread_busy' && error.outcomeUnknown === false
@@ -349,6 +363,33 @@ test('autonomous turns use native automatic review within their saved workspace 
     );
     await f.client.sendMessage(id, 'human guidance', 'chat');
     assert.equal(f.messages.find((message) => message.method === 'turn/steer').params.approvalsReviewer, undefined);
+  } finally {
+    await f.close();
+  }
+});
+test('a full-access turn sends dangerFullAccess under both the existing and the App-reported field name', async () => {
+  const f = await fixture();
+  try {
+    const options = {
+      approvalPolicy: 'on-request' as const,
+      approvalsReviewer: 'auto_review' as const,
+      sandboxPolicy: { type: 'dangerFullAccess' as const },
+    };
+    await f.client.sendMessage(id, 'full access work', 'scheduled', [], options);
+    assert.deepEqual(f.messages.find((message) => message.method === 'turn/start').params, {
+      threadId: id,
+      input: [{ type: 'text', text: 'full access work', text_elements: [] }],
+      clientUserMessageId: 'scheduled',
+      approvalPolicy: 'on-request',
+      approvalsReviewer: 'auto_review',
+      sandboxPolicy: { type: 'dangerFullAccess' },
+      sandbox: { type: 'dangerFullAccess' },
+    });
+    // The local permission projection keeps Morrow's own field only, so the pre-check reads one type.
+    const state = (await f.client.readThread(id)).state;
+    assert.deepEqual(state.currentPermissions.sandboxPolicy, { type: 'dangerFullAccess' });
+    assert.equal(state.currentPermissions.sandbox, undefined);
+    assert.deepEqual(state.latestThreadSettings.sandboxPolicy, { type: 'dangerFullAccess' });
   } finally {
     await f.close();
   }

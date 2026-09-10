@@ -76,7 +76,15 @@ MORROW_HOME="$HOME/.local/share/morrow" npm start
 
 - 每个频道明确绑定一个本项目目录下的原生任务，只同步已绑定任务。
 - 普通对话传递原始文字、图片和请求 ID；运行中通过原生 steering 追加指导。
-- 自动轮次使用同一任务。频道默认沿用 App 自己的权限设置（以 App 中当前的设置为准；单人使用时建议在 App 里选择完整访问），只应用原生自动审查；频道收紧为只读或工作区写入时，先核对原生任务当前沙箱是否符合该范围，再附加相应沙箱。模型与登录仍由原生任务管理。
+- 自动轮次使用同一任务，按频道权限附带一套明确的沙箱与审批设置；模型与登录仍由原生任务管理。启动前先核对原生任务当前沙箱是否符合该范围，完整访问只要求是协议已知的沙箱类型。
+
+  | 频道权限 | `turn/start` 附带的设置 |
+  | --- | --- |
+  | 完整访问（默认，`native`） | `approvalPolicy: on-request` + `approvalsReviewer: auto_review` + `sandboxPolicy: {type: dangerFullAccess}`。2026-09-09 实测：不附沙箱时 App 默认的 workspace-write（断网）会挡住 Morrow 自己的工作接口，并让每条命令多走一次自动审批。该沙箱同时以 App 自己在结果里使用的字段名 `sandbox` 再发一次（见 `turnWorkParams`）；两个字段名中后台实际读哪一个尚未实测，因此只对这一种沙箱加别名，收紧的范围线上形状完全不变。 |
+  | 只读（`read-only`） | `approvalPolicy: on-request` + `approvalsReviewer: auto_review` + `sandboxPolicy: {type: readOnly, networkAccess: false}`。 |
+  | 工作区写入（`workspace-write`） | 同上审批设置 + `sandboxPolicy: {type: workspaceWrite, writableRoots: [项目路径], networkAccess: false, excludeTmpdirEnvVar: true, excludeSlashTmp: true}`。 |
+  | 独立复核轮次（不是频道设置） | `approvalPolicy: never` + 只读沙箱、断网，不受完整访问改动影响。 |
+
 - 审批与结构化问答使用原生待处理请求 ID；不支持的内容明确交由 App 处理。
 - 支持 PNG/JPEG/WebP/GIF：单张最多 10 MiB，每批最多 5 张、20 MiB。附件使用按频道隔离的私有副本与摘要校验。
 - 断线时历史仍可读；同一请求 ID 的内容不能改变。丢失确认后保留未知回执，并按原生消息 ID 核对。
@@ -91,9 +99,9 @@ MORROW_HOME="$HOME/.local/share/morrow" npm start
 
 ## 持续工作与反馈
 
-接入现有文件夹后，新项目准备一个暂停的「自主推进」频道，默认沿用 Codex App 的权限设置（以 App 中当前的设置为准；单人使用时建议在 App 里选择完整访问）、每日最多 32 轮。接入、绑定和保存配置本身不启动模型工作。示例项目不能执行。
+接入现有文件夹后，新项目准备一个暂停的「自主推进」频道，默认完整访问（由 Morrow 请求，审批走 App 的自动审查）、每日最多 32 轮。接入、绑定和保存配置本身不启动模型工作。示例项目不能执行。
 
-自动轮次获得项目目标、方向、共享看板、已有认识、相关经验和人工指导。Codex 通过运行范围内的工作接口维护项目；下一步可选择继续、等待或提问。用户手动暂停优先于反馈唤醒。
+自动轮次获得项目目标、方向、共享看板、已有认识、相关经验和人工指导，以及 `service/native-capabilities.ts` 里那份 2026-09-09 实测的原生能力清单（`context.nativeCapabilities` 和提示词里的一行）。Codex 通过运行范围内的工作接口维护项目；下一步可选择继续、等待或提问。用户手动暂停优先于反馈唤醒。
 
 同一项目目录的责任轮次串行执行，并等待已绑定原生任务空闲。每日上限按 UTC 日界计算，已启动的失败/中断轮次也计数；普通对话和外部 App 轮次不消耗编排预算。配置范围为每天 1–100 轮、复查间隔 1–1440 分钟。
 
@@ -129,7 +137,7 @@ MORROW_HOME="$HOME/.local/share/morrow" npm start
 
 | 路由 | 用途 |
 | --- | --- |
-| `GET /api/native/status` | 实际连接状态、后台就绪、支持能力与最近账户用量读数。 |
+| `GET /api/native/status` | 实际连接状态、后台就绪、支持能力与最近账户用量读数（含 `attempted`/`lastError`，用于区分「尚未读取」和「协议未返回」）。 |
 | `/api/channels/:id/native/threads`、`bind`、`create` | 项目任务目录、明确绑定、创建原生任务。 |
 | `/api/channels/:id/native/conversation`、`messages` | 分页原生历史、提交/追加消息与幂等回执。 |
 | `/api/channels/:id/native/interrupt`、`respond` | 精确停止轮次、回答待处理原生请求。 |
@@ -138,7 +146,7 @@ MORROW_HOME="$HOME/.local/share/morrow" npm start
 | `PATCH /api/projects/:id` | `{goal?, brief?, revision}` 修改目标或项目说明，版本不符返回 409；每次保存写入版本记录与审计，并要求进行中的判断重新评估。 |
 | `GET /api/settings`、`PATCH /api/settings` | 全局设置：`{usageReserve?: {window:'5h'\|'weekly', keepPercent:1–99} \| null, stopWhenUsageUnknown?: boolean}`；首次读取时创建默认行，改动写审计。 |
 | `PATCH /api/projects/:id/usage-budget` | `{usageBudget: {window, limitPercent:1–100} \| null}` 设置或清除项目额度上限（归因估算）；示例项目返回 409。 |
-| `GET /api/projects/:id/usage` | 最近账户读数与是否过期、适用的保留线与项目上限、本项目在窗口内的估算用量，以及当前门禁判断。 |
+| `GET /api/projects/:id/usage` | 最近账户读数与是否过期、是否尝试过读取（`attempted`）与最近一次失败原因（`lastError`，已脱敏、最多 200 字）、适用的保留线与项目上限、本项目在窗口内的估算用量，以及当前门禁判断。 |
 | `POST /api/agent` | 运行范围内的 AI 工作操作。 |
 | `POST /api/releases/:id/review` | 桌面人工发布决定，工作凭据不能调用。 |
 

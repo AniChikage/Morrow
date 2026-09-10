@@ -62,7 +62,9 @@ test('CLI detection stays separate from authentication and details are progressi
   await userEvent.setup().click(row);
   const details = within(screen.getByRole('region', { name: 'Codex 详情' }));
   expect(details.getByText(installed.path)).toBeTruthy();
-  expect(details.getByText('默认沿用 Codex App 的权限设置；每个频道可单独收紧为只读或工作区编辑。')).toBeTruthy();
+  expect(
+    details.getByText('自动轮次默认以完整访问运行（由 Morrow 请求）；每个频道可单独收紧为只读或工作区编辑。')
+  ).toBeTruthy();
   expect(details.getByText(/登录状态与配额在实际执行时验证/)).toBeTruthy();
   expect(row.getAttribute('aria-expanded')).toBe('true');
   expect(screen.queryByRole('button', { name: /安装|登录|配置/ })).toBeNull();
@@ -283,8 +285,15 @@ test('the checklist ends with the account usage per window, or a red unknown wit
       [`5 小时 已用 42%，重置 ${formatResetTime(resetsAt)}`, '每周 已用 10%，重置时间未知'],
     ],
     [{ connected: false }, ['额度未知', '后台未连接']],
+    // Never attempted, attempted and empty, and stale each read differently; a service too old to
+    // report `attempted` keeps the previous reason rather than claiming nothing was tried.
+    [{ connected: true, usage: { stale: true, attempted: false } }, ['额度未知', '尚未读取账户用量']],
+    [
+      { connected: true, usage: { stale: true, attempted: true, lastError: '原生后台不支持读取额度' } },
+      ['额度未知', '协议未返回账户用量'],
+    ],
     [{ connected: true, usage: { stale: true } }, ['额度未知', '协议未返回账户用量']],
-    [{ connected: true, usage: { reading, stale: true } }, ['额度未知', '读数已过期']],
+    [{ connected: true, usage: { reading, stale: true, attempted: true } }, ['额度未知', '读数已过期']],
   ];
   for (const [patch, expected] of cases) {
     const { props, api } = runtimeProps();

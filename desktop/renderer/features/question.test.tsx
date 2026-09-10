@@ -101,6 +101,18 @@ describe('the Codex question card on the channel page', () => {
     expect(document.querySelector('.channel-next-step')).toBeNull();
   });
 
+  it('never re-labels an answered question as the next step', async () => {
+    const { props, view, state } = renderChannel();
+    // The reply is taken but the turn's saved decision is still the needs_input one: its nextStep is
+    // the question, not a next step, so the block says what is actually happening instead.
+    const answered = withChannel(state, { status: 'idle', work: { ...question, awaitingReply: false } });
+    view.rerender(<ChannelView {...props} snapshot={answered} id="channel-system" />);
+    expect(screen.queryByRole('region', { name: cardName })).toBeNull();
+    const block = document.querySelector('.channel-next-step')!;
+    expect(block.textContent).toContain('已回答，等待 Codex 继续');
+    expect(block.textContent).not.toContain('还是集成导入');
+  });
+
   it('sends the trimmed answer with a request id, then shows 已回答 without the box and without changing tabs', async () => {
     const user = userEvent.setup();
     const { api } = renderChannel();

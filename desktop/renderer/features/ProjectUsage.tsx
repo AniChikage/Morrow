@@ -76,7 +76,10 @@ export function ProjectUsageSection({
           ) : (
             <p className="usage-row">
               <span className="usage-unknown">额度未知</span>
-              <span className="subtle">{usage?.reading ? '读数已过期' : '尚未从 Codex 后台读到账户用量'}</span>
+              {/* Same distinction as the runtimes page: nothing read yet, a read that returned nothing, or a stale reading. */}
+              <span className="subtle" title={usage?.lastError}>
+                {usage?.reading ? '读数已过期' : usage?.attempted === false ? '尚未读取账户用量' : '协议未返回账户用量'}
+              </span>
             </p>
           )}
           {usage?.reserve && (

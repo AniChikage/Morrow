@@ -297,7 +297,8 @@ export function ChannelView(props: FeatureProps & { id: string }) {
           channel.work && (
             <div className="channel-next-step">
               <span>下一步</span>
-              <p>{channel.work.nextStep}</p>
+              {/* A needs_input turn's nextStep is the question itself; once answered it is no longer a next step. */}
+              <p>{channel.work.state === 'needs_input' ? '已回答，等待 Codex 继续' : channel.work.nextStep}</p>
               {!paused && channel.nextRunAt && <time>{formatDate(channel.nextRunAt)}</time>}
             </div>
           )
@@ -422,7 +423,7 @@ export function ChannelView(props: FeatureProps & { id: string }) {
               {nativeCodex
                 ? '原生对话设置'
                 : channel.permission === 'native'
-                  ? '沿用 Codex App 原生权限'
+                  ? '完整访问'
                   : channel.permission === 'read-only'
                     ? '只读工作空间'
                     : '允许工作区写入'}

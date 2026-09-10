@@ -14,13 +14,36 @@ Codex 共享连接目前使用本机私有协议，兼容性取决于 App 版本
 
 ## 权限
 
-新频道默认「沿用 Codex App 原生权限」：自动轮次不再附加 Morrow 自己的沙箱或断网设置，只沿用原生自动审查处理审批；Codex 在自动轮次里拥有与你在 App 中相同的权限，以 App 中当前的权限设置为准（单人使用时建议在 App 里选择完整访问，此时可修改整个项目、联网、使用浏览器等原生工具）。这是单人使用下的有意选择，人工合并与上线确认是仅有的两道闸。
+新频道默认「完整访问（由 Morrow 请求，审批走 App 的自动审查）」：自动轮次由 Morrow 明确向原生任务请求 `dangerFullAccess` 沙箱，并附 `approvalPolicy: on-request` 和原生自动审查。Codex 在自动轮次里可以修改整个项目、联网、使用 Computer Use 等原生工具，不再取决于 App 当前的沙箱设置。这是单人使用下的有意选择，人工合并与上线确认是仅有的两道闸。
 
-需要收紧时，可在频道设置中改为只读或工作区写入。启动自动轮次前，Morrow 会核对原生任务当前的沙箱是否符合该范围，不符合则拒绝启动并保留普通对话；这些轮次设置可能延续到后续对话。普通 Codex 对话始终沿用原生设置。「CLI 就绪」只表示可执行文件与选项可用，登录和额度以实际运行结果为准。
+改成显式请求的原因来自 2026-09-09 的实测：不附沙箱时 App 自己的默认（workspace-write、断网）生效，Morrow 的工作接口第一次 `agent-cli.ts --context` 调用就因回环网络被挡而报 `fetch failed`，之后每条命令都要走一次原生审批请求，自动审查每次约一分钟（六次调用约六分钟）。
+
+需要收紧时，可在频道设置中改为只读或工作区写入：这两种范围的沙箱与断网设置完全不变。启动自动轮次前，Morrow 会核对原生任务当前的沙箱是否符合该范围，不符合则拒绝启动并保留普通对话；完整访问频道只要求沙箱类型是协议已知的类型。独立复核轮次始终是 `approvalPolicy: never` 加只读沙箱，不受这条改动影响。这些轮次设置可能延续到后续对话。普通 Codex 对话始终沿用原生设置。「CLI 就绪」只表示可执行文件与选项可用，登录和额度以实际运行结果为准。
+
+## 原生能力
+
+下表是 2026-09-09 一次真实 Morrow 调度轮次的实测结果（隔离数据目录、频道权限为完整访问、模型 gpt-6-astra），以实测为准。「未实测」就是没有测过，既不表示可用也不表示不可用；不要据此汇报没有真正做过的观察。同一份清单通过 `context.nativeCapabilities` 和自动轮次提示词里的一行交给 Codex，它是那次实测的静态记录，不会在运行时重新探测。
+
+| 能力 | 结果 | 实测记录 |
+| --- | --- | --- |
+| 应用内浏览器插件 | 不可用 | `setupBrowserRuntime()` 能加载，但在 Morrow 创建的任务里 `agent.browsers.getForUrl(url)` 返回「No browser is available」，`agent.browsers.list()` 为空。插件技能文档说应用内浏览器用 `agent.browsers.get("iab")` 选取；显式 `get("iab")` 在 Morrow 任务里尚未实测。 |
+| Chrome / Edge 浏览器 | 未实测 | 入口是 `agent.browsers.get("chrome")` 或 `get("edge")`，Chrome 需要 ChatGPT 浏览器扩展；这次没有覆盖。 |
+| Computer Use（`@oai/sky`，经 `node_repl`） | 可用 | `sky.list_apps()` 与 `sky.get_app_state({ app: 'Morrow' })` 返回了无障碍树和截图。ChatGPT 应用本身以安全理由被拒绝；同一 bundle id 有两份安装副本时定位有歧义，用应用名。 |
+| 原生记忆 | 部分可用 | 读取 `~/.codex/memories/MEMORY.md` 可用，当时里面没有 Morrow 相关条目。没有显式的写入工具：记忆由 App 在会话结束后自行抽取，Morrow 创建的任务是否会被总结未实测。 |
+| Web 搜索 | 可用 | 实测可用；官方 app-server 文档确实存在（<https://learn.chatgpt.com/zh-Hans/docs/app-server>）。 |
+| Morrow 工作接口（`agent-cli.ts`） | 可用 | 需要完整访问沙箱，见上一节。App 默认沙箱下第一次调用报 `fetch failed`，随后每次调用都要走一次 `item/commandExecution/requestApproval`，由 `approvalsReviewer: 'auto_review'` 解决。 |
+
+这次实测没有单独验证独立复核轮次（只读、`approvalPolicy: never`）能否用浏览器回看页面；既然浏览器在 Morrow 创建的任务里本来就取不到，复核仍然只核文件与执行记录。
 
 ## 额度
 
-Morrow 通过共享后台直接读取账户的用量窗口：5 小时与每周各自的已用百分比和重置时间，不消耗模型轮次。读取方法名以 0.4 的实测为准（当前代码使用 `account/rateLimits/read`，并接收 `account/rateLimits/updated` 通知）；后台不支持、未连接或超时都只表现为「额度未知」，不会当成错误。读数每 10 分钟刷新一次，也会在每个 Morrow 发起的轮次开始前后各读一次，把前后差值作为该轮次的用量记录在运行记录里（`usage_samples` 表保留最近 2000 条读数）。
+Morrow 通过共享后台直接读取账户的用量窗口：各窗口的已用百分比和重置时间，不消耗模型轮次。2026-09-09 在真实后台确认：方法名就是代码里的 `account/rateLimits/read`（camelCase，`resetsAt` 为 unix 秒），后台自己刷新时发出的通知也就是代码已经处理的 `account/rateLimits/updated`。后台不支持、未连接或超时都只表现为「额度未知」，不会当成错误。读数每 10 分钟刷新一次，也会在每个 Morrow 发起的轮次开始前后各读一次，把前后差值作为该轮次的用量记录在运行记录里（`usage_samples` 表保留最近 2000 条读数）。
+
+同一次实测发现窗口并不总是两个：这个 Pro 账号的主 `codex` 限制只暴露每周窗口（`primary` 的 `windowDurationMins` 为 10080，`secondary` 为 `null`），5 小时窗口只出现在 `rateLimitsByLimitId` 里另一个模型桶。所以在这样的账号上保留线要选「每周」；选「5 小时」时读不到该窗口，界面显示「额度未知」。按 limit id 分桶读取是后续可做的细化，当前没有实现。
+
+界面把三种「读不到」分开说：从未尝试读取时是「尚未读取账户用量」，尝试过但协议没有返回结果是「协议未返回账户用量」，有读数但已过期是「读数已过期」；后台未连接时直接说「后台未连接」。
+
+单次用量数据点（不是基准）：2026-09-09 那一次真实轮次，每周窗口从 15% 走到 16%，运行记录里的差值是 1，即约占每周额度的 1%。这是一次观测，会随轮次长度、模型和账号计划变化。
 
 两条限制都可以留空，空即不限：
 

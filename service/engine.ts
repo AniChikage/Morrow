@@ -55,6 +55,7 @@ export class Engine {
     this.token = token;
     this.loop = new ProjectWorkLoop(store, home);
     this.usage = new UsageMonitor(store);
+    this.usage.redact = (value) => this.redact(value);
     this.loop.usage = this.usage;
   }
   control(id: string): Control {
@@ -438,7 +439,7 @@ export class Engine {
       id,
       run.id,
       'system',
-      `${runtime.name} 开始执行 · ${channel.permission === 'read-only' ? '只读分析' : channel.permission === 'native' ? '沿用 App 权限' : '工作区编辑'} · ${channel.sessionId ? '恢复原生会话' : '完整上下文启动'}。`
+      `${runtime.name} 开始执行 · ${channel.permission === 'read-only' ? '只读分析' : channel.permission === 'native' ? '完整访问' : '工作区编辑'} · ${channel.sessionId ? '恢复原生会话' : '完整上下文启动'}。`
     );
     const child = spawn(runtime.path, invocation(channel, outputPath), {
       cwd: project.path,

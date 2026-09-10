@@ -4,6 +4,7 @@ import assert from 'node:assert/strict';
 import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { autonomousPrompt, projectBriefBlock } from '../service/channel-work.ts';
+import { nativeCapabilities, nativeCapabilitiesMeasuredAt } from '../service/native-capabilities.ts';
 import { startIsolated } from './harness/service.ts';
 import { grantFor as workGrant } from './harness/grant.ts';
 const brief = '## 目标与成功标准\n\n首月留存提升到 40%。\n\n## 约束与红线\n\n不得改动计费逻辑。';
@@ -139,6 +140,24 @@ test('every turn reads the brief: agent context and both prompt paths carry it a
       brief,
       briefRevision: 1,
     });
+    // The measured native capability inventory travels beside the project, dated and never live-probed.
+    assert.deepEqual(context.nativeCapabilities, nativeCapabilities);
+    assert.deepEqual(
+      context.nativeCapabilities.map((entry: { id: string; status: string }) => [entry.id, entry.status]),
+      [
+        ['in-app-browser', 'unavailable'],
+        ['chrome-browser', 'untested'],
+        ['computer-use', 'available'],
+        ['native-memory', 'partial'],
+        ['web-search', 'available'],
+        ['morrow-work-interface', 'available'],
+      ]
+    );
+    assert(
+      context.nativeCapabilities.every(
+        (entry: { measuredAt: string }) => entry.measuredAt === nativeCapabilitiesMeasuredAt
+      )
+    );
     const plain = await s.grantFor(s.plain.id).call('context');
     assert.equal(plain.project.brief, '');
     assert.equal(plain.project.briefRevision, 0);

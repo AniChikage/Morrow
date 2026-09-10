@@ -42,7 +42,16 @@ export type NativeWorkOptions = {
         networkAccess: false;
         excludeTmpdirEnvVar: true;
         excludeSlashTmp: true;
-      };
+      }
+    /**
+     * What a `native` channel now asks for. Measured on 2026-09-09: sending no policy at all left the
+     * App's own default (workspace-write, network off) in force, which blocked Morrow's own work
+     * interface — the first `agent-cli.ts --context` call failed with `fetch failed` because loopback
+     * was unreachable, and every later call cost an `item/commandExecution/requestApproval` round that
+     * `auto_review` took about a minute to resolve. The user chose full access for this single-user
+     * setup, so Morrow requests it explicitly instead of inheriting whatever the App has.
+     */
+    | { type: 'dangerFullAccess' };
 };
 type NativeChange =
   | { type: 'patches'; baseRevision: number; revision: number; patches: unknown[] }
@@ -1046,20 +1055,18 @@ export class NativeConversations {
         ? {
             approvalPolicy: 'on-request',
             approvalsReviewer: 'auto_review',
-            ...(channel.permission === 'native'
-              ? {}
-              : {
-                  sandboxPolicy:
-                    channel.permission === 'read-only'
-                      ? { type: 'readOnly', networkAccess: false }
-                      : {
-                          type: 'workspaceWrite',
-                          writableRoots: [project.path],
-                          networkAccess: false,
-                          excludeTmpdirEnvVar: true,
-                          excludeSlashTmp: true,
-                        },
-                }),
+            sandboxPolicy:
+              channel.permission === 'native'
+                ? { type: 'dangerFullAccess' }
+                : channel.permission === 'read-only'
+                  ? { type: 'readOnly', networkAccess: false }
+                  : {
+                      type: 'workspaceWrite',
+                      writableRoots: [project.path],
+                      networkAccess: false,
+                      excludeTmpdirEnvVar: true,
+                      excludeSlashTmp: true,
+                    },
           }
         : undefined;
     const images = resolveNativeAttachments(this.store, id, attachments);
@@ -1338,8 +1345,9 @@ export class NativeConversations {
         }
         throw new APIError(409, 'Codex App 正在执行此任务，请等待当前轮次完成');
       }
-      // Native interactive settings remain authoritative. A scheduler may only
-      // inherit settings whose sandbox we can verify against its saved scope.
+      // A narrowed channel may only run inside a native sandbox we can verify against its saved
+      // scope. A `native` channel asks for full access instead of inheriting, so any sandbox type
+      // the protocol names is acceptable there; an unrecognized or missing one still refuses.
       const sandbox =
         snapshot.state.currentPermissions?.sandboxPolicy?.type ||
         snapshot.state.latestThreadSettings?.sandboxPolicy?.type ||

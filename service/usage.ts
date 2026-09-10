@@ -109,6 +109,8 @@ export class UsageMonitor {
   reading: Promise<UsageReading | undefined> | null = null;
   lastAttemptAt = 0;
   lastError = '';
+  /** Strips the desktop token before an error reaches the UI; the engine replaces it with its own. */
+  redact: (value: string) => string = (value) => value;
   timer: NodeJS.Timeout | undefined;
   closed = false;
   constructor(store: Store, transport?: NativeTransport) {
@@ -160,7 +162,13 @@ export class UsageMonitor {
   }
   status(): UsageStatus {
     const sample = this.latest();
-    return sample ? { reading: stripScope(sample), stale: this.isStale(sample) } : { stale: true };
+    const error = this.lastError ? this.redact(this.lastError).slice(0, 200) : '';
+    return {
+      ...(sample ? { reading: stripScope(sample) } : {}),
+      stale: sample ? this.isStale(sample) : true,
+      attempted: this.lastAttemptAt > 0,
+      ...(error ? { lastError: error } : {}),
+    };
   }
   record(
     reading: UsageReading,

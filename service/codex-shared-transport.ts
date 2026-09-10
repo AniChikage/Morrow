@@ -99,12 +99,14 @@ interface Options {
   onUsage?: (reading: UsageReading) => void;
 }
 /**
- * App-server method that returns the account's rate-limit windows. Step 0.4 of the plan confirms this
- * name and the payload shape against the real App; until then a method-not-found error simply reads as
- * "usage unknown", never as a failure.
+ * App-server method that returns the account's rate-limit windows. Confirmed against the real App on
+ * 2026-09-09: this name, camelCase fields, `resetsAt` in unix seconds. A method-not-found error still
+ * reads only as "usage unknown", never as a failure. That probe also showed the main `codex` limit can
+ * expose a weekly window alone (`secondary: null`), with a 5-hour window only inside
+ * `rateLimitsByLimitId` for a separate model bucket; reading per limit id is not implemented.
  */
 export const usageReadMethod = 'account/rateLimits/read';
-/** Notification carrying the same payload when the backend refreshes the limits itself. */
+/** Notification carrying the same payload when the backend refreshes the limits itself; confirmed 2026-09-09. */
 export const usageUpdatedNotification = 'account/rateLimits/updated';
 const isoTime = (value: unknown): string | undefined => {
   if (typeof value === 'number' && Number.isFinite(value)) {
@@ -148,6 +150,22 @@ export function parseUsageReading(payload: unknown, at = new Date().toISOString(
     });
   }
   return windows.length ? { at, source: 'protocol', windows } : undefined;
+}
+/**
+ * `turn/start` params for one autonomous turn.
+ *
+ * `approvalPolicy`, `approvalsReviewer` and `sandboxPolicy` are the field names read-only and
+ * workspace-write turns already send, so those two scopes go out byte for byte as before. The App
+ * names the active policy `sandbox` when it reports it back (`result.sandbox` in `thread/resume` and
+ * `thread/start`), so the new full-access variant is additionally sent under that name: whichever of
+ * the two `turn/start` reads, the App receives `dangerFullAccess`, the type name its own thread
+ * permissions use. Which field it actually honours is NOT measured yet — the alias is deliberately
+ * limited to the full-access variant so a rejected or ignored extra key cannot affect the narrowed
+ * scopes or the read-only independent reviewer.
+ */
+export function turnWorkParams(workOptions: NativeWorkOptions): Record<string, unknown> {
+  const fullAccess = workOptions.sandboxPolicy?.type === 'dangerFullAccess';
+  return { ...workOptions, ...(fullAccess ? { sandbox: workOptions.sandboxPolicy } : {}) };
 }
 type ChangeListener = (snapshot: NativeThreadSnapshot, change: NativeThreadChange) => void;
 const userInput = (text: string, images: Array<{ path: string }>) => {
@@ -618,7 +636,7 @@ export class CodexSharedTransport {
         threadId: id,
         input,
         clientUserMessageId: requestId,
-        ...(active ? { expectedTurnId: active.turnId } : workOptions || {}),
+        ...(active ? { expectedTurnId: active.turnId } : workOptions ? turnWorkParams(workOptions) : {}),
       },
       true
     );

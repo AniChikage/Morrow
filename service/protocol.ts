@@ -50,8 +50,12 @@ export type UsageWait = {
   resetsAt?: string;
   since: string;
 };
-/** The latest account reading as the UI sees it; `stale` when older than the freshness window or past its reset. */
-export type UsageStatus = { reading?: UsageReading; stale: boolean };
+/**
+ * The latest account reading as the UI sees it; `stale` when older than the freshness window or past
+ * its reset. `attempted` separates "no read has been tried yet" from "a read was tried and produced
+ * nothing", and `lastError` carries the redacted reason of the most recent failed attempt.
+ */
+export type UsageStatus = { reading?: UsageReading; stale: boolean; attempted: boolean; lastError?: string };
 export type Project = {
   id: string;
   name: string;

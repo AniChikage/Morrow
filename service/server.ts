@@ -232,6 +232,8 @@ export async function startServer(options: { home?: string; port?: number; nativ
         respond(res, 200, {
           reading: status.reading,
           stale: status.stale,
+          attempted: status.attempted,
+          lastError: status.lastError,
           budget,
           reserve: engine.usage.settings().usageReserve,
           project: budget ? engine.usage.projectUsage(project.id, budget.window, status.reading) : undefined,
@@ -601,7 +603,7 @@ export async function startServer(options: { home?: string; port?: number; nativ
               : choice(data.permission, 'permission', ['read-only', 'workspace-write', 'native'] as const),
         };
         if (c.permission === 'native' && c.runtime !== 'codex')
-          throw new APIError(400, '仅 Codex App 支持沿用原生权限');
+          throw new APIError(400, '仅 Codex App 支持完整访问权限');
         store.transaction(() => {
           store.put('channels', c);
           engine.audit({
@@ -646,7 +648,7 @@ export async function startServer(options: { home?: string; port?: number; nativ
           if (data.maxRunsPerDay !== undefined)
             updated.maxRunsPerDay = integer(data.maxRunsPerDay, 'maxRunsPerDay', 1, 100);
           if (updated.permission === 'native' && updated.runtime !== 'codex')
-            throw new APIError(400, '仅 Codex App 支持沿用原生权限');
+            throw new APIError(400, '仅 Codex App 支持完整访问权限');
           if (updated.runtime !== c.runtime) {
             updated.sessionId = '';
             if (data.model === undefined) updated.model = '';

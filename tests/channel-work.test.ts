@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { autonomousPrompt, parseWorkDecision, usageLine } from '../service/channel-work.ts';
+import { nativeCapabilities, nativeCapabilitiesMeasuredAt } from '../service/native-capabilities.ts';
 const block = (value: unknown) => '```morrow-next\n' + JSON.stringify(value) + '\n```';
 test('only bounded, explicit agent decisions can schedule more work', () => {
   const decision = { state: 'wait', focus: '验证', reason: '等待新证据', nextStep: '检查测试结果', waitMinutes: 20 };
@@ -34,7 +35,7 @@ test('the autonomous prompt asks for cheap, informative work under tight usage a
   const sentence = '额度紧张时优先做便宜且有信息价值的事，或选择等待。';
   assert(plain.includes(sentence));
   assert(!plain.includes('当前额度'));
-  assert(plain.indexOf(sentence) > plain.indexOf('本频道沿用 Codex App 当前的权限设置'));
+  assert(plain.indexOf(sentence) > plain.indexOf('本频道以完整访问运行'));
   assert(plain.indexOf(sentence) < plain.indexOf('上线必须通过'));
   const reading = {
     at: '2026-09-09T10:00:00.000Z',
@@ -74,4 +75,48 @@ test('the autonomous prompt asks for cheap, informative work under tight usage a
   );
   assert.equal(usageLine({ runsToday: 0, maxRunsPerDay: 8, usage: { reading, unknown: false } }), '');
   assert.equal(usageLine(undefined), '');
+});
+test('the full-access scope, the measured capability line and product exploration are all in the autonomous prompt', () => {
+  const project = { name: 'p', path: '/tmp/p', goal: '目标' };
+  const channel = { name: '自主推进', goal: '方向', permission: 'native' };
+  const prompt = autonomousPrompt(project, channel, [], null, {});
+  assert(
+    prompt.includes(
+      '本频道以完整访问运行：可以修改整个项目、联网、使用 Computer Use 等原生工具；仍需遵守项目规则和上线确认'
+    )
+  );
+  assert(!prompt.includes('不要假设拥有完整访问'));
+  // The exploration paragraph sits right after the goal/direction block, before the context instructions.
+  const exploration =
+    '产品层面的探索是常规工作的一部分：用可用的原生工具（Computer Use；浏览器插件可用时）走完整流程、看使用数据、找体验问题，把发现记为 feature/issue/hypothesis 并附可回看的证据；优先用原生记忆保存跨轮次的个人经验，Morrow 的记录只放影响决策的认识与证据。';
+  assert(prompt.includes(exploration));
+  assert(prompt.indexOf(exploration) > prompt.indexOf('当前工作方向：方向'));
+  assert(prompt.indexOf(exploration) < prompt.indexOf('沿用这条原生任务的完整上下文'));
+  // One dated line naming what the probe found and what it did not; nothing here is a live check.
+  assert(prompt.includes(`原生能力（${nativeCapabilitiesMeasuredAt} 实测）：`));
+  assert(prompt.includes('可用 Computer Use（@oai/sky）、Web 搜索、Morrow 工作接口（agent-cli.ts）'));
+  assert(prompt.includes('部分可用 原生记忆'));
+  assert(prompt.includes('不可用 应用内浏览器插件'));
+  assert(prompt.includes('未实测 Chrome / Edge 浏览器'));
+  assert(prompt.includes('以 context.nativeCapabilities 的说明为准'));
+  // A read-only channel keeps its own scope sentence and still learns what the native tools can do.
+  const readOnly = autonomousPrompt(project, { ...channel, permission: 'read-only' }, [], null, {});
+  assert(readOnly.includes('本频道为只读范围：仅调查验证并提出有依据的建议'));
+  assert(readOnly.includes(`原生能力（${nativeCapabilitiesMeasuredAt} 实测）：`));
+});
+test('the capability inventory stays a dated record with a reachable status for every entry', () => {
+  assert(nativeCapabilities.length >= 6);
+  for (const entry of nativeCapabilities) {
+    assert.equal(entry.measuredAt, nativeCapabilitiesMeasuredAt);
+    assert(['available', 'unavailable', 'partial', 'untested'].includes(entry.status));
+    for (const field of ['id', 'name', 'note', 'howTo'] as const) assert(entry[field].trim().length > 0);
+  }
+  assert.equal(new Set(nativeCapabilities.map((entry) => entry.id)).size, nativeCapabilities.length);
+  const byId = new Map(nativeCapabilities.map((entry) => [entry.id, entry]));
+  assert.equal(byId.get('in-app-browser')!.status, 'unavailable');
+  assert.equal(byId.get('chrome-browser')!.status, 'untested');
+  assert.equal(byId.get('computer-use')!.status, 'available');
+  assert.equal(byId.get('native-memory')!.status, 'partial');
+  assert.equal(byId.get('web-search')!.status, 'available');
+  assert.equal(byId.get('morrow-work-interface')!.status, 'available');
 });

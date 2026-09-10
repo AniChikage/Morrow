@@ -70,16 +70,39 @@ describe('the project inspector shows the account reading and edits the project 
     const { props, api } = featureProps();
     props.snapshot.channels[0].status = 'waiting';
     props.snapshot.channels[0].usageWait = { kind: 'reserve', window: '5h', resetsAt, since: timestamp };
+    api.getProjectUsage.mockResolvedValue({ stale: true, attempted: false, gate: { blocked: false } });
     render(<ProjectView {...props} id="project-atlas" />, { wrapper: TestProviders });
     const section = within(await screen.findByRole('region', { name: '额度' }));
     const unknown = await section.findByText('额度未知');
     expect(unknown.classList.contains('usage-unknown')).toBe(true);
-    expect(section.getByText('尚未从 Codex 后台读到账户用量')).toBeTruthy();
+    expect(section.getByText('尚未读取账户用量')).toBeTruthy();
     expect((section.getByRole('combobox', { name: '额度窗口' }) as HTMLSelectElement).disabled).toBe(true);
     expect((section.getByRole('button', { name: '保存额度上限' }) as HTMLButtonElement).disabled).toBe(true);
     expect(section.getByText('示例项目不能设置额度上限。')).toBeTruthy();
     expect(screen.getByText('等待额度').parentElement!.textContent).toContain('1 个频道');
     expect(api.updateProjectUsageBudget).not.toHaveBeenCalled();
+  });
+
+  it('separates a read never attempted from one that returned nothing and from a stale reading', async () => {
+    const cases: Array<[ProjectUsage, string]> = [
+      [{ stale: true, attempted: false, gate: { blocked: false } }, '尚未读取账户用量'],
+      [
+        { stale: true, attempted: true, lastError: '原生后台没有返回额度读数', gate: { blocked: false } },
+        '协议未返回账户用量',
+      ],
+      [{ reading, stale: true, attempted: true, gate: { blocked: false } }, '读数已过期'],
+    ];
+    for (const [value, expected] of cases) {
+      const { props, api } = featureProps();
+      api.getProjectUsage.mockResolvedValue(value);
+      const view = render(<ProjectView {...props} id="project-other" />, { wrapper: TestProviders });
+      const section = within(await screen.findByRole('region', { name: '额度' }));
+      expect(await section.findByText(expected)).toBeTruthy();
+      expect(section.getByText('额度未知').classList.contains('usage-unknown')).toBe(true);
+      if (value.lastError) expect(section.getByText(expected).getAttribute('title')).toBe(value.lastError);
+      view.unmount();
+      cleanup();
+    }
   });
 
   it('keeps the goal readable when the connected service has no usage routes', async () => {

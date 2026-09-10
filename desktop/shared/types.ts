@@ -70,6 +70,10 @@ export interface UsageWait {
 export interface UsageStatus {
   reading?: UsageReading;
   stale: boolean;
+  /** Whether a read has been attempted at all since the service started: never read ≠ read and refused. */
+  attempted?: boolean;
+  /** Redacted reason of the most recent failed read, at most 200 characters. */
+  lastError?: string;
 }
 export type UsageGate =
   | { blocked: false }

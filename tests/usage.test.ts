@@ -274,6 +274,8 @@ test('without limits nothing is read; an unavailable reading only blocks when th
     for (let attempt = 0; attempt < 3; attempt++)
       assert.deepEqual(s.engine.usage.gate(s.projectRow()), { blocked: false });
     assert.equal(s.transport.reads, 0);
+    // Nothing has been read yet, which the UI must not present as a protocol that returned nothing.
+    assert.deepEqual(s.engine.usage.status(), { stale: true, attempted: false });
     await s.api('PATCH', '/api/settings', { usageReserve: { window: '5h', keepPercent: 10 } });
     // A read that has not answered yet: a short silent wait, and manual starts are told to retry shortly.
     let answer!: (value: UsageReading | undefined) => void;
@@ -288,6 +290,12 @@ test('without limits nothing is read; an unavailable reading only blocks when th
     answer(undefined);
     await pause(10);
     assert.deepEqual(s.engine.usage.gate(s.projectRow()), { blocked: false });
+    // The attempt happened and produced nothing: the reason is kept, bounded and token-free.
+    assert.deepEqual(s.engine.usage.status(), {
+      stale: true,
+      attempted: true,
+      lastError: '原生后台没有返回额度读数',
+    });
     const { call } = s.grant();
     const context = await call('context');
     assert.equal(context.budget.usage.unknown, true);
@@ -428,7 +436,7 @@ test('settings and budget routes validate input, refuse demo projects and work g
     });
     const state = await s.api('GET', '/api/state');
     assert.deepEqual(state.settings, s.store.get('settings', 'global'));
-    assert.deepEqual(state.usage, { stale: true });
+    assert.deepEqual(state.usage, { stale: true, attempted: false });
     assert.deepEqual(state.projects.find((p: any) => p.id === s.project.id).usageBudget, {
       window: '5h',
       limitPercent: 40,

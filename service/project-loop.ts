@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url';
 import { APIError, choice, integer, keys, object, string, itemKinds, itemStatuses } from './protocol.ts';
 import type { Channel, Project, Run, WorkItem } from './protocol.ts';
 import type { Evidence, Learning, FeedbackWatch, Release, ProjectLoop } from './autonomy-types.ts';
+import { nativeCapabilities } from './native-capabilities.ts';
 import { Store, now } from './store.ts';
 import { ProjectStrategy } from './project-strategy.ts';
 import { WorkVerification } from './work-verification.ts';
@@ -268,6 +269,8 @@ export class ProjectWorkLoop {
       },
       channel: { id: channel.id, goal: channel.goal },
       budget: this.usage?.budgetContext(project, channel),
+      // A dated record of one real probe, not a live query: `untested` means no measurement exists.
+      nativeCapabilities,
       strategy: this.strategy.context(scope, item?.id),
       learningCoverage: {
         total: learningTotal,
