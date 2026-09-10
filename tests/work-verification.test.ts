@@ -215,7 +215,11 @@ test('previously captured incomplete null evidence is not reclassified by recove
     const captured = await f.call('execution.read', { id: prepared.id });
     // Model a persisted pre-fix record; its content and digest are historical evidence.
     const data = { ...captured.evidence.data, outputComplete: false };
-    const legacy = { ...captured.evidence, data, digest: createHash('sha256').update(JSON.stringify(data)).digest('hex') };
+    const legacy = {
+      ...captured.evidence,
+      data,
+      digest: createHash('sha256').update(JSON.stringify(data)).digest('hex'),
+    };
     f.store.put('loop_evidence', legacy);
     f.engine.loop.executions.recover();
     f.emitCommand('legacy-null', 'completed', { aggregatedOutput: null });
