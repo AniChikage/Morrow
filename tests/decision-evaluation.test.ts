@@ -59,8 +59,10 @@ async function fixture() {
     expectations: [expectation, guardrail],
   };
   const capture = async (data: unknown, file = 'result.json') => {
-    writeFileSync(join(s.path, file), typeof data === 'string' ? data : JSON.stringify(data));
-    return call('evidence.capture', { summary: '隔离夹具实际采集', path: file });
+    const text = typeof data === 'string' ? data : JSON.stringify(data);
+    writeFileSync(join(s.path, file), text);
+    // The write response is a receipt without the captured bytes, so `text` carries what the file held.
+    return { ...(await call('evidence.capture', { summary: '隔离夹具实际采集', path: file })), text };
   };
   const assessment = (evidenceId?: string) => ({
     results: [
@@ -533,7 +535,7 @@ test('measurement loop rejects attractive numbers with insufficient samples, the
     await s.close();
     reopened = await s.restart();
     assert.deepEqual(reopened.store.get<any>('strategy_decisions', d.id), final);
-    assert.equal(reopened.store.get<any>('loop_evidence', baseline.id).data, baseline.data);
+    assert.equal(reopened.store.get<any>('loop_evidence', baseline.id).data, baseline.text);
     assert.equal(reopened.engine.control(s.channel.id).enabled, false);
   } finally {
     await reopened?.close();

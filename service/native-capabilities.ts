@@ -80,5 +80,5 @@ export function nativeCapabilityLine(capabilities: NativeCapability[] = nativeCa
     }))
     .filter((group) => group.names.length)
     .map((group) => `${statusLabels[group.status]} ${group.names.join('、')}`);
-  return `原生能力（${nativeCapabilitiesMeasuredAt} 实测）：${groups.join('；')}。以 context.nativeCapabilities 的说明为准，不要假设未实测的能力可用，也不要凭它汇报没做过的观察。`;
+  return `原生能力（${nativeCapabilitiesMeasuredAt} 实测）：${groups.join('；')}。以 contract 操作返回的 nativeCapabilities 说明为准，不要假设未实测的能力可用，也不要凭它汇报没做过的观察。`;
 }

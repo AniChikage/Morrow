@@ -583,6 +583,7 @@ export async function startServer(
         const item: WorkItem = {
           id: randomUUID(),
           projectId: project.id,
+          origin: 'human',
           number: store.nextItemNumber(project.id),
           channelId,
           sourceChannelIds: channelId ? [channelId] : [],
@@ -884,6 +885,7 @@ function createDemo(store: Store, engine: Engine) {
       store.put('items', {
         id: randomUUID(),
         projectId: p.id,
+        origin: 'agent',
         channelId: c.id,
         number: store.nextItemNumber(p.id),
         sourceChannelIds: [c.id],

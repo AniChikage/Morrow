@@ -126,8 +126,16 @@ export interface ProjectPatch {
   /** Must equal the current briefRevision; the service rejects a stale version. */
   revision: number;
 }
+/** Service bookkeeping for the long-lived task charter; the renderer only carries it along. */
+export interface PromptCharter {
+  threadId: string;
+  hash: string;
+  sentAt: string;
+  turnsSince: number;
+}
 export interface Channel {
   work?: ChannelWork;
+  promptCharter?: PromptCharter;
   autonomyEnabled?: boolean;
   id: string;
   projectId: string;
@@ -147,6 +155,8 @@ export interface Channel {
 export interface WorkItem {
   projectId?: string;
   number?: number;
+  /** Who opened the item; absent on rows written before it was recorded. */
+  origin?: 'human' | 'agent';
   sourceChannelIds?: string[];
   lastRunId?: string;
   revision?: number;

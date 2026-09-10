@@ -25,9 +25,10 @@ async function setup() {
   const { run, context } = grant;
   const call = (operation: string, input: unknown, requestId = randomUUID(), expected = 200) =>
     grant.call(operation, input, expected, requestId);
+  const featureSummary = '追踪实际体验';
   const feature = await call('feature.upsert', {
     title: '改善首次使用',
-    summary: '追踪实际体验',
+    summary: featureSummary,
     kind: 'feature',
     status: 'investigating',
     evidenceIds: [],
@@ -45,7 +46,7 @@ async function setup() {
     id: feature.id,
     revision: s.store.get<any>('items', feature.id).revision,
     title: feature.title,
-    summary: feature.summary,
+    summary: featureSummary,
     kind: feature.kind,
     status: 'verified',
     evidenceIds: [evidence.id],
@@ -105,12 +106,39 @@ test('review retains old referenced evidence and native context offers scoped fu
     const original = 'full evidence\n'.repeat(300);
     writeFileSync(join(s.path, 'long.log'), original);
     const long = await s.call('evidence.capture', { itemId: s.feature.id, summary: '完整证据', path: 'long.log' });
+    // The write response is a receipt: provenance, digest and size, never the captured bytes.
+    assert.equal(long.data, undefined);
+    assert.equal(long.bytes, Buffer.byteLength(original));
+    assert.equal(long.origin, 'file');
+    assert.equal(typeof long.digest, 'string');
+    assert(JSON.stringify(long).length < 1000);
+    // The stored row is what the response used to be, so the saving is the content it no longer echoes.
+    assert(JSON.stringify(s.store.get<any>('loop_evidence', long.id)).length > 5000);
+    // An agent statement is echoed the same way: the payload it just sent does not come back.
+    const payload = { claim: '首次完成率已回到基线以上', checked: false, sample: 'x'.repeat(4000) };
+    const recorded = await s.call('evidence.record', {
+      itemId: s.feature.id,
+      summary: '本轮结论（agent 陈述）',
+      source: 'agent:isolated-test',
+      observedAt: new Date().toISOString(),
+      data: payload,
+    });
+    assert.equal(recorded.data, undefined);
+    assert.equal(recorded.origin, 'agent');
+    assert.equal(recorded.bytes, Buffer.byteLength(JSON.stringify(payload)));
+    assert(JSON.stringify(recorded).length < 1000);
+    assert.deepEqual((await s.call('evidence.read', { id: recorded.id })).data, payload);
     const context = await s.call('context', {});
     const preview = context.evidence.find((row: any) => row.id === long.id);
-    assert.equal(preview.truncated, true);
-    assert.equal(preview.data.length, 2000);
+    assert.equal(preview.data, undefined);
+    assert.equal(preview.truncated, undefined);
+    assert.equal(preview.bytes, Buffer.byteLength(original));
+    for (const field of ['id', 'summary', 'source', 'origin', 'digest', 'observedAt'] as const)
+      assert.equal(preview[field], (long as any)[field]);
+    assert.equal(preview.itemId, s.feature.id);
+    // Only `evidence.read` replays the preserved content.
     assert.equal((await s.call('evidence.read', { id: long.id })).data, original);
-    s.store.put('loop_evidence', { ...long, id: 'foreign-evidence', projectId: 'another' });
+    s.store.put('loop_evidence', { ...long, data: original, id: 'foreign-evidence', projectId: 'another' });
     await s.call('evidence.read', { id: 'foreign-evidence' }, randomUUID(), 404);
   } finally {
     await s.cleanup();
@@ -123,6 +151,19 @@ test('native tools maintain one project feature, evidence and revised conclusion
     assert.equal(context.features[0].id, s.feature.id);
     assert.equal(context.evidence[0].origin, 'file');
     assert.equal(context.features[0].evidence.length, 1);
+    // Data in `context`, the unchanging contract text behind one read-only operation.
+    for (const field of ['operations', 'releaseAdapter', 'principles', 'nativeCapabilities'] as const)
+      assert.equal(context[field], undefined);
+    const contract = await s.call('contract', {});
+    assert.equal(typeof contract.operations['feature.upsert'], 'string');
+    assert(contract.operations['release.propose'].includes('local-script'));
+    assert(contract.releaseAdapter.includes('Idempotency-Key'));
+    assert(contract.principles.includes('证据、解释和预期收益分开'));
+    assert.equal(contract.nativeCapabilities.length >= 6, true);
+    assert.equal(contract.briefRevision, 0);
+    // A read operation: no requestId, and it never mutates.
+    assert.deepEqual(await s.api('POST', '/api/agent', { operation: 'contract' }, 200, s.context.token), contract);
+    await s.call('contract', { itemId: s.feature.id }, randomUUID(), 400);
     const id = randomUUID();
     const input = {
       itemId: s.feature.id,
@@ -148,7 +189,7 @@ test('native tools maintain one project feature, evidence and revised conclusion
     });
     assert.equal(revised.revision, 2);
     await s.call('learning.upsert', { ...input, id: first.id, revision: 1 }, randomUUID(), 409);
-    await s.call('feature.upsert', {
+    const upserted = await s.call('feature.upsert', {
       id: s.feature.id,
       revision: s.store.get<any>('items', s.feature.id).revision,
       title: s.feature.title,
@@ -158,6 +199,21 @@ test('native tools maintain one project feature, evidence and revised conclusion
       evidenceIds: [s.evidence.id],
       nextStep: '准备上线',
     });
+    // A receipt of what was written, not a second copy of the board row.
+    const stored = s.store.get<any>('items', s.feature.id);
+    assert.deepEqual(
+      Object.keys(upserted).filter((key) => !key.endsWith('Id') && key !== 'pendingVerification'),
+      ['id', 'number', 'revision', 'kind', 'status', 'title']
+    );
+    assert.deepEqual(
+      [upserted.id, upserted.number, upserted.revision, upserted.title],
+      [stored.id, stored.number, stored.revision, stored.title]
+    );
+    assert.equal(upserted.summary, undefined);
+    assert.equal(upserted.evidence, undefined);
+    assert.equal(upserted.nextStep, undefined);
+    assert(JSON.stringify(upserted).length < 1000);
+    assert.equal(stored.origin, 'agent');
     assert.equal(s.store.all('items').length, 1);
     await s.call('release.approve', {}, randomUUID(), 400);
     await s.api('POST', '/api/releases/unknown/review', {}, 401, s.context.token);

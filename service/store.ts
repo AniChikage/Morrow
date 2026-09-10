@@ -127,6 +127,23 @@ export class Store {
         if (event.projectId === undefined)
           this.put('events', { ...event, projectId: this.get<Channel>('channels', event.channelId)?.projectId || '' });
     });
+    // Who opened an item is now stored on the row. Older rows are read once from their own
+    // `item.created` audit event; an item with no such event keeps the agent default.
+    if (!this.get('migrations', 'item-origin-v1')) {
+      const actors = new Map<string, string>(
+        this.db
+          .prepare(
+            "SELECT json_extract(data,'$.itemId') AS itemId, json_extract(data,'$.actor') AS actor FROM events WHERE json_extract(data,'$.action')='item.created'"
+          )
+          .all()
+          .map((row: any) => [row.itemId, row.actor])
+      );
+      this.transaction(() => {
+        for (const item of this.all<WorkItem>('items'))
+          if (!item.origin) this.put('items', { ...item, origin: actors.get(item.id) === 'human' ? 'human' : 'agent' });
+        this.put('migrations', { id: 'item-origin-v1', createdAt: now() });
+      });
+    }
     // Existing private artifacts remain authoritative historical copies; mirror
     // them once without inventing chunk boundaries or missing old metadata.
     if (!this.get('migrations', 'run-io-v1')) {

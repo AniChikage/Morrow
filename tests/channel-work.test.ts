@@ -1,6 +1,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { autonomousPrompt, parseWorkDecision, usageLine } from '../service/channel-work.ts';
+import {
+  autonomousCharter,
+  autonomousPrompt,
+  autonomousTurnNote,
+  parseWorkDecision,
+  usageLine,
+} from '../service/channel-work.ts';
 import { nativeCapabilities, nativeCapabilitiesMeasuredAt } from '../service/native-capabilities.ts';
 const block = (value: unknown) => '```morrow-next\n' + JSON.stringify(value) + '\n```';
 test('only bounded, explicit agent decisions can schedule more work', () => {
@@ -31,7 +37,7 @@ test('legacy NoHuman decision blocks remain readable after the Morrow rename', (
 test('the autonomous prompt asks for cheap, informative work under tight usage and states the numbers that apply', () => {
   const project = { name: 'p', path: '/tmp/p', goal: '目标' };
   const channel = { name: '自主推进', goal: '方向', permission: 'native' };
-  const plain = autonomousPrompt(project, channel, [], null, {});
+  const plain = autonomousPrompt({ project, channel, reportSchema: {} });
   const sentence = '额度紧张时优先做便宜且有信息价值的事，或选择等待。';
   assert(plain.includes(sentence));
   assert(!plain.includes('当前额度'));
@@ -42,24 +48,21 @@ test('the autonomous prompt asks for cheap, informative work under tight usage a
     source: 'protocol' as const,
     windows: [{ name: '5h' as const, usedPercent: 42, resetsAt: '2026-09-09T13:00:00.000Z' }],
   };
-  const withLimits = autonomousPrompt(
-    project,
-    channel,
-    [],
-    null,
-    {},
-    {
-      runsToday: 1,
-      maxRunsPerDay: 32,
-      usage: {
-        reading,
-        stale: false,
-        unknown: false,
-        reserve: { window: '5h', keepPercent: 10 },
-        project: { window: 'weekly', limitPercent: 30, usedPercent: 12.5 },
-      },
-    }
-  );
+  const budget = {
+    runsToday: 1,
+    maxRunsPerDay: 32,
+    usage: {
+      reading,
+      stale: false,
+      unknown: false,
+      reserve: { window: '5h' as const, keepPercent: 10 },
+      project: { window: 'weekly' as const, limitPercent: 30, usedPercent: 12.5 },
+    },
+  };
+  const withLimits = autonomousPrompt({ project, channel, reportSchema: {}, budget });
+  // The reading changes every turn, so it travels with the turn note rather than the charter.
+  assert(!autonomousCharter({ project, channel, budget }).includes('当前额度'));
+  assert(autonomousTurnNote({ project, channel, budget }).includes('当前额度'));
   assert(
     withLimits.includes(
       '当前额度：账户5 小时额度已用 42%，保留线 10%（用到 90% 即停止自动工作）；本项目归因的每周额度估算已用 12.5%，上限 30%。'
@@ -79,7 +82,7 @@ test('the autonomous prompt asks for cheap, informative work under tight usage a
 test('the inherited App scope, the measured capability line and product exploration are all in the autonomous prompt', () => {
   const project = { name: 'p', path: '/tmp/p', goal: '目标' };
   const channel = { name: '自主推进', goal: '方向', permission: 'native' };
-  const prompt = autonomousPrompt(project, channel, [], null, {});
+  const prompt = autonomousPrompt({ project, channel, reportSchema: {} });
   assert(
     prompt.includes(
       '本频道沿用 Codex App 中此任务的权限设置；实际能否写入、联网或使用工具以 App 当前权限为准，仍需遵守项目规则和上线确认'
@@ -98,9 +101,10 @@ test('the inherited App scope, the measured capability line and product explorat
   assert(prompt.includes('部分可用 原生记忆'));
   assert(!prompt.includes('不可用 应用内浏览器插件'));
   assert(prompt.includes('未实测 Chrome / Edge 浏览器'));
-  assert(prompt.includes('以 context.nativeCapabilities 的说明为准'));
+  // The dated inventory itself moved to the `contract` operation; the line points there.
+  assert(prompt.includes('以 contract 操作返回的 nativeCapabilities 说明为准'));
   // A read-only channel keeps its own scope sentence and still learns what the native tools can do.
-  const readOnly = autonomousPrompt(project, { ...channel, permission: 'read-only' }, [], null, {});
+  const readOnly = autonomousPrompt({ project, channel: { ...channel, permission: 'read-only' }, reportSchema: {} });
   assert(readOnly.includes('本频道为只读范围：仅调查验证并提出有依据的建议'));
   assert(readOnly.includes(`原生能力（${nativeCapabilitiesMeasuredAt} 实测）：`));
 });

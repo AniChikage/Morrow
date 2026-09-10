@@ -3,7 +3,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
-import { autonomousPrompt, projectBriefBlock } from '../service/channel-work.ts';
+import { autonomousPrompt, autonomousTurnNote, projectBriefBlock } from '../service/channel-work.ts';
 import { nativeCapabilities, nativeCapabilitiesMeasuredAt } from '../service/native-capabilities.ts';
 import { startIsolated } from './harness/service.ts';
 import { grantFor as workGrant } from './harness/grant.ts';
@@ -132,18 +132,24 @@ test('PATCH appends a human revision with a bounded audit, and rejects stale ver
 test('every turn reads the brief: agent context and both prompt paths carry it as the user requirement', async () => {
   const s = await setup();
   try {
-    const context = await s.grantFor(s.withBrief.id).call('context');
+    const grant = s.grantFor(s.withBrief.id);
+    const context = await grant.call('context');
+    // The brief text itself lives in the task charter; `context` only states the version it is on.
     assert.deepEqual(context.project, {
       id: s.withBrief.id,
       name: '有说明',
       goal: '让目标用户完成首次使用',
-      brief,
       briefRevision: 1,
     });
-    // The measured native capability inventory travels beside the project, dated and never live-probed.
-    assert.deepEqual(context.nativeCapabilities, nativeCapabilities);
+    assert.equal(context.project.brief, undefined);
+    assert(context.hint.includes('contract'));
+    // The measured native capability inventory is static, so it is served by `contract`, dated and never live-probed.
+    const contract = await grant.call('contract');
+    assert.equal(contract.briefRevision, 1);
+    assert.equal(context.nativeCapabilities, undefined);
+    assert.deepEqual(contract.nativeCapabilities, nativeCapabilities);
     assert.deepEqual(
-      context.nativeCapabilities.map((entry: { id: string; status: string }) => [entry.id, entry.status]),
+      contract.nativeCapabilities.map((entry: { id: string; status: string }) => [entry.id, entry.status]),
       [
         ['in-app-browser', 'available'],
         ['chrome-browser', 'untested'],
@@ -154,12 +160,11 @@ test('every turn reads the brief: agent context and both prompt paths carry it a
       ]
     );
     assert(
-      context.nativeCapabilities.every(
+      contract.nativeCapabilities.every(
         (entry: { measuredAt: string }) => entry.measuredAt === nativeCapabilitiesMeasuredAt
       )
     );
     const plain = await s.grantFor(s.plain.id).call('context');
-    assert.equal(plain.project.brief, '');
     assert.equal(plain.project.briefRevision, 0);
     const project = s.store.get<any>('projects', s.withBrief.id),
       channel = s.channelOf(project.id);
@@ -172,13 +177,15 @@ test('every turn reads the brief: agent context and both prompt paths carry it a
     assert(
       !s.engine.prompt(s.store.get<any>('projects', s.plain.id), s.channelOf(s.plain.id)).includes('项目说明（版本')
     );
-    // Native Codex App path.
-    const native = autonomousPrompt(project, channel, [], undefined, {});
+    // Native Codex App path: the brief block belongs to the charter, and the turn note names its version.
+    const native = autonomousPrompt({ project, channel });
     assert(native.includes(`项目目标：${project.goal}\n项目说明（版本 1）开始`));
     assert(native.includes(brief));
     assert(native.includes('项目说明结束。\n当前工作方向：'));
     assert.equal(native.split('不得改动计费逻辑').length, 2);
-    assert(!autonomousPrompt({ ...project, brief: '  ' }, channel, [], undefined, {}).includes('项目说明（版本'));
+    assert(autonomousTurnNote({ project, channel }).includes('沿用本任务开头的项目说明（版本 1）'));
+    assert(!autonomousTurnNote({ project, channel }).includes(brief));
+    assert(!autonomousPrompt({ project: { ...project, brief: '  ' }, channel }).includes('项目说明（版本 1）开始'));
     assert.equal(projectBriefBlock({ brief: '' }), '');
   } finally {
     await s.cleanup();
