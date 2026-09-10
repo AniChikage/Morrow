@@ -54,6 +54,43 @@ function setup(initial = conversation()) {
   return { props, api };
 }
 
+it('a cached sync cannot enable work or answers when all bound tasks are explicitly unloaded', async () => {
+  const initial = conversation();
+  initial.status.boundThreadCount = 1;
+  initial.status.readyThreadCount = 0;
+  const { props, api } = setup(initial);
+  props.snapshot.projects[0].isDemo = false;
+  props.snapshot.channels[0].work = {
+    state: 'needs_input',
+    focus: 'fixture',
+    reason: '',
+    nextStep: '需要确认',
+    awaitingReply: true,
+    updatedAt: timestamp,
+    runId: 'question',
+  };
+  const view = render(<ChannelView {...props} id="channel-system" />, { wrapper: TestProviders });
+  await screen.findByText(/任务未在 Codex App 中打开。/);
+  expect((screen.getByRole('textbox', { name: '回答 Codex 的问题' }) as HTMLTextAreaElement).disabled).toBe(true);
+  await userEvent.setup().click(screen.getByRole('button', { name: /^在 Codex App 中打开$/ }));
+  expect(api.openNativeApp).toHaveBeenCalledWith('channel-system');
+  expect(api.channelAction).not.toHaveBeenCalled();
+  await userEvent.setup().click(screen.getByRole('button', { name: '频道选项' }));
+  expect(screen.getByRole('menuitem', { name: '继续工作' }).getAttribute('aria-disabled')).toBe('true');
+  view.unmount();
+  props.snapshot.channels[0].work = undefined;
+  for (const count of [undefined, 1]) {
+    vi.mocked(props.api.getNativeConversation).mockResolvedValue(
+      conversation({ status: { ...initial.status, readyThreadCount: count } })
+    );
+    const restored = render(<ChannelView {...props} id="channel-system" />, { wrapper: TestProviders });
+    const resume = await screen.findByRole('button', { name: '继续工作' });
+    await waitFor(() => expect((resume as HTMLButtonElement).disabled).toBe(false));
+    expect(screen.queryByText(/任务未在 Codex App 中打开。/)).toBeNull();
+    restored.unmount();
+  }
+});
+
 describe('native App conversation', () => {
   it('creates and chats through the background without opening the App task', async () => {
     const base = conversation();

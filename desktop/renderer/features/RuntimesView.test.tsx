@@ -152,18 +152,22 @@ test('a connected App guides task association without enabling a launcher', asyn
 });
 test('associated tasks must actually be available before the checklist says ready', async () => {
   const { props, api } = runtimeProps();
+  props.snapshot.channels[0].sessionId = 'bound-task';
   api.getNativeStatus.mockResolvedValue(status({ connected: true, boundThreadCount: 1, readyThreadCount: 0 }));
   const view = render(<RuntimesView {...props} />);
   await checklist();
   expect(step('任务已关联')).toBe('done');
-  expect(step('关联任务可用')).toBe('next');
+  expect(step('任务未在 Codex App 中打开')).toBe('next');
   expect(nextStep().textContent).toContain('在 Codex App 打开已关联任务');
+  await userEvent.setup().click(screen.getByRole('button', { name: '在 Codex App 中打开' }));
+  expect(api.openNativeApp).toHaveBeenCalledWith('channel-system');
   view.unmount();
   api.getNativeStatus.mockResolvedValue(status({ connected: true, boundThreadCount: 1, readyThreadCount: 1 }));
   render(<RuntimesView {...props} />);
   await checklist();
   expect(step('关联任务可用')).toBe('done');
   expect(nextStep().textContent).toContain('已就绪');
+  expect(screen.queryByRole('button', { name: '在 Codex App 中打开' })).toBeNull();
 });
 test('legacy cleanup rereads status, while SSH only explains the host-side task setup', async () => {
   const { props, api } = runtimeProps();

@@ -35,6 +35,7 @@ import { eventHistory, runHistory, runOutput, queryID } from './event-history.ts
 import { runLog } from './run-log.ts';
 import { discoverRuntimes } from './runtimes.ts';
 import { NativeConversations } from './native-conversations.ts';
+import { NativeDesktopError } from './codex-desktop-transport.ts';
 import type { NativeTransport } from './native-conversations.ts';
 import { importNativeImages, readNativeImage } from './native-media.ts';
 import { usageBudgetInput, usageReserveInput, usageWindowLabels } from './usage.ts';
@@ -818,8 +819,20 @@ export async function startServer(
       }
       throw new APIError(404, '接口不存在');
     } catch (e) {
-      respond(res, e instanceof APIError ? e.status : 500, {
-        error: e instanceof APIError ? e.message : '服务内部错误，请查看本机日志',
+      if (!(e instanceof APIError)) {
+        // Do not log request bodies, headers or query strings. Known service credentials are redacted.
+        console.error(
+          engine.redact(
+            `${req.method} ${(req.url || '').split('?')[0]}\n${e instanceof Error ? e.stack || e.message : String(e)}`
+          )
+        );
+      }
+      const unavailable =
+        e instanceof NativeDesktopError && ['desktop_unavailable', 'no-client-found'].includes(e.code);
+      respond(res, e instanceof APIError ? e.status : unavailable ? (e.code === 'no-client-found' ? 409 : 503) : 500, {
+        error:
+          e instanceof APIError ? e.message : unavailable ? engine.redact(e.message) : '服务内部错误，请查看本机日志',
+        ...(unavailable ? { code: e.code, outcomeUnknown: e.outcomeUnknown } : {}),
       });
     }
   });

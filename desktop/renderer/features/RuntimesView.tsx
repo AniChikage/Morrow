@@ -30,7 +30,13 @@ function connectionSteps(native: NativeConnectionStatus) {
     },
     { label: 'App 已连接', done: native.connected },
     { label: '任务已关联', done: (native.boundThreadCount ?? 0) > 0 },
-    { label: '关联任务可用', done: (native.readyThreadCount ?? 0) > 0 && !native.restartRequired },
+    {
+      label:
+        native.connected && (native.boundThreadCount ?? 0) > 0 && native.readyThreadCount === 0
+          ? '任务未在 Codex App 中打开'
+          : '关联任务可用',
+      done: (native.readyThreadCount ?? 0) > 0 && !native.restartRequired,
+    },
   ];
 }
 function AppChecklist({
@@ -41,6 +47,7 @@ function AppChecklist({
   onMutate,
   onRefresh,
   onLink,
+  onOpen,
 }: {
   native: NativeConnectionStatus;
   remote: boolean;
@@ -49,6 +56,7 @@ function AppChecklist({
   onMutate: FeatureProps['onMutate'];
   onRefresh: () => Promise<void>;
   onLink?: () => void;
+  onOpen?: () => void;
 }) {
   const [receipt, setReceipt] = useState('');
   const steps = connectionSteps(native);
@@ -75,7 +83,17 @@ function AppChecklist({
         )}
       </>
     );
-  else if (pending === 3) next = <span>在 Codex App 打开已关联任务，然后重新检测。</span>;
+  else if (pending === 3)
+    next = (
+      <>
+        <span>在 Codex App 打开已关联任务，然后重新检测。</span>
+        {onOpen && !remote && (
+          <Button disabled={busy} onClick={onOpen}>
+            在 Codex App 中打开
+          </Button>
+        )}
+      </>
+    );
   else next = <span>已就绪；保持 Codex App 运行，自动工作沿用任务权限。</span>;
   return (
     <div className="runtime-settings-checklist">
@@ -316,6 +334,18 @@ export function RuntimesView({
                         busy={busy}
                         onMutate={onMutate}
                         onRefresh={refreshNative}
+                        onOpen={
+                          snapshot.channels.some((channel) => channel.runtime === 'codex' && channel.sessionId)
+                            ? () =>
+                                void onMutate(() =>
+                                  api.openNativeApp(
+                                    snapshot.channels.find(
+                                      (channel) => channel.runtime === 'codex' && channel.sessionId
+                                    )!.id
+                                  )
+                                )
+                            : undefined
+                        }
                         onLink={
                           snapshot.channels.find((channel) => channel.runtime === 'codex')
                             ? () =>

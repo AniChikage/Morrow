@@ -12,7 +12,13 @@ import './content.css';
 import './channel-log.css';
 
 const ready = (value: NativeConversation | null) =>
-  !!(value?.status.connected && value.threadId && value.lastSyncedAt && !value.syncError);
+  !!(
+    value?.status.connected &&
+    value.threadId &&
+    value.lastSyncedAt &&
+    !value.syncError &&
+    value.status.readyThreadCount !== 0
+  );
 const active = (value: NativeConversation | null) =>
   !!value?.thread?.activeTurnId || ['active', 'running', 'inProgress'].includes(value?.thread?.status || '');
 const mergeRuns = (old: Run[], next: Run[]) =>
@@ -310,15 +316,19 @@ export function ChannelView(props: FeatureProps & { id: string }) {
   const paused =
     channel.autonomyEnabled === undefined ? ['paused', 'blocked'].includes(channel.status) : !channel.autonomyEnabled;
   const nativeBusy = active(conversation);
+  const unloaded =
+    native && !!conversation?.threadId && conversation.status.connected && conversation.status.readyThreadCount === 0;
   const unavailable = demo
     ? '示例频道不能回答'
-    : !ready(conversation)
-      ? '原生对话尚未就绪，暂时不能回答'
-      : !conversation?.status.capabilities.send
-        ? '当前不能发送到原生对话'
-        : nativeBusy
-          ? 'Codex 正在回应，请稍候'
-          : '';
+    : unloaded
+      ? '任务未在 Codex App 中打开，打开后才能继续或回答。'
+      : !ready(conversation)
+        ? '原生对话尚未就绪，暂时不能回答'
+        : !conversation?.status.capabilities.send
+          ? '当前不能发送到原生对话'
+          : nativeBusy
+            ? 'Codex 正在回应，请稍候'
+            : '';
   const pendingReleases = (snapshot.releases || []).filter(
     (row) => row.projectId === project.id && row.channelId === id && row.status === 'awaiting_approval'
   );
@@ -347,17 +357,19 @@ export function ChannelView(props: FeatureProps & { id: string }) {
                 ? 'latest'
                 : 'none';
   const openApp = () => void onMutate(() => api.openNativeApp(id));
-  const status = channel.work?.awaitingReply
-    ? '等你回答'
-    : channel.usageWait && channel.status === 'waiting'
-      ? channelStatusLabel(channel)
-      : channel.status === 'running'
-        ? '工作中'
-        : paused
-          ? '已暂停'
-          : channel.nextRunAt
-            ? `等待到 ${formatDate(channel.nextRunAt)}`
-            : '等待继续';
+  const status = unloaded
+    ? '任务未就绪'
+    : channel.work?.awaitingReply
+      ? '等你回答'
+      : channel.usageWait && channel.status === 'waiting'
+        ? channelStatusLabel(channel)
+        : channel.status === 'running'
+          ? '工作中'
+          : paused
+            ? '已暂停'
+            : channel.nextRunAt
+              ? `等待到 ${formatDate(channel.nextRunAt)}`
+              : '等待继续';
   return (
     <div className="feature-layout">
       <main className="feature-main channel-log">
@@ -371,7 +383,7 @@ export function ChannelView(props: FeatureProps & { id: string }) {
           <div className="channel-actions">
             {primary === 'open' && (
               <Button variant="primary" disabled={busy} onClick={openApp}>
-                在 Codex App 中打开对话
+                {unloaded ? '在 Codex App 中打开' : '在 Codex App 中打开对话'}
               </Button>
             )}
             {primary === 'resume' && (
@@ -445,19 +457,21 @@ export function ChannelView(props: FeatureProps & { id: string }) {
         )}
         <p className="channel-stage-hint">
           {channel.work?.focus && <strong>{channel.work.focus} · </strong>}
-          {needsLink
-            ? '先关联在 Codex App 创建的任务。'
-            : primary === 'open'
-              ? '请先在 Codex App 恢复连接。'
-              : channel.work?.awaitingReply
-                ? '请先回答下方问题。'
-                : pendingReleases.length
-                  ? '有待批准版本，请先查看变更与风险。'
-                  : blocked.length
-                    ? '有事项受阻，请查看下一步。'
-                    : paused
-                      ? '准备好后继续工作。'
-                      : '最新进展在下方，更多信息按需展开。'}
+          {unloaded
+            ? '任务未在 Codex App 中打开。请先打开已关联任务，继续和回答暂不可用。'
+            : needsLink
+              ? '先关联在 Codex App 创建的任务。'
+              : primary === 'open'
+                ? '请先在 Codex App 恢复连接。'
+                : channel.work?.awaitingReply
+                  ? '请先回答下方问题。'
+                  : pendingReleases.length
+                    ? '有待批准版本，请先查看变更与风险。'
+                    : blocked.length
+                      ? '有事项受阻，请查看下一步。'
+                      : paused
+                        ? '准备好后继续工作。'
+                        : '最新进展在下方，更多信息按需展开。'}
         </p>
         {nativeError && (
           <p className="feature-inline-error" role="alert">
