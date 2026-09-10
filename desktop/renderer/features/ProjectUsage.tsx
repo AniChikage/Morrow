@@ -97,7 +97,7 @@ export function ProjectUsageSection({
             </p>
           )}
           {usage?.gate.blocked && !usage.gate.pending && <p className="usage-row subtle">{usage.gate.message}</p>}
-          <form className="usage-form" onSubmit={save} aria-label="项目额度上限">
+          <form className="usage-form project-usage-form" onSubmit={save} aria-label="项目额度上限">
             <select
               aria-label="额度窗口"
               value={selectedWindow}

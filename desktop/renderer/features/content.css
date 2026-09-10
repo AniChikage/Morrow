@@ -472,6 +472,17 @@
   width: 68px;
   min-width: 0;
 }
+.project-usage-form {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+.project-usage-form select,
+.project-usage-form input {
+  width: 100%;
+}
+.project-usage-form .button {
+  justify-self: start;
+}
 .property-link,
 .property-status-button {
   font: inherit;
