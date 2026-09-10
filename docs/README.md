@@ -19,6 +19,7 @@
 | [项目工作协议](PROJECT-WORK-CONTRACT.md) | AI 管理项目时使用的接口、字段与约束。 |
 | [执行服务](../service/README.md) | 本机与 SSH 部署、服务配置、恢复和运行边界。 |
 | [开发指南](DEVELOPMENT.md) | 隔离开发、测试、构建和品牌资源。 |
+| [验收 harness](../scripts/acceptance/README.md) | 可重复的场景验收：场景 DSL、fixture 运行方式，以及它能与不能证明什么。 |
 | [品牌资源](../assets/brand/README.md) | Logo 图稿、导出方法与生成提示词。 |
 
 ## 产品方向与研究

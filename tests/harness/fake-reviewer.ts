@@ -13,7 +13,7 @@ export class FakeReviewer implements NativeTransport {
   status() {
     return { connected: true, socketPath: 'fake-reviewer', lastError: null };
   }
-  async listThreads() {
+  async listThreads(): Promise<Awaited<ReturnType<NativeTransport['listThreads']>>> {
     return [];
   }
   async createThread(cwd: string) {
@@ -43,7 +43,7 @@ export class FakeReviewer implements NativeTransport {
     requestId = '',
     _images?: Array<{ path: string }>,
     options?: NativeWorkOptions
-  ) {
+  ): Promise<{ turn: { id: string } }> {
     this.sent.push({ threadId, text, requestId, options });
     const turnId = randomUUID(),
       snapshot = this.snapshots.get(threadId)!;

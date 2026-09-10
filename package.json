@@ -12,6 +12,7 @@
   "scripts": {
     "start": "node service/server.ts",
     "test": "node --test tests/*.test.ts",
+    "acceptance": "node scripts/acceptance/run.ts",
     "dev": "electron-vite dev",
     "dev:ui": "vite --config vite.renderer.config.ts --host 127.0.0.1",
     "typecheck": "tsc --noEmit",
