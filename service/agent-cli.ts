@@ -18,6 +18,7 @@ try {
   if (
     ![
       'context',
+      'contract',
       'evidence.read',
       'memory.search',
       'memory.read',

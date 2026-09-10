@@ -1,4 +1,11 @@
-import { autonomousPrompt, parseWorkDecision, projectBriefBlock } from './channel-work.ts';
+import {
+  autonomousCharter,
+  autonomousTurnNote,
+  charterHash,
+  charterResendReason,
+  parseWorkDecision,
+  projectBriefBlock,
+} from './channel-work.ts';
 import { ProjectWorkLoop } from './project-loop.ts';
 import { UsageMonitor, nextUtcDay, usageDelta } from './usage.ts';
 import type { UsageGate } from './usage.ts';
@@ -31,7 +38,7 @@ export class Engine {
   native?: {
     readonly backgroundReady?: boolean;
     create?(id: string): Promise<unknown>;
-    binding(id: string): unknown;
+    binding(id: string): { threadId: string } | undefined;
     isBusy(id: string): boolean;
     isProjectBusy(projectId: string, exceptId?: string): boolean;
     startScheduled(id: string, scheduled: boolean): Promise<void>;
@@ -606,19 +613,63 @@ export class Engine {
       }
     });
   }
+  /** The last scheduled turn on this channel, ignoring native chat, App-owned turns and `exceptId`. */
+  previousScheduledRun(channelId: string, exceptId?: string) {
+    return this.store
+      .channelRuns(channelId, 40)
+      .filter(
+        (row) => row.id !== exceptId && (!row.source || ['morrow-schedule', 'nohuman-schedule'].includes(row.source))
+      )
+      .at(-1);
+  }
+  /**
+   * Records what this turn delivered so the next one can send only a note. Delivery is recorded at
+   * prompt time; a turn the native task never accepted clears it again in `finishFailure`, and a turn
+   * that ended without a work decision resends the charter through `charterResendReason`.
+   */
+  recordCharter(channel: Channel, stored: Channel, delivery: { threadId: string; hash: string; resent: boolean }) {
+    const previous = stored.promptCharter;
+    const promptCharter = {
+      threadId: delivery.threadId,
+      hash: delivery.hash,
+      sentAt: delivery.resent || !previous ? now() : previous.sentAt,
+      turnsSince: delivery.resent ? 1 : (previous?.turnsSince || 0) + 1,
+    };
+    // The native scheduler writes this same channel row again from the object it passed in.
+    channel.promptCharter = promptCharter;
+    this.store.put('channels', { ...stored, promptCharter });
+  }
   prompt(project: Project, channel: Channel, run?: Run) {
     const items = this.store.projectItems(project.id);
-    if (channel.runtime === 'codex' && this.native?.binding(channel.id))
-      return (
-        autonomousPrompt(
-          project,
-          channel,
-          items,
-          channel.work,
-          resultSchema,
-          this.usage.budgetContext(project, channel)
-        ) + (run ? this.loop.prepare(run) : '')
-      );
+    const binding = this.native?.binding(channel.id);
+    if (channel.runtime === 'codex' && binding) {
+      // `prepare` mints this run's own grant, so its entry line goes out with every turn.
+      const tools = run ? this.loop.prepare(run) : '';
+      const stored = this.store.get<Channel>('channels', channel.id) || channel;
+      const previousRun = this.previousScheduledRun(channel.id, run?.id);
+      const context = {
+        project,
+        channel,
+        items,
+        previous: stored.work,
+        budget: this.usage.budgetContext(project, channel),
+        tools,
+        // Without the work grant the optional board report is the only way a turn can reach the board.
+        ...(tools ? {} : { reportSchema: resultSchema }),
+        ...(previousRun ? { lastRunId: previousRun.id } : {}),
+      };
+      const charter = autonomousCharter(context);
+      const hash = charterHash(charter);
+      const resent = !!charterResendReason({
+        record: stored.promptCharter,
+        threadId: binding.threadId,
+        hash,
+        previousRun,
+        work: stored.work,
+      });
+      if (run) this.recordCharter(channel, stored, { threadId: binding.threadId, hash, resent });
+      return (resent ? charter : '') + autonomousTurnNote(context) + tools;
+    }
     const notes = this.store.messages(channel.id);
     const knowledge = this.store.contextKnowledge(project.id, channel.id);
     const prior = this.store.channelRuns(channel.id);
@@ -768,6 +819,7 @@ export class Engine {
           ...item,
           id: old?.id || randomUUID(),
           projectId: original.projectId,
+          origin: old?.origin || 'agent',
           number: old?.number || this.store.nextItemNumber(original.projectId),
           channelId: old?.channelId ?? run.channelId,
           sourceChannelIds: [...new Set([...(old?.sourceChannelIds || []), run.channelId])],
@@ -850,6 +902,8 @@ export class Engine {
     const c = this.store.get<Channel>('channels', run.channelId)!;
     this.store.put('channels', {
       ...c,
+      // A turn the native task never accepted delivered no charter; the next one must send it again.
+      ...(run.executionOwner === 'codex-app' && !run.nativeTurnId ? { promptCharter: undefined } : {}),
       status: status === 'interrupted' ? 'paused' : 'blocked',
       nextRunAt: '',
     });

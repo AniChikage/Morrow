@@ -183,6 +183,66 @@ function readWatchFile(projectPath: string, path: string, pointer: string) {
     closeSync(fd);
   }
 }
+/**
+ * One evidence record without its content: provenance, digest and stored size, so a turn can see
+ * what was collected without the bytes being replayed into every context and write response.
+ * `evidence.read {id}` still returns the preserved `data`.
+ */
+export function evidenceRow(row: Evidence) {
+  const { data, ...rest } = row;
+  return { ...rest, bytes: Buffer.byteLength(typeof data === 'string' ? data : JSON.stringify(data ?? null)) };
+}
+/**
+ * The static work contract: what every operation accepts, how an approved release is delivered, and
+ * the principles a turn works under. None of it changes between turns, so the `contract` operation
+ * serves it on request instead of `context` repeating it in every response.
+ */
+const workContract = {
+  operations: {
+    'understanding.upsert':
+      '{id?, revision?(更新必需), kind:fact|assumption|unknown|capability|constraint, title, statement, relevance, verification, status:active|invalidated|retired, evidenceIds:[], reviewAt:ISO时间}；只保存影响决策的认识，事实与推翻需证据；沿用旧 ID 保留版本。verification 写明如何复查，过期认识需要更新后才能成为行动依据。',
+    'decision.choose':
+      '{objectiveVersion:strategy.objective.version, options:[{title,kind:act|investigate|build_capability|observe|stop,benefit,cost,uncertainty}], selected:从0开始的索引, rationale, nextStep, expectedOutcome, evaluation, stopWhen, expectations:[{id,kind:outcome|guardrail,claim,scope,source:{kind:file,path}|{kind:watch,watchId}|{kind:execution,command},verification,disconfirm,notBefore?:ISO时间,deadline:ISO时间,rule?:{pointer:JSON-Pointer,operator:gte|lte|equals,expected:标量},measurement?:{metric,goalRelation,limitation,comparison:absolute|delta,baseline:{evidenceId}|{unavailable:具体原因},freshness:{pointer:原数据ISO时间字段,maxAgeSeconds:1..2592000},checks:[{label,pointer,operator:gte|lte|equals,expected:标量}]}}], understandingRefs:[{id,revision}], memoryRefs?:[{kind:understanding|decision|learning,id,revision,use:apply|adapt|avoid|not_applicable,reason}], evidenceIds:[], watchIds:[], reviewAt:ISO时间, maxRuns:1..32, itemId?}；expectations 需要 1..8 项，至少一项 outcome；stop 可为空。事先约定观察的实际文件（可以尚未创建）或现有 watch，以及适用对象/版本、验证办法、反证和观察期限。notBefore 默认选择时刻；需要等样本成熟时明确设置。测试/构建使用 execution 来源并先 execution.prepare，rule 核对 /exitCode equals 0；watch 证据保存完整 HTTP JSON 响应，rule.pointer 从原始响应字段开始，例如 /checkStatus，不会包装成 /value；其他可核对数值用 rule，定性结果省略 rule 并说明验证办法；不能虚构量化收益。观测业务或运行指标时一起设计 measurement：metric 写清单位与分母/统计口径，goalRelation 说明与目标的关系，limitation 记录代理指标局限；checks 需要 1..8 项与本项目相关的数据质量条件（如足够样本、完整采集、同一人群或版本），用字段规则而非主观声明。baseline 引用选择前同一来源的最新真实证据；没有基线写 unavailable 并先补齐能力。absolute 核对原值，delta 核对原值减基线（非相对百分比）；delta 没有合格基线不能得到确定结果，原基线不得事后补写。freshness 从原始数据时间算起，采集时间不能冒充数据时间。将不能牺牲的目标条件列为 guardrail。原始预期不可修改，变更口径需复盘后建立新行动并说明差异。每频道一个选择，不重复占用 feature；参考经验保存版本与适用理由。',
+    'decision.review':
+      '{id,revision,outcome:improved|not_improved|inconclusive|abandoned,conclusion,evidenceIds:[],nextDirection,assessment:{results:[{expectationId,verdict:met|not_met|unknown,reason,evidenceIds:[]}],conditions:matched|changed|unknown,conditionReason,diagnosis:expected|pending|measurement|execution|assumption|environment|uncertain,explanation,adjustment:continue|observe|measurement|method|assumption|stop,understandingRefs?:[{id,revision}]}}；新行动必须逐项核对全部 expectations。引用约定来源、观察窗口内的新证据，包含最新观察，旧基线和 agent 陈述不能证明效果。rule 由系统核对实际 JSON 字段；缺字段/类型不符为 unknown。条件不可比、数据未到或采集故障用 inconclusive；全部预期和 guardrail 有证据支持才可 improved。原因不明可以明确 uncertain，观测到变化不等于因果已证明。诊断记录应区分执行、假设、环境与观测问题；adjustment=assumption 时先用 understanding.upsert 保存新认识/修订，再引用准确版本。旧行动无 evaluationVersion 时仍按旧格式复盘，不伪造事前预期。',
+    'observation.read':
+      '{decisionId}；只读核对原始计划、基线、最新窗口内观测与数据质量，返回 observations（ready/waiting/needs_repair/unplanned）、系统 verdict、原值/基线/比较值及具体 issues；context.strategy.decisions 同时包含此状态。仅为规则核对，不代表独立复核或业务因果证明。缺数据先调查、建立观测能力或等待；检查通过才按实际结果复盘。',
+    'memory.search':
+      '{query?:关键词（空格分隔时都需匹配）,kind?:understanding|decision|learning,limit?:1..30,offset?}；搜索本项目全部历史认识、行动复盘及经验，不受 context 最近记录数量限制。只读，无需 requestId。',
+    'memory.recall':
+      '{query?:拟解决的问题或候选行动,itemId?,limit?:1..12}；按项目内文字相关性和同一 feature 召回历史认识、复盘及经验，包含失败与失效记录。省略 query 时按当前方向召回；context.strategy.relatedMemory 自动提供最多 6 条。排序不是可信度，先 memory.read 核对全文和条件，再用 decision.choose.memoryRefs 记录适用性。只读，无需 requestId。',
+    'memory.read':
+      '{kind:understanding|decision|learning,id,beforeRevision?}；读取完整记录及分页版本历史。只读，无需 requestId。',
+    'feature.upsert':
+      '{id?, revision?(更新必需), title, summary, kind:feature|issue|opportunity|hypothesis, status:open|investigating|verified|resolved|blocked, evidenceIds:[], nextStep}；同一 feature 沿用 ID，引用真实证据。',
+    'evidence.record': '{itemId?, summary, source, observedAt, data?}；记录为 agent 陈述，不能伪装为系统观测。',
+    'evidence.capture': '{itemId?, summary, path}；读取项目内实际文件，保存内容与 SHA256，可用于测试日志或分析数据。',
+    'evidence.read':
+      '{id}；读取本项目某条证据的完整内容。context 与写操作回执只给来源、摘要、SHA256 和 bytes，不回放内容，需要原文时用这个操作。只读，无需 requestId。',
+    'execution.prepare':
+      '{command:实际原生命令的完整字符串}；测试/构建前调用，框架封存当前源版本。随后在同一原生轮次、项目根目录执行完全相同命令。Morrow 直接从原生事件保存命令、输出、退出码、任务/轮次和执行前后源版本；execution.read 读取。不要用自行生成的 JSON 或 package.json 证明执行成功。',
+    'execution.read':
+      '{id}；读取准备记录及自动采集的原生执行证据。未收到开始事件、输出不完整、版本变化或没有退出码时不能证明成功。',
+    'verification.request':
+      '{itemId?,decisionId?,evidenceIds:[]}；准备完实际证据后发起有界独立只读复核。不传执行者的通过结论。事先保存的预期是验收条件；有关联预期时，补充 feature 进度说明不会使复核失效。已覆盖的证据子集复用同次复核，新原始观测仍须核对；修正后提交新版本/新证据。读取 verification.read 或 context 中的结果，把反例交回本任务修正。新行动 improved 与 feature 完成会自动触发此步骤，尚未通过时返回 pendingVerification，不能当成已完成。',
+    'verification.read':
+      '{id}；读取独立复核结论、问题、源版本是否仍有效和原生记录。queued/running 时可以做独立工作，或 wait 等待（不紧密轮询）；已提交的 decision.review/feature 完成请求会在通过后自动落库，不需要再花一轮重提；从 context.finalizations 查看 applied/stale/rejected。旧 requestId 仍只重放原回执，请读取当前状态。stale 时先合并新版本再提交；failed/unknown 时先解决反例或缺少的证据。',
+    'verification.retry':
+      '{id}；环境恢复后重试尚未判断的复核，原记录不可覆盖，相同材料每天最多两次，仍计入频道预算。failed 必须先修正反例。重试会接续仍有效的原完成请求，并带上有界的前次工具观察；仍须本轮独立检查，不能继承旧结论。',
+    'learning.upsert':
+      '{id?, revision?, itemId?, kind:outcome|hypothesis|experiment, title, rationale, expectedResult, evaluation, conclusion, status:active|supported|refuted|inconclusive|stopped, evidenceIds:[]}；目标成效、竞争解释与尝试都可记录，结论更新引用新证据。',
+    'watch.create':
+      '{itemId?, title, kind?:http|file, url?(http), path?(file), pointer, condition:changed|gte|lte|equals, expected?, intervalSeconds:30..86400, deadline:ISO时间, releaseId?, continuous?:boolean}；省略kind兼容HTTP。file仅接受项目内普通文件，拒绝符号链接；不存在时安静等待；JSON保存原数据及pointer取值，非JSON仅支持空pointer，同一错误只审计一次。默认持续监测；changed首次仅建基线；file注册时缺失则首次出现唤醒，注册时存在则首次只建基线。file带pointer按选定值比较，空pointer按全文摘要比较，证据digest始终为原字节摘要。deadline为复查期限；continuous:false为一次性，取消或暂停停止轮询。关联releaseId时上线后采样。不支持command观测。',
+    'watch.cancel': '{id}；停止已不再有价值的观测。',
+    wait: '{watchIds:[], releaseIds:[], deadline:ISO时间, reason}；任一条件满足或截止后唤醒，保持自动工作开关；有独立工作可做时不要等待。',
+    'release.propose':
+      '{itemIds:[], title, changes, rationale, expectedBenefit, checks:[{name,result:passed|not_verified,evidenceIds:[]}], risks, rollback, observationPlan, artifactPath, target:{kind:"http",url,statusUrl,label} 或 {kind:"local-script",label,script,args?:[],timeoutSeconds:30..3600,statusScript?}}；准备好的文件复制封存，变更内容不可修改。至少一项通过的检查须引用实际采集证据。人批准后由发布接口发送封存产物或执行封存脚本。kind 省略时按 http 处理。local-script 的 script/statusScript 是项目内的相对路径，必须是已经提交在项目里的普通文件（≤256 KiB）；args 最多 16 项、每项 ≤1000 字符，作为参数数组传给脚本，不经过 shell；label ≤100 字。脚本内容在提议时被复制封存并计入 reviewHash，之后修改项目里的原文件不会改变将要执行的内容。你不能提供或修改脚本摘要，也不能自己执行发布。',
+  },
+  releaseAdapter:
+    'http 目标：发布端接收 POST {releaseId,reviewHash,artifact:{name,sha256,base64}}，Idempotency-Key 为 releaseId；仅在响应 {releaseId,artifactSha256,status:"published",url?} 匹配时认定已上线。statusUrl 的 GET 返回同一回执用于重启/超时后核对。local-script 目标：人批准后，Morrow 在项目根目录以固定最小环境执行封存脚本，只有 PATH、HOME、NO_COLOR=1、MORROW_RELEASE_ID、MORROW_ARTIFACT_PATH（封存产物副本）、MORROW_ARTIFACT_SHA256、MORROW_REVIEW_HASH、MORROW_PROJECT_PATH、MORROW_RECEIPT_PATH、MORROW_RUNTIME_CACHE，不含服务凭据和其余环境变量；退出码 0 且最后一行 stdout 是 {releaseId,artifactSha256,status:"published"|"failed",...} 才认定结果，非零退出、非 JSON 或超时保持 unknown，由回执文件（MORROW_RECEIPT_PATH）或 statusScript 事后核对，不会自动重跑。输出合计保留最后 1 MiB 作为 log。先在已有授权内准备真实接收端或已提交的脚本与产物，不能编造地址、脚本路径或摘要；缺部署能力时继续准备工作并明确缺口。',
+  principles:
+    '主动选择服务目标的工作，必要时先建立反馈。证据、解释和预期收益分开；效果未知时保留未知。人只在发布前批准已准备好的明确版本，AI 没有批准接口。所有频道共享此处记录；失败尝试应更新判断，避免机械重复。先读 strategy 的认识、选择与复查信号，具体工作方法由你判断；工程与运营只是可能方向。评估直接改进、获取信息、建设能力、观察或停止的价值，用 decision.choose 记录依据、验证与止损条件再推进；reviewReasons 出现时先复盘。复盘保留原预期，结果未知时可以继续观察。需要历史经验时使用 memory.search/read；失效认识只能作为历史教训。不要通过增加事项、文档或技能数量证明进展。',
+};
 
 export class ProjectWorkLoop {
   store: Store;
@@ -290,7 +350,7 @@ export class ProjectWorkLoop {
     const command = [process.execPath, fileURLToPath(new URL('./agent-cli.ts', import.meta.url)), '--context', path]
       .map((v) => "'" + v.replaceAll("'", "'\\''") + "'")
       .join(' ');
-    return `\nMorrow 已提供本轮专用工具（只能管理本项目，不能批准上线）。在原生工具中执行：\n${command} --operation context\n写操作将 JSON 通过 --input - 从标准输入传入，或写入临时文件后执行同一命令，附加 --operation 操作名 --input 文件路径 --request-id 稳定唯一ID。标准输入推荐用带引号的 heredoc 一次传入，不要为读取 JSON 启动交互式 TTY。同一次重试沿用相同 ID 和内容。context 返回操作说明和项目共享认识。先读取它；重要发现、feature、尝试及等待条件在工作过程中及时落库，不要只留在最终回复。不得读取或输出 agent-context.json 中的凭证。\n`;
+    return `\nMorrow 已提供本轮专用工具（只能管理本项目，不能批准上线）。凭证按轮次更换，只用本轮这一条路径。在原生工具中执行：\n${command} --operation context\n写操作将 JSON 通过 --input - 从标准输入传入，或写入临时文件后执行同一命令，附加 --operation 操作名 --input 文件路径 --request-id 稳定唯一ID。标准输入推荐用带引号的 heredoc 一次传入，不要为读取 JSON 启动交互式 TTY。同一次重试沿用相同 ID 和内容。context 返回项目当前数据与共享认识；--operation contract 返回各操作的字段约定、发布适配说明、工作原则与原生能力清单（只读，无需 --request-id），需要精确规则时读取它。先读 context；重要发现、feature、尝试及等待条件在工作过程中及时落库，不要只留在最终回复。不得读取或输出 agent-context.json 中的凭证。\n`;
   }
   authenticate(authorization: string): Scope {
     const token = authorization.startsWith('Bearer ') ? authorization.slice(7) : '';
@@ -338,15 +398,26 @@ export class ProjectWorkLoop {
       updatedAt: now(),
     });
   }
+  /**
+   * The read-only contract behind the work interface. It is the same text for every turn, so a turn
+   * reads it when it needs the exact field rules instead of receiving it inside `context`.
+   */
+  contract(scope: Scope, input: Record<string, any>) {
+    keys(input, []);
+    const { project } = this.scope(scope);
+    return {
+      ...workContract,
+      // A dated record of one real probe, not a live query: `untested` means no measurement exists.
+      nativeCapabilities,
+      briefRevision: project.briefRevision || 0,
+    };
+  }
   context(scope: Scope, input: Record<string, any>) {
     keys(input, ['itemId']);
     const { project, channel } = this.scope(scope);
     const item = this.item(scope, input.itemId);
     const view = this.view(project.id, item?.id);
-    const evidence = view.evidence.map((row) => {
-      const raw = typeof row.data === 'string' ? row.data : JSON.stringify(row.data);
-      return raw.length > 2000 ? { ...row, data: raw.slice(0, 2000), truncated: true } : row;
-    });
+    const evidence = view.evidence.map(evidenceRow);
     const learning = view.learning.slice(-12).map((row) => {
       const truncated = [row.rationale, row.expectedResult, row.evaluation, row.conclusion].some(
         (value) => value.length > 500
@@ -370,17 +441,15 @@ export class ProjectWorkLoop {
       ).n
     );
     return {
+      hint: '这里只有项目当前数据。操作契约、发布适配说明、工作原则与原生能力清单运行 contract 操作；项目说明正文在本任务开头的章程里，证据全文用 evidence.read。',
       project: {
         id: project.id,
         name: project.name,
         goal: project.goal,
-        brief: project.brief || '',
         briefRevision: project.briefRevision || 0,
       },
       channel: { id: channel.id, goal: channel.goal },
       budget: this.usage?.budgetContext(project, channel),
-      // A dated record of one real probe, not a live query: `untested` means no measurement exists.
-      nativeCapabilities,
       strategy: this.strategy.context(scope, item?.id),
       learningCoverage: {
         total: learningTotal,
@@ -399,50 +468,6 @@ export class ProjectWorkLoop {
       verifications: view.verifications,
       finalizations: view.finalizations,
       executions: this.rows<any>('loop_executions', project.id).slice(-12),
-      operations: {
-        'understanding.upsert':
-          '{id?, revision?(更新必需), kind:fact|assumption|unknown|capability|constraint, title, statement, relevance, verification, status:active|invalidated|retired, evidenceIds:[], reviewAt:ISO时间}；只保存影响决策的认识，事实与推翻需证据；沿用旧 ID 保留版本。verification 写明如何复查，过期认识需要更新后才能成为行动依据。',
-        'decision.choose':
-          '{objectiveVersion:strategy.objective.version, options:[{title,kind:act|investigate|build_capability|observe|stop,benefit,cost,uncertainty}], selected:从0开始的索引, rationale, nextStep, expectedOutcome, evaluation, stopWhen, expectations:[{id,kind:outcome|guardrail,claim,scope,source:{kind:file,path}|{kind:watch,watchId}|{kind:execution,command},verification,disconfirm,notBefore?:ISO时间,deadline:ISO时间,rule?:{pointer:JSON-Pointer,operator:gte|lte|equals,expected:标量},measurement?:{metric,goalRelation,limitation,comparison:absolute|delta,baseline:{evidenceId}|{unavailable:具体原因},freshness:{pointer:原数据ISO时间字段,maxAgeSeconds:1..2592000},checks:[{label,pointer,operator:gte|lte|equals,expected:标量}]}}], understandingRefs:[{id,revision}], memoryRefs?:[{kind:understanding|decision|learning,id,revision,use:apply|adapt|avoid|not_applicable,reason}], evidenceIds:[], watchIds:[], reviewAt:ISO时间, maxRuns:1..32, itemId?}；expectations 需要 1..8 项，至少一项 outcome；stop 可为空。事先约定观察的实际文件（可以尚未创建）或现有 watch，以及适用对象/版本、验证办法、反证和观察期限。notBefore 默认选择时刻；需要等样本成熟时明确设置。测试/构建使用 execution 来源并先 execution.prepare，rule 核对 /exitCode equals 0；watch 证据保存完整 HTTP JSON 响应，rule.pointer 从原始响应字段开始，例如 /checkStatus，不会包装成 /value；其他可核对数值用 rule，定性结果省略 rule 并说明验证办法；不能虚构量化收益。观测业务或运行指标时一起设计 measurement：metric 写清单位与分母/统计口径，goalRelation 说明与目标的关系，limitation 记录代理指标局限；checks 需要 1..8 项与本项目相关的数据质量条件（如足够样本、完整采集、同一人群或版本），用字段规则而非主观声明。baseline 引用选择前同一来源的最新真实证据；没有基线写 unavailable 并先补齐能力。absolute 核对原值，delta 核对原值减基线（非相对百分比）；delta 没有合格基线不能得到确定结果，原基线不得事后补写。freshness 从原始数据时间算起，采集时间不能冒充数据时间。将不能牺牲的目标条件列为 guardrail。原始预期不可修改，变更口径需复盘后建立新行动并说明差异。每频道一个选择，不重复占用 feature；参考经验保存版本与适用理由。',
-        'decision.review':
-          '{id,revision,outcome:improved|not_improved|inconclusive|abandoned,conclusion,evidenceIds:[],nextDirection,assessment:{results:[{expectationId,verdict:met|not_met|unknown,reason,evidenceIds:[]}],conditions:matched|changed|unknown,conditionReason,diagnosis:expected|pending|measurement|execution|assumption|environment|uncertain,explanation,adjustment:continue|observe|measurement|method|assumption|stop,understandingRefs?:[{id,revision}]}}；新行动必须逐项核对全部 expectations。引用约定来源、观察窗口内的新证据，包含最新观察，旧基线和 agent 陈述不能证明效果。rule 由系统核对实际 JSON 字段；缺字段/类型不符为 unknown。条件不可比、数据未到或采集故障用 inconclusive；全部预期和 guardrail 有证据支持才可 improved。原因不明可以明确 uncertain，观测到变化不等于因果已证明。诊断记录应区分执行、假设、环境与观测问题；adjustment=assumption 时先用 understanding.upsert 保存新认识/修订，再引用准确版本。旧行动无 evaluationVersion 时仍按旧格式复盘，不伪造事前预期。',
-        'observation.read':
-          '{decisionId}；只读核对原始计划、基线、最新窗口内观测与数据质量，返回 observations（ready/waiting/needs_repair/unplanned）、系统 verdict、原值/基线/比较值及具体 issues；context.strategy.decisions 同时包含此状态。仅为规则核对，不代表独立复核或业务因果证明。缺数据先调查、建立观测能力或等待；检查通过才按实际结果复盘。',
-        'memory.search':
-          '{query?:关键词（空格分隔时都需匹配）,kind?:understanding|decision|learning,limit?:1..30,offset?}；搜索本项目全部历史认识、行动复盘及经验，不受 context 最近记录数量限制。只读，无需 requestId。',
-        'memory.recall':
-          '{query?:拟解决的问题或候选行动,itemId?,limit?:1..12}；按项目内文字相关性和同一 feature 召回历史认识、复盘及经验，包含失败与失效记录。省略 query 时按当前方向召回；context.strategy.relatedMemory 自动提供最多 6 条。排序不是可信度，先 memory.read 核对全文和条件，再用 decision.choose.memoryRefs 记录适用性。只读，无需 requestId。',
-        'memory.read':
-          '{kind:understanding|decision|learning,id,beforeRevision?}；读取完整记录及分页版本历史。只读，无需 requestId。',
-        'feature.upsert':
-          '{id?, revision?(更新必需), title, summary, kind:feature|issue|opportunity|hypothesis, status:open|investigating|verified|resolved|blocked, evidenceIds:[], nextStep}；同一 feature 沿用 ID，引用真实证据。',
-        'evidence.record': '{itemId?, summary, source, observedAt, data?}；记录为 agent 陈述，不能伪装为系统观测。',
-        'evidence.capture':
-          '{itemId?, summary, path}；读取项目内实际文件，保存内容与 SHA256，可用于测试日志或分析数据。',
-        'evidence.read': '{id}；读取本项目某条证据的完整内容；context 中较长的证据会标记 truncated。',
-        'execution.prepare':
-          '{command:实际原生命令的完整字符串}；测试/构建前调用，框架封存当前源版本。随后在同一原生轮次、项目根目录执行完全相同命令。Morrow 直接从原生事件保存命令、输出、退出码、任务/轮次和执行前后源版本；execution.read 读取。不要用自行生成的 JSON 或 package.json 证明执行成功。',
-        'execution.read':
-          '{id}；读取准备记录及自动采集的原生执行证据。未收到开始事件、输出不完整、版本变化或没有退出码时不能证明成功。',
-        'verification.request':
-          '{itemId?,decisionId?,evidenceIds:[]}；准备完实际证据后发起有界独立只读复核。不传执行者的通过结论。事先保存的预期是验收条件；有关联预期时，补充 feature 进度说明不会使复核失效。已覆盖的证据子集复用同次复核，新原始观测仍须核对；修正后提交新版本/新证据。读取 verification.read 或 context 中的结果，把反例交回本任务修正。新行动 improved 与 feature 完成会自动触发此步骤，尚未通过时返回 pendingVerification，不能当成已完成。',
-        'verification.read':
-          '{id}；读取独立复核结论、问题、源版本是否仍有效和原生记录。queued/running 时可以做独立工作，或 wait 等待（不紧密轮询）；已提交的 decision.review/feature 完成请求会在通过后自动落库，不需要再花一轮重提；从 context.finalizations 查看 applied/stale/rejected。旧 requestId 仍只重放原回执，请读取当前状态。stale 时先合并新版本再提交；failed/unknown 时先解决反例或缺少的证据。',
-        'verification.retry':
-          '{id}；环境恢复后重试尚未判断的复核，原记录不可覆盖，相同材料每天最多两次，仍计入频道预算。failed 必须先修正反例。重试会接续仍有效的原完成请求，并带上有界的前次工具观察；仍须本轮独立检查，不能继承旧结论。',
-        'learning.upsert':
-          '{id?, revision?, itemId?, kind:outcome|hypothesis|experiment, title, rationale, expectedResult, evaluation, conclusion, status:active|supported|refuted|inconclusive|stopped, evidenceIds:[]}；目标成效、竞争解释与尝试都可记录，结论更新引用新证据。',
-        'watch.create':
-          '{itemId?, title, kind?:http|file, url?(http), path?(file), pointer, condition:changed|gte|lte|equals, expected?, intervalSeconds:30..86400, deadline:ISO时间, releaseId?, continuous?:boolean}；省略kind兼容HTTP。file仅接受项目内普通文件，拒绝符号链接；不存在时安静等待；JSON保存原数据及pointer取值，非JSON仅支持空pointer，同一错误只审计一次。默认持续监测；changed首次仅建基线；file注册时缺失则首次出现唤醒，注册时存在则首次只建基线。file带pointer按选定值比较，空pointer按全文摘要比较，证据digest始终为原字节摘要。deadline为复查期限；continuous:false为一次性，取消或暂停停止轮询。关联releaseId时上线后采样。不支持command观测。',
-        'watch.cancel': '{id}；停止已不再有价值的观测。',
-        wait: '{watchIds:[], releaseIds:[], deadline:ISO时间, reason}；任一条件满足或截止后唤醒，保持自动工作开关；有独立工作可做时不要等待。',
-        'release.propose':
-          '{itemIds:[], title, changes, rationale, expectedBenefit, checks:[{name,result:passed|not_verified,evidenceIds:[]}], risks, rollback, observationPlan, artifactPath, target:{kind:"http",url,statusUrl,label} 或 {kind:"local-script",label,script,args?:[],timeoutSeconds:30..3600,statusScript?}}；准备好的文件复制封存，变更内容不可修改。至少一项通过的检查须引用实际采集证据。人批准后由发布接口发送封存产物或执行封存脚本。kind 省略时按 http 处理。local-script 的 script/statusScript 是项目内的相对路径，必须是已经提交在项目里的普通文件（≤256 KiB）；args 最多 16 项、每项 ≤1000 字符，作为参数数组传给脚本，不经过 shell；label ≤100 字。脚本内容在提议时被复制封存并计入 reviewHash，之后修改项目里的原文件不会改变将要执行的内容。你不能提供或修改脚本摘要，也不能自己执行发布。',
-      },
-      releaseAdapter:
-        'http 目标：发布端接收 POST {releaseId,reviewHash,artifact:{name,sha256,base64}}，Idempotency-Key 为 releaseId；仅在响应 {releaseId,artifactSha256,status:"published",url?} 匹配时认定已上线。statusUrl 的 GET 返回同一回执用于重启/超时后核对。local-script 目标：人批准后，Morrow 在项目根目录以固定最小环境执行封存脚本，只有 PATH、HOME、NO_COLOR=1、MORROW_RELEASE_ID、MORROW_ARTIFACT_PATH（封存产物副本）、MORROW_ARTIFACT_SHA256、MORROW_REVIEW_HASH、MORROW_PROJECT_PATH、MORROW_RECEIPT_PATH、MORROW_RUNTIME_CACHE，不含服务凭据和其余环境变量；退出码 0 且最后一行 stdout 是 {releaseId,artifactSha256,status:"published"|"failed",...} 才认定结果，非零退出、非 JSON 或超时保持 unknown，由回执文件（MORROW_RECEIPT_PATH）或 statusScript 事后核对，不会自动重跑。输出合计保留最后 1 MiB 作为 log。先在已有授权内准备真实接收端或已提交的脚本与产物，不能编造地址、脚本路径或摘要；缺部署能力时继续准备工作并明确缺口。',
-      principles:
-        '主动选择服务目标的工作，必要时先建立反馈。证据、解释和预期收益分开；效果未知时保留未知。人只在发布前批准已准备好的明确版本，AI 没有批准接口。所有频道共享此处记录；失败尝试应更新判断，避免机械重复。先读 strategy 的认识、选择与复查信号，具体工作方法由你判断；工程与运营只是可能方向。评估直接改进、获取信息、建设能力、观察或停止的价值，用 decision.choose 记录依据、验证与止损条件再推进；reviewReasons 出现时先复盘。复盘保留原预期，结果未知时可以继续观察。需要历史经验时使用 memory.search/read；失效认识只能作为历史教训。不要通过增加事项、文档或技能数量证明进展。',
     };
   }
   async call(scope: Scope, payload: unknown): Promise<unknown> {
@@ -451,6 +476,7 @@ export class ProjectWorkLoop {
     const operation = text(body.operation, 'operation', 80);
     const input = object(body.input ?? {});
     if (operation === 'context') return this.context(scope, input);
+    if (operation === 'contract') return this.contract(scope, input);
     if (operation === 'observation.read') return this.strategy.evaluation.read(scope, input);
     if (operation === 'execution.read') return this.executions.read(scope, input);
     if (operation === 'verification.read') return this.verification.read(scope, input);
@@ -532,6 +558,7 @@ export class ProjectWorkLoop {
       const item: WorkItem = {
         id: old?.id || base.id,
         projectId: project.id,
+        origin: old?.origin || 'agent',
         number: old?.number || this.store.nextItemNumber(project.id),
         channelId: old?.channelId || scope.channelId,
         sourceChannelIds: [...new Set([...(old?.sourceChannelIds || []), scope.channelId])],
@@ -574,8 +601,15 @@ export class ProjectWorkLoop {
           item.id,
           item
         );
+        // A receipt, not a copy of the board: the turn wrote these fields and reads the rest back
+        // through `context`. The verification ids are what decides whether the change is complete.
         return {
-          ...item,
+          id: item.id,
+          number: item.number,
+          revision: item.revision,
+          kind: item.kind,
+          status: item.status,
+          title: item.title,
           ...(verification
             ? { verificationId: verification.id, pendingVerification: item.status === 'investigating' }
             : {}),
@@ -623,7 +657,9 @@ export class ProjectWorkLoop {
       this.linkEvidence(entry);
       this.strategy.evidenceObserved(entry);
       this.audit(scope, 'evidence.recorded', entry.summary, item?.id, { id: entry.id, origin, source });
-      return entry;
+      // The content is already the agent's own input or a file it can read again; echoing it back
+      // only doubles the turn's context. `evidence.read {id}` returns the preserved record.
+      return evidenceRow(entry);
     }
     if (operation === 'learning.upsert') {
       keys(input, [

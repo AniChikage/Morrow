@@ -291,8 +291,8 @@ async function latestFor(turn: TurnContext, state: Snapshot, decision: any, expe
   );
   const record = rows.at(-1);
   if (!record) return undefined;
-  // A long sample is abbreviated in `context`; the number has to come from the stored evidence.
-  const data = record.truncated ? (await turn.grant.call('evidence.read', { id: record.id })).data : record.data;
+  // `context` lists provenance and size only; the number has to come from the stored evidence.
+  const { data } = await turn.grant.call('evidence.read', { id: record.id });
   return { id: record.id, value: pointerValue(data, expected.rule.pointer) };
 }
 

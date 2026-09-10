@@ -81,8 +81,15 @@ export type ProjectBriefRevision = {
   updatedAt: string;
   actor: 'human';
 };
+/**
+ * What this channel's bound native task was last told as its long-lived charter (role, goal, brief,
+ * direction, rules), so later turns can send only a short note. `hash` digests the charter text;
+ * `turnsSince` counts the turns delivered under it, including the turn that carried it.
+ */
+export type PromptCharter = { threadId: string; hash: string; sentAt: string; turnsSince: number };
 export type Channel = {
   work?: ChannelWork;
+  promptCharter?: PromptCharter;
   autonomyEnabled?: boolean;
   id: string;
   projectId: string;
@@ -103,6 +110,8 @@ export type WorkItem = {
   id: string;
   projectId: string;
   number: number;
+  /** Who opened the item. Older rows are inferred once from their `item.created` audit event. */
+  origin?: 'human' | 'agent';
   channelId: string;
   sourceChannelIds: string[];
   lastRunId: string;

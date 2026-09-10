@@ -45,9 +45,10 @@ async function setup() {
     join(s.path, 'release-manifest.json'),
     JSON.stringify({ commit: 'a'.repeat(40), branch: 'agent/work', version: '0.9.6', sourceDigest: 'b'.repeat(64) })
   );
+  const featureSummary = '记录实际安装结果';
   const feature = await call('feature.upsert', {
     title: '安装流程可复现',
-    summary: '记录实际安装结果',
+    summary: featureSummary,
     kind: 'feature',
     status: 'investigating',
     evidenceIds: [],
@@ -61,7 +62,7 @@ async function setup() {
     id: feature.id,
     revision: s.store.get<any>('items', feature.id).revision,
     title: feature.title,
-    summary: feature.summary,
+    summary: featureSummary,
     kind: feature.kind,
     status: 'verified',
     evidenceIds: [evidence.id],
