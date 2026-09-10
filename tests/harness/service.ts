@@ -56,7 +56,7 @@ export async function startIsolated(options: IsolatedOptions = {}): Promise<Isol
     typeof options.nativeTransport === 'function'
       ? options.nativeTransport({ root, home, path })
       : options.nativeTransport;
-  let current = await startServer({ home, port: 0, nativeTransport: transport });
+  let current = await startServer({ home, port: 0, nativeTransport: transport, reviewTransport: transport });
   const token = readFileSync(join(home, 'token'), 'utf8');
   const api: Api = async (method, url, body, status = 200, auth = token) => {
     const response = await fetch(origin(current.port) + url, {
@@ -87,7 +87,7 @@ export async function startIsolated(options: IsolatedOptions = {}): Promise<Isol
     async restart(next = {}) {
       await current.close();
       if (next.nativeTransport) transport = next.nativeTransport;
-      current = await startServer({ home, port: 0, nativeTransport: transport });
+      current = await startServer({ home, port: 0, nativeTransport: transport, reviewTransport: transport });
       Object.assign(handle, current, { base: origin(current.port) });
       return handle;
     },

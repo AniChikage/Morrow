@@ -1,10 +1,6 @@
-/**
- * What the native Codex App actually offered a Morrow-scheduled turn, as measured on 2026-09-09 by
- * one real turn against the shared App backend (isolated data directory, channel permission
- * `native`, model gpt-6-astra). This is a dated record of that probe, not a live capability query:
- * nothing here is re-checked at runtime, and `untested` means exactly that — no measurement exists.
- * Re-run the probe and edit this file rather than inferring a status from a later failure.
- */
+/** Dated evidence, not a live capability probe. Browser/App tools were re-tested on the
+ * official App follower path on 2026-09-09; historical observations remain explicitly scoped.
+ * See docs/CODEX-CONNECTION-VALIDATION-2026-09-09.md. */
 export type NativeCapabilityStatus = 'available' | 'unavailable' | 'partial' | 'untested';
 export type NativeCapability = {
   id: string;
@@ -28,11 +24,11 @@ export const nativeCapabilities: NativeCapability[] = [
   {
     id: 'in-app-browser',
     name: '应用内浏览器插件',
-    status: 'unavailable',
+    status: 'available',
     measuredAt: nativeCapabilitiesMeasuredAt,
-    note: 'Morrow 创建的任务里 setupBrowserRuntime() 能加载，但 agent.browsers.getForUrl(url) 返回「No browser is available」，agent.browsers.list() 为空。显式 agent.browsers.get("iab") 在 Morrow 任务中尚未实测。',
+    note: 'App 创建并加载的任务，经 follower 发起完整访问轮次后，真实读取本机页面的随机标记、点击按钮并读到对应结果。旧转接方案下的不可用记录已被此路径实测更新；仍取决于 App 权限和插件状态。',
     howTo:
-      '插件技能文档给出的入口是 agent.browsers.get("iab")；取不到浏览器时不要把网页截图或页面状态当作可获得的证据，改用可回看的文件或 HTTP 观测。',
+      '按 Browser skill 使用 agent.browsers.get("iab")。只有实际取得页面与操作结果后才能作为证据；连接不可用时如实记录。',
   },
   {
     id: 'chrome-browser',
@@ -71,7 +67,7 @@ export const nativeCapabilities: NativeCapability[] = [
     name: 'Morrow 工作接口（agent-cli.ts）',
     status: 'available',
     measuredAt: nativeCapabilitiesMeasuredAt,
-    note: '需要完整访问沙箱。App 默认沙箱（workspace-write、断网）下回环网络被挡，第一次 --context 调用报 fetch failed，之后每次调用都要走一次 requestApproval，auto_review 每次约一分钟。native 频道现在由 Morrow 显式请求完整访问。',
+    note: '此前在完整访问轮次验证可用；工作区断网会阻止本机 HTTP 接口并可能触发原生审批。现在 native 频道沿用 App 权限，Morrow 不自动提升为完整访问；需要由用户在 App 设置适当权限。',
     howTo: '按本轮提示里的 agent-cli.ts --context <文件> --operation <操作> 调用；写操作带稳定的 --request-id。',
   },
 ];

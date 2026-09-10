@@ -413,33 +413,25 @@ export function NativeConversationView({
           )}
         </div>
       )}
-      {!conversation?.status.backgroundReady && api.setupNativeBackground && (
+      {(!bound || conversation?.status.restartRequired || conversation?.status.backgroundConfigured) && (
         <div className="native-background-setup" role="status">
           <span>
-            {conversation?.status.backgroundConfigured
-              ? '后台连接已设置，请在当前任务结束后重新打开一次 Codex App。'
-              : '启用后台连接后，可直接在这里新建和恢复对话。'}
+            {conversation?.status.restartRequired
+              ? '旧转接仍在运行，请在当前任务结束后重开 Codex App。'
+              : '在 Codex App 为同一项目目录创建任务并发送首条消息，再回到这里关联。关联后可持续工作，权限沿用 App 设置。'}
           </span>
-          {!conversation?.status.backgroundConfigured && (
-            <Button
-              variant="ghost"
-              disabled={busy}
-              onClick={() => void runAction('setup-background', () => api.setupNativeBackground!())}
-            >
-              启用后台连接
-            </Button>
-          )}
           {conversation?.status.backgroundConfigured && api.restoreNativeBackground && (
             <Button
               variant="ghost"
               disabled={busy}
               onClick={() => void runAction('restore-background', () => api.restoreNativeBackground!())}
             >
-              撤销设置
+              清理旧转接设置
             </Button>
           )}
         </div>
       )}
+
       {picker && (
         <div className="native-thread-picker">
           <header>
@@ -549,8 +541,18 @@ export function NativeConversationView({
           {!loading && !bound && autonomous && (
             <EmptyState
               icon={<Sparkles />}
-              title="让 Codex 沿着这个方向开始"
-              description="点击上方开始工作，它会自主判断下一步。你也可以先在下面补充背景。"
+              title="先关联 Codex App 任务"
+              description="在 App 中创建同一项目目录的任务、发送首条消息并保持打开，关联后即可开始持续工作。"
+              action={
+                <>
+                  <Button disabled={busy} onClick={() => void runAction('open', () => api.openNativeApp(channelId))}>
+                    在 App 中创建任务
+                  </Button>
+                  <Button disabled={busy || !caps?.list} onClick={() => void loadThreads()}>
+                    关联 App 任务
+                  </Button>
+                </>
+              }
             />
           )}
           {!loading && !bound && !autonomous && (

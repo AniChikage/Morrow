@@ -10,7 +10,9 @@ Electron / React 界面
 
 执行服务
   ├─ 项目工作接口、调度、反馈、证据核对与发布确认
-  └─ Codex App 共享原生后台
+  ├─ App 本地 IPC follower → App 已创建并加载的任务
+  ├─ 官方只读 CLI → 独立复核
+  └─ 短暂官方协议客户端 → 额度读取（无模型轮次）
 ```
 
 服务默认监听 `127.0.0.1:43821`，使用私有随机 token。Renderer 不持有该 token，`localStorage` 只保存视图偏好。退出界面后独立服务可以继续工作；机器休眠时不执行。
@@ -21,10 +23,10 @@ Electron / React 界面
 | `runs/` | 有界 CLI 输入输出及工作上下文的私有文件副本。 |
 | `native-images/` | 原生对话图片的私有副本。 |
 | `releases/` | 与人工审阅版本关联的封存发布产物。 |
-| `codex-bridge/` | 启动器、配置回执与共享后台连接清单。 |
+| `codex-bridge/` | 旧转接安装回执；只用于撤销和历史诊断，不用于生产连接。 |
 | `token`、`service.log`、`desktop-connection.json` | 服务认证、诊断日志与桌面连接偏好。 |
 
-远程模式通过已有 SSH 配置连接远端服务，代码执行和数据保留在远端。Codex App 同步要求服务与 App 在同一台机器、同一用户会话；远端服务不会回连本机的 Codex App，远端的自动工作依赖该主机自己的 Codex App 共享后台。远端安装依赖、启动和接口说明见 [执行服务文档](../service/README.md)。
+远程模式通过已有 SSH 配置连接远端服务，代码执行和数据保留在远端。Codex App 同步要求服务与 App 在同一台机器、同一用户会话；远端服务不会回连本机的 Codex App，远端的自动工作依赖该主机自己的 Codex App 和已加载的关联任务。远端安装依赖、启动和接口说明见 [执行服务文档](../service/README.md)。
 
 原生任务的权威历史由 Codex 管理。SQLite 保存已绑定任务的同步镜像和 Morrow 编排记录；不会导入未关联任务的私有历史。早期版本留下的 Claude Code / Trae 频道、运行和事件仍按原样保存并可读，但不再执行。
 

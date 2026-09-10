@@ -1,8 +1,7 @@
 import { execFileSync } from 'node:child_process';
-import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync, unlinkSync } from 'node:fs';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
-import { fileURLToPath } from 'node:url';
 
 export const shellQuote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
 /** The command-line runtime the Codex App launches for its own tasks. */
@@ -17,71 +16,14 @@ export function bridgeLoginAgent(launcher: string, label = currentAgentLabel) {
   return `<?xml version="1.0" encoding="UTF-8"?>\n<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n<plist version="1.0"><dict><key>Label</key><string>${label}</string><key>ProgramArguments</key><array><string>/bin/launchctl</string><string>setenv</string><string>CODEX_CLI_PATH</string><string>${escaped}</string></array><key>RunAtLoad</key><true/></dict></plist>\n`;
 }
 const loginAgentPath = (label = currentAgentLabel) => join(homedir(), `Library/LaunchAgents/${label}.plist`);
-export function configureCodexBridge(home: string) {
-  if (process.platform !== 'darwin') throw new Error('Codex App 后台连接目前只支持本机 Mac。');
-  const binary = codexAppBinary;
-  if (!existsSync(binary)) throw new Error('未找到已安装的 Codex App。');
-  const directory = join(home, 'codex-bridge'),
-    launcher = join(directory, 'codex');
-  let previous: string | null = null;
-  try {
-    previous =
-      execFileSync('/bin/launchctl', ['getenv', 'CODEX_CLI_PATH'], {
-        encoding: 'utf8',
-        stdio: ['ignore', 'pipe', 'ignore'],
-      }).trim() || null;
-  } catch {
-    /* Unset is normal. */
-  }
-  if (previous && previous !== launcher)
-    throw new Error('已有自定义 CODEX_CLI_PATH，已保留原配置；需要先确认该运行时如何与后台桥接兼容。');
-  mkdirSync(directory, { recursive: true, mode: 0o700 });
-  chmodSync(directory, 0o700);
-  const source = bridgeLauncher(
-    process.execPath,
-    fileURLToPath(new URL('./codex-app-host-bridge.ts', import.meta.url)),
-    binary,
-    directory
-  );
-  const temporary = `${launcher}.tmp`;
-  writeFileSync(temporary, source, { mode: 0o700 });
-  chmodSync(temporary, 0o700);
-  renameSync(temporary, launcher);
-  const receiptPath = join(directory, 'setup.json');
-  const receipt = existsSync(receiptPath)
-    ? JSON.parse(readFileSync(receiptPath, 'utf8'))
-    : { previousCliPath: previous, installedAt: new Date().toISOString() };
-  writeFileSync(receiptPath, JSON.stringify({ ...receipt, launcher, binary, configuredAt: new Date().toISOString() }), {
-    mode: 0o600,
-  });
-  const agentPath = loginAgentPath(),
-    agentSource = bridgeLoginAgent(launcher);
-  if (existsSync(agentPath) && readFileSync(agentPath, 'utf8') !== agentSource)
-    throw new Error('后台启动项已有其他配置，已保留；请检查 ai.morrow.codex-bridge.plist。');
-  const legacyPath = loginAgentPath(legacyAgentLabel),
-    legacySource = bridgeLoginAgent(launcher, legacyAgentLabel);
-  if (existsSync(legacyPath) && readFileSync(legacyPath, 'utf8') !== legacySource)
-    throw new Error('检测到不同配置的旧版后台启动项，已保留；请检查 ai.nohuman.codex-bridge.plist。');
-  mkdirSync(join(homedir(), 'Library/LaunchAgents'), { recursive: true });
-  writeFileSync(agentPath, agentSource, { mode: 0o600 });
-  execFileSync('/bin/launchctl', ['setenv', 'CODEX_CLI_PATH', launcher], { stdio: 'pipe' });
-  if (existsSync(legacyPath)) {
-    try {
-      execFileSync('/bin/launchctl', ['bootout', `gui/${process.getuid!()}/${legacyAgentLabel}`], { stdio: 'ignore' });
-    } catch {
-      /* It may not have been loaded since login. */
-    }
-    unlinkSync(legacyPath);
-  }
-  return {
-    launcher,
-    restartRequired: true,
-    detail: '后台桥接已配置。请在当前任务结束后重新打开一次 Codex App，之后可直接在 Morrow 新建和恢复对话。',
-  };
+/** Retired: changing the App CLI path breaks its signed local tool connections. */
+export function configureCodexBridge(_home: string): never {
+  throw new Error('旧后台转接已退役。请在 Codex App 创建任务并在 Morrow 关联。');
 }
 export function restoreCodexBridge(home: string) {
   const launcher = join(home, 'codex-bridge', 'codex');
   let current = '';
+  let changed = false;
   try {
     current = execFileSync('/bin/launchctl', ['getenv', 'CODEX_CLI_PATH'], {
       encoding: 'utf8',
@@ -90,7 +32,10 @@ export function restoreCodexBridge(home: string) {
   } catch {
     /* Already restored. */
   }
-  if (current === launcher) execFileSync('/bin/launchctl', ['unsetenv', 'CODEX_CLI_PATH'], { stdio: 'pipe' });
+  if (current === launcher) {
+    execFileSync('/bin/launchctl', ['unsetenv', 'CODEX_CLI_PATH'], { stdio: 'pipe' });
+    changed = true;
+  }
   for (const label of [currentAgentLabel, legacyAgentLabel]) {
     const agentPath = loginAgentPath(label);
     if (existsSync(agentPath) && readFileSync(agentPath, 'utf8') === bridgeLoginAgent(launcher, label)) {
@@ -100,11 +45,35 @@ export function restoreCodexBridge(home: string) {
         /* It may not have been loaded since login. */
       }
       unlinkSync(agentPath);
+      changed = true;
     }
   }
   // Leave the running App's executable and sockets intact until it exits itself.
   return {
-    restartRequired: true,
-    detail: '已撤销后台启动设置，当前会话保持运行，下次打开 Codex App 时恢复原连接方式。',
+    restartRequired: changed,
+    detail: changed
+      ? '已撤销旧转接设置。当前会话保持运行；当前任务结束后重开 Codex App。'
+      : '未检测到 Morrow 旧转接启动设置，App 使用原连接方式。',
   };
+}
+
+/** Read only the receipts belonging to this old installation; never stop the App or its runtime. */
+export function legacyBridgeRunning(home: string): boolean {
+  const dir = join(home, 'codex-bridge');
+  if (process.platform !== 'darwin' || !existsSync(dir)) return false;
+  return readdirSync(dir)
+    .filter((name) => /^host-[0-9]+\.json$/.test(name))
+    .some((name) => {
+      try {
+        const { bridgePid } = JSON.parse(readFileSync(join(dir, name), 'utf8'));
+        if (!Number.isInteger(bridgePid) || bridgePid < 1) return false;
+        return execFileSync('/bin/ps', ['-p', String(bridgePid), '-o', 'command='], {
+          encoding: 'utf8',
+          timeout: 1000,
+          stdio: ['ignore', 'pipe', 'ignore'],
+        }).includes('codex-app-host-bridge.ts');
+      } catch {
+        return false;
+      }
+    });
 }

@@ -1,3 +1,4 @@
+import type { NativeWorkOptions } from './native-conversations.ts';
 import { randomUUID } from 'node:crypto';
 import { lstatSync, realpathSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
@@ -685,7 +686,8 @@ export class CodexDesktopTransport {
     threadId: string,
     text: string,
     clientMessageId: string = randomUUID(),
-    images: NativeImageInput[] = []
+    images: NativeImageInput[] = [],
+    workOptions?: NativeWorkOptions
   ): Promise<unknown> {
     const input = nativeInput(text, images);
     const snapshot = await this.readThread(threadId);
@@ -699,15 +701,28 @@ export class CodexDesktopTransport {
     if (
       snapshot.state.threadRuntimeStatus?.type === 'active' ||
       (snapshot.state.threadRuntimeStatus?.type !== 'idle' && turns.at(-1)?.status === 'inProgress')
-    )
+    ) {
+      if (workOptions) throw new NativeDesktopError('原生任务已开始新的轮次，自动工作将在空闲后继续。', 'thread_busy');
       return this.steer(threadId, text, clientMessageId, images);
+    }
     const response = await this.request(
       'thread-follower-start-turn',
       {
         conversationId: threadId,
         turnStart: {
-          request: { threadId, input, clientUserMessageId: clientMessageId },
-          context: { inheritThreadSettings: true },
+          request: {
+            threadId,
+            input,
+            clientUserMessageId: clientMessageId,
+            ...workOptions,
+            ...(workOptions?.sandboxPolicy ? { permissions: null } : {}),
+          },
+          context: {
+            inheritThreadSettings: true,
+            ...(workOptions?.sandboxPolicy
+              ? { useAppServerPermissionDefault: false, usePermissionSelection: false }
+              : {}),
+          },
         },
       },
       2,

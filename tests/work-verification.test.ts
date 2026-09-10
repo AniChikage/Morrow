@@ -762,3 +762,35 @@ test('expired-window and stale-source execution cannot queue a reviewer even whe
     await f.cleanup();
   }
 });
+
+test('CLI review observations preserve verification gates and never use the implementer task for review', async () => {
+  const { CodexCliReviewRunner } = await import('../service/codex-cli-review.ts');
+  const { fileURLToPath } = await import('node:url');
+  for (const mode of ['success', 'nonzero', 'file-change']) {
+    const f = await fixture();
+    try {
+      f.engine.loop.verification.connectRunner(
+        new CodexCliReviewRunner({
+          executable: () => fileURLToPath(new URL('./fixtures/codex-review.mjs', import.meta.url)),
+          env: { ...process.env, REVIEW_FIXTURE_MODE: mode },
+        })
+      );
+      const request = await f.call('verification.request', { itemId: f.item.id, evidenceIds: [f.evidence.id] });
+      await f.engine.loop.verification.start(request.id);
+      const result = f.store.get<any>('loop_verifications', request.id);
+      assert.equal(result.status, mode === 'success' ? 'passed' : 'unknown', mode);
+      assert.equal(result.executionOwner, 'codex-cli');
+      assert.equal(result.threadId, 'fixture-cli-session');
+      assert.equal(result.turnId, undefined);
+      assert.equal(f.native.sent.length, 0);
+      assert.equal(f.native.interrupted.length, 0);
+      assert(
+        f.store
+          .all<any>('loop_verification_events')
+          .some((e) => e.verificationId === request.id && e.raw?.type === 'commandExecution')
+      );
+    } finally {
+      await f.cleanup();
+    }
+  }
+});

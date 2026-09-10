@@ -428,3 +428,45 @@ test('large Unicode snapshots and following patches decode across native socket 
     await f.close();
   }
 });
+
+test('automatic follower turns inherit App settings by default, while explicit narrower policies are forwarded', async () => {
+  const f = await fixture();
+  try {
+    await f.client.sendMessage(threadId, 'automatic', 'inherit', [], {});
+    const inherited = f.messages.find((m) => m.method === 'thread-follower-start-turn').params.turnStart;
+    assert.deepEqual(inherited.request, {
+      threadId,
+      input: [{ type: 'text', text: 'automatic', text_elements: [] }],
+      clientUserMessageId: 'inherit',
+    });
+    assert.deepEqual(inherited.context, { inheritThreadSettings: true });
+    await f.client.sendMessage(threadId, 'read only', 'narrow', [], {
+      approvalPolicy: 'on-request',
+      approvalsReviewer: 'auto_review',
+      sandboxPolicy: { type: 'readOnly', networkAccess: false },
+    });
+    const explicit = f.messages.filter((m) => m.method === 'thread-follower-start-turn').at(-1).params.turnStart;
+    assert.deepEqual(explicit.request.sandboxPolicy, { type: 'readOnly', networkAccess: false });
+    assert.equal(explicit.request.permissions, null);
+    assert.equal(explicit.request.approvalsReviewer, 'auto_review');
+    assert.equal(explicit.context.useAppServerPermissionDefault, false);
+    let active = false;
+    const stop = await f.client.subscribe(threadId, (s) => {
+      active = s.state.threadRuntimeStatus?.type === 'active';
+    });
+    f.patch({
+      type: 'snapshot',
+      revision: 100,
+      conversationState: { ...state, threadRuntimeStatus: { type: 'active' } },
+    });
+    await until(() => active);
+    await assert.rejects(
+      () => f.client.sendMessage(threadId, 'automatic', 'busy', [], {}),
+      (e: any) => e.code === 'thread_busy'
+    );
+    assert.equal(f.messages.filter((m) => m.method === 'thread-follower-steer-turn').length, 0);
+    stop();
+  } finally {
+    await f.close();
+  }
+});

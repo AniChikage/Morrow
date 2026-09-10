@@ -21,23 +21,22 @@ function detection(runtime: Runtime) {
   return runtime.path ? { label: '需检查', className: 'attention' } : { label: '未检测到', className: '' };
 }
 /** The four facts that must hold, in order, before Morrow can create and resume App tasks by itself. */
-function bridgeSteps(native: NativeConnectionStatus) {
-  // A live connection proves the App exists even when an older service does not report appInstalled.
-  const installed = !!native.appInstalled || native.connected;
+function connectionSteps(native: NativeConnectionStatus) {
   return [
-    { label: 'Codex App 已安装', done: installed, version: native.appVersion },
-    { label: 'App 原生后台运行中', done: native.connected },
-    { label: '后台桥接已配置', done: !!native.backgroundConfigured },
-    { label: '桥接已生效', done: !!native.backgroundReady, version: native.runtimeVersion },
+    { label: 'Codex App 已安装', done: !!native.appInstalled || native.connected, version: native.appVersion },
+    { label: 'App 已连接', done: native.connected },
+    { label: '任务已关联', done: (native.boundThreadCount ?? 0) > 0 },
+    { label: '关联任务可用', done: (native.readyThreadCount ?? 0) > 0 && !native.restartRequired },
   ];
 }
-function BridgeChecklist({
+function AppChecklist({
   native,
   remote,
   api,
   busy,
   onMutate,
   onRefresh,
+  onLink,
 }: {
   native: NativeConnectionStatus;
   remote: boolean;
@@ -45,48 +44,28 @@ function BridgeChecklist({
   busy: boolean;
   onMutate: FeatureProps['onMutate'];
   onRefresh: () => Promise<void>;
+  onLink?: () => void;
 }) {
   const [receipt, setReceipt] = useState('');
-  const steps = bridgeSteps(native);
+  const steps = connectionSteps(native);
   const pending = steps.findIndex((step) => !step.done);
-  const run = (action: () => Promise<{ detail: string }>) =>
-    void onMutate(async () => {
-      const result = await action();
-      setReceipt(result.detail);
-      await onRefresh();
-    });
-  const remoteNote = <span>后台桥接在运行 Codex App 的那台 Mac 上设置或撤销。</span>;
-  const restore =
-    !remote && api.restoreNativeBackground ? (
-      <Button variant="ghost" disabled={busy} onClick={() => run(() => api.restoreNativeBackground!())}>
-        撤销设置
-      </Button>
-    ) : null;
   let next: ReactNode;
-  if (pending === 0) next = <span>安装并登录 Codex App</span>;
+  if (native.restartRequired) next = <span>旧转接设置已撤销；当前任务结束后重开 Codex App，再重新检测。</span>;
+  else if (pending === 0) next = <span>安装并登录 Codex App</span>;
   else if (pending === 1) next = <span>打开 Codex App</span>;
   else if (pending === 2)
-    next = remote ? (
-      remoteNote
-    ) : (
-      <Button disabled={busy || !api.setupNativeBackground} onClick={() => run(() => api.setupNativeBackground!())}>
-        启用后台连接
-      </Button>
-    );
-  else if (pending === 3)
     next = (
       <>
-        <span>后台连接已设置，请在当前任务结束后重新打开一次 Codex App</span>
-        {remote ? remoteNote : restore}
+        <span>在 Codex App 为同一项目目录创建任务、发送首条消息，再回到频道关联。</span>
+        {onLink && (
+          <Button disabled={busy} onClick={onLink}>
+            去关联任务
+          </Button>
+        )}
       </>
     );
-  else
-    next = (
-      <>
-        <span>已就绪</span>
-        {remote ? remoteNote : restore}
-      </>
-    );
+  else if (pending === 3) next = <span>在 Codex App 打开已关联任务，然后重新检测。</span>;
+  else next = <span>已就绪；保持 Codex App 运行，自动工作沿用任务权限。</span>;
   return (
     <div className="runtime-settings-checklist">
       <ol aria-label="Codex App 连接清单">
@@ -105,6 +84,22 @@ function BridgeChecklist({
         <b>下一步</b>
         {next}
       </p>
+      {remote && <p className="runtime-settings-receipt">请在执行主机的 Codex App 中创建并打开任务。</p>}
+      {native.backgroundConfigured && !remote && api.restoreNativeBackground && (
+        <Button
+          variant="ghost"
+          disabled={busy}
+          onClick={() =>
+            void onMutate(async () => {
+              const result = await api.restoreNativeBackground!();
+              setReceipt(result.detail);
+              await onRefresh();
+            })
+          }
+        >
+          清理旧转接设置
+        </Button>
+      )}
       {receipt && (
         <p className="runtime-settings-receipt" role="status">
           {receipt}
@@ -280,13 +275,22 @@ export function RuntimesView({
                       <ChevronRight size={13} className="runtime-settings-chevron" />
                     </button>
                     {appRuntime && !nativeUnreachable && (
-                      <BridgeChecklist
+                      <AppChecklist
                         native={native}
                         remote={remote}
                         api={api}
                         busy={busy}
                         onMutate={onMutate}
                         onRefresh={refreshNative}
+                        onLink={
+                          snapshot.channels.find((channel) => channel.runtime === 'codex')
+                            ? () =>
+                                onNavigate({
+                                  kind: 'channel',
+                                  id: snapshot.channels.find((channel) => channel.runtime === 'codex')!.id,
+                                })
+                            : undefined
+                        }
                       />
                     )}
                     {isExpanded && (
@@ -340,7 +344,7 @@ export function RuntimesView({
                               <dd>
                                 {runtime.available
                                   ? runtime.canWrite
-                                    ? '自动轮次默认以完整访问运行（由 Morrow 请求）；每个频道可单独收紧为只读或工作区编辑。'
+                                    ? '自动轮次默认沿用 App 任务设置；每个频道可单独收紧为只读或工作区编辑。'
                                     : '只读执行'
                                   : 'CLI 可用后读取支持的权限。'}
                               </dd>
@@ -390,8 +394,8 @@ export function RuntimesView({
           <p className="runtime-settings-note">
             <Info size={13} />
             <span>
-              Codex 对话连接 Mac App；终端 CLI 版本仅供查看。连接检测不会调用模型，也不代表账号或配额已经验证。旧的
-              Claude Code / Trae 频道保持可读，但不再执行。
+              自动工作使用 Codex App 任务；独立复核使用官方只读
+              CLI。连接检测不会调用模型，账号与配额以实际读数为准。旧的 Claude Code / Trae 频道保持可读，但不再执行。
             </span>
           </p>
         </div>

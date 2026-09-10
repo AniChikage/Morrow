@@ -77,16 +77,15 @@ describe('native App conversation', () => {
     expect(api.openNativeApp).not.toHaveBeenCalled();
     expect(api.sendMessage).not.toHaveBeenCalled();
   });
-  it('offers one-time background setup and keeps the current task in place', async () => {
+  it('never offers the retired launcher setup on an existing task', async () => {
     const initial = conversation();
     const { props, api } = setup(initial);
-    const configure = vi.fn().mockResolvedValue({ restartRequired: true, detail: 'configured' });
-    props.api.setupNativeBackground = configure;
+    props.api.setupNativeBackground = vi.fn();
     render(<NativeConversationView channelId="channel-system" api={props.api} />, { wrapper: TestProviders });
-    await userEvent.setup().click(await screen.findByRole('button', { name: '启用后台连接' }));
-    await waitFor(() => expect(configure).toHaveBeenCalledTimes(1));
+    await screen.findByRole('textbox', { name: '发送到 Codex App 原生对话' });
+    expect(screen.queryByRole('button', { name: '启用后台连接' })).toBeNull();
+    expect(props.api.setupNativeBackground).not.toHaveBeenCalled();
     expect(api.openNativeApp).not.toHaveBeenCalled();
-    expect(api.createNativeThread).not.toHaveBeenCalled();
   });
   const imageData =
     'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aWQAAAABJRU5ErkJggg==';
@@ -573,7 +572,7 @@ describe('native App conversation', () => {
     });
   });
 
-  it('centers a channel on direction and guidance, prepares a task on start, and keeps machinery in details', async () => {
+  it('centers a channel on direction and requires App task association before starting', async () => {
     const user = userEvent.setup(),
       state = snapshot();
     state.projects[0].isDemo = false;
@@ -595,11 +594,12 @@ describe('native App conversation', () => {
     expect(screen.queryByRole('tab')).toBeNull();
     expect(screen.queryByText('每日上限')).toBeNull();
     expect(screen.queryByRole('button', { name: '运行一次' })).toBeNull();
-    await screen.findByText('让 Codex 沿着这个方向开始');
-    await user.click(screen.getByRole('button', { name: '开始工作' }));
-    expect(api.createNativeThread).toHaveBeenCalledOnce();
-    expect(api.channelAction).toHaveBeenCalledWith('channel-system', 'resume');
-    expect(api.openNativeApp).not.toHaveBeenCalled();
+    await screen.findByText('先关联 Codex App 任务');
+    expect((screen.getByRole('button', { name: '开始工作' }) as HTMLButtonElement).disabled).toBe(true);
+    await user.click(screen.getByRole('button', { name: '在 App 中创建任务' }));
+    expect(api.createNativeThread).not.toHaveBeenCalled();
+    expect(api.channelAction).not.toHaveBeenCalled();
+    expect(api.openNativeApp).toHaveBeenCalledWith('channel-system');
     await user.click(screen.getByRole('button', { name: '工作详情' }));
     expect(screen.getByRole('tab', { name: '运行记录 0' })).toBeTruthy();
   });

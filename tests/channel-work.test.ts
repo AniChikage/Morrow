@@ -35,7 +35,7 @@ test('the autonomous prompt asks for cheap, informative work under tight usage a
   const sentence = '额度紧张时优先做便宜且有信息价值的事，或选择等待。';
   assert(plain.includes(sentence));
   assert(!plain.includes('当前额度'));
-  assert(plain.indexOf(sentence) > plain.indexOf('本频道以完整访问运行'));
+  assert(plain.indexOf(sentence) > plain.indexOf('本频道沿用 Codex App 中此任务的权限设置'));
   assert(plain.indexOf(sentence) < plain.indexOf('上线必须通过'));
   const reading = {
     at: '2026-09-09T10:00:00.000Z',
@@ -76,13 +76,13 @@ test('the autonomous prompt asks for cheap, informative work under tight usage a
   assert.equal(usageLine({ runsToday: 0, maxRunsPerDay: 8, usage: { reading, unknown: false } }), '');
   assert.equal(usageLine(undefined), '');
 });
-test('the full-access scope, the measured capability line and product exploration are all in the autonomous prompt', () => {
+test('the inherited App scope, the measured capability line and product exploration are all in the autonomous prompt', () => {
   const project = { name: 'p', path: '/tmp/p', goal: '目标' };
   const channel = { name: '自主推进', goal: '方向', permission: 'native' };
   const prompt = autonomousPrompt(project, channel, [], null, {});
   assert(
     prompt.includes(
-      '本频道以完整访问运行：可以修改整个项目、联网、使用 Computer Use 等原生工具；仍需遵守项目规则和上线确认'
+      '本频道沿用 Codex App 中此任务的权限设置；实际能否写入、联网或使用工具以 App 当前权限为准，仍需遵守项目规则和上线确认'
     )
   );
   assert(!prompt.includes('不要假设拥有完整访问'));
@@ -94,9 +94,9 @@ test('the full-access scope, the measured capability line and product exploratio
   assert(prompt.indexOf(exploration) < prompt.indexOf('沿用这条原生任务的完整上下文'));
   // One dated line naming what the probe found and what it did not; nothing here is a live check.
   assert(prompt.includes(`原生能力（${nativeCapabilitiesMeasuredAt} 实测）：`));
-  assert(prompt.includes('可用 Computer Use（@oai/sky）、Web 搜索、Morrow 工作接口（agent-cli.ts）'));
+  assert(prompt.includes('可用 应用内浏览器插件、Computer Use（@oai/sky）、Web 搜索、Morrow 工作接口（agent-cli.ts）'));
   assert(prompt.includes('部分可用 原生记忆'));
-  assert(prompt.includes('不可用 应用内浏览器插件'));
+  assert(!prompt.includes('不可用 应用内浏览器插件'));
   assert(prompt.includes('未实测 Chrome / Edge 浏览器'));
   assert(prompt.includes('以 context.nativeCapabilities 的说明为准'));
   // A read-only channel keeps its own scope sentence and still learns what the native tools can do.
@@ -113,7 +113,7 @@ test('the capability inventory stays a dated record with a reachable status for 
   }
   assert.equal(new Set(nativeCapabilities.map((entry) => entry.id)).size, nativeCapabilities.length);
   const byId = new Map(nativeCapabilities.map((entry) => [entry.id, entry]));
-  assert.equal(byId.get('in-app-browser')!.status, 'unavailable');
+  assert.equal(byId.get('in-app-browser')!.status, 'available');
   assert.equal(byId.get('chrome-browser')!.status, 'untested');
   assert.equal(byId.get('computer-use')!.status, 'available');
   assert.equal(byId.get('native-memory')!.status, 'partial');

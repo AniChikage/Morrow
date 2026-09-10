@@ -11,7 +11,7 @@ import {
   type NativeThreadChange,
 } from './codex-desktop-transport.ts';
 import type { NativeWorkOptions } from './native-conversations.ts';
-import type { UsageReading, UsageWindow, UsageWindowReading } from './protocol.ts';
+import type { UsageReading } from './protocol.ts';
 
 export interface SharedHost {
   version: number;
@@ -98,59 +98,8 @@ interface Options {
   /** Called when the backend pushes a rate-limit update on its own. */
   onUsage?: (reading: UsageReading) => void;
 }
-/**
- * App-server method that returns the account's rate-limit windows. Confirmed against the real App on
- * 2026-09-09: this name, camelCase fields, `resetsAt` in unix seconds. A method-not-found error still
- * reads only as "usage unknown", never as a failure. That probe also showed the main `codex` limit can
- * expose a weekly window alone (`secondary: null`), with a 5-hour window only inside
- * `rateLimitsByLimitId` for a separate model bucket; reading per limit id is not implemented.
- */
-export const usageReadMethod = 'account/rateLimits/read';
-/** Notification carrying the same payload when the backend refreshes the limits itself; confirmed 2026-09-09. */
-export const usageUpdatedNotification = 'account/rateLimits/updated';
-const isoTime = (value: unknown): string | undefined => {
-  if (typeof value === 'number' && Number.isFinite(value)) {
-    // Unix seconds or milliseconds: anything below 1e12 cannot be a millisecond timestamp of this century.
-    const date = new Date(value < 1e12 ? value * 1000 : value);
-    return Number.isNaN(date.getTime()) ? undefined : date.toISOString();
-  }
-  if (typeof value === 'string') {
-    const date = new Date(
-      /^\d+(\.\d+)?$/.test(value.trim()) ? Number(value) * (Number(value) < 1e12 ? 1000 : 1) : value
-    );
-    return Number.isNaN(date.getTime()) ? undefined : date.toISOString();
-  }
-  return undefined;
-};
-/** Maps a rate-limit payload (camelCase or snake_case) to Morrow's reading; `undefined` when nothing usable is in it. */
-export function parseUsageReading(payload: unknown, at = new Date().toISOString()): UsageReading | undefined {
-  if (!payload || typeof payload !== 'object') return undefined;
-  const raw = payload as Record<string, any>;
-  const limits = raw.rateLimits ?? raw.rate_limits ?? raw;
-  if (!limits || typeof limits !== 'object') return undefined;
-  const windows: UsageWindowReading[] = [];
-  for (const [key, fallback] of [
-    ['primary', '5h'],
-    ['secondary', 'weekly'],
-  ] as const) {
-    const entry = limits[key];
-    if (!entry || typeof entry !== 'object') continue;
-    const used = Number(entry.usedPercent ?? entry.used_percent);
-    if (!Number.isFinite(used)) continue;
-    const minutes = Number(entry.windowDurationMins ?? entry.window_duration_mins);
-    const hasMinutes = Number.isFinite(minutes) && minutes > 0;
-    const name: UsageWindow = hasMinutes ? (minutes <= 600 ? '5h' : 'weekly') : fallback;
-    if (windows.some((window) => window.name === name)) continue;
-    const resetsAt = isoTime(entry.resetsAt ?? entry.resets_at);
-    windows.push({
-      name,
-      usedPercent: Math.min(100, Math.max(0, used)),
-      ...(resetsAt ? { resetsAt } : {}),
-      ...(hasMinutes ? { windowMinutes: minutes } : {}),
-    });
-  }
-  return windows.length ? { at, source: 'protocol', windows } : undefined;
-}
+export { parseUsageReading, usageReadMethod, usageUpdatedNotification } from './codex-usage.ts';
+import { parseUsageReading, usageReadMethod, usageUpdatedNotification } from './codex-usage.ts';
 /**
  * `turn/start` params for one autonomous turn.
  *

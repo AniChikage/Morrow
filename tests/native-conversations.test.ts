@@ -155,25 +155,19 @@ test('shared background creates one native task per channel and records creation
     await s.cleanup();
   }
 });
-test('a native channel asks for the full-access sandbox where a narrower saved scope is refused, and scoped work tools attach to the same task', async () => {
+test('a native channel inherits App permissions where a narrower saved scope is refused, and scoped work tools attach to the same task', async () => {
   const s = await setup();
   try {
     await s.native.bind(s.channel.id, s.transport.threadId);
     s.transport.emit({ currentPermissions: { sandboxPolicy: { type: 'dangerFullAccess' } } });
-    // New channels run with full access; a channel narrowed to workspace-write still cannot inherit it.
+    // New channels inherit App permissions; a narrowed channel cannot silently inherit full access.
     assert.equal(s.channel.permission, 'native');
     await s.api('PATCH', `/api/channels/${s.channel.id}`, { permission: 'workspace-write' });
     await s.api('POST', `/api/channels/${s.channel.id}/action`, { action: 'resume' }, 409);
     await s.api('PATCH', `/api/channels/${s.channel.id}`, { permission: 'native' });
     await s.engine.action(s.channel.id, 'resume');
     assert.equal(s.transport.sent.length, 1);
-    // Morrow requests the sandbox itself: the App default (workspace-write, network off) blocked the
-    // work interface's own loopback call and charged an approval round per later command.
-    assert.deepEqual(s.transport.sent[0].workOptions, {
-      approvalPolicy: 'on-request',
-      approvalsReviewer: 'auto_review',
-      sandboxPolicy: { type: 'dangerFullAccess' },
-    });
+    assert.deepEqual(s.transport.sent[0].workOptions, {});
     assert.match(s.transport.sent[0].text, /--operation context/);
     const run = s.store.all<any>('runs').find((r) => r.source === 'morrow-schedule');
     assert.equal(run.sessionId, s.transport.threadId);
@@ -604,7 +598,7 @@ test('native bounded scheduling inherits compatible settings, observes completio
     assert.equal(s.engine.active.size, 0);
     const run = s.store.all<any>('runs')[0];
     assert.equal(run.executionOwner, 'codex-app');
-    assert.equal(run.permission, 'native');
+    assert.equal(run.permission, 'read-only');
     assert.deepEqual(s.transport.sent[0].workOptions?.sandboxPolicy, { type: 'readOnly', networkAccess: false });
     const turns = s.transport.snapshot.state.turns.map((turn: any) => ({
       ...turn,
@@ -985,6 +979,31 @@ test('the test hook fakes an installed App with a bundle version', async () => {
     assert.equal(status.appVersion, '9.9.9-fixture');
   } finally {
     delete process.env.MORROW_TEST_CODEX_APP_VERSION;
+    await s.cleanup();
+  }
+});
+
+test('follower status reports actual associations and the retired setup endpoint cannot change launch configuration', async () => {
+  const s = await setup();
+  try {
+    Object.assign(s.transport, {
+      connectionMode: 'app-follower',
+      backgroundReady: true,
+      threadStatus: () => ({ ready: true, detail: 'fixture loaded' }),
+    });
+    const before = await s.native.status();
+    assert.equal(before.boundThreadCount, 0);
+    assert.equal(before.capabilities.create, false);
+    await s.native.bind(s.channel.id, s.transport.threadId);
+    const linked = await s.native.status();
+    assert.equal(linked.boundThreadCount, 1);
+    assert.equal(linked.readyThreadCount, 1);
+    const rejected = await s.api('POST', '/api/native/background/setup', {}, 410);
+    assert.match(rejected.error, /已退役/);
+    assert.equal(s.store.get<any>('migrations', 'codex-background-bridge'), undefined);
+    assert.equal(s.native.binding(s.channel.id)?.threadId, s.transport.threadId);
+    assert.equal(s.transport.sent.length, 0);
+  } finally {
     await s.cleanup();
   }
 });

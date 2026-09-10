@@ -221,14 +221,9 @@ export function ChannelView(props: FeatureProps & { id: string }) {
                 </Button>
                 <Button
                   variant="primary"
-                  disabled={
-                    busy ||
-                    (paused &&
-                      !(nativeConversation?.status.capabilities.create || nativeConversationReady(nativeConversation)))
-                  }
+                  disabled={busy || (paused && nativeRunUnavailable)}
                   onClick={() =>
                     void onMutate(async () => {
-                      if (paused && !nativeConversation?.threadId) await api.createNativeThread(id);
                       await api.channelAction(id, paused ? 'resume' : 'pause');
                     })
                   }
@@ -423,7 +418,7 @@ export function ChannelView(props: FeatureProps & { id: string }) {
               {nativeCodex
                 ? '原生对话设置'
                 : channel.permission === 'native'
-                  ? '完整访问'
+                  ? '沿用 App 设置'
                   : channel.permission === 'read-only'
                     ? '只读工作空间'
                     : '允许工作区写入'}

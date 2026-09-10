@@ -1,3 +1,4 @@
+import type { ReviewRunner, ReviewObservation } from './codex-cli-review.ts';
 import { createHash, randomUUID } from 'node:crypto';
 import { APIError, keys, string } from './protocol.ts';
 import type { Channel, Project, Run, WorkItem } from './protocol.ts';
@@ -19,10 +20,16 @@ const outputLimit = 4 * 1024 * 1024;
 /** Independent native task; no agent grant, no approval/escalation, no write permission. */
 export class WorkVerification {
   transport?: NativeTransport;
+  runner?: ReviewRunner;
   redact = (value: string) => value;
   active = new Map<
     string,
-    { stop?: () => void; timer: ReturnType<typeof setTimeout>; seen: Map<string, Record<string, any>> }
+    {
+      stop?: () => void;
+      cancel?: () => void;
+      timer: ReturnType<typeof setTimeout>;
+      seen: Map<string, Record<string, any>>;
+    }
   >();
   interrupting = new Set<string>();
   readonly loop: ProjectWorkLoop;
@@ -31,7 +38,11 @@ export class WorkVerification {
   }
   connect(transport: NativeTransport, redact: (value: string) => string) {
     this.transport = transport;
+    this.runner = undefined;
     this.redact = redact;
+  }
+  connectRunner(runner: ReviewRunner) {
+    this.runner = runner;
   }
   rows(projectId: string, itemId?: string) {
     return this.loop
@@ -566,13 +577,14 @@ file/agent 证据可能由执行者生成，只证明采集了该内容，不证
         );
       return;
     }
-    if (!this.transport?.createThread) {
+    if (!this.runner && !this.transport?.createThread) {
       this.finish(id, 'unknown', '原生后台暂不支持独立只读复核');
       return;
     }
     this.loop.store.put('loop_verifications', {
       ...row,
       status: 'running',
+      ...(this.runner ? { executionOwner: 'codex-cli' as const } : {}),
       startedAt: now(),
       summary: '独立检查源文件、原始证据与反例',
       retryAt: undefined,
@@ -582,22 +594,42 @@ file/agent 证据可能由执行者生成，只证明采集了该内容，不证
       timer: setTimeout(() => this.stop(id, '独立复核达到 5 分钟上限，结果保留未知'), row.timeoutSeconds * 1000),
       seen: new Map<string, Record<string, any>>(),
       stop: undefined as (() => void) | undefined,
+      cancel: undefined as (() => void) | undefined,
     };
     this.active.set(id, active);
     try {
-      await this.transport.connect();
+      if (this.runner) {
+        const execution = this.runner.start({
+          cwd: project.path,
+          prompt: row.prompt,
+          timeoutMs: row.timeoutSeconds * 1000,
+          model: this.loop.store.get<Channel>('channels', row.channelId)?.model || undefined,
+          observe: (observation) => {
+            try {
+              this.ingestObservation(id, observation);
+            } catch (error) {
+              this.stop(id, `复核记录不可用：${this.redact(error instanceof Error ? error.message : '记录失败')}`);
+            }
+          },
+        });
+        active.cancel = execution.cancel;
+        if (!this.active.has(id)) execution.cancel();
+        await execution.done;
+        return;
+      }
+      await this.transport!.connect();
       if (terminal(this.loop.store.get<Verification>('loop_verifications', id)!)) return;
-      if (!this.transport.backgroundReady) {
+      if (!this.transport!.backgroundReady) {
         this.stop(id, '原生后台暂不支持独立只读复核');
         return;
       }
-      const snapshot = await this.transport.createThread(project.path);
+      const snapshot = await this.transport!.createThread!(project.path);
       this.update(id, {
         threadId: snapshot.threadId,
         model: snapshot.state.latestThreadSettings?.model || snapshot.state.model,
       });
       if (terminal(this.loop.store.get<Verification>('loop_verifications', id)!)) return;
-      const unsubscribe = await this.transport.subscribe(snapshot.threadId, (s) => {
+      const unsubscribe = await this.transport!.subscribe(snapshot.threadId, (s) => {
         try {
           this.ingest(id, s);
         } catch (error) {
@@ -609,7 +641,7 @@ file/agent 证据可能由执行者生成，只证明采集了该内容，不证
         return;
       }
       active.stop = unsubscribe;
-      const response = (await this.transport.sendMessage(snapshot.threadId, row.prompt, id, [], {
+      const response = (await this.transport!.sendMessage(snapshot.threadId, row.prompt, id, [], {
         approvalPolicy: 'never',
         sandboxPolicy: { type: 'readOnly', networkAccess: false },
       })) as any;
@@ -622,7 +654,7 @@ file/agent 证据可能由执行者生成，只证明采集了该内容，不证
         }
         return;
       }
-      this.ingest(id, await this.transport.readThread(snapshot.threadId));
+      this.ingest(id, await this.transport!.readThread(snapshot.threadId));
     } catch (error) {
       this.stop(
         id,
@@ -643,10 +675,26 @@ file/agent 证据可能由执行者生成，只证明采集了该内容，不证
         ? turns.find((t) => (t.turnId || t.id) === row.turnId)
         : turns.find((t) => t.params?.clientUserMessageId === id) || turns[0];
     if (!turn) return;
-    const turnId = String(turn.turnId || turn.id);
-    this.update(id, { turnId });
+    this.ingestObservation(
+      id,
+      {
+        threadId: snapshot.threadId,
+        turnId: String(turn.turnId || turn.id),
+        items: turn.items || [],
+        status: turn.status,
+        error: turn.error?.message,
+      },
+      snapshot.state.requests || []
+    );
+  }
+  ingestObservation(id: string, observation: ReviewObservation, requests: unknown[] = []) {
+    const row = this.loop.store.get<Verification>('loop_verifications', id)!;
+    const active = this.active.get(id);
+    if (!active || row.status !== 'running') return;
+    const { threadId, turnId, items } = observation;
+    this.update(id, { ...(threadId ? { threadId } : {}), ...(turnId ? { turnId } : {}) });
     let bytes = row.bytes;
-    for (const [index, raw] of (turn.items || []).entries()) {
+    for (const [index, raw] of items.entries()) {
       if (raw.type === 'fileChange') {
         this.stop(id, '复核出现文件变更，超出只读范围，不能判定通过');
         return;
@@ -684,7 +732,7 @@ file/agent 证据可能由执行者生成，只证明采集了该内容，不证
         channelId: row.channelId,
         runId: row.runId,
         verificationId: id,
-        threadId: snapshot.threadId,
+        threadId,
         turnId,
         nativeItemId: key,
         createdAt: now(),
@@ -701,23 +749,25 @@ file/agent 证据可能由执行者生成，只证明采集了该内容，不证
         typeof raw.aggregatedOutput === 'string'
     ).length;
     this.update(id, { bytes, commandCount });
-    if ((snapshot.state.requests || []).length) {
+    if (requests.length) {
       this.stop(id, '复核请求额外权限或人工输入；只读范围内无法完成，保留未知');
       return;
     }
-    if (['inProgress', 'running'].includes(turn.status)) return;
-    if (turn.status !== 'completed') {
-      this.finish(id, 'unknown', '原生复核未正常完成');
+    if (observation.status === 'inProgress') return;
+    if (observation.status !== 'completed') {
+      this.finish(
+        id,
+        'unknown',
+        observation.error ? `复核未正常完成：${this.redact(observation.error)}` : '原生复核未正常完成'
+      );
       return;
     }
     if (!this.current(row)) {
       this.finish(id, 'unknown', '复核期间源版本或目标变化，旧结论不能用于当前版本');
       return;
     }
-    const messages = (turn.items || []).filter((r: any) => r.type === 'agentMessage' && r.phase === 'final_answer');
-    const text = (
-      messages.length ? messages : (turn.items || []).filter((r: any) => r.type === 'agentMessage').slice(-1)
-    )
+    const messages = items.filter((r: any) => r.type === 'agentMessage' && r.phase === 'final_answer');
+    const text = (messages.length ? messages : items.filter((r: any) => r.type === 'agentMessage').slice(-1))
       .map((r: any) => r.text || '')
       .join('\n');
     try {
@@ -793,8 +843,9 @@ file/agent 证据可能由执行者生成，只证明采集了该内容，不证
   stop(id: string, reason: string) {
     const row = this.loop.store.get<Verification>('loop_verifications', id);
     if (!row || terminal(row)) return;
+    this.active.get(id)?.cancel?.();
     this.finish(id, 'unknown', reason);
-    if (row.threadId) {
+    if (row.threadId && row.executionOwner !== 'codex-cli') {
       this.update(id, { interruptPending: true });
       this.loop.track(this.interrupt(id));
     }
@@ -804,6 +855,10 @@ file/agent 证据可能由执行者生成，只证明采集了该内容，不证
     this.interrupting.add(id);
     try {
       const row = this.loop.store.get<Verification>('loop_verifications', id)!;
+      if (row.executionOwner === 'codex-cli') {
+        this.update(id, { interruptPending: false });
+        return;
+      }
       if (!row.threadId) return;
       const snapshot = await this.transport.readThread(row.threadId);
       const turn = nativeTurns(snapshot.state).find((t) =>

@@ -215,8 +215,8 @@ function ProjectDialog({
           </Button>
         </div>
         <p className="form-note">
-          所有频道共用这个项目的功能看板。Codex 沿用 Codex App 的登录与模型设置；自动轮次默认以完整访问运行，审批走 App
-          的自动审查。接入后可开启持续跟踪，频道初始保持暂停。
+          所有频道共用这个项目的功能看板。Codex 沿用 Codex App 的登录与模型设置；自动轮次默认沿用 App
+          中此任务的权限与审批设置。接入后可开启持续跟踪，频道初始保持暂停。
         </p>
         {existing && <p className="form-note">这个文件夹已接入，将打开已有项目。</p>}
         {(error || localError) && (
@@ -428,7 +428,7 @@ function ChannelDialog({
   const [name, setName] = useState(channel?.name || '');
   const [goal, setGoal] = useState(channel?.goal || '');
   const [model, setModel] = useState(channel?.model || '');
-  // New channels run with full access: Morrow requests the sandbox itself instead of inheriting the App's.
+  // New channels inherit the App task's existing permissions and approval settings.
   const [permission, setPermission] = useState<Channel['permission']>(channel?.permission || 'native');
   const [interval, setInterval] = useState(channel?.intervalMinutes || 60);
   const [budget, setBudget] = useState(channel?.maxRunsPerDay || 32);
@@ -505,7 +505,7 @@ function ChannelDialog({
           </Field>
           <Field
             title="执行权限"
-            hint="默认完整访问：自动轮次由 Morrow 向 Codex App 明确请求完整访问沙箱，审批交给 App 的自动审查；可以修改整个项目、联网、使用 Computer Use 等原生工具。需要收紧时改为只读或工作区写入。"
+            hint="默认沿用 Codex App 中此任务的权限与审批设置；如需完整访问，请在 App 中设置。需要收紧时可选择只读或工作区写入，最终可写目录包含 App 保留的工作区。"
           >
             <select
               value={permission}
@@ -514,7 +514,7 @@ function ChannelDialog({
             >
               <option value="read-only">只读工作空间</option>
               <option value="workspace-write">允许工作区写入</option>
-              {!legacy && <option value="native">完整访问（由 Morrow 请求，审批走 App 的自动审查）</option>}
+              {!legacy && <option value="native">沿用 App 设置</option>}
             </select>
           </Field>
           <div className="form-row">

@@ -1,3 +1,4 @@
+import { CodexCliReviewRunner, type ReviewRunner } from './codex-cli-review.ts';
 import { createServer } from 'node:http';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
@@ -53,7 +54,7 @@ function defaultChannel(projectId: string, name: string, goal: string): Channel 
     status: 'paused',
     intervalMinutes: 60,
     maxRunsPerDay: 8,
-    // New channels follow the Codex App's own permission settings (full access by default).
+    // New channels inherit the App task's permission and approval settings.
     permission: 'native',
     nextRunAt: '',
     lastRunAt: '',
@@ -108,7 +109,15 @@ async function body(req: IncomingMessage) {
     throw new APIError(400, 'JSON 格式无效');
   }
 }
-export async function startServer(options: { home?: string; port?: number; nativeTransport?: NativeTransport } = {}) {
+export async function startServer(
+  options: {
+    home?: string;
+    port?: number;
+    nativeTransport?: NativeTransport;
+    reviewTransport?: NativeTransport;
+    reviewRunner?: ReviewRunner;
+  } = {}
+) {
   const currentHome = join(homedir(), 'Library/Application Support/Morrow');
   const legacyHome = join(homedir(), 'Library/Application Support/NoHuman');
   const home =
@@ -166,7 +175,9 @@ export async function startServer(options: { home?: string; port?: number; nativ
   const engine = new Engine(store, home, token);
   const native = new NativeConversations(store, engine, options.nativeTransport);
   engine.native = native;
-  engine.loop.verification.connect(native.transport, (value) => engine.redact(value));
+  engine.loop.verification.connect(options.reviewTransport ?? native.transport, (value) => engine.redact(value));
+  if (!options.reviewTransport)
+    engine.loop.verification.connectRunner(options.reviewRunner ?? new CodexCliReviewRunner());
   engine.usage.connect(native.transport);
   engine.recover();
   /** A raised or cleared limit lets waiting channels and held reviews re-check the gate on the next tick. */
@@ -603,7 +614,7 @@ export async function startServer(options: { home?: string; port?: number; nativ
               : choice(data.permission, 'permission', ['read-only', 'workspace-write', 'native'] as const),
         };
         if (c.permission === 'native' && c.runtime !== 'codex')
-          throw new APIError(400, '仅 Codex App 支持完整访问权限');
+          throw new APIError(400, '仅 Codex App 支持沿用原生任务权限');
         store.transaction(() => {
           store.put('channels', c);
           engine.audit({
@@ -648,7 +659,7 @@ export async function startServer(options: { home?: string; port?: number; nativ
           if (data.maxRunsPerDay !== undefined)
             updated.maxRunsPerDay = integer(data.maxRunsPerDay, 'maxRunsPerDay', 1, 100);
           if (updated.permission === 'native' && updated.runtime !== 'codex')
-            throw new APIError(400, '仅 Codex App 支持完整访问权限');
+            throw new APIError(400, '仅 Codex App 支持沿用原生任务权限');
           if (updated.runtime !== c.runtime) {
             updated.sessionId = '';
             if (data.model === undefined) updated.model = '';

@@ -69,7 +69,7 @@ export function autonomousPrompt(
 ): string {
   const scope =
     channel.permission === 'native'
-      ? '本频道以完整访问运行：可以修改整个项目、联网、使用 Computer Use 等原生工具；仍需遵守项目规则和上线确认'
+      ? '本频道沿用 Codex App 中此任务的权限设置；实际能否写入、联网或使用工具以 App 当前权限为准，仍需遵守项目规则和上线确认'
       : channel.permission === 'read-only'
         ? '本频道为只读范围：仅调查验证并提出有依据的建议'
         : '本频道为工作区写入范围：可在项目内修改和验证，不联网';

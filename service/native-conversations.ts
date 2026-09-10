@@ -1,3 +1,4 @@
+import { CodexUsageReader } from './codex-usage.ts';
 import { createHash, randomUUID } from 'node:crypto';
 import { mkdirSync, realpathSync } from 'node:fs';
 import { join } from 'node:path';
@@ -17,10 +18,9 @@ import type {
 import { Store, now } from './store.ts';
 import type { Engine } from './engine.ts';
 import { extractReport } from './reports.ts';
-import { applyDesktopPatches } from './codex-desktop-transport.ts';
+import { applyDesktopPatches, CodexDesktopTransport } from './codex-desktop-transport.ts';
 import { CodexNativeTransport } from './codex-native-transport.ts';
-import { CodexSharedTransport } from './codex-shared-transport.ts';
-import { configureCodexBridge, restoreCodexBridge } from './codex-bridge-setup.ts';
+import { restoreCodexBridge, legacyBridgeRunning } from './codex-bridge-setup.ts';
 import { codexAppInstalled, codexAppVersion } from './runtimes.ts';
 import { resolveNativeAttachments } from './native-media.ts';
 
@@ -32,32 +32,27 @@ export type NativeSnapshot = {
   state: Record<string, any>;
 };
 export type NativeWorkOptions = {
-  approvalPolicy: 'on-request' | 'never';
+  /** Empty options mark an automatic turn while preserving every App permission setting. */
+  approvalPolicy?: 'on-request' | 'never';
   approvalsReviewer?: 'auto_review';
   sandboxPolicy?:
     | { type: 'readOnly'; networkAccess: false }
+    /** Accepted only by legacy protocol fixtures; native channels send no permission override. */
+    | { type: 'dangerFullAccess' }
     | {
         type: 'workspaceWrite';
         writableRoots: string[];
         networkAccess: false;
         excludeTmpdirEnvVar: true;
         excludeSlashTmp: true;
-      }
-    /**
-     * What a `native` channel now asks for. Measured on 2026-09-09: sending no policy at all left the
-     * App's own default (workspace-write, network off) in force, which blocked Morrow's own work
-     * interface — the first `agent-cli.ts --context` call failed with `fetch failed` because loopback
-     * was unreachable, and every later call cost an `item/commandExecution/requestApproval` round that
-     * `auto_review` took about a minute to resolve. The user chose full access for this single-user
-     * setup, so Morrow requests it explicitly instead of inheriting whatever the App has.
-     */
-    | { type: 'dangerFullAccess' };
+      };
 };
 type NativeChange =
   | { type: 'patches'; baseRevision: number; revision: number; patches: unknown[] }
   | { type: 'snapshot'; revision: number; conversationState: Record<string, any> };
 export interface NativeTransport {
   readonly backgroundReady?: boolean;
+  readonly connectionMode?: 'app-follower';
   /** Version string the shared native backend reported when connected through it; empty otherwise. */
   readonly runtimeVersion?: string;
   createThread?(cwd: string): Promise<NativeSnapshot>;
@@ -307,17 +302,12 @@ export class NativeConversations {
     this.engine = engine;
     this.transport =
       transport ||
-      new CodexNativeTransport(
-        undefined,
-        new CodexSharedTransport({
-          directory: join(engine.home, 'codex-bridge'),
-          preferredLaunchId: () => store.get<any>('migrations', 'native-host-affinity')?.launchId,
-          preferredThreadIds: () => store.all<Binding>('native_bindings').map((row) => row.threadId),
-          onConnected: (host) =>
-            store.put('migrations', { id: 'native-host-affinity', launchId: host.launchId, connectedAt: now() }),
-          onUsage: (reading) => engine.usage.record(reading, 'poll'),
-        })
-      );
+      (process.env.MORROW_TEST_MODE === '1'
+        ? new CodexNativeTransport(
+            new CodexDesktopTransport({ codexHome: join(engine.home, 'codex') }),
+            new CodexUsageReader({ executable: () => '' })
+          )
+        : new CodexNativeTransport());
   }
   safe<T>(value: T): T {
     if (typeof value === 'string') return this.engine.redact(value) as T;
@@ -465,25 +455,36 @@ export class NativeConversations {
     }
     const value = this.transport.status(),
       connected = value.connected && !connectionError;
-    const backgroundReady = connected && !!this.transport.backgroundReady;
+    const restartRequired = process.env.MORROW_TEST_MODE !== '1' && legacyBridgeRunning(this.engine.home);
+    const backgroundReady = connected && !!this.transport.backgroundReady && !restartRequired;
     const backgroundConfigured = this.store.get<any>('migrations', 'codex-background-bridge')?.enabled === true;
     const appInstalled = codexAppInstalled();
     const appVersion = await this.cachedAppVersion();
     const runtimeVersion = (connected && this.transport.runtimeVersion) || '';
+    const bindings = this.store.all<Binding>('native_bindings');
+    const readyThreadCount = connected
+      ? bindings.filter((binding) => this.transport.threadStatus?.(binding.threadId).ready).length
+      : 0;
     const detail =
       connectionError ||
-      (!connected
-        ? value.lastError || '请启动 Codex App 后重新连接。'
-        : backgroundReady
-          ? '已连接 Codex App 的同一原生后台，可直接新建和恢复对话。'
-          : backgroundConfigured
-            ? '后台桥接已配置，等待 Codex App 重新打开一次。'
-            : '已连接 Codex App 已加载的任务；后台连接尚未设置。');
+      (restartRequired
+        ? '旧转接仍随当前 App 运行。设置已撤销；请在当前任务结束后重开 Codex App。'
+        : !connected
+          ? value.lastError || '请启动 Codex App 后重新连接。'
+          : this.transport.connectionMode === 'app-follower'
+            ? '已连接 Codex App。请在 App 创建并打开同一项目的任务，再关联到 Morrow；自动工作沿用 App 权限。'
+            : backgroundReady
+              ? '已连接原生测试后台。'
+              : '已连接 Codex App 已加载的任务。');
     return {
       available: connected,
       connected,
       backgroundReady,
       backgroundConfigured,
+      connectionMode: this.transport.connectionMode,
+      boundThreadCount: bindings.length,
+      readyThreadCount,
+      restartRequired,
       appInstalled,
       ...(appVersion ? { appVersion } : {}),
       ...(runtimeVersion ? { runtimeVersion } : {}),
@@ -500,38 +501,28 @@ export class NativeConversations {
     };
   }
   configureBackground() {
-    const result = configureCodexBridge(this.engine.home);
-    this.store.transaction(() => {
-      this.store.put('migrations', {
-        id: 'codex-background-bridge',
-        enabled: true,
-        configuredAt: now(),
-        launcher: result.launcher,
-      });
-      this.engine.audit({
-        projectId: '',
-        actor: 'human',
-        action: 'native.background-configured',
-        text: '已配置 Codex App 原生后台桥接，等待 App 下次启动生效。',
-        after: { launcher: result.launcher },
-      });
-    });
-    return result;
+    throw new APIError(410, '旧后台转接已退役。请在 Codex App 中创建同一项目的任务，再回到 Morrow 关联。');
   }
-  restoreBackground() {
+  restoreBackground(actor: 'human' | 'system' = 'human') {
     const result = restoreCodexBridge(this.engine.home);
-    this.store.transaction(() => {
-      this.store.put('migrations', { id: 'codex-background-bridge', enabled: false, restoredAt: now() });
-      this.engine.audit({
-        projectId: '',
-        actor: 'human',
-        action: 'native.background-restored',
-        text: '已恢复 Codex App 原始启动设置，当前会话未中断。',
+    if (
+      actor === 'human' ||
+      result.restartRequired ||
+      this.store.get<any>('migrations', 'codex-background-bridge')?.enabled
+    )
+      this.store.transaction(() => {
+        this.store.put('migrations', { id: 'codex-background-bridge', enabled: false, restoredAt: now() });
+        this.engine.audit({
+          projectId: '',
+          actor,
+          action: 'native.background-restored',
+          text: '已恢复 Codex App 原始启动设置，当前会话未中断。',
+        });
       });
-    });
     return result;
   }
   async start() {
+    if (process.env.MORROW_TEST_MODE !== '1') this.restoreBackground('system');
     for (const entry of this.store.all<Outbox>('native_outbox').filter((entry) => entry.state === 'pending'))
       this.store.put('native_outbox', {
         ...entry,
@@ -842,7 +833,7 @@ export class NativeConversations {
         throw new APIError(409, '请先暂停频道并等待本轮完成');
       const status = await this.status();
       if (!status.capabilities.create || !this.transport.createThread)
-        throw new APIError(409, '完成一次 Codex 后台连接设置后，即可在 Morrow 新建对话。');
+        throw new APIError(409, '请在 Codex App 中创建同一项目的任务、发送首条消息，再回到 Morrow 关联。');
       this.engine.audit({
         projectId: project.id,
         channelId: id,
@@ -1051,14 +1042,15 @@ export class NativeConversations {
     const binding = this.bound(id);
     const key = `${id}:${requestId}`;
     const workOptions: NativeWorkOptions | undefined =
-      source === 'schedule'
-        ? {
-            approvalPolicy: 'on-request',
-            approvalsReviewer: 'auto_review',
-            sandboxPolicy:
-              channel.permission === 'native'
-                ? { type: 'dangerFullAccess' }
-                : channel.permission === 'read-only'
+      source !== 'schedule'
+        ? undefined
+        : channel.permission === 'native'
+          ? {}
+          : {
+              approvalPolicy: 'on-request',
+              approvalsReviewer: 'auto_review',
+              sandboxPolicy:
+                channel.permission === 'read-only'
                   ? { type: 'readOnly', networkAccess: false }
                   : {
                       type: 'workspaceWrite',
@@ -1067,8 +1059,7 @@ export class NativeConversations {
                       excludeTmpdirEnvVar: true,
                       excludeSlashTmp: true,
                     },
-          }
-        : undefined;
+            };
     const images = resolveNativeAttachments(this.store, id, attachments);
     const attachmentIds = attachments.map((item) => item.id);
     const textHash = createHash('sha256').update(text).digest('hex');
@@ -1330,6 +1321,8 @@ export class NativeConversations {
   async startScheduled(id: string, scheduled: boolean) {
     const { channel, project } = this.channel(id);
     const binding = this.bound(id);
+    if (process.env.MORROW_TEST_MODE !== '1' && legacyBridgeRunning(this.engine.home))
+      throw new APIError(409, '旧转接仍在运行；请在当前任务结束后重开 Codex App，再开始自动工作。');
     if (this.starting.has(id) || this.scheduled.has(id)) throw new APIError(409, '该频道正在执行原生轮次');
     this.starting.add(id);
     try {
@@ -1345,9 +1338,8 @@ export class NativeConversations {
         }
         throw new APIError(409, 'Codex App 正在执行此任务，请等待当前轮次完成');
       }
-      // A narrowed channel may only run inside a native sandbox we can verify against its saved
-      // scope. A `native` channel asks for full access instead of inheriting, so any sandbox type
-      // the protocol names is acceptable there; an unrecognized or missing one still refuses.
+      // Native channels inherit App settings. Narrowed channels also verify the existing scope,
+      // because the App merges its retained workspace roots into workspaceWrite requests.
       const sandbox =
         snapshot.state.currentPermissions?.sandboxPolicy?.type ||
         snapshot.state.latestThreadSettings?.sandboxPolicy?.type ||
@@ -1378,7 +1370,7 @@ export class NativeConversations {
         channelId: id,
         runtime: 'codex',
         model: snapshot.state.model || snapshot.state.latestThreadSettings?.model || '',
-        permission: 'native',
+        permission: channel.permission,
         executionOwner: 'codex-app',
         source: 'morrow-schedule',
         trigger: scheduled ? 'schedule' : 'manual',

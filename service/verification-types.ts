@@ -46,6 +46,8 @@ export type Verification = {
   threadId?: string;
   turnId?: string;
   model?: string;
+  /** CLI reviews have an actual session ID but may not expose a native turn ID. */
+  executionOwner?: 'codex-cli';
   interruptPending?: boolean;
   /** A queued review held by the usage gate is not re-attempted before this time. */
   retryAt?: string;

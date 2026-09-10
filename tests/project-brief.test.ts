@@ -145,7 +145,7 @@ test('every turn reads the brief: agent context and both prompt paths carry it a
     assert.deepEqual(
       context.nativeCapabilities.map((entry: { id: string; status: string }) => [entry.id, entry.status]),
       [
-        ['in-app-browser', 'unavailable'],
+        ['in-app-browser', 'available'],
         ['chrome-browser', 'untested'],
         ['computer-use', 'available'],
         ['native-memory', 'partial'],

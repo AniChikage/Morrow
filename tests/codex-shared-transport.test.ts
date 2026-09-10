@@ -438,11 +438,8 @@ test('native rejections remain definitive and creating a task does not start a t
   }
 });
 
-// A renamed installation may retain its old state directory or use MORROW_HOME.
-// Discover through the production constructor, then recover an actual task from
-// the isolated socket; selecting a default directory would miss this receipt.
-test('native task discovery follows the service home after a rename', async () => {
-  const f = await fixture({ codexHome: process.env.CODEX_HOME || join(homedir(), '.codex') });
+test('production follower ignores legacy shared-host receipts and cannot create App tasks', async () => {
+  const f = await fixture();
   const home = join(f.dir, 'NoHuman'),
     directory = join(home, 'codex-bridge');
   mkdirSync(directory, { recursive: true, mode: 0o700 });
@@ -450,17 +447,11 @@ test('native task discovery follows the service home after a rename', async () =
   const store = new Store(join(home, 'workspace.sqlite'));
   const native = new NativeConversations(store, { home } as Engine);
   try {
-    const snapshot = await native.transport.readThread(id);
-    assert.equal(native.transport.backgroundReady, true);
-    assert.equal(native.transport.runtimeVersion, 'fixture/1');
-    assert.equal(snapshot.threadId, id);
-    assert.equal(snapshot.state.turns[0].items[0].text, 'original');
-    assert.equal(store.get<any>('migrations', 'native-host-affinity')?.launchId, 'fixture-launch');
-    assert.equal(f.messages.filter((message) => message.method === 'thread/resume').length, 1);
-    assert.equal(
-      f.messages.some((message) => message.method === 'thread/start' || message.method === 'turn/start'),
-      false
-    );
+    assert.equal(native.transport.connectionMode, 'app-follower');
+    assert.equal(native.transport.createThread, undefined);
+    assert.notEqual(native.transport.status().socketPath, f.client.options.host?.socketPath);
+    assert.equal(store.get<any>('migrations', 'native-host-affinity'), undefined);
+    assert.equal(f.messages.length, 0);
   } finally {
     native.close();
     store.close();

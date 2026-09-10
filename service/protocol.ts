@@ -152,7 +152,12 @@ export type NativeConnectionStatus = {
   /** Version the shared native backend reported in its handshake; known only once the bridge is in effect. */
   runtimeVersion?: string;
   backgroundReady?: boolean;
+  /** Legacy installation record; never authorizes installing the retired bridge. */
   backgroundConfigured?: boolean;
+  connectionMode?: 'app-follower';
+  boundThreadCount?: number;
+  readyThreadCount?: number;
+  restartRequired?: boolean;
   /** Latest account usage reading known to the service, when any. */
   usage?: UsageStatus;
   capabilities: { list: boolean; read: boolean; send: boolean; create: boolean; interrupt: boolean; respond: boolean };

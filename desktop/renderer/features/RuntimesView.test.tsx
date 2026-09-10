@@ -62,15 +62,13 @@ test('CLI detection stays separate from authentication and details are progressi
   await userEvent.setup().click(row);
   const details = within(screen.getByRole('region', { name: 'Codex 详情' }));
   expect(details.getByText(installed.path)).toBeTruthy();
-  expect(
-    details.getByText('自动轮次默认以完整访问运行（由 Morrow 请求）；每个频道可单独收紧为只读或工作区编辑。')
-  ).toBeTruthy();
+  expect(details.getByText('自动轮次默认沿用 App 任务设置；每个频道可单独收紧为只读或工作区编辑。')).toBeTruthy();
   expect(details.getByText(/登录状态与配额在实际执行时验证/)).toBeTruthy();
   expect(row.getAttribute('aria-expanded')).toBe('true');
   expect(screen.queryByRole('button', { name: /安装|登录|配置/ })).toBeNull();
 });
 
-test('Codex reports the live App connection and bundle version separately from its unused terminal executable', async () => {
+test('Codex reports the live App connection and bundle version separately from the installed CLI used for review', async () => {
   const { props, api } = runtimeProps();
   api.getNativeStatus.mockResolvedValue(
     status({ connected: true, detail: '原生会话连接已建立', appVersion: '1.0-test', runtimeVersion: 'app-server/7' })
@@ -96,9 +94,9 @@ test('the checklist marks the first unmet step and names installing, then openin
   render(<RuntimesView {...props} />);
   await checklist();
   expect(step('Codex App 已安装')).toBe('next');
-  expect(step('App 原生后台运行中')).toBe('pending');
-  expect(step('后台桥接已配置')).toBe('pending');
-  expect(step('桥接已生效')).toBe('pending');
+  expect(step('App 已连接')).toBe('pending');
+  expect(step('任务已关联')).toBe('pending');
+  expect(step('关联任务可用')).toBe('pending');
   expect(nextStep().textContent).toBe('下一步安装并登录 Codex App');
   expect(screen.queryByRole('button', { name: /启用后台连接|撤销设置/ })).toBeNull();
   cleanup();
@@ -107,92 +105,61 @@ test('the checklist marks the first unmet step and names installing, then openin
   const list = within(await checklist());
   expect(step('Codex App 已安装')).toBe('done');
   expect(list.getByText('1.2.3')).toBeTruthy();
-  expect(step('App 原生后台运行中')).toBe('next');
+  expect(step('App 已连接')).toBe('next');
   expect(nextStep().textContent).toBe('下一步打开 Codex App');
   expect(screen.queryByRole('button', { name: /启用后台连接|撤销设置/ })).toBeNull();
 });
 
-test('enabling the bridge calls the desktop API through the mutation pipeline, rereads the status and shows the receipt', async () => {
+test('a connected App guides task association without enabling a launcher', async () => {
   const { props, api } = runtimeProps();
-  api.getNativeStatus
-    .mockResolvedValueOnce(status({ connected: true }))
-    .mockResolvedValue(status({ connected: true, backgroundConfigured: true }));
-  const configure = vi.fn(async () => ({ restartRequired: true, detail: '桥接已写入，重开 App 后生效。' }));
-  props.api.setupNativeBackground = configure;
-  props.api.restoreNativeBackground = vi.fn();
+  props.api.setupNativeBackground = vi.fn();
+  api.getNativeStatus.mockResolvedValue(
+    status({ connected: true, connectionMode: 'app-follower', boundThreadCount: 0, readyThreadCount: 0 })
+  );
   render(<RuntimesView {...props} />);
   await checklist();
-  expect(step('App 原生后台运行中')).toBe('done');
-  expect(step('后台桥接已配置')).toBe('next');
-  expect(nextStep().textContent).toBe('下一步启用后台连接');
-  expect(screen.queryByRole('button', { name: '撤销设置' })).toBeNull();
-  await userEvent.setup().click(screen.getByRole('button', { name: '启用后台连接' }));
-  await waitFor(() => expect(configure).toHaveBeenCalledTimes(1));
-  expect(props.onMutate).toHaveBeenCalledTimes(1);
-  expect(await screen.findByText('后台连接已设置，请在当前任务结束后重新打开一次 Codex App')).toBeTruthy();
-  expect(api.getNativeStatus).toHaveBeenCalledTimes(2);
-  expect(screen.getByRole('status').textContent).toBe('桥接已写入，重开 App 后生效。');
-  expect(step('后台桥接已配置')).toBe('done');
-  expect(step('桥接已生效')).toBe('next');
+  expect(step('任务已关联')).toBe('next');
   expect(screen.queryByRole('button', { name: '启用后台连接' })).toBeNull();
-  expect(screen.getByRole('button', { name: '撤销设置' }).className).toContain('button-ghost');
-  expect(props.api.restoreNativeBackground).not.toHaveBeenCalled();
+  await userEvent.setup().click(screen.getByRole('button', { name: '去关联任务' }));
+  expect(props.onNavigate).toHaveBeenCalledWith({
+    kind: 'channel',
+    id: props.snapshot.channels.find((c) => c.runtime === 'codex')!.id,
+  });
+  expect(props.api.setupNativeBackground).not.toHaveBeenCalled();
   expect(api.openNativeApp).not.toHaveBeenCalled();
 });
-
-test('a ready bridge shows the backend version and a ghost revoke action that also rereads the status', async () => {
+test('associated tasks must actually be available before the checklist says ready', async () => {
   const { props, api } = runtimeProps();
-  const ready = status({
-    connected: true,
-    appVersion: '1.2.3',
-    backgroundConfigured: true,
-    backgroundReady: true,
-    runtimeVersion: 'codex-app-server/0.50.0',
-  });
-  api.getNativeStatus
-    .mockResolvedValueOnce(ready)
-    .mockResolvedValue(status({ ...ready, backgroundConfigured: false, runtimeVersion: undefined }));
-  const restore = vi.fn(async () => ({ restartRequired: true, detail: '已撤销后台启动设置。' }));
-  props.api.setupNativeBackground = vi.fn();
-  props.api.restoreNativeBackground = restore;
+  api.getNativeStatus.mockResolvedValue(status({ connected: true, boundThreadCount: 1, readyThreadCount: 0 }));
+  const view = render(<RuntimesView {...props} />);
+  await checklist();
+  expect(step('任务已关联')).toBe('done');
+  expect(step('关联任务可用')).toBe('next');
+  expect(nextStep().textContent).toContain('在 Codex App 打开已关联任务');
+  view.unmount();
+  api.getNativeStatus.mockResolvedValue(status({ connected: true, boundThreadCount: 1, readyThreadCount: 1 }));
   render(<RuntimesView {...props} />);
-  const list = within(await checklist());
-  for (const label of ['Codex App 已安装', 'App 原生后台运行中', '后台桥接已配置', '桥接已生效'])
-    expect(step(label)).toBe('done');
-  expect(list.getByText('codex-app-server/0.50.0')).toBeTruthy();
-  expect(nextStep().textContent).toBe('下一步已就绪撤销设置');
-  const user = userEvent.setup();
-  await user.click(screen.getByRole('button', { name: 'Codex，App 已连接，查看详情' }));
-  expect(within(screen.getByRole('region', { name: 'Codex 详情' })).getByText('codex-app-server/0.50.0')).toBeTruthy();
-  const revoke = screen.getByRole('button', { name: '撤销设置' });
-  expect(revoke.className).toContain('button-ghost');
-  await user.click(revoke);
-  await waitFor(() => expect(restore).toHaveBeenCalledTimes(1));
-  expect(props.onMutate).toHaveBeenCalledTimes(1);
-  expect(await screen.findByRole('button', { name: '启用后台连接' })).toBeTruthy();
-  expect(api.getNativeStatus).toHaveBeenCalledTimes(2);
-  expect(screen.getByRole('status').textContent).toBe('已撤销后台启动设置。');
-  expect(step('后台桥接已配置')).toBe('next');
-  expect(props.api.setupNativeBackground).not.toHaveBeenCalled();
+  await checklist();
+  expect(step('关联任务可用')).toBe('done');
+  expect(nextStep().textContent).toContain('已就绪');
 });
-
-test('SSH mode hides both bridge buttons and points at the machine that runs the App', async () => {
+test('legacy cleanup rereads status, while SSH only explains the host-side task setup', async () => {
   const { props, api } = runtimeProps();
-  props.api.setupNativeBackground = vi.fn();
-  props.api.restoreNativeBackground = vi.fn();
-  api.getNativeStatus.mockResolvedValue(status({ connected: true }));
-  render(<RuntimesView {...props} connection={remote} />);
+  props.api.restoreNativeBackground = vi.fn(async () => ({ restartRequired: false, detail: '已清理旧转接' }));
+  api.getNativeStatus
+    .mockResolvedValueOnce(status({ connected: true, backgroundConfigured: true }))
+    .mockResolvedValue(status({ connected: true }));
+  render(<RuntimesView {...props} />);
   await checklist();
-  expect(nextStep().textContent).toBe('下一步后台桥接在运行 Codex App 的那台 Mac 上设置或撤销。');
-  expect(screen.queryByRole('button', { name: /启用后台连接|撤销设置/ })).toBeNull();
+  await userEvent.setup().click(screen.getByRole('button', { name: '清理旧转接设置' }));
+  await waitFor(() => expect(props.api.restoreNativeBackground).toHaveBeenCalledTimes(1));
+  expect(api.getNativeStatus).toHaveBeenCalledTimes(2);
   cleanup();
-  api.getNativeStatus.mockResolvedValue(status({ connected: true, backgroundConfigured: true, backgroundReady: true }));
+  api.getNativeStatus.mockResolvedValue(status({ connected: true, backgroundConfigured: true }));
   render(<RuntimesView {...props} connection={remote} />);
   await checklist();
-  expect(nextStep().textContent).toBe('下一步已就绪后台桥接在运行 Codex App 的那台 Mac 上设置或撤销。');
-  expect(screen.queryByRole('button', { name: /启用后台连接|撤销设置/ })).toBeNull();
-  expect(props.api.setupNativeBackground).not.toHaveBeenCalled();
-  expect(props.api.restoreNativeBackground).not.toHaveBeenCalled();
+  expect(screen.getByText('请在执行主机的 Codex App 中创建并打开任务。')).toBeTruthy();
+  expect(screen.queryByRole('button', { name: '清理旧转接设置' })).toBeNull();
 });
 
 test('an unreachable service shows no checklist instead of a guessed next step', async () => {

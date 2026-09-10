@@ -6,7 +6,7 @@
 
 | 文档 | 内容 |
 | --- | --- |
-| [开始使用](GETTING-STARTED.md) | 安装、Codex 后台连接、第一个项目和日常操作。 |
+| [开始使用](GETTING-STARTED.md) | 安装、关联 Codex App 任务、第一个项目和日常操作。 |
 | [原生运行时](RUNTIMES.md) | Codex 的接入方式、默认权限、实测过的原生能力与能力边界，以及旧运行时记录的处理。 |
 | [升级与数据迁移](UPGRADING.md) | 旧 NoHuman 数据、任务连续性、更新与备份。 |
 
@@ -35,3 +35,7 @@
 - [早期服务协议](contract.md)、[SwiftUI 验收](VALIDATION.md)、[Electron 验收](ELECTRON-VALIDATION.md)。
 - [0.3.0](PRODUCT-V030-VALIDATION.md)、[0.4.0](PRODUCT-V040-VALIDATION.md)、[0.4.3](ACCEPTANCE-0.4.3.md)。
 - [0.6.0](PRODUCT-V060-VALIDATION.md)、[0.7.0](PRODUCT-V070-VALIDATION.md)、[0.7.1](PRODUCT-V071-VALIDATION.md)、[0.8.0](PRODUCT-V080-VALIDATION.md)。
+
+- [Codex 两种连接方案实测](CODEX-CONNECTION-VALIDATION-2026-09-09.md)：follower 与直接共享后台的真实结果及边界。
+
+- [0.9.5 follower 迁移](FOLLOWER-MIGRATION-V095.md)：实现、真机验收、安装状态与下一步。

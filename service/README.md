@@ -23,7 +23,7 @@ MORROW_HOME="$HOME/.local/share/morrow" MORROW_PORT=43821 npm start
 | `MORROW_NODE` | Electron 开发模式下可选的 Node 可执行文件路径。 |
 | `MORROW_APP` | 登录启动脚本使用的已安装 App 路径。 |
 
-旧 `NOHUMAN_HOME`、`NOHUMAN_PORT`、`NOHUMAN_NODE`、`NOHUMAN_APP` 保留兼容；同时设置时，新变量优先。原生桥接从实际数据目录下的 `codex-bridge/` 发现后台，明确指定或沿用旧目录时不会另找一个空的新目录。
+旧 `NOHUMAN_HOME`、`NOHUMAN_PORT`、`NOHUMAN_NODE`、`NOHUMAN_APP` 保留兼容；同时设置时，新变量优先。`codex-bridge/` 只保留旧转接安装回执，用于安全撤销；生产执行不再从中发现后台。
 
 Electron 优先连接已经运行的服务，只在本机端口未运行服务时启动打包的 daemon。关闭界面不会停止该 daemon；安装或 UI 升级不会自动重启它。可选登录启动：
 
@@ -70,26 +70,17 @@ MORROW_HOME="$HOME/.local/share/morrow" npm start
 
 ### Codex App
 
-`codex-app-host-bridge.ts` 保留 App 的启动参数和配置，将其启动的原生后台通过私有 Unix WebSocket 提供给同用户客户端。Morrow 连接这个后台，不另起一个 `codex exec` 或替代后台。
+生产 `CodexNativeTransport` 只使用 App 的 owner/follower IPC，不替换 `CODEX_CLI_PATH`，不拉起替代 App 后台。旧启动转接程序及共享 transport 保留为历史隔离夹具，生产入口不会选择它们，配置接口返回 410。
 
-首次在桌面配置后台连接后，需要在当前任务结束时重开一次 Codex App。生效后，Morrow 可以创建或冷恢复原生任务，无需用户逐条打开 App 页面。切换前的 owner/follower IPC 作为受限兼容路径，依赖 App 已加载的任务，不支持新的自动工作能力。
+- 在 App 为同一目录创建任务、发送首条消息并保持打开，再在 Morrow 明确关联。Morrow 不自动创建、分叉或替换原生任务。
+- 普通对话同步文字、图片、原生请求和运行记录；用户运行中指导使用 steering。自动轮次发现任务已忙时返回等待，不能自动变成 steering 干扰手动轮次。
+- `native` 自动轮次传递空工作选项，只标识自动请求，不改变 App 的沙箱、审批策略或复核者。
+- 只读/工作区选项保留 `on-request` + `auto_review` 和明确沙箱；发送 `permissions:null` 以配合显式沙箱。App 可能合并已有目录，启动前仍检查当前权限，不能声称只含传入目录。
+- 独立复核走官方 `codex exec` 只读临时会话，使用专用 supervisor 处理取消、硬超时及父服务退出。只有实际 CLI 工具事件、正常终止和退出码均有效时才能通过。CLI 未提供轮次 ID 时保持为空，不编造原生 ID。
+- 额度通过短暂的官方 app-server 客户端读取 `account/rateLimits/read`，不创建任务或模型轮次；失败保持未知，沿用原预算门禁。
+- 保留绑定、历史、待核对回执、原生审批/问答与附件规则。发送结果未知时先同步核对，不自动重发。
 
-- 每个频道明确绑定一个本项目目录下的原生任务，只同步已绑定任务。
-- 普通对话传递原始文字、图片和请求 ID；运行中通过原生 steering 追加指导。
-- 自动轮次使用同一任务，按频道权限附带一套明确的沙箱与审批设置；模型与登录仍由原生任务管理。启动前先核对原生任务当前沙箱是否符合该范围，完整访问只要求是协议已知的沙箱类型。
-
-  | 频道权限 | `turn/start` 附带的设置 |
-  | --- | --- |
-  | 完整访问（默认，`native`） | `approvalPolicy: on-request` + `approvalsReviewer: auto_review` + `sandboxPolicy: {type: dangerFullAccess}`。2026-09-09 实测：不附沙箱时 App 默认的 workspace-write（断网）会挡住 Morrow 自己的工作接口，并让每条命令多走一次自动审批。该沙箱同时以 App 自己在结果里使用的字段名 `sandbox` 再发一次（见 `turnWorkParams`）；两个字段名中后台实际读哪一个尚未实测，因此只对这一种沙箱加别名，收紧的范围线上形状完全不变。 |
-  | 只读（`read-only`） | `approvalPolicy: on-request` + `approvalsReviewer: auto_review` + `sandboxPolicy: {type: readOnly, networkAccess: false}`。 |
-  | 工作区写入（`workspace-write`） | 同上审批设置 + `sandboxPolicy: {type: workspaceWrite, writableRoots: [项目路径], networkAccess: false, excludeTmpdirEnvVar: true, excludeSlashTmp: true}`。 |
-  | 独立复核轮次（不是频道设置） | `approvalPolicy: never` + 只读沙箱、断网，不受完整访问改动影响。 |
-
-- 审批与结构化问答使用原生待处理请求 ID；不支持的内容明确交由 App 处理。
-- 支持 PNG/JPEG/WebP/GIF：单张最多 10 MiB，每批最多 5 张、20 MiB。附件使用按频道隔离的私有副本与摘要校验。
-- 断线时历史仍可读；同一请求 ID 的内容不能改变。丢失确认后保留未知回执，并按原生消息 ID 核对。
-
-连接依赖 Codex App 的私有协议，不能承诺任意未来版本兼容。后台存在与某条任务就绪是不同状态；多后台归属不明确时不会猜测目标。
+服务启动撤销精确匹配的旧转接环境变量及登录项；不终止 App，不覆盖其他自定义配置。旧转接进程仍在运行时，状态与自动工作门禁要求在当前任务结束后重开 App。后台连接就绪与某个任务已加载是两回事，运行时页分别展示。
 
 ### 已停止支持的运行时
 
@@ -99,7 +90,7 @@ MORROW_HOME="$HOME/.local/share/morrow" npm start
 
 ## 持续工作与反馈
 
-接入现有文件夹后，新项目准备一个暂停的「自主推进」频道，默认完整访问（由 Morrow 请求，审批走 App 的自动审查）、每日最多 32 轮。接入、绑定和保存配置本身不启动模型工作。示例项目不能执行。
+接入现有文件夹后，新项目准备一个暂停的「自主推进」频道，默认沿用 App 任务权限与审批设置、每日最多 32 轮。接入、绑定和保存配置本身不启动模型工作。示例项目不能执行。
 
 自动轮次获得项目目标、方向、共享看板、已有认识、相关经验和人工指导，以及 `service/native-capabilities.ts` 里那份 2026-09-09 实测的原生能力清单（`context.nativeCapabilities` 和提示词里的一行）。Codex 通过运行范围内的工作接口维护项目；下一步可选择继续、等待或提问。用户手动暂停优先于反馈唤醒。
 
