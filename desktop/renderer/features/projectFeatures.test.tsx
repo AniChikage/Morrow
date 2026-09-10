@@ -365,7 +365,8 @@ describe('channels are execution sources, not separate boards', () => {
     expect(screen.getByRole('heading', { name: '工作日志' })).toBeTruthy();
     expect(screen.queryByRole('tab')).toBeNull();
     expect(screen.queryByRole('tab', { name: /发现|功能/ })).toBeNull();
-    await userEvent.setup().click(screen.getByRole('button', { name: '项目功能看板' }));
+    await userEvent.setup().click(screen.getByRole('button', { name: '频道选项' }));
+    await userEvent.setup().click(screen.getByRole('menuitem', { name: '项目功能看板' }));
     expect(props.onNavigate).toHaveBeenCalledWith({ kind: 'project', id: 'project-atlas' });
   });
 
@@ -383,7 +384,7 @@ describe('channels are execution sources, not separate boards', () => {
     expect(within(screen.getByRole('complementary')).getByText('1 个旧频道，历史可读')).toBeTruthy();
   });
 
-  it('never opens a native CLI for a retired-runtime channel, even when the rest of the project is idle', () => {
+  it('never opens a native CLI for a retired-runtime channel, even when the rest of the project is idle', async () => {
     const state = snapshot();
     state.projects[0].isDemo = false;
     state.channels[0].runtime = 'claude';
@@ -401,8 +402,10 @@ describe('channels are execution sources, not separate boards', () => {
     ];
     const { props, api } = featureProps({ snapshot: state });
     render(<ChannelView {...props} id="channel-system" />, { wrapper: TestProviders });
-    const handoff = screen.getByRole('button', { name: '在 Codex App 中打开对话' }) as HTMLButtonElement;
-    expect(handoff.disabled).toBe(true);
+    await userEvent.setup().click(screen.getByRole('button', { name: '频道选项' }));
+    const handoff = screen.getByRole('menuitem', { name: '在 Codex App 中打开对话' });
+    expect(handoff.getAttribute('aria-disabled')).toBe('true');
+    await userEvent.setup().keyboard('{Escape}');
     expect(screen.getByRole('note').textContent).toContain('已停止支持');
     expect(screen.getByRole('article', { name: /轮次/ })).toBeTruthy();
     expect(api.openNativeSession).not.toHaveBeenCalled();

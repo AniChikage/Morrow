@@ -83,7 +83,7 @@ export default function App() {
     route?.kind === 'project'
       ? snapshot.projects.find((p) => p.id === route.id)
       : snapshot.projects.find((p) => p.id === (finding?.projectId || channel?.projectId));
-  const canInspect = !!project && route?.kind !== 'runs' && route?.kind !== 'runtimes';
+  const canInspect = !!project && !['runs', 'runtimes', 'channel'].includes(route?.kind || '');
   const toggleSidebar = useCallback(
     () =>
       setSidebar((v) => {
