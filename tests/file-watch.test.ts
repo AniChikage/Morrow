@@ -231,6 +231,39 @@ test('object key ordering is irrelevant for selected file values while array ord
   }
 });
 
+test('overflowing JSON numbers are errors, not silently persisted as null, and valid data recovers', async () => {
+  const s = await startIsolated();
+  try {
+    const { call } = grantFor(s, { projectId: s.project.id, channelId: s.channel.id });
+    const path = join(s.path, 'metrics.json');
+    writeFileSync(path, '{"selected":{"n":1e400}}');
+    const w = await call('watch.create', input('metrics.json', '/selected'));
+    await s.engine.loop.poll(w.id);
+    await s.engine.loop.poll(w.id);
+    assert.match(s.store.get<any>('loop_watches', w.id).error, /非有限数值/);
+    assert.equal(s.store.all('loop_evidence').length, 0);
+    assert.equal(s.store.all<any>('events').filter((e) => e.action === 'feedback.unavailable').length, 1);
+    await call('wait', { watchIds: [w.id], releaseIds: [], deadline: future(), reason: '等待有效数据' });
+    writeFileSync(path, '{"selected":{"n":null}}');
+    await s.engine.loop.poll(w.id);
+    assert.equal(s.store.get<any>('loop_watches', w.id).error, undefined);
+    assert.deepEqual(s.store.all<any>('loop_evidence')[0].value, { n: null });
+    assert.equal(s.store.get<any>('loop_waits', s.channel.id).status, 'ready');
+    const empty = await call('watch.create', input('metrics.json', ''));
+    for (const raw of ['-1e400', '{"selected":1,"unselected":[1e400]}']) {
+      writeFileSync(path, raw);
+      await s.engine.loop.poll(empty.id);
+      assert.match(s.store.get<any>('loop_watches', empty.id).error, /非有限数值/);
+      assert.equal(s.store.all('loop_evidence').length, 1);
+    }
+    writeFileSync(path, '{"selected":{"n":"1e400"}}');
+    await s.engine.loop.poll(w.id);
+    assert.deepEqual(s.store.all<any>('loop_evidence').at(-1).value, { n: '1e400' });
+  } finally {
+    await s.cleanup();
+  }
+});
+
 test('file watches reject escape, symlink components, mixed sources and later symlink replacements', async () => {
   const s = await startIsolated();
   try {

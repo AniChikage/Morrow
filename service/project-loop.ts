@@ -152,8 +152,12 @@ function readWatchFile(projectPath: string, path: string, pointer: string) {
       raw = bytes.toString('utf8');
     let data: unknown;
     try {
-      data = JSON.parse(raw);
-    } catch {
+      data = JSON.parse(raw, (_key, value: unknown) => {
+        if (typeof value === 'number' && !Number.isFinite(value)) throw new RangeError('观察文件包含非有限数值');
+        return value;
+      });
+    } catch (error) {
+      if (error instanceof RangeError) throw error;
       if (pointer) throw new Error('文件不是 JSON，不能使用 pointer');
       data = raw;
     }
