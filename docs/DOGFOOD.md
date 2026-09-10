@@ -11,7 +11,16 @@
 
 `phase-0` 保存人工复审的上游改动；需要时在 `agent/work` 执行 `git merge phase-0`。冲突以 `phase-0` 为准，并记录处理内容。每步小提交，不推送、不重写历史。合并到 `main`、构建与安装由人处理。
 
-等 `phase-0` 的本地脚本发布能力合入后，使用 `release.propose` 的 `local-script` 目标、`scripts/release-local.sh` 和根目录 `release-manifest.json`（commit、branch、version、sourceDigest）。这些是约定的后续发布接口，未合入前不编造 HTTP 接收端，也不直接运行发布脚本。批准对应封存的明确版本。发布后的 `.morrow/metrics.json` 可接入 file 观测；记录实际结果，不假定指标已存在。
+本地脚本发布能力已从 `phase-0` 合入。使用 `release.propose` 的 `local-script` 目标、人工维护的 `scripts/release-local.sh` 和根目录 `release-manifest.json`（commit、branch、version、sourceDigest）。不直接执行或修改发布脚本；人在 Morrow 批准后，发布接口执行封存的脚本。
+
+清单是生成的发布产物，由根目录 `.gitignore` 的 `/release-manifest.json` 排除，不提交到源码中。`sourceVersion` 会计入 Git 已跟踪及未忽略的文件；若清单也参与摘要，写入 `sourceDigest` 就会改变它自身要记录的版本。准备顺序如下：
+
+1. 在 `agent/work` 完成源码修改、验证并提交，确认工作树干净且所有待发布输入均已提交。
+2. 用 `service/source-version.ts` 的 `sourceVersion` 读取源码摘要；清单填写同次读取的完整 `head` 为 commit、当前分支、该提交的 package.json 版本和 digest。不要用提交号或自行拼接的散列替代源码摘要。
+3. 写清单后再次读取源码摘要，确认与清单相同；清单内容变化不能遮蔽真实源码变化。提议时服务会另行复制清单和脚本，封存各自的 SHA-256。
+4. 核对每个发布事项都有当前源码版本的独立复核。旧版本通过记录保留，但不能替代当前版本的发布门禁；源码再变更时重新核验。
+
+批准后脚本在临时工作树检出清单提交，核对版本，运行依赖安装、typecheck、默认并发服务测试、构建及安装。开发阶段单并发检查通过，不保证高负载下脚本中的默认并发测试不会超时。脚本校验 sourceDigest 格式但不重算源码摘要，因此提议前的版本一致性核对仍必需。脚本不重启运行中的服务：由人在本轮结束后暂停频道、退出应用并停止旧服务，再重新打开。发布后的 `.morrow/metrics.json` 可接入 file 观测；指标导出失败不等于安装失败，需分别查看回执和文件。
 
 ## 两条护栏
 
