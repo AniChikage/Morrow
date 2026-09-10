@@ -57,12 +57,29 @@ function readPreferences(id: string): ProjectPreferences {
   }
 }
 export function ProjectView(props: FeatureProps & { id: string }) {
-  const { id, snapshot, api, onMutate, onNavigate, onNewFeature, showInspector, busy } = props;
+  const { id, snapshot, api, onMutate, onNavigate, onNewFeature, onNewChannel, busy } = props;
   const project = snapshot.projects.find((project) => project.id === id);
   const channels = snapshot.channels.filter((channel) => channel.projectId === id);
   const allItems = snapshot.items.filter((item) => featureProjectId(item, snapshot.channels) === id);
   const [tab, setTab] = useState<'items' | 'brief' | 'thinking' | 'records' | 'releases'>('items');
   const [query, setQuery] = useState('');
+  const [propertiesOpen, setPropertiesOpen] = useState(false);
+  const [briefState, setBriefState] = useState<{ id: string; revision?: number; present: boolean }>();
+  useEffect(() => {
+    if (!project || !api.getProjectBrief) return;
+    let cancelled = false;
+    api.getProjectBrief(id).then(
+      (value) => {
+        if (!cancelled) setBriefState({ id, revision: project.briefRevision, present: !!value.brief.trim() });
+      },
+      () => {
+        if (!cancelled) setBriefState(undefined);
+      }
+    );
+    return () => {
+      cancelled = true;
+    };
+  }, [api, id, project?.briefRevision]);
   const [preferences, setPreferences] = useState(() => readPreferences(id));
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
   useEffect(() => {
@@ -70,6 +87,7 @@ export function ProjectView(props: FeatureProps & { id: string }) {
     setQuery('');
     setCollapsed(new Set());
     setTab('items');
+    setPropertiesOpen(false);
   }, [id]);
   const changePreferences = (patch: Partial<ProjectPreferences>) =>
     setPreferences((previous) => {
@@ -107,6 +125,59 @@ export function ProjectView(props: FeatureProps & { id: string }) {
   const legacyChannels = channels.filter((channel) => isLegacyRuntime(channel.runtime));
   const pendingQuestions = channels.filter((channel) => channel.work?.awaitingReply);
   if (!project) return <EmptyState title="项目不存在" description="项目可能已被移除，请在侧栏重新选择。" />;
+  const pendingReleases = (snapshot.releases || []).filter(
+    (release) => release.projectId === id && release.status === 'awaiting_approval'
+  );
+  const blocked = allItems.find((item) => item.status === 'blocked');
+  const boundChannel = channels.find((channel) => channel.runtime === 'codex' && channel.sessionId);
+  const missingBrief =
+    briefState?.id === id && briefState.revision === project.briefRevision
+      ? !briefState.present
+      : project.brief !== undefined
+        ? !project.brief.trim()
+        : project.briefRevision === 0;
+  const next = pendingQuestions.length
+    ? {
+        text: `${pendingQuestions.length} 个频道有问题待回答`,
+        label: '回答当前问题',
+        action: () => onNavigate({ kind: 'channel', id: pendingQuestions[0].id }),
+      }
+    : pendingReleases.length
+      ? {
+          text: `${pendingReleases.length} 个版本等待你审核`,
+          label: '查看待审版本',
+          action: () => setTab('releases'),
+        }
+      : blocked
+        ? {
+            text: blocked.title,
+            label: '查看阻塞事项',
+            action: () => openItem(blocked),
+          }
+        : missingBrief
+          ? {
+              text: '写下目标、约束和需要你决定的事',
+              label: '完善项目说明',
+              action: () => setTab('brief'),
+            }
+          : !codexChannel
+            ? {
+                text: '添加持续频道，再关联你在 Codex App 中创建的任务',
+                label: '添加频道',
+                action: () => onNewChannel(id),
+              }
+            : !boundChannel
+              ? {
+                  text: '在 Codex App 创建任务，再到频道关联',
+                  label: '关联已有任务',
+                  action: () => onNavigate({ kind: 'channel', id: codexChannel.id }),
+                }
+              : {
+                  text: `${boundChannel.name} · 查看当前进展和下一步`,
+                  label: '打开工作日志',
+                  action: () => onNavigate({ kind: 'channel', id: boundChannel.id }),
+                };
+
   return (
     <div className="feature-layout">
       <main className="feature-main">
@@ -224,29 +295,29 @@ export function ProjectView(props: FeatureProps & { id: string }) {
               </IconButton>
             </>
           )}
-          <Button
-            variant="ghost"
-            aria-label="在 Codex App 中继续此项目"
-            title={
-              project.isDemo
-                ? '示例项目不会打开原生对话。'
-                : codexChannel
-                  ? '打开此项目的原生会话；尚未关联时打开 App 新建对话。'
-                  : legacyChannels.length
-                    ? '旧频道使用的运行时已停止支持；新建 Codex 频道后可打开原生对话。'
-                    : '创建 Codex 频道后可打开原生对话。'
-            }
-            disabled={busy || project.isDemo || !codexChannel}
-            onClick={() => codexChannel && void onMutate(() => api.openNativeApp(codexChannel.id))}
-          >
-            <ArrowUpRight size={14} />
-            <span className="project-native-label">Codex App</span>
-          </Button>
-          <Button disabled={busy} onClick={() => onNewFeature(id)}>
-            <Plus size={14} />
-            新建功能
+          {tab === 'items' && (
+            <Button variant="ghost" disabled={busy} onClick={() => onNewFeature(id)}>
+              <Plus size={14} />
+              新建功能
+            </Button>
+          )}
+          <Button variant="ghost" aria-expanded={propertiesOpen} onClick={() => setPropertiesOpen((open) => !open)}>
+            项目属性
           </Button>
         </div>
+        {tab === 'items' && (
+          <section className="project-next" aria-label="项目下一步">
+            <div>
+              <p className="project-goal-summary" title={project.goal}>
+                {project.goal}
+              </p>
+              <p>{next.text}</p>
+            </div>
+            <Button variant="primary" disabled={busy} onClick={next.action}>
+              {next.label}
+            </Button>
+          </section>
+        )}
         {tab === 'brief' ? (
           <ProjectBrief key={id} api={api} project={project} busy={busy} onMutate={onMutate} />
         ) : tab === 'thinking' ? (
@@ -268,7 +339,7 @@ export function ProjectView(props: FeatureProps & { id: string }) {
                   : 'Codex 会根据项目目标自动建立和跟踪功能，你可以进入频道指导它。'
               }
               action={
-                <Button onClick={filtered ? clearFilters : () => onNewFeature(id)}>
+                <Button variant="ghost" onClick={filtered ? clearFilters : () => onNewFeature(id)}>
                   {filtered ? (
                     '清除筛选'
                   ) : (
@@ -350,13 +421,32 @@ export function ProjectView(props: FeatureProps & { id: string }) {
           </div>
         )}
       </main>
-      {showInspector && (
+      {propertiesOpen && (
         <PropertyPanel>
           <div className="property-project-icon">
             <Folder size={24} />
           </div>
           <h2 className="property-title">{project.name}</h2>
           {project.isDemo && <span className="feature-demo-label">示例数据</span>}
+          <Button
+            variant="ghost"
+            aria-label="在 Codex App 中继续此项目"
+            title={
+              project.isDemo
+                ? '示例项目不会打开原生对话。'
+                : codexChannel
+                  ? '打开此项目的原生会话；尚未关联时打开 App 新建对话。'
+                  : legacyChannels.length
+                    ? '旧频道使用的运行时已停止支持；新建 Codex 频道后可打开原生对话。'
+                    : '创建 Codex 频道后可打开原生对话。'
+            }
+            disabled={busy || project.isDemo || !codexChannel}
+            onClick={() => codexChannel && void onMutate(() => api.openNativeApp(codexChannel.id))}
+          >
+            <ArrowUpRight size={14} />
+            <span className="project-native-label">Codex App</span>
+          </Button>
+
           {pendingQuestions.length > 0 && (
             <section className="property-section" aria-label="待回答">
               <h3>待回答</h3>

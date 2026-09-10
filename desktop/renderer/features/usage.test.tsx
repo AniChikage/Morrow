@@ -41,6 +41,7 @@ describe('the project inspector shows the account reading and edits the project 
     props.snapshot.projects[1].usageBudget = { window: 'weekly', limitPercent: 30 };
     api.getProjectUsage.mockResolvedValue(usage);
     render(<ProjectView {...props} id="project-other" />, { wrapper: TestProviders });
+    await userEvent.setup().click(screen.getByRole('button', { name: '项目属性' }));
     const section = within(await screen.findByRole('region', { name: '额度' }));
     expect(await section.findByText(`5 小时 · 已用 42% · 重置 ${formatResetTime(resetsAt)}`)).toBeTruthy();
     expect(section.getByText('每周 · 已用 10% · 重置时间未知')).toBeTruthy();
@@ -72,6 +73,7 @@ describe('the project inspector shows the account reading and edits the project 
     props.snapshot.channels[0].usageWait = { kind: 'reserve', window: '5h', resetsAt, since: timestamp };
     api.getProjectUsage.mockResolvedValue({ stale: true, attempted: false, gate: { blocked: false } });
     render(<ProjectView {...props} id="project-atlas" />, { wrapper: TestProviders });
+    await userEvent.setup().click(screen.getByRole('button', { name: '项目属性' }));
     const section = within(await screen.findByRole('region', { name: '额度' }));
     const unknown = await section.findByText('额度未知');
     expect(unknown.classList.contains('usage-unknown')).toBe(true);
@@ -96,6 +98,7 @@ describe('the project inspector shows the account reading and edits the project 
       const { props, api } = featureProps();
       api.getProjectUsage.mockResolvedValue(value);
       const view = render(<ProjectView {...props} id="project-other" />, { wrapper: TestProviders });
+      await userEvent.setup().click(screen.getByRole('button', { name: '项目属性' }));
       const section = within(await screen.findByRole('region', { name: '额度' }));
       expect(await section.findByText(expected)).toBeTruthy();
       expect(section.getByText('额度未知').classList.contains('usage-unknown')).toBe(true);
@@ -109,6 +112,7 @@ describe('the project inspector shows the account reading and edits the project 
     const { props, api } = featureProps();
     delete (api as { getProjectUsage?: unknown }).getProjectUsage;
     render(<ProjectView {...props} id="project-other" />, { wrapper: TestProviders });
+    await userEvent.setup().click(screen.getByRole('button', { name: '项目属性' }));
     const section = within(await screen.findByRole('region', { name: '额度' }));
     expect(section.getByText('当前连接的 Morrow 服务尚不支持额度读数。')).toBeTruthy();
     expect(section.queryByRole('button', { name: '保存额度上限' })).toBeNull();

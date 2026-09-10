@@ -71,6 +71,22 @@ function fixture() {
   props.snapshot.releases = [release];
   return { props, api, release, data, getProjectWork, reviewRelease, reconcileRelease };
 }
+it('routes the project primary action to its pending release without approving it', async () => {
+  const f = fixture();
+  const view = render(<ProjectView {...f.props} id="project-atlas" />, { wrapper: TestProviders });
+  await userEvent.setup().click(screen.getByRole('button', { name: '查看待审版本' }));
+  expect(screen.getByRole('tab', { name: /上线确认/ }).getAttribute('aria-selected')).toBe('true');
+  expect(f.reviewRelease).not.toHaveBeenCalled();
+  expect(screen.queryByRole('button', { name: '新建功能' })).toBeNull();
+  f.props.snapshot.releases = [{ ...f.release, projectId: 'project-other' }];
+  f.props.snapshot.items[0].status = 'blocked';
+  view.rerender(<ProjectView {...f.props} id="project-atlas" />);
+  await userEvent.setup().click(screen.getByRole('tab', { name: /功能看板/ }));
+  await userEvent.setup().click(screen.getByRole('button', { name: '查看阻塞事项' }));
+  expect(f.props.onNavigate).toHaveBeenCalledWith({ kind: 'finding', id: 'finding-import' });
+  expect(screen.queryByRole('button', { name: '查看待审版本' })).toBeNull();
+});
+
 function historyRow(id: string, itemId = 'finding-import'): NonNullable<ProjectLoop['verifications']>[number] {
   return {
     id,

@@ -19,6 +19,71 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
+describe('project next step and secondary properties', () => {
+  it('prioritizes the current question and exposes properties only on request', async () => {
+    const { props, api } = featureProps();
+    props.snapshot.channels[0].work = {
+      state: 'needs_input',
+      focus: '确认范围',
+      runId: 'question-run',
+      reason: '',
+      nextStep: '是否继续？',
+      awaitingReply: true,
+      updatedAt: timestamp,
+    };
+    render(<ProjectView {...props} id="project-atlas" />, { wrapper: TestProviders });
+    expect(screen.queryByRole('complementary')).toBeNull();
+    expect(api.getProjectUsage).not.toHaveBeenCalled();
+    const next = within(screen.getByRole('region', { name: '项目下一步' }));
+    expect(next.getAllByRole('button')).toHaveLength(1);
+    await userEvent.setup().click(next.getByRole('button', { name: '回答当前问题' }));
+    expect(props.onNavigate).toHaveBeenCalledWith({ kind: 'channel', id: 'channel-system' });
+    await userEvent.setup().click(screen.getByRole('button', { name: '项目属性' }));
+    expect(screen.getByRole('complementary')).toBeTruthy();
+    expect(await screen.findByRole('region', { name: '额度' })).toBeTruthy();
+    await userEvent.setup().click(screen.getByRole('tab', { name: '全部记录' }));
+    expect(screen.queryByRole('region', { name: '项目下一步' })).toBeNull();
+    expect(screen.queryByRole('button', { name: '新建功能' })).toBeNull();
+  });
+
+  it('uses actual brief content before guiding the user to an existing App task', async () => {
+    const { props, api } = featureProps();
+    props.snapshot.projects[0].briefRevision = 3;
+    api.getProjectBrief.mockResolvedValue({ goal: '目标', brief: '', briefRevision: 3 });
+    const view = render(<ProjectView {...props} id="project-atlas" />, { wrapper: TestProviders });
+    await screen.findByRole('button', { name: '完善项目说明' });
+    api.getProjectBrief.mockResolvedValue({ goal: '目标', brief: '真实说明', briefRevision: 4 });
+    props.snapshot.projects[0].briefRevision = 4;
+    view.rerender(<ProjectView {...props} id="project-atlas" />);
+    await userEvent.setup().click(await screen.findByRole('button', { name: '关联已有任务' }));
+    expect(props.onNavigate).toHaveBeenCalledWith({ kind: 'channel', id: 'channel-system' });
+    props.snapshot.channels[0].sessionId = 'bound-app-task';
+    view.rerender(<ProjectView {...props} id="project-atlas" />);
+    await userEvent.setup().click(screen.getByRole('button', { name: '打开工作日志' }));
+    expect(api.openNativeSession).not.toHaveBeenCalled();
+    expect(api.channelAction).not.toHaveBeenCalled();
+  });
+
+  it('does not carry an opened properties panel or a late brief response across projects', async () => {
+    const { props, api } = featureProps();
+    let finish!: (value: { goal: string; brief: string; briefRevision: number }) => void;
+    api.getProjectBrief.mockImplementation((id) =>
+      id === 'project-atlas'
+        ? new Promise((resolve) => {
+            finish = resolve;
+          })
+        : Promise.resolve({ goal: '其他目标', brief: '已有说明', briefRevision: 2 })
+    );
+    const view = render(<ProjectView {...props} id="project-atlas" />, { wrapper: TestProviders });
+    await userEvent.setup().click(screen.getByRole('button', { name: '项目属性' }));
+    view.rerender(<ProjectView {...props} id="project-other" />);
+    await screen.findByRole('button', { name: '关联已有任务' });
+    finish({ goal: '迟到', brief: '', briefRevision: 0 });
+    await waitFor(() => expect(screen.queryByRole('button', { name: '完善项目说明' })).toBeNull());
+    expect(screen.queryByRole('complementary')).toBeNull();
+  });
+});
+
 describe('one project-owned feature board', () => {
   it('combines manual features and legacy channel contributions without crossing project ownership', async () => {
     const user = userEvent.setup();
@@ -117,6 +182,7 @@ describe('the project brief is the user-owned document between the board and Cod
       '上线确认 ',
     ]);
     expect(screen.getByRole('tab', { name: '项目说明' }).getAttribute('aria-selected')).toBe('false');
+    await user.click(screen.getByRole('button', { name: '项目属性' }));
     await user.click(within(screen.getByRole('complementary')).getByRole('button', { name: /改善可靠性与激活体验/ }));
     expect(screen.getByRole('tab', { name: '项目说明' }).getAttribute('aria-selected')).toBe('true');
     expect(await screen.findByRole('heading', { level: 2, name: '目标与成功标准' })).toBeTruthy();
@@ -171,6 +237,8 @@ describe('the project brief is the user-owned document between the board and Cod
     state.projects[0].briefRevision = 1;
     const { props, api } = featureProps({ snapshot: state });
     api.getProjectBrief
+      // The project summary and the document each read the same initial version.
+      .mockResolvedValueOnce({ goal: '改善可靠性与激活体验。', brief: '旧说明', briefRevision: 1 })
       .mockResolvedValueOnce({ goal: '改善可靠性与激活体验。', brief: '旧说明', briefRevision: 1 })
       .mockResolvedValue({ goal: '改善可靠性与激活体验。', brief: '别人写的新说明', briefRevision: 2 });
     api.updateProject.mockRejectedValue(new Error('项目说明已被更新，请刷新后再保存'));
@@ -328,6 +396,7 @@ describe('channels are execution sources, not separate boards', () => {
     const { props, api } = featureProps({ snapshot: state });
     render(<ProjectView {...props} id="project-atlas" />, { wrapper: TestProviders });
     expect(screen.queryByRole('button', { name: '在原生 CLI 中继续' })).toBeNull();
+    await userEvent.setup().click(screen.getByRole('button', { name: '项目属性' }));
     const button = screen.getByRole('button', { name: '在 Codex App 中继续此项目' });
     expect((button as HTMLButtonElement).disabled).toBe(false);
     await userEvent.setup().click(button);
@@ -342,6 +411,7 @@ describe('channels are execution sources, not separate boards', () => {
     state.channels[1].runtime = 'claude';
     const { props, api } = featureProps({ snapshot: state });
     const view = render(<ProjectView {...props} id="project-atlas" />, { wrapper: TestProviders });
+    await userEvent.setup().click(screen.getByRole('button', { name: '项目属性' }));
     await userEvent.setup().click(screen.getByRole('button', { name: '在 Codex App 中继续此项目' }));
     expect(api.openNativeApp).toHaveBeenCalledWith('channel-system');
     const noCodex = {
@@ -378,6 +448,7 @@ describe('channels are execution sources, not separate boards', () => {
     const { props, api } = featureProps({ snapshot: state });
     render(<ProjectView {...props} id="project-atlas" />, { wrapper: TestProviders });
     expect(screen.queryByRole('button', { name: '在原生 CLI 中继续' })).toBeNull();
+    await userEvent.setup().click(screen.getByRole('button', { name: '项目属性' }));
     await userEvent.setup().click(screen.getByRole('button', { name: '在 Codex App 中继续此项目' }));
     expect(api.openNativeApp).toHaveBeenCalledWith('channel-system');
     expect(api.openNativeSession).not.toHaveBeenCalled();

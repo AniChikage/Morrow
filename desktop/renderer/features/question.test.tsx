@@ -255,6 +255,9 @@ describe('pending questions on the project page and in the sidebar', () => {
     state.channels[1].work = { ...question, nextStep: '# 长问题\n\n' + '很长的问题正文，'.repeat(40) };
     const { props } = featureProps({ snapshot: state });
     render(<ProjectView {...props} id="project-atlas" />, { wrapper: TestProviders });
+    expect(screen.getByText('2 个频道有问题待回答')).toBeTruthy();
+    expect(screen.queryByRole('region', { name: '待回答' })).toBeNull();
+    await user.click(screen.getByRole('button', { name: '项目属性' }));
     const section = screen.getByRole('region', { name: '待回答' });
     expect(document.querySelector('.property-section')).toBe(section);
     const rows = within(section);

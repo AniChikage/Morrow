@@ -1718,3 +1718,34 @@
 .native-conversation-compact .native-thread-name {
   display: none;
 }
+
+.project-next {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 14px 20px;
+  border-bottom: 1px solid var(--line-soft);
+  flex-shrink: 0;
+}
+.project-next > div {
+  flex: 1;
+  min-width: 0;
+}
+.project-next p {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.6;
+}
+.project-next .project-goal-summary {
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-size: 12px;
+}
+.project-feature-toolbar {
+  overflow-x: auto;
+  flex-wrap: wrap;
+  height: auto;
+  padding-block: 6px;
+}
