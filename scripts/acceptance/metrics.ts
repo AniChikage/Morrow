@@ -492,7 +492,11 @@ function fingerprint(): Maybe<{ digest: string; head: string; files: number; cov
 function matchesSource(expected: Expectation, row: Evidence) {
   if (expected.source.kind === 'file') return row.origin === 'file' && row.source === expected.source.path;
   if (expected.source.kind === 'execution') return row.origin === 'execution' && row.source === expected.source.command;
-  return row.origin === 'http' && row.watchId === expected.source.watchId && row.source === expected.source.url;
+  return (
+    row.origin === (expected.source.path ? 'file' : 'http') &&
+    row.watchId === expected.source.watchId &&
+    row.source === (expected.source.path ?? expected.source.url)
+  );
 }
 
 export function pointerValue(data: unknown, pointer: string): unknown {
