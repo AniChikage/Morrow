@@ -359,6 +359,11 @@ it.each([
       );
     await user.clear(screen.getByRole('textbox', { name: '工作方向' }));
     await user.type(screen.getByRole('textbox', { name: '工作方向' }), '只调整后续关注点');
+    const help = screen.getByText('对话与任务设置', { selector: 'summary' });
+    expect(help.closest('details')?.open).toBe(false);
+    if (permission !== 'native') expect(screen.getByText(/此频道还保留此前/).closest('details')).toBeNull();
+    await user.click(help);
+    expect((screen.getByRole('textbox', { name: '工作方向' }) as HTMLTextAreaElement).value).toBe('只调整后续关注点');
     await user.click(screen.getByRole('button', { name: '在 Codex App 中打开对话' }));
     expect(context.current.api.openNativeApp).toHaveBeenCalledWith(channel.id);
     expect(context.current.api.updateChannel).not.toHaveBeenCalled();
@@ -393,6 +398,7 @@ it('keeps the direction draft when opening App fails and disables that entry in 
   );
   await user.clear(screen.getByRole('textbox', { name: '工作方向' }));
   await user.type(screen.getByRole('textbox', { name: '工作方向' }), '保留方向草稿');
+  await user.click(screen.getByText('对话与任务设置', { selector: 'summary' }));
   await user.click(screen.getByRole('button', { name: '在 Codex App 中打开对话' }));
   await waitFor(() => expect(context.current.mutate).toHaveResolvedWith(false));
   expect((screen.getByRole('textbox', { name: '工作方向' }) as HTMLTextAreaElement).value).toBe('保留方向草稿');

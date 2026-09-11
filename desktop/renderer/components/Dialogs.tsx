@@ -467,7 +467,7 @@ function ChannelDialog({
   return (
     <Modal
       title={channel ? '调整工作方向' : '新建频道'}
-      description="告诉 Codex 长期关注什么，它会自主选择下一步，你可以随时通过对话指导。"
+      description="写下长期关注的方向，Codex 自主选择下一步。"
       onClose={onClose}
     >
       <form onSubmit={submit}>
@@ -490,23 +490,30 @@ function ChannelDialog({
             required
           />
         </Field>
+        {!legacy && channel && ['read-only', 'workspace-write'].includes(channel.permission) && (
+          <p className="form-note">
+            此频道还保留此前的自动执行范围：{channel.permission === 'read-only' ? '只读工作空间' : '允许工作区写入'}。
+            保存方向会保留该范围。
+          </p>
+        )}
+        {!legacy && !channel && <p className="form-note">创建频道后，在频道页关联已有的 App 任务。</p>}
         {!legacy && (
-          <div className="form-note">
-            <p>模型、工具与任务权限在 Codex App 中管理。</p>
-            {channel ? (
-              <Button disabled={busy || demo} onClick={() => void mutate(() => api.openNativeApp(channel.id))}>
+          <details className="feature-form-details">
+            <summary>对话与任务设置</summary>
+            <p className="form-note">
+              模型、工具与任务权限在 Codex App 中管理。
+              {channel ? '保存方向会保留已有对话和进展，可在 App 中继续指导。' : '关联后可在 App 中继续指导。'}
+            </p>
+            {channel && (
+              <Button
+                variant="ghost"
+                disabled={busy || demo}
+                onClick={() => void mutate(() => api.openNativeApp(channel.id))}
+              >
                 <ArrowUpRight size={13} />在 Codex App 中打开对话
               </Button>
-            ) : (
-              <p>创建频道后，在频道页关联已有的 App 任务。</p>
             )}
-            {channel && ['read-only', 'workspace-write'].includes(channel.permission) && (
-              <p>
-                此频道还保留此前的自动执行范围：{channel.permission === 'read-only' ? '只读工作空间' : '允许工作区写入'}
-                。保存方向会保留该范围。
-              </p>
-            )}
-          </div>
+          </details>
         )}
         <details className="feature-form-details">
           <summary>工作设置</summary>
@@ -533,11 +540,11 @@ function ChannelDialog({
             </Field>
           </div>
         </details>
-        <p className="form-note">
-          {legacy
-            ? '此频道使用的运行时已停止支持，只能调整名称与方向；历史记录保持可读，新工作请新建 Codex 频道。'
-            : '保存后可在频道开始工作。已有对话和进展会保留。'}
-        </p>
+        {legacy && (
+          <p className="form-note">
+            此频道使用的运行时已停止支持，只能调整名称与方向；历史记录保持可读，新工作请新建 Codex 频道。
+          </p>
+        )}
         {error && (
           <p className="form-error" role="alert">
             {error}
