@@ -360,3 +360,16 @@
     gap: 10px;
   }
 }
+
+.runtime-settings-diagnostics {
+  margin-top: 12px;
+  font-size: 12px;
+  color: var(--muted);
+}
+.runtime-settings-diagnostics > summary {
+  cursor: pointer;
+  width: fit-content;
+}
+.runtime-settings-diagnostics > ol {
+  margin-top: 10px;
+}

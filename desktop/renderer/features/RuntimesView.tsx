@@ -77,7 +77,7 @@ function AppChecklist({
       <>
         <span>在 Codex App 为同一项目目录创建任务、发送首条消息，再回到频道关联。</span>
         {onLink && (
-          <Button disabled={busy} onClick={onLink}>
+          <Button variant="primary" disabled={busy} onClick={onLink}>
             去关联任务
           </Button>
         )}
@@ -86,9 +86,9 @@ function AppChecklist({
   else if (pending === 3)
     next = (
       <>
-        <span>在 Codex App 打开已关联任务，然后重新检测。</span>
+        <span>任务未在 Codex App 中打开。请在 Codex App 打开已关联任务，然后重新检测。</span>
         {onOpen && !remote && (
-          <Button disabled={busy} onClick={onOpen}>
+          <Button variant="primary" disabled={busy} onClick={onOpen}>
             在 Codex App 中打开
           </Button>
         )}
@@ -97,77 +97,80 @@ function AppChecklist({
   else next = <span>已就绪；保持 Codex App 运行，自动工作沿用任务权限。</span>;
   return (
     <div className="runtime-settings-checklist">
-      <ol aria-label="Codex App 连接清单">
-        {steps.map((step, index) => (
-          <li
-            key={step.label}
-            className={`runtime-settings-detection ${step.done ? 'detected' : index === pending ? 'attention' : ''}`}
-          >
-            <span className="runtime-settings-dot" />
-            <span>{step.label}</span>
-            {step.version && <code title={step.version}>{step.version}</code>}
-          </li>
-        ))}
-      </ol>
       <p className="runtime-settings-next">
         <b>下一步</b>
         {next}
       </p>
       {remote && <p className="runtime-settings-receipt">请在执行主机的 Codex App 中创建并打开任务。</p>}
-      {native.backgroundConfigured && !remote && api.restoreNativeBackground && (
-        <Button
-          variant="ghost"
-          disabled={busy}
-          onClick={() =>
-            void onMutate(async () => {
-              const result = await api.restoreNativeBackground!();
-              setReceipt(result.detail);
-              await onRefresh();
-            })
-          }
-        >
-          清理旧转接设置
-        </Button>
-      )}
-      {receipt && (
-        <p className="runtime-settings-receipt" role="status">
-          {receipt}
-        </p>
-      )}
-      <p className="runtime-settings-account-usage" aria-label="账户用量">
-        <b>账户用量</b>
-        {native.usage?.reading && !native.usage.stale ? (
-          <span>
-            {native.usage.reading.windows
-              .map(
-                (entry) =>
-                  `${usageWindowLabel(entry.name)} 已用 ${entry.usedPercent}%，${entry.resetsAt ? `重置 ${formatResetTime(entry.resetsAt)}` : '重置时间未知'}`
-              )
-              .join('；')}
-          </span>
-        ) : (
-          <>
-            <span className="usage-unknown">额度未知</span>
-            {/* Never read ≠ read and refused. A service too old to report `attempted` keeps the old reason. */}
-            <span title={native.usage?.lastError}>
-              {native.usage?.lastError
-                ? `读取失败：${native.usage.lastError}`
-                : !native.connected
-                  ? '后台未连接'
-                  : native.usage?.reading
-                    ? '读数已过期'
-                    : native.usage?.attempted === false
-                      ? '尚未读取账户用量'
-                      : '协议未返回账户用量'}
+      <details className="runtime-settings-diagnostics">
+        <summary>连接清单与账户用量</summary>
+        <ol aria-label="Codex App 连接清单">
+          {steps.map((step, index) => (
+            <li
+              key={step.label}
+              className={`runtime-settings-detection ${step.done ? 'detected' : index === pending ? 'attention' : ''}`}
+            >
+              <span className="runtime-settings-dot" />
+              <span>{step.label}</span>
+              {step.version && <code title={step.version}>{step.version}</code>}
+            </li>
+          ))}
+        </ol>
+        {native.backgroundConfigured && !remote && api.restoreNativeBackground && (
+          <Button
+            variant="ghost"
+            disabled={busy}
+            onClick={() =>
+              void onMutate(async () => {
+                const result = await api.restoreNativeBackground!();
+                setReceipt(result.detail);
+                await onRefresh();
+              })
+            }
+          >
+            清理旧转接设置
+          </Button>
+        )}
+        {receipt && (
+          <p className="runtime-settings-receipt" role="status">
+            {receipt}
+          </p>
+        )}
+        <p className="runtime-settings-account-usage" aria-label="账户用量">
+          <b>账户用量</b>
+          {native.usage?.reading && !native.usage.stale ? (
+            <span>
+              {native.usage.reading.windows
+                .map(
+                  (entry) =>
+                    `${usageWindowLabel(entry.name)} 已用 ${entry.usedPercent}%，${entry.resetsAt ? `重置 ${formatResetTime(entry.resetsAt)}` : '重置时间未知'}`
+                )
+                .join('；')}
             </span>
-          </>
-        )}
-        {native.usage?.reading && !native.usage.stale && native.usage.lastError && (
-          <span className="usage-unknown" title={native.usage.lastError}>
-            刷新失败，显示最近读数
-          </span>
-        )}
-      </p>
+          ) : (
+            <>
+              <span className="usage-unknown">额度未知</span>
+              {/* Never read ≠ read and refused. A service too old to report `attempted` keeps the old reason. */}
+              <span title={native.usage?.lastError}>
+                {native.usage?.lastError
+                  ? `读取失败：${native.usage.lastError}`
+                  : !native.connected
+                    ? '后台未连接'
+                    : native.usage?.reading
+                      ? '读数已过期'
+                      : native.usage?.attempted === false
+                        ? '尚未读取账户用量'
+                        : '协议未返回账户用量'}
+              </span>
+            </>
+          )}
+          {native.usage?.reading && !native.usage.stale && native.usage.lastError && (
+            <span className="usage-unknown" title={native.usage.lastError}>
+              刷新失败，显示最近读数
+            </span>
+          )}
+        </p>
+      </details>
     </div>
   );
 }
@@ -220,6 +223,14 @@ export function RuntimesView({
   const availableCount = snapshot.runtimes.filter((runtime) => runtime.available).length;
   const runningCount = snapshot.channels.filter((channel) => channel.status === 'running').length;
   const remote = connection?.config.mode === 'ssh';
+  const appPending = native ? connectionSteps(native).findIndex((step) => !step.done) : -1;
+  const taskAction =
+    !!native &&
+    !nativeUnreachable &&
+    !native.restartRequired &&
+    snapshot.runtimes.some((r) => r.id === 'codex') &&
+    ((appPending === 2 && snapshot.channels.some((c) => c.runtime === 'codex')) ||
+      (appPending === 3 && !remote && snapshot.channels.some((c) => c.runtime === 'codex' && c.sessionId)));
   const HostIcon = remote ? Server : Monitor;
   return (
     <main className="feature-main runtime-settings">
@@ -230,6 +241,7 @@ export function RuntimesView({
         </span>
         <div className="feature-toolbar-spacer" />
         <Button
+          variant={taskAction ? 'secondary' : 'primary'}
           disabled={busy}
           onClick={() =>
             void onMutate(async () => {
@@ -455,13 +467,16 @@ export function RuntimesView({
               />
             </div>
           )}
-          <p className="runtime-settings-note">
-            <Info size={13} />
-            <span>
-              自动工作使用 Codex App 任务；独立复核使用官方只读
-              CLI。连接检测不会调用模型，账号与配额以实际读数为准。旧的 Claude Code / Trae 频道保持可读，但不再执行。
-            </span>
-          </p>
+          <details className="runtime-settings-diagnostics">
+            <summary>运行与复核说明</summary>
+            <p className="runtime-settings-note">
+              <Info size={13} />
+              <span>
+                自动工作使用 Codex App 任务；独立复核使用官方只读
+                CLI。连接检测不会调用模型，账号与配额以实际读数为准。旧的 Claude Code / Trae 频道保持可读，但不再执行。
+              </span>
+            </p>
+          </details>
         </div>
       </div>
     </main>

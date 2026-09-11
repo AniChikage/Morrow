@@ -40,7 +40,11 @@ const remote: ConnectionInfo = {
   connected: true,
   config: { mode: 'ssh', host: 'dev-box', port: 43821, directory: '~/.local/share/morrow' },
 };
-const checklist = () => screen.findByRole('list', { name: 'Codex App 连接清单' });
+const checklist = async () => {
+  const toggle = await screen.findByText('连接清单与账户用量', { selector: 'summary' });
+  if (!toggle.closest('details')?.open) await userEvent.setup().click(toggle);
+  return screen.findByRole('list', { name: 'Codex App 连接清单' });
+};
 /** done: green dot; next: amber dot marking the first unmet step; pending: gray. */
 function step(label: string) {
   const item = screen.getByText(label).closest('li')!;
@@ -366,4 +370,29 @@ test('a delayed usage response from a previous host cannot overwrite the current
   });
   await waitFor(() => expect(screen.getByLabelText('账户用量').textContent).toContain('22%'));
   expect(screen.queryByText('每周 已用 99%，重置时间未知')).toBeNull();
+});
+
+test('keeps the next step visible and highlights one action while diagnostics remain optional', async () => {
+  const { props, api } = runtimeProps();
+  props.snapshot.channels[0].sessionId = 'bound-task';
+  api.getNativeStatus.mockResolvedValue(status({ connected: true, boundThreadCount: 1, readyThreadCount: 0 }));
+  const view = render(<RuntimesView {...props} />);
+  const open = await screen.findByRole('button', { name: '在 Codex App 中打开' });
+  expect(open.classList.contains('button-primary')).toBe(true);
+  expect(screen.getByRole('button', { name: '重新检测' }).classList.contains('button-primary')).toBe(false);
+  expect(nextStep().closest('details')).toBeNull();
+  expect(nextStep().textContent).toContain('任务未在 Codex App 中打开');
+  const toggle = screen.getByText('连接清单与账户用量', { selector: 'summary' });
+  expect(toggle.closest('details')?.open).toBe(false);
+  expect(screen.getByText('运行与复核说明', { selector: 'summary' }).closest('details')?.open).toBe(false);
+  await userEvent.setup().click(toggle);
+  expect(screen.getByLabelText('账户用量').closest('details')?.open).toBe(true);
+  expect(api.openNativeApp).not.toHaveBeenCalled();
+  expect(api.channelAction).not.toHaveBeenCalled();
+  view.unmount();
+  api.getNativeStatus.mockResolvedValue(status({ connected: true, boundThreadCount: 1, readyThreadCount: 1 }));
+  render(<RuntimesView {...props} />);
+  await screen.findByText(/已就绪；/);
+  expect(screen.getByRole('button', { name: '重新检测' }).classList.contains('button-primary')).toBe(true);
+  expect(screen.queryByRole('button', { name: '在 Codex App 中打开' })).toBeNull();
 });
