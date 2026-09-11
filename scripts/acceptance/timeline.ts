@@ -308,10 +308,18 @@ export type RunView = {
   model?: string;
   startedAt?: string;
   finishedAt?: string;
+  /**
+   * **App 自己**给这一轮打的 `turnTrigger`（例如 `resume_interrupted_task`），生产实现从
+   * `native_turns` 里该 run 的 `raw.params.turnTrigger` 读，**只对 `native-app` 行解析**：runner 要
+   * 看的只有 App 自己开的那些轮次。注意这不是 `runs.trigger`——那是 Morrow 自己记的 `manual`/`schedule`。
+   */
+  trigger?: string;
 };
 
 export type ChannelView = {
   status: string;
+  /** 频道开关（`controls` 行的 `enabled`）。引擎会在一轮 `interrupted` 之后把它关掉。 */
+  enabled?: boolean;
   nextRunAt?: string;
   maxRunsPerDay?: number;
   runsToday?: number;
@@ -367,7 +375,11 @@ export type LiveSession = {
   seedMemory(seeds: MemorySeed[]): Promise<string[]>;
   /** 直接置开关，让第一轮仍由时间线发起。 */
   enableControl(): void;
-  /** 把频道置为到期，其余交给真实调度器。 */
+  /**
+   * 把频道置为到期，其余交给真实调度器。**同时重新打开频道开关**：引擎对 `interrupted` 的运行会把
+   * 频道置 `paused` 并关掉 control（`service/engine.ts` 的 `finishFailure`），只改 `status`/`nextRunAt`
+   * 的话真实调度器永远不会再启动一轮——首跑 usagegap-live-01 的第 2 轮就是这样干等到 `--turn-timeout`。
+   */
   makeDue(): void;
   channel(): ChannelView;
   runs(): RunView[];
@@ -444,6 +456,11 @@ export type LiveRunner = {
   baseline: Set<string>;
   /** 本次运行新出现的 `morrow-schedule` 行；真实调度器自己发起的轮次一样计入。 */
   seen: Set<string>;
+  /**
+   * runner 自己请求停过的轮次（`runId`）。只有 `--turn-timeout` 的那条路径会往里加。有了它，
+   * 「这一轮以 `interrupted` 结束」能分成两种：runner 自己停的，和别人（App）停的。
+   */
+  interrupts: Set<string>;
   /** 每一轮的真实起止、耗时、结论与工具清单，写进 `live.json`。 */
   turns: Array<{
     stepIndex: number;
@@ -466,6 +483,15 @@ export type LiveRunner = {
     adopted?: 'running' | 'completed';
     /** 接管的轮次起止取自哪里：`run` 是 `runs` 行上的时间，`clock` 是行上没有、用了接管时的当前时刻。 */
     timesFrom?: 'run' | 'clock' | 'mixed';
+    /**
+     * App 自己中断了这一轮，又以 `turnTrigger: 'resume_interrupted_task'` 开一轮把活干完。这一对
+     * 属于同一轮工作，所以记在同一条里：`status` 仍是 Morrow 那轮的 `interrupted`，续跑那轮的
+     * 结局在 `resumedStatus`，`tools` 是两轮的并集，`decision` 仍取引擎对 Morrow 那轮解析出的值。
+     */
+    interruptedByApp?: true;
+    resumedRunId?: string;
+    resumedStatus?: string;
+    resumedWallMs?: number;
   }>;
   stop?: { reason: LiveStopReason; detail: string };
   /** 原生状态的节流缓存：每次等待都查一遍会变成一串真实 IPC 往返。 */
@@ -660,6 +686,15 @@ async function liveTurn(runner: LiveRunner, stepIndex: number): Promise<Record<s
         finishedAt: new Date(endedAt).toISOString(),
         wallMs: endedAt - startedAt,
       };
+  const resumed = await appResume(runner, finished);
+  const pair = resumed
+    ? {
+        interruptedByApp: true as const,
+        resumedRunId: resumed.run.id,
+        resumedStatus: resumed.run.status,
+        resumedWallMs: resumed.wallMs,
+      }
+    : {};
   runner.turns.push({
     stepIndex,
     runId: finished.id,
@@ -671,8 +706,12 @@ async function liveTurn(runner: LiveRunner, stepIndex: number): Promise<Record<s
     ...(finished.permission === undefined ? {} : { permission: finished.permission }),
     ...(finished.model === undefined ? {} : { model: finished.model }),
     ...times,
-    tools: runner.session.turnTools(finished),
+    // 续跑的那一轮是同一轮工作的后半段，所以工具清单取两轮的并集（生产的 turnTools 本来就是排序的）。
+    tools: resumed
+      ? [...new Set([...runner.session.turnTools(finished), ...runner.session.turnTools(resumed.run)])].sort()
+      : runner.session.turnTools(finished),
     ...(adopted ? { adopted } : {}),
+    ...pair,
   });
   const result = {
     runId: finished.id,
@@ -684,6 +723,7 @@ async function liveTurn(runner: LiveRunner, stepIndex: number): Promise<Record<s
     newThisRun: runner.seen.size - before.size,
     wallMs: times.wallMs,
     ...(adopted ? { adopted } : {}),
+    ...pair,
   };
   if (decision === 'needs_input') {
     const work = runner.session.channel().work;
@@ -716,6 +756,7 @@ async function waitFinished(runner: LiveRunner, started: RunView, startedAt: num
   ).catch(async (error) => {
     if (error instanceof LiveStop) throw error;
     const row = runner.session.runs().find((candidate) => candidate.id === started.id);
+    runner.interrupts.add(started.id);
     const interrupted = row?.nativeTurnId
       ? await runner.session
           .interrupt(row.nativeTurnId)
@@ -724,6 +765,86 @@ async function waitFinished(runner: LiveRunner, started: RunView, startedAt: num
       : '本轮还没有 nativeTurnId，未发中断';
     throw new LiveStop('turn-timeout', `${message(error)}；${interrupted}`);
   });
+}
+
+/** App 自己中断之后的续跑要在这么久之内出现，否则就认为它不会来了。 */
+const appResumeWindowMs = 15_000;
+
+/**
+ * 接住「App 自己中断这一轮、又自己把它续跑完」的情况。首跑 usagegap-live-01 就是这样：任务窗口在
+ * 前台时 App 对该任务重放了 thread settings，把 Morrow 跟随的这一轮标成
+ * `turn_aborted reason=interrupted`（"interrupted on purpose"），紧接着自己以
+ * `turnTrigger: 'resume_interrupted_task'` 开了新一轮并跑完（Morrow 侧记成一行 `native-app` 运行）。
+ * 不是 runner 发的中断，`events` 里也没有 `native.interrupt`。
+ *
+ * 这一对属于同一轮工作，所以在最多 15 秒内找同一线程上随后出现的那行续跑运行，找到就等它结束
+ * （仍受 `--turn-timeout`），由调用方把两者记进同一条 turn 记录。找不到就照旧记 `interrupted`。
+ * 这不是失败条件：无论找不找到，时间线都继续往下走。
+ *
+ * 只按「`interrupted` 且 runner 自己没请求过停」触发，并且要求续跑那行的 `startedAt` 不早于被中断
+ * 那一轮——线程的历史里可能本来就有一行 `resume_interrupted_task`，那不是本次运行的事。
+ */
+async function appResume(runner: LiveRunner, finished: RunView): Promise<{ run: RunView; wallMs: number } | undefined> {
+  if (finished.status !== 'interrupted' || runner.interrupts.has(finished.id)) return undefined;
+  const notBefore = msAt(finished.startedAt) ?? runner.clock.now();
+  const taken = new Set(runner.turns.flatMap((turn) => (turn.resumedRunId ? [turn.resumedRunId] : [])));
+  const candidate = () =>
+    runner.session
+      .runs()
+      .find(
+        (row) =>
+          row.source === 'native-app' &&
+          row.trigger === 'resume_interrupted_task' &&
+          row.sessionId === finished.sessionId &&
+          !taken.has(row.id) &&
+          (msAt(row.startedAt) ?? 0) >= notBefore
+      );
+  const found = await waitLive(
+    runner,
+    candidate,
+    () => 'App 自己以 resume_interrupted_task 续跑的轮次出现',
+    appResumeWindowMs
+  ).catch((error) => {
+    if (error instanceof LiveStop) throw error;
+    return undefined;
+  });
+  if (!found) {
+    runner.log(
+      `轮次 ${finished.id} 以 interrupted 结束，而 runner 没有发过中断；${appResumeWindowMs / 1000} 秒内也没有出现 App 自己的续跑轮次，如实记为 interrupted。`
+    );
+    return undefined;
+  }
+  runner.log(
+    [
+      `轮次 ${finished.id} 是被 App 自己中断的（runner 没有发过中断），App 随后以 turnTrigger=resume_interrupted_task`,
+      `开了 ${found.id} 把这一轮续完。两者记为同一轮：状态保留 interrupted，续跑的结局记在 resumedStatus，`,
+      '工具清单取两轮的并集。morrow-next 仍取引擎对 Morrow 那一轮解析出的值——App 自己 resume 的轮次引擎不解析，所以通常是 none。',
+    ].join('')
+  );
+  const from = runner.clock.now();
+  const settled =
+    found.status === 'running'
+      ? await waitLive(
+          runner,
+          () => {
+            const row = runner.session.runs().find((candidate) => candidate.id === found.id);
+            return row && row.status !== 'running' ? row : undefined;
+          },
+          () =>
+            `App 续跑的轮次 ${found.id} 结束（当前 ${runner.session.runs().find((row) => row.id === found.id)?.status}）`,
+          runner.limits.turnTimeoutMs
+        ).catch((error) => {
+          if (error instanceof LiveStop) throw error;
+          // 这一轮是 App 自己开的，不给它发停止请求（和清理里「不给原任务发别的停止请求」同一条约定）。
+          throw new LiveStop('turn-timeout', `${message(error)}；这一轮是 App 自己开的，runner 未发中断`);
+        })
+      : found;
+  const started = msAt(settled.startedAt);
+  const ended = msAt(settled.finishedAt);
+  return {
+    run: settled,
+    wallMs: started !== undefined && ended !== undefined ? Math.max(0, ended - started) : runner.clock.now() - from,
+  };
 }
 
 /**
@@ -866,10 +987,14 @@ async function liveAdvance(runner: LiveRunner, minutes: number) {
   };
 }
 
-/** 真实调度器为什么可能还没发起这一轮。 */
+/**
+ * 真实调度器为什么可能还没发起这一轮。`enabled=` 排在最前面：首跑 usagegap-live-01 干等满
+ * `--turn-timeout` 的原因正是频道开关被引擎关掉了，而当时这行说明里看不出来。
+ */
 function liveGateDetail(runner: LiveRunner) {
   const channel = runner.session.channel();
   return [
+    `enabled=${channel.enabled ?? '未知'}`,
     `status=${channel.status}`,
     `nextRunAt=${channel.nextRunAt || '空'}`,
     `runsToday=${channel.runsToday ?? '未知'}/${channel.maxRunsPerDay ?? '未知'}`,

@@ -1,3 +1,4 @@
+import { spawnSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
@@ -153,6 +154,8 @@ export type Prepared = {
   /** 人要在 Codex App 里选的那个绝对目录。 */
   projectPath: string;
   files: number;
+  /** 项目目录是不是一个独立 git 仓库、种子是不是已经提交。见 `seedGit()`。 */
+  git: boolean;
 };
 
 export type LiveDeps = {
@@ -276,6 +279,7 @@ export function prepareLive(
     mkdirSync(dirname(join(projectPath, name)), { recursive: true });
     writeFileSync(join(projectPath, name), text);
   }
+  const git = seedGit(projectPath);
   const prepared: Prepared = {
     scenario: scenario.id,
     scenarioVersion: scenario.version,
@@ -284,6 +288,7 @@ export function prepareLive(
     root,
     projectPath,
     files: Object.keys(files).length,
+    git: git.ok,
   };
   writeFileSync(join(root, preparedFile), JSON.stringify(prepared, null, 2) + '\n');
   log(
@@ -292,12 +297,12 @@ export function prepareLive(
       '',
       `已准备 live 运行 ${runId}（场景 ${scenario.id}，种子 ${prepared.files} 个文件）。`,
       `产物目录：${root}`,
+      git.ok
+        ? '项目目录已经是一个独立 git 仓库，种子提交为 "seed"：这样 runs[].treeState 和模型看到的 git status 都是种子应用自己的。'
+        : `项目目录没有做成 git 仓库（prepared.json 记 git: false）：${git.detail}。runs[].treeState 与模型看到的 git status 会是外层工作树的，不影响运行。`,
       '',
       '接下来人要做四步：',
-      '1. 打开 Codex App，新建一个任务，目录选：',
-      `     ${projectPath}`,
-      '2. 在这个任务里发一条首条消息（例如「准备好了」），等它回完。',
-      '3. 保持这个任务打开，不要关闭窗口，也不要在它里面继续手动提问。',
+      ...humanSteps(projectPath),
       '4. 回到终端执行（`--budget` 必填，没有缺省）：',
       `     npm run acceptance -- run ${scenario.id} --mode live --run-id ${runId} --budget ${options.budget ?? 3}`,
       '',
@@ -306,6 +311,59 @@ export function prepareLive(
   );
   return prepared;
 }
+
+/** 固定身份，好让这一步不依赖作者的 git 配置，也不去读它。 */
+const seedIdentity = { name: 'morrow-live', email: 'morrow-live@localhost' };
+
+/**
+ * 把项目目录做成一个独立 git 仓库并提交种子。不做的话它只是 harness 工作树里的一个被忽略的目录，
+ * 于是 `runs[].treeState` 记的是 **harness** 的 `git status`（首跑 usagegap-live-01 记成
+ * `?? node_modules`），模型在项目里跑 `git status` 看到的也是外层仓库——两者都不是被测的那个种子应用。
+ *
+ * 身份走 env 固定下来并关掉签名，所以不读也不写作者的 git 配置。git 不可用（没装、init 失败）时如实
+ * 记 `git: false` 并打印说明，**不中止**：这一步是为了让现场更干净，不是运行的前提。
+ */
+function seedGit(projectPath: string): { ok: boolean; detail: string } {
+  const env = {
+    ...process.env,
+    GIT_AUTHOR_NAME: seedIdentity.name,
+    GIT_AUTHOR_EMAIL: seedIdentity.email,
+    GIT_COMMITTER_NAME: seedIdentity.name,
+    GIT_COMMITTER_EMAIL: seedIdentity.email,
+  };
+  const git = (...args: string[]) =>
+    spawnSync('git', ['-c', 'commit.gpgsign=false', '-c', 'init.defaultBranch=main', '-C', projectPath, ...args], {
+      encoding: 'utf8',
+      env,
+    });
+  for (const args of [
+    ['init', '-q'],
+    ['add', '-A'],
+    ['commit', '-q', '-m', 'seed'],
+  ]) {
+    const result = git(...args);
+    if (result.error || result.status !== 0)
+      return {
+        ok: false,
+        detail: `git ${args.join(' ')} 失败：${(result.error?.message || result.stderr || `退出码 ${result.status}`).trim()}`,
+      };
+  }
+  return { ok: true, detail: '' };
+}
+
+/**
+ * 人要做的前三步。`prepare` 和 `run` 的等待提示共用同一份文本，两处说法不该不一样；第 4 步两处不同，
+ * 由调用方自己接。
+ *
+ * 第 3 步要求「加载了但不在前台」：首跑 usagegap-live-01 的任务窗口一直在前台，App 于是对它重放了
+ * thread settings、把 Morrow 跟随的那一轮中断掉并自己 resume。
+ */
+const humanSteps = (projectPath: string) => [
+  '1. 打开 Codex App，新建一个任务，目录选：',
+  `     ${projectPath}`,
+  '2. 在这个任务里发一条首条消息（例如「准备好了」），等它回完。',
+  '3. 发完首条消息后，把 App 切到别的任务或关闭这个任务的窗口视图（不要删除任务）；不要在里面继续手动提问。',
+];
 
 /** `run` 只接受 `prepare` 建好、还没跑过的目录，而且场景要对得上。 */
 export function readPrepared(out: string, scenario: Scenario, runId: string): Prepared {
@@ -482,6 +540,7 @@ export async function runLive(
       // 关联 App 任务会把它的历史同步进来；那些轮次不属于本次运行，不计预算也不当结果。
       baseline: new Set(session.runs().flatMap((row) => (row.source === 'morrow-schedule' ? [row.id] : []))),
       seen: new Set<string>(),
+      interrupts: new Set<string>(),
       turns: live.turns,
     };
 
@@ -640,10 +699,7 @@ async function waitForThread(
   deps.log(
     [
       'Morrow 不能创建 App 任务（capabilities.create 恒为 false），所以这一步要人开头。如果还没做：',
-      '1. 打开 Codex App，新建一个任务，目录选：',
-      `     ${prepared.projectPath}`,
-      '2. 在这个任务里发一条首条消息（例如「准备好了」），等它回完。',
-      '3. 保持这个任务打开，不要关闭窗口，也不要在它里面继续手动提问。',
+      ...humanSteps(prepared.projectPath),
       '4. 留在这个终端；runner 会自己发现并关联它。',
       '',
       `等待中：每 ${bindPollMs / 1000} 秒检查一次，最多等 ${settings.waitBindMinutes} 分钟。`,
@@ -774,7 +830,7 @@ function liveSummary(scenario: Scenario, result: LiveResult, settings: LiveSetti
           '| --- | --- | --- | --- | --- | --- | --- |',
           ...live.turns.map(
             (turn, index) =>
-              `| ${index + 1} | ${initiator(turn)} | ${turn.status}${turn.reportStatus ? `/${turn.reportStatus}` : ''} | ${turn.decision} | ${Math.round(turn.wallMs / 1000)}s | ${turn.model || '未记录'} | ${turn.tools.join('、') || '无记录'} |`
+              `| ${index + 1} | ${initiator(turn)} | ${turnStatus(turn)} | ${turn.decision} | ${wall(turn)} | ${turn.model || '未记录'} | ${turn.tools.join('、') || '无记录'} |`
           ),
           '',
           ...(live.turns.some((turn) => turn.adopted)
@@ -782,6 +838,17 @@ function liveSummary(scenario: Scenario, result: LiveResult, settings: LiveSetti
                 '真实调度器不停，所以它自己也会发起轮次（一轮以 `continue` 结束 30 秒后就有下一轮）。标成「调度器」' +
                   '的那几轮不是时间线 `makeDue` 开的，而是被时间线的 `turn` 步骤接管的：它们一样计入 `--budget`，' +
                   '也一样出现在这张表里，所以表的行数与 `spentTurns` 对得上。',
+                '',
+              ]
+            : []),
+          ...(live.turns.some((turn) => turn.interruptedByApp)
+            ? [
+                '标成「App 中断后自行续跑」的那几轮：任务窗口在 App 前台时，App 可能对这个任务重放 thread settings、' +
+                  '把 Morrow 跟随的这一轮标成 `interrupted`（"interrupted on purpose"），紧接着自己以 ' +
+                  '`turnTrigger: resume_interrupted_task` 开一轮把活干完。不是 runner 或引擎发的中断。两者是同一轮工作，' +
+                  '所以记在同一行：状态保留 Morrow 那轮的 `interrupted`，续跑的结局与耗时在 `live.json` 的 ' +
+                  '`resumedStatus`/`resumedWallMs` 里，工具类型取两轮的并集，`morrow-next` 仍取引擎对 Morrow 那一轮解析' +
+                  '出的值（App 自己 resume 的轮次引擎不解析 morrow-next，所以通常是 `none`）。',
                 '',
               ]
             : []),
@@ -800,6 +867,16 @@ function liveSummary(scenario: Scenario, result: LiveResult, settings: LiveSetti
     ...(result.failures.length ? ['## 失败原因', '', ...result.failures.map((row) => `- ${row}`), ''] : []),
   ].join('\n');
 }
+
+/** Morrow 那一轮的结局，加上 App 自己续跑那一轮的结局（如果有）。 */
+const turnStatus = (turn: LiveRunner['turns'][number]) =>
+  `${turn.status}${turn.reportStatus ? `/${turn.reportStatus}` : ''}` +
+  (turn.interruptedByApp ? ` · App 中断后自行续跑 → ${turn.resumedStatus || '未知'}` : '');
+
+/** 真实耗时；App 自己续跑的那一段单独给出，不混进 Morrow 那一轮的耗时里。 */
+const wall = (turn: LiveRunner['turns'][number]) =>
+  `${Math.round(turn.wallMs / 1000)}s` +
+  (turn.resumedWallMs === undefined ? '' : `（+ 续跑 ${Math.round(turn.resumedWallMs / 1000)}s）`);
 
 /** 这一轮是时间线开的，还是真实调度器自己开、被某个 `turn` 步骤接管的。 */
 const initiator = (turn: LiveRunner['turns'][number]) =>
@@ -887,20 +964,48 @@ async function startLiveService(options: {
     get: (table, id) => current.store.get(table, id),
   };
   const channelRow = () => current.store.get<Channel>('channels', channelId)!;
+  const controlEnabled = () => !!current.store.get<{ enabled?: boolean }>('controls', channelId)?.enabled;
   const runRows = () => current.store.all<Run>('runs').filter((row) => row.channelId === channelId);
   const verifications = () => current.store.all<Verification>('loop_verifications');
-  const view = (row: Run): RunView => ({
-    id: row.id,
-    ...(row.source === undefined ? {} : { source: row.source }),
-    status: row.status,
-    ...(row.reportStatus === undefined ? {} : { reportStatus: row.reportStatus }),
-    ...(row.sessionId ? { sessionId: row.sessionId } : {}),
-    ...(row.nativeTurnId === undefined ? {} : { nativeTurnId: row.nativeTurnId }),
-    ...(row.permission === undefined ? {} : { permission: row.permission }),
-    ...(row.model ? { model: row.model } : {}),
-    ...(row.startedAt ? { startedAt: row.startedAt } : {}),
-    ...(row.finishedAt ? { finishedAt: row.finishedAt } : {}),
-  });
+  /**
+   * App 自己给这一轮打的 `turnTrigger`（例如 `resume_interrupted_task`）。它在 `native_turns` 的
+   * `raw.params` 里，按 `native_turns.runId` 对上那一行。这和 `runs.trigger`（Morrow 自己记的
+   * `manual`/`schedule`）不是一回事。
+   *
+   * 只给 `native-app` 行解析，而且解析结果一直缓存：runner 要看的只有 App 自己开的那些轮次，而这种
+   * `runs` 行是 `NativeConversations.recordNativeRuns` 和它的 `native_turns` 行在同一个事务里写出来
+   * 的，所以第一次看见就一定读得到，读到的值之后也不会变。缓存不是洁癖：`raw` 带着整轮的 items，
+   * 首跑 usagegap-live-01 里一轮就有 485KB，而等待中 `runs()` 每秒要被调好几次。
+   */
+  const triggers = new Map<string, string | undefined>();
+  const appTrigger = (row: Run): string | undefined => {
+    if (row.source !== 'native-app' || !row.sessionId) return undefined;
+    if (!triggers.has(row.id)) {
+      for (const turn of current.store.nativeRows<any>('native_turns', row.sessionId)) {
+        const value = turn?.raw?.params?.turnTrigger;
+        if (typeof turn?.runId === 'string')
+          triggers.set(turn.runId, typeof value === 'string' && value ? value : undefined);
+      }
+      if (!triggers.has(row.id)) triggers.set(row.id, undefined);
+    }
+    return triggers.get(row.id);
+  };
+  const view = (row: Run): RunView => {
+    const trigger = appTrigger(row);
+    return {
+      id: row.id,
+      ...(row.source === undefined ? {} : { source: row.source }),
+      status: row.status,
+      ...(row.reportStatus === undefined ? {} : { reportStatus: row.reportStatus }),
+      ...(row.sessionId ? { sessionId: row.sessionId } : {}),
+      ...(row.nativeTurnId === undefined ? {} : { nativeTurnId: row.nativeTurnId }),
+      ...(row.permission === undefined ? {} : { permission: row.permission }),
+      ...(row.model ? { model: row.model } : {}),
+      ...(row.startedAt ? { startedAt: row.startedAt } : {}),
+      ...(row.finishedAt ? { finishedAt: row.finishedAt } : {}),
+      ...(trigger === undefined ? {} : { trigger }),
+    };
+  };
   const session: LiveSession = {
     home: current.home,
     projectPath: options.projectPath,
@@ -971,6 +1076,10 @@ async function startLiveService(options: {
       current.store.put('channels', { ...channelRow(), status: 'waiting' });
     },
     makeDue: () => {
+      // 先重新打开开关，和 `resume` 一致：引擎对 `interrupted` 的运行走 finishFailure，会把频道置
+      // `paused` 并 `setControl(enabled: false)`。只置 `status`/`nextRunAt` 的话真实调度器根本不看这个
+      // 频道——首跑 usagegap-live-01 的第 2 轮就是这样干等满 `--turn-timeout`。
+      current.engine.setControl(channelId, { enabled: true });
       current.store.put('channels', {
         ...channelRow(),
         status: 'waiting',
@@ -981,6 +1090,7 @@ async function startLiveService(options: {
       const row = channelRow();
       return {
         status: row.status,
+        enabled: controlEnabled(),
         nextRunAt: row.nextRunAt,
         maxRunsPerDay: row.maxRunsPerDay,
         runsToday: current.store.runCount(channelId, new Date().toISOString().slice(0, 10)),

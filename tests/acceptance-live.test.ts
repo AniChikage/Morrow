@@ -112,8 +112,24 @@ function scenario(timeline: Step[], budget = 3): Scenario {
 }
 
 type Knobs = {
-  /** `makeDue` 之后假调度器做什么。 */
-  onMakeDue?: 'complete' | 'running' | 'nothing' | 'native-app';
+  /**
+   * `makeDue` 之后假调度器做什么。`interrupted` 模拟引擎的 finishFailure：那一轮以 `interrupted`
+   * 结束，频道被置 `paused` 且开关被关掉。
+   */
+  onMakeDue?: 'complete' | 'running' | 'nothing' | 'native-app' | 'interrupted';
+  /**
+   * App 自己中断 Morrow 这一轮之后，又自己以 `turnTrigger: 'resume_interrupted_task'` 续跑：第
+   * `afterSleeps`（缺省 1）次 `sleep` 之后往 `runs` 里塞一行 `native-app` 运行；`status: 'running'`
+   * 的那行再过 `finishAfterSleeps`（缺省 2）次 `sleep` 落到 `completed`。`trigger` 可以换成别的值，
+   * `never` 则一行都不塞——用来验证「没找到续跑轮次就照旧记 interrupted」。
+   */
+  appResume?: {
+    afterSleeps?: number;
+    status?: 'running' | 'completed';
+    finishAfterSleeps?: number;
+    trigger?: string;
+    never?: boolean;
+  };
   /** 每一轮结束时给出的 `morrow-next` 状态。 */
   decision?: string;
   /** `native.list` 依次返回的候选；最后一项重复。 */
@@ -193,6 +209,8 @@ function fake(knobs: Knobs = {}): Fake {
   let statusCall = 0;
   let reviewCall = 0;
   let paused = false;
+  /** 频道开关（真实实现读 `controls` 行的 `enabled`）。 */
+  let enabled = false;
   let restarted = false;
   let turnsRun = 0;
   let sleeps = 0;
@@ -238,6 +256,42 @@ function fake(knobs: Knobs = {}): Fake {
       scheduled.finishedAt = new Date(now).toISOString();
       tables.runs = runs.slice();
       decisions.set(scheduled.id, spec.decision || 'continue');
+    }
+  };
+
+  /**
+   * App 自己的续跑轮次。它是一行 `native-app` 运行，`trigger` 来自 `native_turns` 的
+   * `raw.params.turnTrigger`；runner 从来没有 `makeDue` 过它，也不该拿它计预算。
+   */
+  let resumeRow: RunView | undefined;
+  let interruptedAtSleep: number | undefined;
+  let resumeAtSleep = 0;
+  const resumeTick = () => {
+    const spec = knobs.appResume;
+    if (!spec || spec.never || interruptedAtSleep === undefined) return;
+    if (!resumeRow) {
+      if (sleeps < interruptedAtSleep + (spec.afterSleeps ?? 1)) return;
+      resumeAtSleep = sleeps;
+      resumeRow = {
+        id: 'run-app-resume',
+        source: 'native-app',
+        status: spec.status || 'completed',
+        trigger: spec.trigger ?? 'resume_interrupted_task',
+        sessionId: 'thread-1',
+        nativeTurnId: 'turn-app-resume',
+        permission: 'native',
+        model: 'gpt-5.3-codex',
+        startedAt: new Date(now).toISOString(),
+        ...(spec.status === 'running' ? {} : { finishedAt: new Date(now + 40_000).toISOString() }),
+      };
+      runs.push(resumeRow);
+      tables.runs = runs.slice();
+      return;
+    }
+    if (resumeRow.status === 'running' && sleeps >= resumeAtSleep + (spec.finishAfterSleeps ?? 2)) {
+      resumeRow.status = 'completed';
+      resumeRow.finishedAt = new Date(now).toISOString();
+      tables.runs = runs.slice();
     }
   };
 
@@ -301,8 +355,13 @@ function fake(knobs: Knobs = {}): Fake {
     },
     enableControl: () => {
       order.push('enable');
+      enabled = true;
     },
     makeDue: () => {
+      // 真实实现先 `setControl(enabled: true)` 再置到期：引擎会在一轮 `interrupted` 之后关掉开关。
+      order.push('enable');
+      enabled = true;
+      paused = false;
       order.push('make-due');
       turnsRun++;
       const id = `run-${turnsRun}`;
@@ -315,8 +374,8 @@ function fake(knobs: Knobs = {}): Fake {
       const row: RunView = {
         id,
         source: 'morrow-schedule',
-        status: mode === 'running' ? 'running' : 'completed',
-        reportStatus: 'valid',
+        status: mode === 'running' ? 'running' : mode === 'interrupted' ? 'interrupted' : 'completed',
+        reportStatus: mode === 'interrupted' ? 'missing' : 'valid',
         sessionId: 'thread-1',
         nativeTurnId: `turn-${turnsRun}`,
         permission: 'native',
@@ -327,9 +386,16 @@ function fake(knobs: Knobs = {}): Fake {
       runs.push(row);
       tables.runs = runs.slice();
       if (mode === 'complete') decisions.set(id, knobs.decision || 'continue');
+      if (mode === 'interrupted') {
+        // 引擎的 finishFailure：频道置 paused，开关关掉。
+        paused = true;
+        enabled = false;
+        interruptedAtSleep = sleeps;
+      }
     },
     channel: () => ({
       status: paused ? 'paused' : 'waiting',
+      enabled,
       nextRunAt: '',
       maxRunsPerDay: 6,
       runsToday: turnsRun,
@@ -342,7 +408,12 @@ function fake(knobs: Knobs = {}): Fake {
         : {}),
     }),
     runs: () => runs.slice(),
-    turnTools: (run) => (run.nativeTurnId ? ['commandExecution', 'webSearch', 'toolCall:browser'] : []),
+    turnTools: (run) =>
+      run.nativeTurnId
+        ? run.source === 'native-app'
+          ? ['agentMessage', 'webSearch']
+          : ['commandExecution', 'webSearch', 'toolCall:browser']
+        : [],
     turnDecision: (runId) => decisions.get(runId) || 'none',
     pollWatches: async () => {
       order.push('poll');
@@ -360,10 +431,12 @@ function fake(knobs: Knobs = {}): Fake {
     pause: async () => {
       order.push('pause');
       paused = true;
+      enabled = false;
     },
     resume: () => {
       order.push('resume');
       paused = false;
+      enabled = true;
     },
     restart: async () => {
       order.push('restart');
@@ -416,6 +489,7 @@ function fake(knobs: Knobs = {}): Fake {
         now += Math.max(0, ms);
         sleeps++;
         schedulerTick();
+        resumeTick();
       },
     },
     log: (text) => logs.push(text),
@@ -551,8 +625,24 @@ test('prepare 建目录、写种子与 prepared.json，并打印步骤 0 和人�
   assert.match(text, new RegExp(`1\\. 打开 Codex App`));
   assert.ok(text.includes(join(out, 'project')), '打印的是绝对项目路径');
   assert.match(text, /--run-id probe-1 --budget 3/);
+  // 第 3 步要求任务加载了但不在前台：前台的任务窗口会让 App 重放 thread settings 并中断 follower 轮次。
+  assert.match(text, /把 App 切到别的任务或关闭这个任务的窗口视图（不要删除任务）/);
+  assert.doesNotMatch(text, /保持这个任务打开，不要关闭窗口/);
   // 同一个 run-id 不能准备两次：现场不能被覆盖。
   assert.throws(() => prepareLive(scenario([{ verb: 'turn' }]), { runId: 'probe-1', out }, () => {}), /已经存在/);
+});
+
+test('prepare 把项目目录做成独立 git 仓库并提交种子，工作树是干净的', () => {
+  const out = join(workspace(), 'run');
+  const printed: string[] = [];
+  const prepared = prepareLive(scenario([{ verb: 'turn' }]), { runId: 'probe-1', out }, (text) => printed.push(text));
+  assert.equal(prepared.git, true);
+  assert.equal(JSON.parse(readFileSync(join(out, 'prepared.json'), 'utf8')).git, true);
+  assert.equal(existsSync(join(out, 'project', '.git')), true, '项目目录自己就是一个仓库');
+  const git = (...args: string[]) => spawnSync('git', ['-C', join(out, 'project'), ...args], { encoding: 'utf8' });
+  assert.equal(git('status', '--porcelain').stdout, '', 'runs[].treeState 应当看到一棵干净的树');
+  assert.match(git('log', '-1', '--pretty=%s%n%an%n%ae').stdout, /^seed\nmorrow-live\nmorrow-live@localhost\n$/);
+  assert.match(printed.join('\n'), /项目目录已经是一个独立 git 仓库，种子提交为 "seed"/);
 });
 
 /* ------------------------------- 关联与断言 ------------------------------- */
@@ -754,6 +844,90 @@ test('预算用完的那一刻仍然接管调度器已经跑过的轮次，挡�
   assert.equal(result.live.turns.length, 2, '第 3 步接管了调度器那轮，第 4 步才被预算挡住');
   assert.equal(instance.order.filter((row) => row === 'make-due').length, 1);
   assert.equal(result.live.remainingSteps, 1);
+});
+
+test('makeDue 会重新打开频道开关，而且 liveGateDetail 打印 enabled=', async () => {
+  // 引擎对 interrupted 的运行会把频道置 paused 并关掉开关；第 2 个 turn 的 makeDue 必须先打开它，
+  // 否则真实调度器永远不会再启动一轮——首跑 usagegap-live-01 就是这样干等满 --turn-timeout。
+  const { result, fake: instance } = await live(
+    [{ verb: 'turn' }, { verb: 'turn' }],
+    { onMakeDue: 'interrupted', appResume: { never: true } },
+    { budget: 3 }
+  );
+  assert.equal(result.exitCode, 0);
+  assert.equal(result.stop.reason, 'timeline-finished');
+  const dues = instance.order.reduce<number[]>((at, row, index) => (row === 'make-due' ? [...at, index] : at), []);
+  assert.equal(dues.length, 2);
+  for (const at of dues) assert.equal(instance.order[at - 1], 'enable', 'makeDue 之前紧跟着一次 enable');
+  assert.equal(result.live.turns.length, 2, '开关重新打开了，所以第 2 轮真的起来了');
+
+  // 开关的取值进 liveGateDetail：首跑那次的说明里看不出真实原因。
+  const stuck = await live([{ verb: 'turn' }], { onMakeDue: 'nothing' }, { turnTimeoutMinutes: 1 });
+  assert.equal(stuck.result.stop.reason, 'turn-timeout');
+  assert.match(stuck.result.stop.detail, /enabled=true/);
+});
+
+test('App 自己中断这一轮又自己续跑时，两者记成同一轮，时间线继续', async () => {
+  const { result, fake: instance } = await live(
+    [{ verb: 'turn' }, { verb: 'poll' }],
+    { onMakeDue: 'interrupted', appResume: { status: 'running', finishAfterSleeps: 2 } },
+    { budget: 3 }
+  );
+  assert.equal(result.exitCode, 0);
+  assert.equal(result.stop.reason, 'timeline-finished', '不是失败条件：时间线继续往下走');
+  assert.equal(result.timeline.length, 2);
+  assert.equal(result.live.turns.length, 1, '这一对是同一轮，不是两行');
+  const turn = result.live.turns[0];
+  assert.equal(turn.runId, 'run-1');
+  assert.equal(turn.status, 'interrupted', 'Morrow 那一轮的结局如实保留');
+  assert.equal(turn.interruptedByApp, true);
+  assert.equal(turn.resumedRunId, 'run-app-resume');
+  assert.equal(turn.resumedStatus, 'completed');
+  assert.equal(turn.resumedWallMs, 2000, '续跑那一轮的耗时取它自己 runs 行上的起止');
+  assert.equal(turn.decision, 'none', 'decision 仍取引擎对 Morrow 那一轮解析出的值');
+  assert.deepEqual(
+    turn.tools,
+    ['agentMessage', 'commandExecution', 'toolCall:browser', 'webSearch'],
+    'tools 是两轮的并集'
+  );
+  assert.equal(result.live.spentTurns, 1, '续跑那一轮是 native-app，不计 --budget');
+  assert.equal(result.timeline[0].result.interruptedByApp, true);
+  assert.equal(result.timeline[0].result.resumedRunId, 'run-app-resume');
+  assert.match(instance.logs.join('\n'), /turnTrigger=resume_interrupted_task/);
+  assert.match(result.summary, /App 中断后自行续跑 → completed/);
+  assert.match(result.summary, /标成「App 中断后自行续跑」的那几轮/);
+  assert.match(result.summary, /interrupted on purpose/);
+
+  // 续跑那一轮一出现就已经是终态时同样记得下来。
+  const settled = await live([{ verb: 'turn' }], { onMakeDue: 'interrupted', appResume: {} }, { budget: 3 });
+  assert.equal(settled.result.live.turns[0].resumedStatus, 'completed');
+  assert.equal(settled.result.live.turns[0].resumedWallMs, 40_000);
+});
+
+test('没有出现 App 续跑轮次时照旧记 interrupted，也不算失败', async () => {
+  const never = await live([{ verb: 'turn' }], { onMakeDue: 'interrupted', appResume: { never: true } });
+  assert.equal(never.result.exitCode, 0);
+  assert.equal(never.result.stop.reason, 'timeline-finished');
+  assert.equal(never.result.live.turns[0].status, 'interrupted');
+  assert.equal(never.result.live.turns[0].interruptedByApp, undefined);
+  assert.deepEqual(never.result.live.turns[0].tools, ['commandExecution', 'webSearch', 'toolCall:browser']);
+  assert.match(never.fake.logs.join('\n'), /15 秒内也没有出现 App 自己的续跑轮次，如实记为 interrupted/);
+  assert.doesNotMatch(never.result.summary, /App 中断后自行续跑/);
+
+  // 别的 turnTrigger 不算：只认 App 自己的 resume_interrupted_task。
+  const other = await live([{ verb: 'turn' }], { onMakeDue: 'interrupted', appResume: { trigger: 'composer' } });
+  assert.equal(other.result.live.turns[0].interruptedByApp, undefined);
+});
+
+test('runner 自己中断的那一轮不去找 App 的续跑轮次', async () => {
+  const { result } = await live(
+    [{ verb: 'turn' }],
+    { onMakeDue: 'running', appResume: { status: 'completed' } },
+    { turnTimeoutMinutes: 1 }
+  );
+  assert.equal(result.stop.reason, 'turn-timeout');
+  assert.equal(result.exitCode, 1);
+  assert.equal(result.live.turns.length, 0, '超时的那一轮本来就没有记录，不该被当成 App 中断');
 });
 
 test('新出现的 native-app 轮次不算一轮，turn 会超时并精确中断', async () => {
