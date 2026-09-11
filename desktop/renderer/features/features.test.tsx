@@ -392,3 +392,80 @@ it('places next steps before long detail and resets disclosures when switching i
   expect(screen.getByText('变更记录').closest('details')!.open).toBe(false);
   expect(JSON.stringify(props.snapshot.items)).toBe(original);
 });
+
+describe('project audit density', () => {
+  it('keeps full long records and failed tool output behind summaries only in the project view', async () => {
+    const state = snapshot();
+    const text = '审计原文'.repeat(80) + '审计尾部';
+    const message = '原始回复'.repeat(80) + '回复尾部';
+    const failure = '错误解释'.repeat(80) + '错误尾部';
+    state.events = [
+      event('action', text, 1, {
+        projectId: 'project-atlas',
+        action: 'item.updated',
+        itemId: 'finding-import',
+        changes: { before: { status: 'open' }, after: { status: 'investigating' } },
+      }),
+      event('reply', message, 2, { projectId: 'project-atlas' }),
+      event('error', failure, 3, { projectId: 'project-atlas', kind: 'error' }),
+      event('tool', 'raw tool', 4, {
+        projectId: 'project-atlas',
+        kind: 'tool',
+        detail: { type: 'tool', tool: 'test command', status: 'failed', output: '失败输出尾部' },
+      }),
+    ];
+    const original = structuredClone(state.events);
+    const { props, api } = featureProps({ snapshot: state });
+    api.getEvents.mockResolvedValue({ events: state.events, hasMore: false });
+    const view = render(<ProjectRecords {...props} projectId="project-atlas" />, { wrapper: TestProviders });
+    await waitFor(() => expect(screen.queryByText('正在读取记录…')).toBeNull());
+    for (const value of [text, message, failure]) expect(screen.getByText(value).closest('details')?.open).toBe(false);
+    const user = userEvent.setup();
+    for (const summary of screen.getAllByText('完整记录', { selector: 'summary' })) await user.click(summary);
+    for (const value of [text, message, failure]) expect(screen.getByText(value).closest('details')?.open).toBe(true);
+    const tool = screen.getByText('test command').closest('details')!;
+    expect(tool.open).toBe(false);
+    expect(within(tool.querySelector('summary')!).getByText('运行失败')).toBeTruthy();
+    await user.click(screen.getByText('test command'));
+    expect(screen.getByText('失败输出尾部').closest('details')?.open).toBe(true);
+    await user.click(screen.getByText('查看变更'));
+    expect(screen.getByText('待处理')).toBeTruthy();
+    expect(state.events).toEqual(original);
+    view.unmount();
+    render(<ChannelAudit {...props} id="channel-system" />, { wrapper: TestProviders });
+    await screen.findByText('test command');
+    expect(screen.getByText('test command').closest('details')?.open).toBe(true);
+    expect(screen.getByText(message).closest('details')).toBeNull();
+  });
+  it('filters only loaded sources, preserves pagination and resets the filter across projects', async () => {
+    const state = snapshot();
+    const older = event('older', '更早的项目操作', 1, { projectId: 'project-atlas', action: 'item.created' });
+    const recent = event('recent', '最近的频道记录', 3, { projectId: 'project-atlas' });
+    state.events = [older, recent];
+    const { props, api } = featureProps({ snapshot: state });
+    api.getEvents
+      .mockResolvedValueOnce({ events: [recent], hasMore: true, cursor: 'recent' } as EventsPage)
+      .mockResolvedValueOnce({ events: [older], hasMore: false })
+      .mockResolvedValue({ events: [], hasMore: false });
+    const view = render(<ProjectRecords {...props} projectId="project-atlas" />, { wrapper: TestProviders });
+    await screen.findByRole('button', { name: '加载更早记录' });
+    const user = userEvent.setup();
+    await user.selectOptions(screen.getByRole('combobox', { name: '记录来源筛选' }), 'operations');
+    expect(screen.getByText('已载入记录中没有此来源。')).toBeTruthy();
+    expect(screen.getByText('仅筛选已载入的记录，可继续加载更早记录。')).toBeTruthy();
+    await user.click(screen.getByRole('button', { name: '加载更早记录' }));
+    await screen.findByText('更早的项目操作');
+    expect(api.getEvents).toHaveBeenLastCalledWith({ projectId: 'project-atlas', before: 'recent', limit: 50 });
+    await user.selectOptions(screen.getByRole('combobox', { name: '记录来源筛选' }), 'all');
+    expect(
+      screen.getByText('最近的频道记录').compareDocumentPosition(screen.getByText('更早的项目操作')) &
+        Node.DOCUMENT_POSITION_FOLLOWING
+    ).toBeTruthy();
+    await user.selectOptions(screen.getByRole('combobox', { name: '记录来源筛选' }), 'channel');
+    expect(screen.queryByText('更早的项目操作')).toBeNull();
+    view.rerender(<ProjectRecords {...props} projectId="other-project" />);
+    await screen.findByText('还没有项目记录');
+    expect((screen.getByRole('combobox', { name: '记录来源筛选' }) as HTMLSelectElement).value).toBe('all');
+    expect(screen.queryByText('最近的频道记录')).toBeNull();
+  });
+});

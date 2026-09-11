@@ -3,11 +3,19 @@ import type { WorkspaceEvent } from '../../shared/types';
 import { Markdown } from '../components/ui';
 import { formatDate, runtimeLabel, statusLabel } from '../components/format';
 import { readableEventText, toolPresentation } from './eventPresentation';
-export function EventLog({ event, runtime }: { event: WorkspaceEvent; runtime: string }) {
+export function EventLog({
+  event,
+  runtime,
+  compact = false,
+}: {
+  event: WorkspaceEvent;
+  runtime: string;
+  compact?: boolean;
+}) {
   const tool = toolPresentation(event);
   if (tool)
     return (
-      <details className="tool-event" open={tool.status === 'failed'}>
+      <details className="tool-event" open={!compact && tool.status === 'failed'}>
         <summary>
           <Terminal size={14} />
           <span>{tool.name}</span>
@@ -33,12 +41,24 @@ export function EventLog({ event, runtime }: { event: WorkspaceEvent; runtime: s
       </details>
     );
   const value = readableEventText(event);
+  const content =
+    compact && value.length > 240 ? (
+      <>
+        <p>{value.slice(0, 160)}…</p>
+        <details className="audit-changes">
+          <summary>完整记录</summary>
+          <Markdown>{value}</Markdown>
+        </details>
+      </>
+    ) : (
+      <Markdown>{value}</Markdown>
+    );
   if (event.kind === 'system' || event.kind === 'error')
     return (
       <div className={`system-event ${event.kind === 'error' ? 'event-error' : ''}`}>
         {event.kind === 'error' ? <CircleAlert size={14} /> : <Code2 size={14} />}
         <div>
-          <span>{value}</span>
+          {compact && value.length > 240 ? content : <span>{value}</span>}
           <time>{formatDate(event.createdAt)}</time>
         </div>
       </div>
@@ -54,7 +74,7 @@ export function EventLog({ event, runtime }: { event: WorkspaceEvent; runtime: s
           {event.kind === 'result' && <span className="event-result-label">运行结果</span>}
           <time>{formatDate(event.createdAt)}</time>
         </header>
-        <Markdown>{value}</Markdown>
+        {content}
       </div>
     </article>
   );

@@ -79,6 +79,7 @@ export function ProjectRecords({ projectId, itemId, ...props }: FeatureProps & {
   const [cursor, setCursor] = useState<string>();
   const [error, setError] = useState('');
   const [historyLoaded, setHistoryLoaded] = useState(false);
+  const [source, setSource] = useState('all');
   const snapshotBaseline = useRef(new Set<string>());
   const belongs = useCallback(
     (event: WorkspaceEvent) =>
@@ -124,22 +125,44 @@ export function ProjectRecords({ projectId, itemId, ...props }: FeatureProps & {
   );
   useEffect(() => {
     snapshotBaseline.current = new Set(snapshot.events.map((event) => event.id));
+    setSource('all');
     setPages([]);
     setHistoryLoaded(false);
     setHasMore(false);
     setCursor(undefined);
     void load();
   }, [load]);
+  const displayed = itemId
+    ? events
+    : events
+        .slice()
+        .reverse()
+        .filter((event) => source === 'all' || (source === 'operations' ? !!event.action : !event.action));
+  const more = hasMore && (
+    <div className="load-history">
+      <Button variant="ghost" disabled={loading} onClick={() => void load(cursor)}>
+        <History size={14} />
+        加载更早记录
+      </Button>
+    </div>
+  );
   return (
     <div className="project-records" aria-label={itemId ? '功能变更记录' : '项目全部记录'}>
-      {hasMore && (
-        <div className="load-history">
-          <Button variant="ghost" disabled={loading} onClick={() => void load(cursor)}>
-            <History size={14} />
-            加载更早记录
-          </Button>
+      {!itemId && (
+        <div className="records-heading">
+          <p className="subtle">最近记录优先，展开查看完整内容。</p>
+          <label>
+            来源{' '}
+            <select aria-label="记录来源筛选" value={source} onChange={(event) => setSource(event.target.value)}>
+              <option value="all">全部记录</option>
+              <option value="operations">项目操作</option>
+              <option value="channel">频道记录</option>
+            </select>
+          </label>
+          {source !== 'all' && <p className="subtle">仅筛选已载入的记录{hasMore ? '，可继续加载更早记录' : ''}。</p>}
         </div>
       )}
+      {itemId && more}
       {error && (
         <div className="feature-inline-error" role="alert">
           {error}
@@ -161,10 +184,12 @@ export function ProjectRecords({ projectId, itemId, ...props }: FeatureProps & {
           }
         />
       )}
-      {events.map((event) => {
+      {!loading && !!events.length && !displayed.length && <p className="subtle">已载入记录中没有此来源。</p>}
+      {displayed.map((event) => {
         const channel = snapshot.channels.find((channel) => channel.id === event.channelId);
         const item = snapshot.items.find((item) => item.id === event.itemId);
-        if (!event.action) return <EventLog key={event.id} event={event} runtime={channel?.runtime || 'Agent'} />;
+        if (!event.action)
+          return <EventLog key={event.id} event={event} runtime={channel?.runtime || 'Agent'} compact={!itemId} />;
         const before = asRecord(event.changes?.before),
           after = asRecord(event.changes?.after);
         const changedFields = Object.keys(fields).filter(
@@ -180,7 +205,17 @@ export function ProjectRecords({ projectId, itemId, ...props }: FeatureProps & {
               <time>{formatDate(event.createdAt)}</time>
             </header>
             <div className="audit-record-body">
-              <Markdown>{event.text}</Markdown>
+              {!itemId && event.text.length > 240 ? (
+                <>
+                  <p>{event.text.slice(0, 160)}…</p>
+                  <details className="audit-changes">
+                    <summary>完整记录</summary>
+                    <Markdown>{event.text}</Markdown>
+                  </details>
+                </>
+              ) : (
+                <Markdown>{event.text}</Markdown>
+              )}
               <div className="audit-record-links">
                 {item && !itemId && (
                   <button onClick={() => onNavigate({ kind: 'finding', id: item.id })}>
@@ -215,6 +250,7 @@ export function ProjectRecords({ projectId, itemId, ...props }: FeatureProps & {
           </article>
         );
       })}
+      {!itemId && more}
     </div>
   );
 }

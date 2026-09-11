@@ -1428,6 +1428,27 @@
   margin: 0 auto;
   box-sizing: border-box;
 }
+.records-heading {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px 16px;
+  padding-bottom: 12px;
+}
+.records-heading > p {
+  margin: 0;
+}
+.records-heading > label {
+  margin-left: auto;
+  color: var(--muted);
+  font-size: 12px;
+}
+.records-heading select {
+  padding: 4px 6px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: var(--canvas);
+}
 .feature-history-section > .project-records {
   padding: 0;
   max-width: none;
