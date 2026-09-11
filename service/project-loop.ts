@@ -599,11 +599,42 @@ export class ProjectWorkLoop {
         let verification, completion;
         if (['verified', 'resolved'].includes(status)) {
           const decision = this.strategy.view(project.id, item.id).decisions.at(-1);
-          verification = this.verification.request(scope, {
-            itemId: item.id,
-            ...(decision ? { decisionId: decision.id } : {}),
-            evidenceIds: [...new Set([...(decision?.review?.evidenceIds || []), ...evidenceIds])],
-          });
+          const latest = this.verification.rows(project.id, item.id).at(-1);
+          const afterHistory =
+            latest &&
+            !latest.decisionId &&
+            decision?.status === 'reviewed' &&
+            decision.createdAt <= latest.createdAt &&
+            decision.updatedAt <= latest.createdAt &&
+            !!decision.expectations?.length &&
+            decision.expectations.every((expected) => expected.deadline < latest.createdAt);
+          if (afterHistory) {
+            // A later standalone review validates the current item, not the expired historical experiment.
+            const uncovered = this.rows<Evidence>('loop_evidence', project.id).some(
+              (row) =>
+                row.origin !== 'agent' &&
+                row.createdAt >= latest.createdAt &&
+                (row.itemId === item.id ||
+                  decision.expectations!.some((expected) => this.strategy.evaluation.matches(expected, row))) &&
+                !latest.evidenceIds.includes(row.id)
+            );
+            if (
+              latest.status !== 'passed' ||
+              !this.verification.current(latest) ||
+              uncovered ||
+              !evidenceIds.every((id) => latest.evidenceIds.includes(id))
+            )
+              throw new APIError(409, '当前事项复核未通过、已变化或未覆盖新证据；先核验当前事项，不能回选旧行动结论');
+            verification = latest;
+          } else {
+            verification = this.verification.request(scope, {
+              itemId: item.id,
+              ...(decision ? { decisionId: decision.id } : {}),
+              evidenceIds: [...new Set([...(decision?.review?.evidenceIds || []), ...evidenceIds])],
+            });
+            if (verification.status === 'passed' && latest && latest.id !== verification.id)
+              throw new APIError(409, '已有更新的事项复核，不能回选较早通过记录完成事项');
+          }
           if (verification.status !== 'passed' || !this.verification.current(verification)) {
             item.status = 'investigating';
             completion = this.verification.defer(scope, verification, 'feature.complete', item.id, item.revision, {
