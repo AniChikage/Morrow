@@ -177,12 +177,16 @@ export default function App() {
         <EmptyState
           icon={<FolderPlus />}
           title={snapshot.projects.length ? '选择一个项目' : '还没有项目'}
-          description="接入项目目录，创建持续负责这个项目的 AI 频道。"
+          description={
+            snapshot.projects.length
+              ? '从左侧或顶部选择已有项目，也可接入另一个项目目录。'
+              : '接入已有项目目录，写下项目说明，再关联 Codex App 任务。'
+          }
           action={
             <>
               <Button variant="primary" onClick={() => setModal({ kind: 'project' })}>
                 <Plus />
-                新建项目
+                接入项目
               </Button>
               {!snapshot.projects.some((p) => p.isDemo) && (
                 <Button onClick={() => void mutate(() => api.loadDemo())}>浏览示例</Button>
@@ -259,7 +263,7 @@ export default function App() {
         </div>
         <Dropdown
           trigger={
-            <button className="icon-button add-tab" aria-label="打开项目">
+            <button className="icon-button add-tab" aria-label="选择项目">
               <Plus size={15} />
             </button>
           }
@@ -274,7 +278,7 @@ export default function App() {
           <DropdownSeparator />
           <DropdownItem onSelect={() => setModal({ kind: 'project' })}>
             <Plus />
-            新建项目
+            接入项目
           </DropdownItem>
         </Dropdown>
         <div className="titlebar-space" />
@@ -294,7 +298,7 @@ export default function App() {
               >
                 <DropdownItem onSelect={() => setModal({ kind: 'project' })}>
                   <Plus />
-                  新建项目
+                  接入项目
                 </DropdownItem>
                 <DropdownItem onSelect={() => setModal({ kind: 'settings' })}>
                   <Settings2 />
@@ -325,7 +329,7 @@ export default function App() {
                   项目
                   <ChevronDown className={sidebarSection.projects ? 'collapsed' : ''} />
                 </button>
-                <IconButton label="新建项目" onClick={() => setModal({ kind: 'project' })}>
+                <IconButton label="接入项目" onClick={() => setModal({ kind: 'project' })}>
                   <Plus />
                 </IconButton>
               </div>

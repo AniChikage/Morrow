@@ -85,7 +85,7 @@ it('opens a native folder, derives the project name and always creates a Codex p
     isDemo: false,
   });
   render(<Dialogs modal={{ kind: 'project' }} onClose={onClose} onNavigate={onNavigate} />, { wrapper: TestProviders });
-  expect((screen.getByRole('button', { name: '打开项目' }) as HTMLButtonElement).disabled).toBe(true);
+  expect((screen.getByRole('button', { name: '接入项目' }) as HTMLButtonElement).disabled).toBe(true);
   await user.click(screen.getByRole('button', { name: '选择文件夹' }));
   expect(context.current.api.chooseFolder).toHaveBeenCalledOnce();
   expect((screen.getByPlaceholderText('选择本机项目文件夹') as HTMLInputElement).value).toBe(
@@ -93,7 +93,7 @@ it('opens a native folder, derives the project name and always creates a Codex p
   );
   expect((screen.getByRole('textbox', { name: '项目名称' }) as HTMLInputElement).value).toBe('Atlas');
   expect(screen.queryByRole('combobox', { name: /运行时|引擎/ })).toBeNull();
-  await user.click(screen.getByRole('button', { name: '打开项目' }));
+  await user.click(screen.getByRole('button', { name: '接入项目' }));
   await waitFor(() =>
     expect(context.current.api.createProject).toHaveBeenCalledWith({
       name: 'Atlas',
@@ -132,7 +132,7 @@ it('sends a project brief only when one was written and fills the suggested outl
   await user.click(screen.getByText('项目说明（可选） · 已填写'));
   expect(options.open).toBe(false);
   expect(brief.value).toBe('  不得改动计费。  ');
-  await user.click(screen.getByRole('button', { name: '打开项目' }));
+  await user.click(screen.getByRole('button', { name: '接入项目' }));
   await waitFor(() =>
     expect(context.current.api.createProject).toHaveBeenCalledWith({
       name: 'Atlas',
@@ -166,7 +166,7 @@ it('keeps a failed native folder selection recoverable and never submits an empt
   await user.click(screen.getByRole('button', { name: '选择文件夹' }));
   expect((await screen.findByRole('alert')).textContent).toContain('文件夹选择器暂不可用');
   await user.click(screen.getByRole('button', { name: '选择文件夹' }));
-  expect((screen.getByRole('button', { name: '打开项目' }) as HTMLButtonElement).disabled).toBe(true);
+  expect((screen.getByRole('button', { name: '接入项目' }) as HTMLButtonElement).disabled).toBe(true);
   expect(context.current.api.createProject).not.toHaveBeenCalled();
 });
 
@@ -184,7 +184,7 @@ it('accepts a remote project directory without invoking the local folder picker'
   expect(screen.queryByRole('button', { name: '选择文件夹' })).toBeNull();
   await user.type(screen.getByRole('textbox', { name: '远程项目目录' }), '/srv/projects/remote-app');
   await user.type(screen.getByRole('textbox', { name: /持续目标/ }), '验证远程构建结果');
-  await user.click(screen.getByRole('button', { name: '打开项目' }));
+  await user.click(screen.getByRole('button', { name: '接入项目' }));
   await waitFor(() =>
     expect(context.current.api.createProject).toHaveBeenCalledWith({
       name: 'remote-app',

@@ -163,7 +163,7 @@ function ProjectDialog({
   }
   return (
     <Modal
-      title="打开项目文件夹"
+      title="接入项目文件夹"
       description="接入已有目录，再关联 Codex App 任务开始工作。"
       onClose={onClose}
       className="project-dialog"
@@ -231,7 +231,7 @@ function ProjectDialog({
         <div className="form-actions">
           <Button onClick={onClose}>取消</Button>
           <Button variant="primary" type="submit" disabled={busy || !path.trim()}>
-            {busy ? '正在接入…' : existing ? '打开已有项目' : '打开项目'}
+            {busy ? '正在接入…' : existing ? '打开已有项目' : '接入项目'}
           </Button>
         </div>
       </form>
