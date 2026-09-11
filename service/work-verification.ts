@@ -737,15 +737,22 @@ file/agent 证据可能由执行者生成，只证明采集了该内容，不证
   }
   /** The release gate's candidate half: one passed review of this source version covering these items. */
   requireReleasePassed(scope: Scope, itemIds: string[]) {
-    const latest = this.rows(scope.projectId).findLast(
-      (row) =>
-        row.kind === 'release' &&
-        row.status === 'passed' &&
-        itemIds.every((id) => row.itemIds?.includes(id)) &&
-        this.current(row)
-    );
-    if (!latest) throw new APIError(409, '需要当前源版本的发布级复核通过；先 verification.request kind:release');
-    return latest;
+    const project = this.loop.store.get<Project>('projects', scope.projectId)!;
+    const digest = sourceVersion(project.path).digest;
+    const seen = new Set<string>();
+    for (const row of this.rows(scope.projectId).toReversed()) {
+      if (row.kind !== 'release' || !this.materialCurrent(row, digest)) continue;
+      const covered = row.itemIds || [];
+      const key = [...covered].sort().join(',');
+      // A bounded retry supersedes its own unknown result, never a different review scope.
+      if (seen.has(key)) continue;
+      seen.add(key);
+      if (!itemIds.some((id) => covered.includes(id))) continue;
+      if (row.status !== 'passed')
+        throw new APIError(409, '有较新的相关发布级复核未通过；先读取最新结果，不能回选较早的通过记录');
+      if (itemIds.every((id) => covered.includes(id))) return row;
+    }
+    throw new APIError(409, '需要当前源版本的发布级复核通过；先 verification.request kind:release');
   }
   read(scope: Scope, input: Record<string, unknown>) {
     keys(input, ['id']);

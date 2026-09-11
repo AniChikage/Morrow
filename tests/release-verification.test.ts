@@ -312,3 +312,91 @@ test('completing an item still needs that item’s own review of the current sou
     await f.cleanup();
   }
 });
+
+test('a newer failed or unknown overlapping review blocks an older covering pass without blocking unrelated items', async () => {
+  for (const verdict of ['fail', 'unknown'] as const) {
+    for (const overlap of ['subset', 'overlap'] as const) {
+      const f = await fixture();
+      try {
+        const items = await Promise.all(['A', 'B', 'C'].map((name) => f.feature(name)));
+        for (const item of items) await f.reviewItem(item.item.id, item.evidence.id);
+        const [a, b, c] = items.map((entry) => entry.item.id);
+        const execution = await f.grant.execute('node --test');
+        const passed = await f.reviewRelease([a, b], [execution.id]);
+        f.reviewer.verdict = verdict;
+        const rejected = await f.reviewRelease(overlap === 'subset' ? [a] : [a, c], [execution.id]);
+        assert.equal(rejected.status, verdict === 'fail' ? 'failed' : 'unknown');
+        for (const proposed of [[a], [a, b]]) {
+          const result = await f.call('release.propose', f.proposal(proposed, execution.id), 409);
+          assert.match(result.error, /发布级复核/);
+        }
+        assert.equal(f.store.all('loop_releases').length, 0);
+        const unrelated = await f.call('release.propose', f.proposal([b], execution.id));
+        assert.equal(unrelated.releaseVerificationId, passed.id);
+        assert.equal(f.stored(rejected.id).status, rejected.status);
+      } finally {
+        await f.cleanup();
+      }
+    }
+  }
+});
+
+test('pending overlapping reviews cannot be skipped, while a newer subset pass keeps the covering pass usable', async () => {
+  const f = await fixture();
+  try {
+    const a = await f.feature('A'),
+      b = await f.feature('B');
+    for (const item of [a, b]) await f.reviewItem(item.item.id, item.evidence.id);
+    const ids = [a.item.id, b.item.id];
+    const execution = await f.grant.execute('node --test');
+    const passed = await f.reviewRelease(ids, [execution.id]);
+    f.reviewer.autoComplete = false;
+    const pending = await f.call('verification.request', {
+      kind: 'release',
+      itemIds: [a.item.id],
+      evidenceIds: [execution.id],
+    });
+    await f.call('release.propose', f.proposal(ids, execution.id), 409);
+    await f.engine.loop.verification.start(pending.id);
+    await f.call('release.propose', f.proposal(ids, execution.id), 409);
+    f.reviewer.complete();
+    assert.equal(f.stored(pending.id).status, 'passed');
+    const result = await f.call('release.propose', f.proposal(ids, execution.id));
+    assert.equal(result.releaseVerificationId, passed.id);
+  } finally {
+    await f.cleanup();
+  }
+});
+
+test('a passed bounded retry supersedes only its own unknown scope and does not rewrite history', async () => {
+  const f = await fixture();
+  try {
+    const a = await f.feature('A'),
+      b = await f.feature('B');
+    for (const item of [a, b]) await f.reviewItem(item.item.id, item.evidence.id);
+    const ids = [a.item.id, b.item.id];
+    const execution = await f.grant.execute('node --test');
+    const passed = await f.reviewRelease(ids, [execution.id]);
+    f.reviewer.verdict = 'unknown';
+    const unknown = await f.reviewRelease([a.item.id], [execution.id]);
+    await f.call('release.propose', f.proposal(ids, execution.id), 409);
+    f.reviewer.verdict = 'pass';
+    const retry = await f.call('verification.retry', { id: unknown.id });
+    await f.settle(retry.id);
+    const result = await f.call('release.propose', f.proposal(ids, execution.id));
+    assert.equal(result.releaseVerificationId, passed.id);
+    assert.equal(f.stored(unknown.id).status, 'unknown');
+    assert.equal(f.stored(retry.id).status, 'passed');
+    // An unrelated source version cannot invalidate this candidate's review history.
+    f.editSource('other source\n');
+    const otherExecution = await f.grant.execute('node --test');
+    f.reviewer.verdict = 'fail';
+    const other = await f.reviewRelease([b.item.id], [otherExecution.id]);
+    f.editSource('build one\n');
+    assert.equal(f.engine.loop.verification.current(other), false);
+    const again = await f.call('release.propose', f.proposal(ids, execution.id));
+    assert.equal(again.releaseVerificationId, passed.id);
+  } finally {
+    await f.cleanup();
+  }
+});
