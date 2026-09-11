@@ -1028,3 +1028,26 @@ describe('AI work and release review', () => {
     expect(f.reviewRelease).not.toHaveBeenCalled();
   });
 });
+
+it('the compact item summary shows the latest item review with stale conditions and preserves full history', async () => {
+  const f = fixture();
+  f.data.verifications = [
+    historyRow('previous', 'finding-import'),
+    { ...historyRow('latest', 'finding-import'), summary: '本事项最近失败', current: false },
+    { ...historyRow('foreign', 'another-item'), summary: '别的事项最新结果', createdAt: '2099-01-01T00:00:00Z' },
+  ];
+  const original = JSON.stringify(f.data.verifications);
+  render(<FeatureWork api={f.api} projectId="project-atlas" itemId="finding-import" compact />, {
+    wrapper: TestProviders,
+  });
+  const heading = await screen.findByRole('heading', { name: '最近事项复核' });
+  const summary = within(heading.parentElement!);
+  expect(summary.getByText('本事项最近失败')).toBeTruthy();
+  expect(summary.getByText(/版本或条件已变化/)).toBeTruthy();
+  expect(summary.queryByText('别的事项最新结果')).toBeNull();
+  const disclosure = screen.getByText('判断、尝试与反馈', { selector: 'summary' }).closest('details')!;
+  expect(disclosure.open).toBe(false);
+  await userEvent.setup().click(screen.getByText('判断、尝试与反馈', { selector: 'summary' }));
+  expect(disclosure.open).toBe(true);
+  expect(JSON.stringify(f.data.verifications)).toBe(original);
+});

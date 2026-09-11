@@ -1786,3 +1786,34 @@
   color: var(--muted);
   font-size: 13px;
 }
+
+.finding-disclosure > summary {
+  cursor: pointer;
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--text);
+  margin-bottom: 12px;
+}
+.finding-disclosure > summary svg {
+  width: 16px;
+  height: 16px;
+  vertical-align: middle;
+  margin-right: 6px;
+  color: var(--muted);
+}
+.finding-disclosure > summary span {
+  color: var(--muted);
+  font-size: 12px;
+}
+.finding-summary-preview,
+.finding-latest-review p {
+  font-size: 14px;
+  line-height: 1.8;
+}
+.finding-latest-review h2 {
+  font-size: 14px;
+  margin: 0 0 10px;
+}
+.finding-latest-review {
+  margin-bottom: 16px;
+}

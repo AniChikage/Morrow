@@ -69,11 +69,13 @@ describe('full finding view', () => {
     expect(main.getByRole('heading', { level: 1, name: 'CSV 重试会重复提交' })).toBeTruthy();
     expect(main.getByRole('heading', { name: '复现观察' })).toBeTruthy();
     expect(main.getByText('两条重复记录').tagName).toBe('STRONG');
+    await user.click(main.getByText('证据', { selector: 'summary' }));
     expect(main.getByText('日志包含唯一证据关键词：request-17。')).toBeTruthy();
     expect(main.getByRole('link', { name: '官方错误码' }).getAttribute('href')).toBe(
       'https://example.com/import/errors'
     );
     expect(main.getByText('验证幂等键，并补充失败后的恢复测试。')).toBeTruthy();
+    await user.click(screen.getByRole('button', { name: '事项属性' }));
     const properties = within(screen.getByRole('complementary'));
     expect(properties.queryByText('日志包含唯一证据关键词：request-17。')).toBeNull();
     await user.click(properties.getByRole('button', { name: '待处理' }));
@@ -363,4 +365,30 @@ describe('database history controls the loaded range', () => {
       expect(screen.getByRole('button', { name: '加载更早记录' })).toBeTruthy();
     }
   );
+});
+
+it('places next steps before long detail and resets disclosures when switching items', async () => {
+  const { props } = featureProps();
+  props.snapshot.items[0].summary = '原始说明段落。'.repeat(50) + '\n\n## 完整内容尾部\n\n不可丢失的尾部';
+  const original = JSON.stringify(props.snapshot.items);
+  const view = render(<FindingView {...props} id="finding-import" />, { wrapper: TestProviders });
+  expect(screen.queryByRole('complementary')).toBeNull();
+  const next = screen.getByRole('heading', { name: '下一步' });
+  const description = screen.getByRole('heading', { name: '功能说明' });
+  expect(next.compareDocumentPosition(description) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  const full = screen.getByText('完整说明').closest('details')!;
+  const evidence = screen.getByText('证据', { selector: 'summary' }).closest('details')!;
+  expect(full.open).toBe(false);
+  expect(evidence.open).toBe(false);
+  await userEvent.setup().click(screen.getByText('完整说明'));
+  expect(screen.getByText('不可丢失的尾部')).toBeTruthy();
+  await userEvent.setup().click(screen.getByText('证据', { selector: 'summary' }));
+  await userEvent.setup().click(screen.getByRole('button', { name: '打开工作日志' }));
+  expect(props.onNavigate).toHaveBeenCalledWith({ kind: 'channel', id: 'channel-system' });
+  await userEvent.setup().click(screen.getByRole('button', { name: '事项属性' }));
+  view.rerender(<FindingView {...props} id="finding-growth" />);
+  expect(screen.queryByRole('complementary')).toBeNull();
+  expect(screen.getByText('证据', { selector: 'summary' }).closest('details')!.open).toBe(false);
+  expect(screen.getByText('变更记录').closest('details')!.open).toBe(false);
+  expect(JSON.stringify(props.snapshot.items)).toBe(original);
 });

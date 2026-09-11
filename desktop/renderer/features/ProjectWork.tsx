@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { ArrowLeft, ArrowUpRight, CheckCircle2, Clock3 } from 'lucide-react';
 import type { ProjectLoop, Release, ReleaseScript, DesktopAPI, DecisionView } from '../../shared/types';
 import type { FeatureProps } from './types';
+import { questionExcerpt } from './ChannelQuestion';
 import { Button, EmptyState, Markdown } from '../components/ui';
 import { formatDate } from '../components/format';
 import './project-work.css';
@@ -130,7 +131,17 @@ function useProjectWork(api: DesktopAPI, projectId: string, itemId?: string) {
   }, [api, projectId, itemId]);
   return { data, error, historyError, moreHistory, loadingHistory, loadHistory };
 }
-export function FeatureWork({ api, projectId, itemId }: { api: DesktopAPI; projectId: string; itemId: string }) {
+export function FeatureWork({
+  api,
+  projectId,
+  itemId,
+  compact = false,
+}: {
+  api: DesktopAPI;
+  projectId: string;
+  itemId: string;
+  compact?: boolean;
+}) {
   const { data, error } = useProjectWork(api, projectId, itemId);
   if (!api.getProjectWork) return null;
   if (error)
@@ -148,13 +159,13 @@ export function FeatureWork({ api, projectId, itemId }: { api: DesktopAPI; proje
     !data.strategy?.decisions.length &&
     !data.verifications?.length
   )
-    return (
+    return compact ? null : (
       <section className="finding-section">
         <h2>持续跟踪</h2>
         <p className="subtle">Codex 会在这里记录判断、尝试和实际反馈，沿着同一个 feature 持续推进。</p>
       </section>
     );
-  return (
+  const full = (
     <section className="finding-section">
       <h2>判断、尝试与反馈</h2>
       <VerificationRecords data={data} />
@@ -241,6 +252,29 @@ export function FeatureWork({ api, projectId, itemId }: { api: DesktopAPI; proje
           </div>
         </details>
       )}
+    </section>
+  );
+  if (!compact) return full;
+  const latest = [...(data.verifications || [])]
+    .reverse()
+    .filter((row) => row.itemId === itemId)
+    .sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0];
+  return (
+    <section className="finding-section">
+      {latest && (
+        <div className="finding-latest-review">
+          <h2>最近事项复核</h2>
+          <p>
+            {verificationLabels[latest.status]} ·{' '}
+            {latest.current === true ? '当前版本' : latest.current === false ? '版本或条件已变化' : '版本未核对'}
+          </p>
+          <p>{questionExcerpt(latest.summary, 160)}</p>
+        </div>
+      )}
+      <details className="finding-disclosure" key={itemId}>
+        <summary>判断、尝试与反馈</summary>
+        {full}
+      </details>
     </section>
   );
 }

@@ -337,6 +337,7 @@ describe('manual feature details and audit', () => {
     });
     render(<FindingView {...props} id="manual" />, { wrapper: TestProviders });
     expect(within(screen.getByRole('main')).getByRole('heading', { level: 1, name: '手工功能' })).toBeTruthy();
+    await user.click(screen.getByRole('button', { name: '事项属性' }));
     const properties = within(screen.getByRole('complementary'));
     expect(properties.getByText('手动创建')).toBeTruthy();
     expect(properties.getByRole('button', { name: /Atlas 示例项目/ })).toBeTruthy();
@@ -347,6 +348,7 @@ describe('manual feature details and audit', () => {
     await waitFor(() => expect(api.patchItem).toHaveBeenCalledWith('manual', { status: 'verified', revision: 3 }));
     expect(api.updateItem).not.toHaveBeenCalled();
     expect(api.getEvents).toHaveBeenCalledWith({ projectId: 'project-atlas', itemId: 'manual', limit: 50 });
+    await user.click(screen.getByText('变更记录'));
     await screen.findByText('修改了功能标题。');
     await user.click(screen.getByText('查看变更'));
     expect(screen.getByText('旧标题')).toBeTruthy();
@@ -367,6 +369,7 @@ describe('manual feature details and audit', () => {
     const { props, api } = featureProps({ snapshot: state });
     api.getEvents.mockRejectedValueOnce(new Error('审计服务暂不可用'));
     render(<FindingView {...props} id="finding-import" />, { wrapper: TestProviders });
+    await userEvent.setup().click(screen.getByText('变更记录'));
     expect(await screen.findByRole('alert')).toHaveProperty('textContent', '审计服务暂不可用重试');
     expect(screen.getByText('已经持久化的本地修改。')).toBeTruthy();
     expect(screen.getByRole('button', { name: '重试' })).toBeTruthy();
