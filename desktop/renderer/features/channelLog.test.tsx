@@ -137,7 +137,10 @@ it('keeps historical work distinct from the channel current focus and renders ho
   };
   const { props, api } = featureProps({ snapshot: state });
   vi.mocked(props.api.getRuns).mockResolvedValue({
-    runs: [round('old'), round('missing', { log: undefined, usage: undefined })],
+    runs: [
+      round('old'),
+      round('missing', { log: { commands: [], files: [], outputs: [], truncated: false }, usage: undefined }),
+    ],
     hasMore: false,
   });
   render(<ChannelView {...props} id="channel-system" />, { wrapper: TestProviders });
@@ -218,4 +221,43 @@ it('shows only this channel pending releases and blocked items in 需要你', as
   await userEvent.setup().click(needs.getByText('待批准发布 · 候选版本'));
   view.rerender(<ChannelView {...props} snapshot={{ ...state, releases: [] }} id="channel-system" />);
   expect(screen.getByRole('button', { name: /被阻塞/ }).classList.contains('button-primary')).toBe(true);
+});
+
+it('does not call a completed snapshot missing while its structured log is still loading', async () => {
+  const state = snapshot();
+  state.channels[0].autonomyEnabled = true;
+  state.channels[0].status = 'waiting';
+  state.runs = [round('delayed', { log: undefined })];
+  const { props, api } = featureProps({ snapshot: state });
+  let resolve!: (page: RunsPage) => void;
+  vi.mocked(api.getRuns).mockImplementationOnce(
+    () =>
+      new Promise<RunsPage>((r) => {
+        resolve = r;
+      })
+  );
+  render(<ChannelView {...props} id="channel-system" />, { wrapper: TestProviders });
+  expect(screen.getByText('本轮摘要尚未载入')).toBeTruthy();
+  expect(screen.queryByText('未记录本轮关注点')).toBeNull();
+  expect(screen.queryByText('结论未记录')).toBeNull();
+  await userEvent.setup().click(screen.getByText('查看最新轮次'));
+  expect(screen.queryByText('未记录命令或文件变更')).toBeNull();
+  expect(screen.queryByText('未记录结构化产出')).toBeNull();
+  await act(async () => resolve({ runs: [round('delayed')], hasMore: false }));
+  expect(screen.getByText('关注 delayed')).toBeTruthy();
+  expect(screen.queryByText('本轮摘要尚未载入')).toBeNull();
+  expect(state.runs[0].log).toBeUndefined();
+});
+
+it('shows retrieval failure without claiming that the unavailable summary is absent', async () => {
+  const state = snapshot();
+  state.runs = [round('unavailable', { log: undefined })];
+  const { props, api } = featureProps({ snapshot: state });
+  vi.mocked(api.getRuns).mockRejectedValue(new Error('轮次接口暂不可用'));
+  render(<ChannelView {...props} id="channel-system" />, { wrapper: TestProviders });
+  await screen.findByText('轮次接口暂不可用');
+  expect(screen.getByText('本轮摘要尚未载入')).toBeTruthy();
+  expect(screen.queryByText('未记录本轮关注点')).toBeNull();
+  expect(screen.queryByText('结论未记录')).toBeNull();
+  expect(screen.getByRole('button', { name: '重试轮次' })).toBeTruthy();
 });

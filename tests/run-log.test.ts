@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { randomUUID } from 'node:crypto';
 import { startIsolated } from './harness/service.ts';
+import { grantFor } from './harness/grant.ts';
 import type { Run } from '../service/protocol.ts';
 
 test('channel run logs join durable records by run and native turn, leave originals unchanged, and expand on demand', async () => {
@@ -292,6 +293,41 @@ test('removed native items cannot consume the command, activity or file summary 
       ['visible-command', 'visible-file']
     );
     assert.equal(log.truncated, false);
+  } finally {
+    await s.cleanup();
+  }
+});
+
+test('completed morrow-next decisions survive trailing citations and project log projections', async () => {
+  const s = await startIsolated();
+  try {
+    const cases = [];
+    for (const state of ['continue', 'wait'] as const) {
+      const grant = grantFor(s, { projectId: s.project.id, channelId: s.channel.id });
+      const work = {
+        state,
+        focus: `原始关注-${state}`,
+        reason: '真实检查已完成',
+        nextStep: '核对后续反馈',
+        ...(state === 'wait' ? { waitMinutes: 5 } : {}),
+      };
+      const text =
+        '已完成检查。\n```morrow-next\n' +
+        JSON.stringify(work) +
+        '\n```\n<oai-mem-citation>历史引用</oai-mem-citation>';
+      const run = { ...grant.run, status: 'completed' as const, finishedAt: new Date().toISOString(), summary: text };
+      s.store.put('runs', run);
+      s.engine.completeAutonomousWork(run, text, false);
+      cases.push({ run, work });
+    }
+    await s.restart();
+    const page = await s.api('GET', `/api/runs?channelId=${s.channel.id}`);
+    for (const { run, work } of cases) {
+      const expected = { state: work.state, focus: work.focus, reason: work.reason, nextStep: work.nextStep };
+      assert.deepEqual(page.runs.find((r: any) => r.id === run.id).log.work, expected);
+      assert.deepEqual((await s.api('GET', `/api/runs/${run.id}`)).run.log.work, expected);
+      assert.equal(s.store.get<Run>('runs', run.id)?.summary, run.summary);
+    }
   } finally {
     await s.cleanup();
   }

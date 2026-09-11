@@ -89,19 +89,21 @@ function LogEntry({
         <span>{duration === undefined ? '尚未结束' : `${duration} 秒`}</span>
         <span>{runUsage(run)}</span>
       </header>
-      <h3>{work?.focus || log?.direction || '未记录本轮关注点'}</h3>
+      <h3>{work?.focus || log?.direction || (log ? '未记录本轮关注点' : '本轮摘要尚未载入')}</h3>
       <p className="log-summary">
         {questionAbove
           ? '需要回答 · 问题见上方'
           : work
             ? `${stateLabel(work.state)} · ${questionExcerpt(work.nextStep, 100)}`
-            : '结论未记录'}
+            : log
+              ? '结论未记录'
+              : '摘要尚未载入，可展开查看原话。'}
       </p>
       <details className="log-work-details">
         <summary className={primaryAction ? 'log-primary-action' : undefined}>
           {primaryAction ? '查看最新轮次' : '本轮详情'}
         </summary>
-        <p className="log-reason">{work?.reason || '未记录选择理由'}</p>
+        <p className="log-reason">{work?.reason || (log ? '未记录选择理由' : '选择理由尚未载入')}</p>
         <section>
           <h4>做了什么</h4>
           {!!log?.files.length && <p className="log-files">{log.files.join(' · ')}</p>}
@@ -118,7 +120,7 @@ function LogEntry({
               ))}
             </ul>
           ) : (
-            <p className="subtle">未记录命令或文件变更</p>
+            <p className="subtle">{log ? '未记录命令或文件变更' : '命令与文件记录尚未载入'}</p>
           )}
         </section>
         <section>
@@ -137,11 +139,11 @@ function LogEntry({
               ))}
             </ul>
           ) : (
-            <p className="subtle">未记录结构化产出</p>
+            <p className="subtle">{log ? '未记录结构化产出' : '产出记录尚未载入'}</p>
           )}
         </section>
         <section className="log-conclusion">
-          <h4>{work ? stateLabel(work.state) : '结论未记录'}</h4>
+          <h4>{work ? stateLabel(work.state) : log ? '结论未记录' : '结论尚未载入'}</h4>
           <Markdown>{work?.nextStep || '展开查看本轮原话；缺少安排不代表执行失败。'}</Markdown>
         </section>
         {log?.truncated && <p className="subtle">当前为有界摘要，完整过程可在 Codex App 查看。</p>}
