@@ -351,7 +351,7 @@ test('start prepares one task, native decisions drive follow-up and user guidanc
     await Promise.all([s.engine.action(s.channel.id, 'resume'), s.engine.action(s.channel.id, 'resume')]);
     assert.equal(creates, 1);
     assert.equal(s.transport.sent.length, 1);
-    assert.match(s.transport.sent[0].text, /自主选出最值得推进/);
+    assert.match(s.transport.sent[0].text, /先核对最新指导、事实、进展和未知，再选择有价值的行动/);
     assert.equal(s.engine.control(s.channel.id).enabled, true);
     completeWork(s, nextWork());
     let channel = s.store.get<any>('channels', s.channel.id);
