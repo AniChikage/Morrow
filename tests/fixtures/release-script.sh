@@ -4,12 +4,20 @@
 # directory. It never builds or installs anything; the real script is scripts/release-local.sh.
 set -euo pipefail
 MODE="${1:-publish}"
+# Optional: the bundle an installing release would have replaced and that bundle's build fingerprint.
+# Absent means a publication that installs nothing, so nothing can ever be switched because of it.
+INSTALLED_BUNDLE="${2:-}"
+BUILD_FINGERPRINT="${3:-}"
+INSTALLED_COMMIT="${4:-}"
 RELEASE_DIR="$(dirname "$MORROW_RECEIPT_PATH")"
 # Everything this script can see. Bash itself adds PWD/SHLVL/OLDPWD/_ on top of what Morrow passed.
 printenv | sort >"$RELEASE_DIR/env.txt"
 echo "fixture mode $MODE in $PWD" >&2
 RECEIPT="{\"releaseId\":\"$MORROW_RELEASE_ID\",\"artifactSha256\":\"$MORROW_ARTIFACT_SHA256\""
 RECEIPT="$RECEIPT,\"status\":\"published\",\"reviewHash\":\"$MORROW_REVIEW_HASH\""
+if [ -n "$INSTALLED_BUNDLE" ]; then RECEIPT="$RECEIPT,\"installedBundle\":\"$INSTALLED_BUNDLE\""; fi
+if [ -n "$BUILD_FINGERPRINT" ]; then RECEIPT="$RECEIPT,\"buildFingerprint\":\"$BUILD_FINGERPRINT\""; fi
+if [ -n "$INSTALLED_COMMIT" ]; then RECEIPT="$RECEIPT,\"commit\":\"$INSTALLED_COMMIT\""; fi
 RECEIPT="$RECEIPT,\"cache\":\"$MORROW_RUNTIME_CACHE\",\"mode\":\"$MODE\"}"
 case "$MODE" in
 publish | status)

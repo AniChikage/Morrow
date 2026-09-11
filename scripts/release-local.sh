@@ -18,9 +18,13 @@
 # Contract: exactly one line of receipt JSON on stdout (Morrow parses the last non-empty line) and the
 # same JSON written to MORROW_RECEIPT_PATH. Every other message goes to stderr, where Morrow keeps the
 # last 1 MiB as the release log. A failed gate reports status "failed" with a reason and exits non-zero.
+# A published receipt also names the bundle it installed (installedBundle) and that bundle's own
+# build fingerprint (buildFingerprint), read back from the installed build-info.json.
 #
-# This script never restarts the Morrow daemon or the Codex App: switching the running daemon to a
-# newly installed build is a human step (pause the channel, quit the UI, stop the daemon, reopen).
+# This script never restarts the Morrow daemon or the Codex App, sends no signal and kills nothing. It
+# only installs and reports. Morrow itself decides whether the receipt describes its own bundle and,
+# if so, waits for its current work to finish before switching; a receipt without a readable
+# fingerprint simply leaves the running version alone until a human switches it.
 set -euo pipefail
 
 : "${MORROW_RELEASE_ID:?MORROW_RELEASE_ID is required}"
@@ -50,18 +54,25 @@ WORKTREE=''
 STATUS=failed
 REASON='脚本在完成前退出'
 code=0
+# Both stay empty until the install actually replaced the bundle, so a failed receipt claims neither.
+INSTALLED_BUNDLE=''
+BUILD_FINGERPRINT=''
 
 emit() {
   "$NODE_BIN" -e '
     const fs = require("node:fs");
-    const [releaseId, artifactSha256, status, commit, version, reason] = process.argv.slice(1);
+    const [releaseId, artifactSha256, status, commit, version, reason, installedBundle, buildFingerprint] =
+      process.argv.slice(1);
     const receipt = { releaseId, artifactSha256, status, commit, version, installedAt: new Date().toISOString() };
     if (reason) receipt.reason = reason;
+    if (installedBundle) receipt.installedBundle = installedBundle;
+    if (buildFingerprint) receipt.buildFingerprint = buildFingerprint;
     const line = JSON.stringify(receipt);
     fs.mkdirSync(require("node:path").dirname(process.env.MORROW_RECEIPT_PATH), { recursive: true });
     fs.writeFileSync(process.env.MORROW_RECEIPT_PATH, line + "\n");
     process.stdout.write(line + "\n");
-  ' "$MORROW_RELEASE_ID" "$MORROW_ARTIFACT_SHA256" "$1" "$COMMIT" "$VERSION" "${2:-}"
+  ' "$MORROW_RELEASE_ID" "$MORROW_ARTIFACT_SHA256" "$1" "$COMMIT" "$VERSION" "${2:-}" "$INSTALLED_BUNDLE" \
+    "$BUILD_FINGERPRINT"
 }
 
 cleanup() {
@@ -139,8 +150,23 @@ gate "类型检查 npm run typecheck" in_worktree npm run typecheck
 gate "服务测试 npm test" in_worktree npm test
 gate "打包 npm run build:app" in_worktree npm run build:app
 gate "安装到 ~/Applications" in_worktree bash scripts/install-app.sh
+INSTALLED_BUNDLE="$HOME/Applications/Morrow.app"
 
-# 4. Export the real metrics for the weekly review. An export problem is reported but never rolls the
+# 4. Read the freshly installed bundle's own build identity, so the receipt says which build is now on
+#    disk. Best effort: an unreadable identity leaves the receipt without a fingerprint, which means
+#    the running service keeps its version until a human switches it. It never fails an install.
+if BUILD_FINGERPRINT="$("$NODE_BIN" -e '
+  const data = JSON.parse(require("node:fs").readFileSync(process.argv[1], "utf8"));
+  if (!/^[a-f0-9]{16,128}$/.test(data.fingerprint || "")) throw new Error("build-info.json 缺少运行指纹");
+  process.stdout.write(data.fingerprint);
+' "$INSTALLED_BUNDLE/Contents/Resources/build-info.json" 2>&1)"; then
+  echo "== 已安装版本指纹 $BUILD_FINGERPRINT" >&2
+else
+  echo "== 未能读取安装版 build-info.json（$BUILD_FINGERPRINT）；回执不含运行指纹，本次需人工切换。" >&2
+  BUILD_FINGERPRINT=''
+fi
+
+# 5. Export the real metrics for the weekly review. An export problem is reported but never rolls the
 #    installed build back or turns an installed release into a failure; rerun `metrics` by hand.
 mkdir -p "$MORROW_PROJECT_PATH/.morrow"
 if in_worktree "$NODE_BIN" scripts/acceptance/run.ts metrics "$HOME/Library/Application Support/Morrow" \
@@ -150,6 +176,10 @@ else
   echo '== 指标导出失败；已安装的版本保持不变，请在复盘前手动补跑 metrics 子命令。' >&2
 fi
 
-echo '== 已安装；切换运行中的 daemon 由人执行（暂停频道 → 退出界面 → 停 daemon → 重开）。' >&2
+if [ -n "$BUILD_FINGERPRINT" ]; then
+  echo '== 已安装；本脚本不重启任何进程。Morrow 自行核对回执后，会等当前工作结束再切换到新版本。' >&2
+else
+  echo '== 已安装；缺少运行指纹，切换运行中的 daemon 仍由人执行（暂停频道 → 退出界面 → 停 daemon → 重开）。' >&2
+fi
 STATUS=published
 emit published

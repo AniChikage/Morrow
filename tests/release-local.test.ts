@@ -1,150 +1,14 @@
 import './harness/env.ts';
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { copyFileSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
-import { fileURLToPath } from 'node:url';
 import { ProjectWorkLoop } from '../service/project-loop.ts';
-import { FakeReviewer } from './harness/fake-reviewer.ts';
-import { startIsolated } from './harness/service.ts';
-import { grantFor } from './harness/grant.ts';
-import { startReceiver } from './harness/receiver.ts';
-
-/** Keys bash exports on its own; everything else in the fixture's environment came from Morrow. */
-const shellAdded = ['PWD', 'SHLVL', 'OLDPWD', '_'];
-/** `TMPDIR` is the one optional key: passed through when the service has one, absent when it does not. */
-const allowedEnv = [
-  'PATH',
-  'HOME',
-  'NO_COLOR',
-  ...(process.env.TMPDIR ? ['TMPDIR'] : []),
-  'MORROW_RELEASE_ID',
-  'MORROW_ARTIFACT_PATH',
-  'MORROW_ARTIFACT_SHA256',
-  'MORROW_REVIEW_HASH',
-  'MORROW_PROJECT_PATH',
-  'MORROW_RECEIPT_PATH',
-  'MORROW_RUNTIME_CACHE',
-];
-
-/**
- * One isolated service whose project already holds a committed-style release script and a release
- * manifest, a passed independent review for the feature the release closes, and a passed
- * release-level review of this exact source version. The HTTP receiver only exists to prove a local
- * publication never reaches the network.
- */
-async function setup() {
-  const receiver = await startReceiver({ feedback: { activation: 0.2 } });
-  const s = await startIsolated({ project: { name: '本地脚本发布', goal: '让批准后的安装可复现' } });
-  const grant = grantFor(s, {
-    projectId: s.project.id,
-    channelId: s.channel.id,
-    // The release gate needs one execution capture, which needs a native task and turn to bind to.
-    overrides: { sessionId: 'isolated-test', nativeTurnId: 'isolated-turn' },
-  });
-  const call = (operation: string, input: unknown, requestId = randomUUID(), expected = 200) =>
-    grant.call(operation, input, expected, requestId);
-  // Every project file has to exist before the review passes: a later write changes the source
-  // fingerprint and `release.propose` would then reject for a stale verification.
-  copyFileSync(fileURLToPath(new URL('./fixtures/release-script.sh', import.meta.url)), join(s.path, 'release.sh'));
-  writeFileSync(join(s.path, 'checks.log'), '3 tests passed\n');
-  writeFileSync(
-    join(s.path, 'release-manifest.json'),
-    JSON.stringify({ commit: 'a'.repeat(40), branch: 'agent/work', version: '0.9.6', sourceDigest: 'b'.repeat(64) })
-  );
-  const featureSummary = '记录实际安装结果';
-  const feature = await call('feature.upsert', {
-    title: '安装流程可复现',
-    summary: featureSummary,
-    kind: 'feature',
-    status: 'investigating',
-    evidenceIds: [],
-    nextStep: '准备本地脚本发布',
-  });
-  const evidence = await call('evidence.capture', { itemId: feature.id, summary: '隔离测试日志', path: 'checks.log' });
-  const reviewer = new FakeReviewer();
-  reviewer.autoComplete = true;
-  s.engine.loop.verification.connect(reviewer, (v) => v);
-  const completion = await call('feature.upsert', {
-    id: feature.id,
-    revision: s.store.get<any>('items', feature.id).revision,
-    title: feature.title,
-    summary: featureSummary,
-    kind: feature.kind,
-    status: 'verified',
-    evidenceIds: [evidence.id],
-    nextStep: '等待人工批准安装',
-  });
-  await s.engine.loop.verification.start(completion.verificationId);
-  assert.equal(s.store.get<any>('items', feature.id).status, 'verified');
-  // The candidate itself is reviewed once, citing a check bound to this exact source version.
-  const execution = await grant.execute('bash scripts/checks.sh');
-  const releaseReview = await call('verification.request', {
-    kind: 'release',
-    itemIds: [feature.id],
-    evidenceIds: [execution.id],
-  });
-  await s.engine.loop.verification.start(releaseReview.id);
-  assert.equal(s.store.get<any>('loop_verifications', releaseReview.id).status, 'passed');
-  const base = {
-    itemIds: [feature.id],
-    title: '安装当前提交',
-    changes: '按 manifest 里的提交构建并安装',
-    rationale: '人工构建步骤容易漏掉门禁',
-    expectedBenefit: '预期减少安装差异；线上收益尚待验证',
-    checks: [{ name: '隔离测试', result: 'passed', evidenceIds: [evidence.id] }],
-    risks: '会替换本机安装的版本',
-    rollback: '重新安装上一个版本',
-    observationPlan: '安装后观察指标文件',
-    artifactPath: 'release-manifest.json',
-  };
-  const local = (args: string[] = ['publish'], extra: Record<string, unknown> = {}) => ({
-    ...base,
-    target: { kind: 'local-script', label: '本机安装', script: 'release.sh', args, timeoutSeconds: 30, ...extra },
-  });
-  const http = {
-    ...base,
-    target: { url: receiver.url + '/deploy', statusUrl: receiver.url + '/status', label: '隔离测试发布端' },
-  };
-  const approve = async (release: any, expected = 200) => {
-    await s.api(
-      'POST',
-      `/api/releases/${release.id}/review`,
-      { reviewHash: release.reviewHash, decision: 'approve' },
-      expected
-    );
-    await Promise.allSettled([...s.engine.loop.pending]);
-  };
-  return {
-    ...s,
-    call,
-    grant,
-    feature,
-    evidence,
-    local,
-    http,
-    approve,
-    releaseDir: (id: string) => join(s.home, 'releases', id),
-    get posts() {
-      return receiver.posts;
-    },
-    cleanup: async () => {
-      await s.close();
-      await receiver.close();
-      await s.cleanup();
-    },
-  };
-}
-const envKeys = (path: string) =>
-  readFileSync(path, 'utf8')
-    .split('\n')
-    .filter((line) => line.includes('='))
-    .map((line) => line.slice(0, line.indexOf('=')))
-    .filter((key) => !shellAdded.includes(key));
+import { releaseEnv, releaseEnvKeys, startReleaseFixture } from './harness/release.ts';
 
 test('an approved local-script release runs only the sealed copy, in a fixed environment, and reports its receipt', async () => {
-  const s = await setup();
+  const s = await startReleaseFixture();
   try {
     const release = await s.call('release.propose', s.local());
     assert.equal(release.status, 'awaiting_approval');
@@ -171,7 +35,7 @@ test('an approved local-script release runs only the sealed copy, in a fixed env
     assert(row.log.includes('fixture mode publish'));
     assert(row.log.includes('preparing the isolated fixture release'));
     const environment = join(s.releaseDir(release.id), 'env.txt');
-    assert.deepEqual(envKeys(environment).sort(), [...allowedEnv].sort());
+    assert.deepEqual(releaseEnv(environment).sort(), [...releaseEnvKeys].sort());
     const dump = readFileSync(environment, 'utf8');
     assert.equal(dump.includes(s.token), false);
     assert.equal(dump.includes(s.grant.token), false);
@@ -187,7 +51,7 @@ test('an approved local-script release runs only the sealed copy, in a fixed env
 });
 
 test('editing the project script after a proposal cannot change what an approval executes', async () => {
-  const s = await setup();
+  const s = await startReleaseFixture();
   try {
     const release = await s.call('release.propose', s.local());
     writeFileSync(join(s.path, 'release.sh'), `#!/usr/bin/env bash\ntouch "${join(s.path, 'tampered-ran')}"\nexit 1\n`);
@@ -201,7 +65,7 @@ test('editing the project script after a proposal cannot change what an approval
 });
 
 test('a tampered sealed script blocks approval and, if it changes later, publishes nothing', async () => {
-  const s = await setup();
+  const s = await startReleaseFixture();
   try {
     const blocked = await s.call('release.propose', s.local());
     const afterApproval = await s.call('release.propose', { ...s.local(), title: '第二个版本' });
@@ -224,7 +88,7 @@ test('a tampered sealed script blocks approval and, if it changes later, publish
 });
 
 test('a failed gate, unparsable output or a timeout keeps the outcome unknown instead of claiming success', async () => {
-  const s = await setup();
+  const s = await startReleaseFixture();
   try {
     const failing = await s.call('release.propose', s.local(['fail']));
     const garbage = await s.call('release.propose', { ...s.local(['garbage']), title: '非 JSON 输出' });
@@ -256,7 +120,7 @@ test('a failed gate, unparsable output or a timeout keeps the outcome unknown in
 });
 
 test('a publication interrupted by a restart is reconciled from its receipt file without running again', async () => {
-  const s = await setup();
+  const s = await startReleaseFixture();
   let recovered: ProjectWorkLoop | undefined;
   try {
     const release = await s.call('release.propose', s.local(['quiet']));
@@ -279,7 +143,7 @@ test('a publication interrupted by a restart is reconciled from its receipt file
 });
 
 test('a sealed status script answers an unconfirmed publication when no receipt file exists', async () => {
-  const s = await setup();
+  const s = await startReleaseFixture();
   try {
     const release = await s.call('release.propose', s.local(['fail'], { statusScript: 'release.sh' }));
     assert.equal(release.target.statusScript, 'release.sh');
@@ -290,7 +154,7 @@ test('a sealed status script answers an unconfirmed publication when no receipt 
     // The status script receives the same fixed environment and no arguments.
     assert.equal((await s.engine.loop.reconcile(release.id)).status, 'published');
     assert(existsSync(join(s.releaseDir(release.id), 'receipt.json')));
-    assert.deepEqual(envKeys(join(s.releaseDir(release.id), 'env.txt')).sort(), [...allowedEnv].sort());
+    assert.deepEqual(releaseEnv(join(s.releaseDir(release.id), 'env.txt')).sort(), [...releaseEnvKeys].sort());
     assert.equal(s.posts, 0);
   } finally {
     await s.cleanup();
@@ -298,7 +162,7 @@ test('a sealed status script answers an unconfirmed publication when no receipt 
 });
 
 test('closing the service stops waiting for a running script and leaves the outcome to be reconciled', async () => {
-  const s = await setup();
+  const s = await startReleaseFixture();
   try {
     const release = await s.call('release.propose', s.local(['sleep'], { timeoutSeconds: 3600 }));
     // The review returns as soon as publication starts; the detached script keeps running.
@@ -319,7 +183,7 @@ test('closing the service stops waiting for a running script and leaves the outc
 });
 
 test('the sealed script text is readable with the desktop credential and refused to the work grant', async () => {
-  const s = await setup();
+  const s = await startReleaseFixture();
   try {
     const release = await s.call('release.propose', s.local());
     const remote = await s.call('release.propose', { ...s.http, title: 'HTTP 版本' });
@@ -339,7 +203,7 @@ test('the sealed script text is readable with the desktop credential and refused
 });
 
 test('local-script proposals reject unusable scripts, arguments and timeouts', async () => {
-  const s = await setup();
+  const s = await startReleaseFixture();
   try {
     const bad = async (target: Record<string, unknown>, status: number) =>
       s.call('release.propose', { ...s.local(), target }, randomUUID(), status);

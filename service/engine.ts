@@ -8,6 +8,9 @@ import {
   projectBriefBlock,
 } from './channel-work.ts';
 import { ProjectWorkLoop } from './project-loop.ts';
+import { UpgradeManager } from './upgrade.ts';
+import type { UpgradeBlocker } from './upgrade.ts';
+import type { BuildIdentity } from './build-identity.ts';
 import { UsageMonitor, nextUtcDay, usageDelta } from './usage.ts';
 import type { UsageGate } from './usage.ts';
 import { spawn, execFileSync } from 'node:child_process';
@@ -17,6 +20,7 @@ import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { APIError, isLegacyRuntime, resultSchema } from './protocol.ts';
 import type { AgentResult, Channel, Event, Project, Run, Runtime, WorkItem } from './protocol.ts';
+import type { Verification } from './verification-types.ts';
 import { sanitizeEventDetail } from './event-details.ts';
 import type { EventDetail } from './protocol.ts';
 import { Store, now } from './store.ts';
@@ -58,19 +62,54 @@ export class Engine {
   loop: ProjectWorkLoop;
   /** Account usage readings and the reserve/budget gate; the transport is attached by the server. */
   usage: UsageMonitor;
+  /** The automatic version switch: one persisted request per installed build, and its phase. */
+  upgrade: UpgradeManager;
   /** Before-samples still in flight per run, so the after-sample can wait for its counterpart. */
   usageBefore = new Map<string, Promise<void>>();
   /** The working-tree wait each channel has already announced, so a repeated tick repeats no event. */
   treeWaits = new Map<string, string>();
-  constructor(store: Store, home: string, token: string) {
+  constructor(store: Store, home: string, token: string, identity?: BuildIdentity) {
     this.store = store;
     this.home = home;
     this.token = token;
     this.loop = new ProjectWorkLoop(store, home);
     this.usage = new UsageMonitor(store);
+    this.upgrade = new UpgradeManager(store, home, identity);
+    this.upgrade.blockersOf = () => this.workBlockers();
     this.usage.redact = (value) => this.redact(value);
     this.loop.redact = (value) => this.redact(value);
     this.loop.usage = this.usage;
+    this.loop.upgrade = this.upgrade;
+  }
+  /**
+   * Real work in progress right now, read from the engine, the native connection and the loop rather
+   * than from `channels.status`: an active CLI run, a native turn starting/scheduled/active, a send
+   * still waiting for the native task, a queued or running review, and a publication in flight.
+   * Empty means idle. Nothing here is ever interrupted; it is only reported.
+   */
+  workBlockers(): UpgradeBlocker[] {
+    const name = (channelId: string) => this.store.get<Channel>('channels', channelId)?.name || '已移除的频道';
+    const blockers: UpgradeBlocker[] = [];
+    for (const active of this.active.values())
+      blockers.push({ kind: 'run', label: `频道「${name(active.channelId)}」正在执行` });
+    for (const channel of this.store.all<Channel>('channels'))
+      if (this.native?.isBusy(channel.id))
+        blockers.push({ kind: 'native', label: `频道「${channel.name}」原生轮次进行中` });
+    for (const project of this.store.all<Project>('projects'))
+      if (!project.isDemo && this.native?.isProjectBusy(project.id))
+        blockers.push({ kind: 'native', label: `项目「${project.name}」有正在进行的原生任务轮次` });
+    for (const entry of this.store.all<{ id: string; threadId: string; state: string }>('native_outbox'))
+      if (entry.state === 'pending') blockers.push({ kind: 'send', label: '有一条原生消息尚未被任务接收' });
+    for (const row of this.store.all<Verification>('loop_verifications'))
+      if (['queued', 'running'].includes(row.status))
+        blockers.push({
+          kind: 'review',
+          label: row.status === 'running' ? '独立复核正在进行' : '独立复核已排队等待执行',
+        });
+    for (const release of this.store.all<{ id: string; status: string; title: string }>('loop_releases'))
+      if (release.status === 'publishing' || this.loop.inFlight.has(release.id))
+        blockers.push({ kind: 'publication', label: `发布「${release.title}」正在执行` });
+    return blockers;
   }
   control(id: string): Control {
     return (
@@ -148,6 +187,8 @@ export class Engine {
     });
   }
   recover() {
+    // An installed build is reconciled against the build actually running before anything is scheduled.
+    this.upgrade.recover();
     this.loop.recover();
     for (const run of this.store
       .all<Run>('runs')

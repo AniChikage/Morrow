@@ -106,6 +106,13 @@ export type Release = {
   feedback?: string;
   error?: string;
   publishedUrl?: string;
+  /**
+   * Where a `local-script` publication reported it installed the build, and that build's whole-bundle
+   * fingerprint as read from the installed bundle. Both are optional: a receipt without them (or from
+   * an HTTP target) is a normal publication that switches nothing.
+   */
+  installedBundle?: string;
+  buildFingerprint?: string;
   /** Combined stdout/stderr tail of a `local-script` publication, bounded to 1 MiB and redacted. */
   log?: string;
 };

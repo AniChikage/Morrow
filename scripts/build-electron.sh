@@ -52,6 +52,11 @@ if [ ! -d "$MORROW_PACKAGED" ]; then echo 'Electron package output was not found
 # Replace only the previous build artifact, never the installed app or daemon.
 if [ -d "$MORROW_APP" ]; then rm -rf "$MORROW_APP"; fi
 ditto "$MORROW_PACKAGED" "$MORROW_APP"
+# The build identity: a read-only whole-bundle fingerprint over the service sources, the compiled
+# Electron output and the package metadata. Written before signing so the signature covers it, and
+# read once at start by the daemon and the Electron main to know which build they are running.
+"$MORROW_CACHE/node/bin/node" "$MORROW_ROOT/scripts/build-info.ts" --root "$MORROW_ROOT" \
+  --out "$MORROW_APP/Contents/Resources/build-info.json"
 codesign --force --sign - "$MORROW_APP/Contents/Resources/bin/node"
 codesign --force --deep --sign - "$MORROW_APP"
 codesign --verify --deep --strict "$MORROW_APP"

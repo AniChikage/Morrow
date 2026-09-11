@@ -27,6 +27,8 @@ import { Store, now } from './store.ts';
 import { ProjectStrategy } from './project-strategy.ts';
 import { WorkVerification } from './work-verification.ts';
 import { ExecutionEvidence } from './execution-evidence.ts';
+import { isFingerprint } from './build-identity.ts';
+import type { UpgradeManager } from './upgrade.ts';
 import type { UsageMonitor } from './usage.ts';
 
 export type Scope = { id: string; projectId: string; channelId: string; runId: string; expiresAt: string };
@@ -260,6 +262,8 @@ export class ProjectWorkLoop {
   executions: ExecutionEvidence;
   /** Attached by the engine; the reviewer gate and `context.budget` read through it. */
   usage?: UsageMonitor;
+  /** Attached by the engine, so a published receipt can request a switch to the build it installed. */
+  upgrade?: UpgradeManager;
   /** Attached by the engine so a sealed script's own output can never carry the desktop token. */
   redact: (text: string) => string = (text) => text;
   constructor(store: Store, home: string) {
@@ -1412,24 +1416,53 @@ export class ProjectWorkLoop {
       !['published', 'failed'].includes(data?.status)
     )
       throw new Error('回执未确认同一发布版本');
+    // What a local publication installed, kept only when it is usable: an unreadable or malformed
+    // value is dropped, so it can never be mistaken for a version this service could switch to.
+    const installedBundle =
+      typeof data.installedBundle === 'string' &&
+      isAbsolute(data.installedBundle) &&
+      data.installedBundle.length <= 4096 &&
+      !data.installedBundle.includes('\0')
+        ? data.installedBundle
+        : undefined;
+    const buildFingerprint = isFingerprint(data.buildFingerprint) ? data.buildFingerprint : undefined;
     const result: Release = {
       ...row,
       status: data.status,
       publishedAt: data.status === 'published' ? now() : undefined,
       publishedUrl: typeof data.url === 'string' ? endpoint(data.url) : undefined,
       error: data.status === 'failed' ? '发布端报告失败，尚未上线' : undefined,
+      installedBundle,
+      buildFingerprint,
       updatedAt: now(),
     };
-    this.store.put('loop_releases', result);
-    for (const itemId of row.itemIds)
-      this.audit(
-        row,
-        `release.${result.status}`,
-        result.status === 'published' ? `已上线，继续观察：${row.title}` : `上线失败：${row.title}`,
-        itemId,
-        { releaseId: id, receipt: data },
-        'system'
-      );
+    // One transaction: the published release, its audit trail and any request to switch this service
+    // to the build it just installed are stored together or not at all.
+    this.store.transaction(() => {
+      this.store.put('loop_releases', result);
+      const requested =
+        result.status === 'published' && installedBundle && buildFingerprint
+          ? this.upgrade?.consider(result, { ...data, installedBundle, buildFingerprint })
+          : undefined;
+      for (const itemId of row.itemIds)
+        this.audit(
+          row,
+          `release.${result.status}`,
+          result.status === 'published' ? `已上线，继续观察：${row.title}` : `上线失败：${row.title}`,
+          itemId,
+          { releaseId: id, receipt: data },
+          'system'
+        );
+      if (requested)
+        this.audit(
+          row,
+          'upgrade.requested',
+          `新版本已安装，将在当前工作结束后自动切换（目标 ${requested.targetFingerprint.slice(0, 12)}）`,
+          undefined,
+          { releaseId: id, targetFingerprint: requested.targetFingerprint, targetCommit: requested.targetCommit },
+          'system'
+        );
+    });
     this.signal(
       row.channelId,
       id,

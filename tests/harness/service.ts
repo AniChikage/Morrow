@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { startServer } from '../../service/server.ts';
 import type { NativeTransport } from '../../service/native-conversations.ts';
+import type { BuildIdentity } from '../../service/build-identity.ts';
 import type { Channel, Project } from '../../service/protocol.ts';
 
 export type Service = Awaited<ReturnType<typeof startServer>>;
@@ -17,6 +18,8 @@ export type IsolatedOptions = {
   project?: { name?: string; goal?: string; brief?: string; files?: Record<string, string> } | false;
   /** Reuse an existing data directory instead of a fresh one under `root`; `cleanup()` leaves it in place. */
   home?: string;
+  /** The build this service should report as the one it runs; a dev identity is derived otherwise. */
+  identity?: BuildIdentity;
 };
 export type IsolatedService = Service & {
   /** Temporary directory holding `home` (unless supplied) and the project directory `path`. */
@@ -29,7 +32,7 @@ export type IsolatedService = Service & {
   project: Project;
   channel: Channel;
   /** Closes the service (idempotent) and starts it again on the same home and transport, refreshing this handle. */
-  restart(options?: { nativeTransport?: NativeTransport }): Promise<IsolatedService>;
+  restart(options?: { nativeTransport?: NativeTransport; identity?: BuildIdentity }): Promise<IsolatedService>;
   /** Closes the current service and removes `root`. */
   cleanup(): Promise<void>;
 };
@@ -56,7 +59,15 @@ export async function startIsolated(options: IsolatedOptions = {}): Promise<Isol
     typeof options.nativeTransport === 'function'
       ? options.nativeTransport({ root, home, path })
       : options.nativeTransport;
-  let current = await startServer({ home, port: 0, nativeTransport: transport, reviewTransport: transport });
+  const start = () =>
+    startServer({
+      home,
+      port: 0,
+      nativeTransport: transport,
+      reviewTransport: transport,
+      ...(options.identity ? { identity: options.identity } : {}),
+    });
+  let current = await start();
   const token = readFileSync(join(home, 'token'), 'utf8');
   const api: Api = async (method, url, body, status = 200, auth = token) => {
     const response = await fetch(origin(current.port) + url, {
@@ -87,7 +98,8 @@ export async function startIsolated(options: IsolatedOptions = {}): Promise<Isol
     async restart(next = {}) {
       await current.close();
       if (next.nativeTransport) transport = next.nativeTransport;
-      current = await startServer({ home, port: 0, nativeTransport: transport, reviewTransport: transport });
+      if (next.identity) options.identity = next.identity;
+      current = await start();
       Object.assign(handle, current, { base: origin(current.port) });
       return handle;
     },

@@ -53,6 +53,7 @@ export class Store {
       'project_brief_revisions',
       'usage_samples',
       'settings',
+      'upgrades',
     ])
       this.db.exec(`CREATE TABLE IF NOT EXISTS ${table} (id TEXT PRIMARY KEY, data TEXT NOT NULL)`);
     this.db.exec(
@@ -340,6 +341,7 @@ export class Store {
         'project_brief_revisions',
         'usage_samples',
         'settings',
+        'upgrades',
       ].includes(t)
     )
       throw new Error('Unknown table');

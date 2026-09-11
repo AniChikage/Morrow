@@ -31,6 +31,8 @@ import {
 import type { Channel, Project, ProjectBriefRevision, Run, WorkItem } from './protocol.ts';
 import { now, Store } from './store.ts';
 import { Engine } from './engine.ts';
+import { buildIdentity } from './build-identity.ts';
+import type { BuildIdentity } from './build-identity.ts';
 import { eventHistory, runHistory, runOutput, queryID } from './event-history.ts';
 import { runLog } from './run-log.ts';
 import { discoverRuntimes } from './runtimes.ts';
@@ -118,6 +120,8 @@ export async function startServer(
     nativeTransport?: NativeTransport;
     reviewTransport?: NativeTransport;
     reviewRunner?: ReviewRunner;
+    /** The build this process runs; read from its own bundle when omitted. */
+    identity?: BuildIdentity;
   } = {}
 ) {
   if (
@@ -180,7 +184,7 @@ export async function startServer(
   }
   chmodSync(join(home, 'token'), 0o600);
   const store = new Store(join(home, 'workspace.sqlite'));
-  const engine = new Engine(store, home, token);
+  const engine = new Engine(store, home, token, options.identity ?? buildIdentity(import.meta.url));
   const native = new NativeConversations(store, engine, options.nativeTransport);
   engine.native = native;
   engine.loop.verification.connect(options.reviewTransport ?? native.transport, (value) => engine.redact(value));
@@ -231,7 +235,13 @@ export async function startServer(
           ...store.snapshot(engine.runtimes),
           settings: engine.usage.settings(),
           usage: engine.usage.status(),
+          upgrade: engine.upgrade.state(),
         });
+        return;
+      }
+      // The installed build, the build actually running, and whether any work still holds the switch.
+      if (req.method === 'GET' && path === '/api/upgrade') {
+        respond(res, 200, engine.upgrade.state());
         return;
       }
       if (req.method === 'GET' && path === '/api/native/status') {
