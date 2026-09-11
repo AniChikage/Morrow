@@ -65,7 +65,7 @@ async function setup(items = 10) {
   return { ...s, ids, project, channel, turn, complete, step, board };
 }
 const charterMark = '你是这个项目中持续工作的 Codex。';
-const noteMark = '沿用本任务开头的项目说明（版本 1）、工作方向与规则；完整内容见 contract。';
+const noteMark = '沿用本任务开头的项目说明（版本 1）、工作方向与规则；操作约定见 contract。';
 
 test('the first turn carries the charter and the next unchanged turn is a short note', async () => {
   const s = await setup();
@@ -90,8 +90,8 @@ test('the first turn carries the charter and the next unchanged turn is a short 
     assert(second.text.includes('看板（未解决'));
     assert(second.text.includes('结束附 morrow-next'));
     // This run's own grant path: the previous run's credential is already scoped out.
-    assert(second.text.includes(`runs/${second.run.id}/agent-context.json`));
-    assert(!second.text.includes(`runs/${first.run.id}/agent-context.json`));
+    assert(second.text.includes(`runs/${second.run.id}/tool.sh`));
+    assert(!second.text.includes(`runs/${first.run.id}/tool.sh`));
     assert(second.text.length < turnNoteLimit, `turn note is ${second.text.length} chars`);
     assert.equal(s.channel().promptCharter!.turnsSince, 2);
     assert.equal(s.channel().promptCharter!.hash, record.hash);
@@ -325,7 +325,7 @@ test('a turn holding the Morrow work grant is not also given the fallback board-
       const withoutTools = s.engine.prompt(s.project(), s.channel(), { ...withTools.run, id: randomUUID() });
       assert(withoutTools.includes('morrow-report'));
       assert(withoutTools.includes('nextCheckMinutes'));
-      assert(!withoutTools.includes('--operation contract'));
+      assert(!withoutTools.includes('--operation context'));
     } finally {
       s.engine.loop.baseURL = baseURL;
     }
@@ -441,4 +441,37 @@ test('an accepted unfinished turn gets a review and the next completed turn retu
   } finally {
     await s.cleanup();
   }
+});
+
+test('the complete note and review stay bounded with long arrangements, large boards and both usage limits', () => {
+  const tools = '工具入口'.repeat(62);
+  const context = {
+    project: { briefRevision: 7, goal: '目标'.repeat(1000) },
+    channel: { name: '自主', goal: '方向'.repeat(1000), permission: 'native' },
+    items: Array.from({ length: 300 }, (_, i) => ({
+      number: i + 1,
+      origin: 'human',
+      title: '事项'.repeat(200),
+      nextStep: '行动'.repeat(500),
+      kind: 'opportunity',
+      status: 'investigating',
+    })),
+    previous: { focus: '关注'.repeat(1000), nextStep: '下一步'.repeat(1000) },
+    tools,
+    budget: {
+      runsToday: 0,
+      maxRunsPerDay: 32,
+      usage: {
+        unknown: true,
+        reserve: { window: 'weekly' as const, keepPercent: 50 },
+        project: { window: 'weekly' as const, usedPercent: 33, limitPercent: 50 },
+      },
+    },
+  };
+  const note = autonomousTurnNote(context) + tools;
+  assert(note.length <= 1500, String(note.length));
+  assert((autonomousCharterReview(context) + note).length <= 2500);
+  assert(note.includes('当前额度'));
+  assert(note.includes('完整看板用 context 读取'));
+  assert(note.includes('morrow-next'));
 });

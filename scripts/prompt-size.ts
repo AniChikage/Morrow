@@ -13,7 +13,9 @@ import { now } from '../service/store.ts';
 import type { Channel, Project, Run, WorkItem } from '../service/protocol.ts';
 
 /** Second-turn budget this change is meant to hold; the script fails when a turn grows past it. */
-export const turnNoteLimit = 3000;
+export const turnNoteLimit = 1500;
+export const reviewLimit = 2500;
+export const toolEntryLimit = 250;
 
 const body = '记录当前事实、已验证的部分、仍然未知的部分，以及下一步为什么值得做和怎么核对。';
 /** `label` plus filler text cut to exactly `length` characters, so a fixture field has a stated size. */
@@ -29,6 +31,7 @@ export type Measurement = {
   charter: number;
   items: number;
   boardJson: number;
+  tools: number;
 };
 
 export async function measurePrompts(): Promise<Measurement> {
@@ -69,6 +72,7 @@ export async function measurePrompts(): Promise<Measurement> {
     });
     const second = grantFor(s, { projectId: s.project.id, channelId: s.channel.id, overrides });
     const secondPrompt = s.engine.prompt(project(s), channel(s), second.run);
+    const tools = s.engine.loop.prepare(second.run);
     s.store.put('runs', { ...second.run, status: 'completed', nativeTurnId: 'prompt-size-turn-2', finishedAt: now() });
     s.store.put('channels', {
       ...channel(s),
@@ -80,6 +84,7 @@ export async function measurePrompts(): Promise<Measurement> {
     if (!reviewPrompt.includes('章程回顾') || reviewPrompt.includes('项目说明结束'))
       throw new Error('measurement must exercise an expired, delivered charter review');
     return {
+      tools: tools.length,
       review: reviewPrompt.length,
       first: firstPrompt.length,
       second: secondPrompt.length,
@@ -138,11 +143,14 @@ if (import.meta.filename === process.argv[1]) {
       `second turn (note)     ${result.second} chars`,
       `charter share          ${result.charter} chars`,
       `review turn            ${result.review} chars`,
+      `tool entry             ${result.tools} chars`,
       '',
     ].join('\n')
   );
-  if (result.second >= turnNoteLimit) {
-    process.stderr.write(`second turn is ${result.second} chars, over the ${turnNoteLimit} limit\n`);
+  if (result.second > turnNoteLimit || result.review > reviewLimit || result.tools > toolEntryLimit) {
+    process.stderr.write(
+      `limits: note ${result.second}/${turnNoteLimit}, review ${result.review}/${reviewLimit}, tools ${result.tools}/${toolEntryLimit}\n`
+    );
     process.exitCode = 1;
   }
 }

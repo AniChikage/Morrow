@@ -158,12 +158,16 @@ export function autonomousTurnNote(context: PromptContext): string {
     ? `关注点：${oneLine(context.previous.focus, 120)}\n下一步：${oneLine(context.previous.nextStep, 220)}\n`
     : '上次安排：暂无，这是本任务的第一轮。\n';
   const usage = usageLine(context.budget);
-  return `沿用本任务开头的项目说明（版本 ${project.briefRevision || 0}）、工作方向与规则；完整内容见 contract。\n${previous}${usage ? usage + '\n' : ''}${boardDigest(context.items || [], context.lastRunId ? { lastRunId: context.lastRunId } : {})}结束附 morrow-next，保留正文汇报。\n`;
+  const header = `沿用本任务开头的项目说明（版本 ${project.briefRevision || 0}）、工作方向与规则；操作约定见 contract。\n${previous}${usage ? usage + '\n' : ''}`;
+  const footer = '结束附 morrow-next，保留正文汇报。\n';
+  // Tools are included in the turn budget, but never truncate executable paths or user instructions.
+  const limit = Math.max(0, Math.min(1200, 1500 - header.length - footer.length - (context.tools?.length || 0)));
+  return header + boardDigest(context.items || [], { lastRunId: context.lastRunId, limit }) + footer;
 }
 
 /** A reminder of an already delivered charter, not a replacement for the user's full brief. */
 export function autonomousCharterReview(context: PromptContext): string {
-  return `章程回顾：完整章程见本任务开头。项目说明版本 ${context.project.briefRevision || 0}。\n项目目标：${oneLine(context.project.goal, 200)}\n当前工作方向：${oneLine(context.channel.goal, 250)}\n三条规则：上线只能走 release.propose 并由人批准；证据必须可回看；缺关键信息用 needs_input 在正文提问。完整要求、权限与操作见 contract。\n`;
+  return `章程回顾：完整章程见本任务开头。项目说明版本 ${context.project.briefRevision || 0}。\n项目目标：${oneLine(context.project.goal, 200)}\n当前工作方向：${oneLine(context.channel.goal, 250)}\n三条规则：上线只能走 release.propose 并由人批准；证据必须可回看；缺关键信息用 needs_input 在正文提问。操作约定见 contract。\n`;
 }
 /** Charter plus turn note plus this run's tool entry: the full text a new or expired charter sends. */
 export function autonomousPrompt(context: PromptContext): string {

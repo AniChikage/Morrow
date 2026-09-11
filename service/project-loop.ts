@@ -368,7 +368,11 @@ export class ProjectWorkLoop {
     const command = [process.execPath, fileURLToPath(new URL('./agent-cli.ts', import.meta.url)), '--context', path]
       .map((v) => "'" + v.replaceAll("'", "'\\''") + "'")
       .join(' ');
-    return `\nMorrow 已提供本轮专用工具（只能管理本项目，不能批准上线）。凭证按轮次更换，只用本轮这一条路径。在原生工具中执行：\n${command} --operation context\n写操作将 JSON 通过 --input - 从标准输入传入，或写入临时文件后执行同一命令，附加 --operation 操作名 --input 文件路径 --request-id 稳定唯一ID。标准输入推荐用带引号的 heredoc 一次传入，不要为读取 JSON 启动交互式 TTY。同一次重试沿用相同 ID 和内容。context 返回项目当前数据与共享认识；--operation contract 返回各操作的字段约定、发布适配说明、工作原则与原生能力清单（只读，无需 --request-id），需要精确规则时读取它。先读 context；重要发现、feature、尝试及等待条件在工作过程中及时落库，不要只留在最终回复。不得读取或输出 agent-context.json 中的凭证。\n`;
+    // Only paths live in this launcher; the existing CLI still reads and validates the run grant.
+    // `sh` avoids executable-bit assumptions and "$@" preserves stdin and every original CLI argument.
+    const launcher = join(directory, 'tool.sh');
+    writeFileSync(launcher, `#!/bin/sh\nexec ${command} "$@"\n`, { mode: 0o600 });
+    return `\nsh '${launcher.replaceAll("'", "'\\''")}' --operation context\n写操作带 --request-id，用 --input - 传JSON；重试同ID/内容。仅本轮项目，不能批准；详情 --operation contract，勿读凭证。\n`;
   }
   authenticate(authorization: string): Scope {
     const token = authorization.startsWith('Bearer ') ? authorization.slice(7) : '';
