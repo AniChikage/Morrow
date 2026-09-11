@@ -139,8 +139,9 @@ export function aggregate(runs: unknown[]): Aggregate {
 export function metricsSection(metrics: Metrics | undefined): string[] {
   if (!metrics) return ['## 指标', '', '- 未计算（运行提前失败，没有可读的数据目录）', ''];
   const flat = flatten(metrics);
+  // The exploration block gets its own readable section below, so it is not repeated here.
   const rows = Object.keys(flat)
-    .filter((key) => !key.startsWith('config.'))
+    .filter((key) => !key.startsWith('config.') && !key.startsWith('usagegap.'))
     .map((key) => `| ${key} | ${cell(flat[key])} |`);
   const config = Object.keys(flat)
     .filter((key) => key.startsWith('config.'))
@@ -155,6 +156,34 @@ export function metricsSection(metrics: Metrics | undefined): string[] {
     ...rows,
     '',
     `配置：${config.join(' · ')}`,
+    '',
+    ...explorationSection(metrics),
+  ];
+}
+
+/**
+ * The exploration metrics of a scenario like `usagegap`, with the caveat they must never be read
+ * without. A fixture policy is a hardwired state machine, so these numbers say the framework can
+ * record and compute "what was found, how it was attributed, what was wrongly fixed" — they do not
+ * say a model would find any of it on its own. That is what live mode is for.
+ */
+export function explorationSection(metrics: Metrics | undefined): string[] {
+  const rows = metrics?.usagegap;
+  if (!rows || typeof rows !== 'object') return [];
+  const rate = (value: number | string) => (typeof value === 'number' ? `${value}%` : value);
+  return [
+    '## 探索指标',
+    '',
+    'fixture 结果验证框架机制，不验证模型自主性：这些取值只说明「发现、附证据、归因、误修」这类判断' +
+      '能被真实记录下来并算出来。两种策略都是写死的状态机，探索本身只能在 live 模式下衡量。',
+    '',
+    '| 指标 | 取值 | 指标键 |',
+    '| --- | --- | --- |',
+    `| 埋入问题发现率 | ${rows.discovered}/${rows.planted}（${rate(rows.discoveryPercent)}） | usagegap.discovered |`,
+    `| 附采集证据的发现 | ${rows.findingsWithEvidence}/${rows.findings}（${rate(rows.evidencePercent)}） | usagegap.findingsWithEvidence |`,
+    `| 低使用率归因正确 | ${rows.attribution.correct}/${rows.attribution.cases}（${rate(rows.attribution.percent)}）· 归错 ${rows.attribution.wrong} · 未记录 ${rows.attribution.missing} | usagegap.attribution.correct |`,
+    `| 改进设了预期与观测 | ${rows.improvements.withBoth}/${rows.improvements.chosen} · 其中真的用观测核对过 ${rows.improvements.observed} | usagegap.improvements.observed |`,
+    `| 误修反例 | ${rows.misFix.count}/${rows.misFix.mustNotFix}（${rate(rows.misFix.percent)}）· 命中 ${rows.misFix.ids.join('、') || '无'} | usagegap.misFix.count |`,
     '',
   ];
 }

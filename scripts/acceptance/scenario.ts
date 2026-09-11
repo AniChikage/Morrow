@@ -65,6 +65,16 @@ export type InvariantContext = {
   transport: ScriptedNativeTransport;
   receiver: Receiver;
   timeline: TimelineRecord[];
+  /** The served seed app, when the scenario has a `project.serve` block; see `ServedApp`. */
+  app?: ServedApp;
+};
+
+/** The seed app the runner started for this run, as an invariant and the report see it. */
+export type ServedApp = {
+  /** Origin the agent is given, e.g. `http://127.0.0.1:45171`. */
+  url: string;
+  /** JSON the runner read once from `serve.probe`, so a scenario can assert the seed's own shape. */
+  probe?: unknown;
 };
 export type InvariantResult = { ok: boolean; detail: string };
 export type Invariant = { name: string; check(context: InvariantContext): InvariantResult };
@@ -83,8 +93,31 @@ export type MemorySeed = {
   stale?: boolean;
 };
 
+/**
+ * What kind of problem a planted one is, as the scenario knows it. Only exploration scenarios set it;
+ * `usagegap`'s attribution metric compares it against the kind the run gave its own finding.
+ *
+ * `entrance` 入口太深导致使用率低 · `flow` 流程在某一步中断 · `empty-state` 空状态没有下一步 ·
+ * `copy` 文案与实际行为不一致 · `not-needed` 使用率低但目标用户本来就不需要（反例，不该被"修"）。
+ */
+export type PlantedKind = 'entrance' | 'flow' | 'empty-state' | 'copy' | 'not-needed';
+
 /** A problem deliberately built into the seed project, for a later step's discovery metrics. */
-export type PlantedProblem = { id: string; where: string; description: string; shouldFix: boolean };
+export type PlantedProblem = {
+  id: string;
+  where: string;
+  description: string;
+  shouldFix: boolean;
+  /** Exploration scenarios only; without it the `usagegap` metrics stay `unknown`. */
+  kind?: PlantedKind;
+  /**
+   * Exploration scenarios only: the `/usage` feature this problem belongs to. A filed finding counts
+   * as having discovered this problem when it names this id anywhere in its title, summary or next
+   * step — the same match works for a fixture policy and for a real model in live mode. Feature ids
+   * must not be substrings of one another.
+   */
+  feature?: string;
+};
 
 /**
  * The scenario's own labels, written to `labels.json`. They are the only input the metrics read that
@@ -118,8 +151,54 @@ export type ProjectSpec = {
   artifactBody?: string;
   /** The full check a policy runs on the release candidate. The first entry is the command it uses. */
   tests?: string[];
-  /** How to serve the seed project in live mode; unused in fixture mode. */
-  serve?: { command: string; port: number };
+  /** How to run the seed project as a real app for the length of the run; see `ServeSpec`. */
+  serve?: ServeSpec;
+};
+
+/**
+ * How the runner serves the seed project: `node <args…>` started in the isolated project directory
+ * with a free port in `PORT`, polled on `ready` until it answers, handed to the policy and to the
+ * project brief as `appUrl`, and stopped again in cleanup. No shell is involved.
+ *
+ * The plan wrote this as `{command, port}`. A fixed port cannot be used by two runs at once — the
+ * in-process tests and `run all` both start several services — so the runner picks the port and the
+ * scenario only says what to run.
+ */
+export type ServeSpec = {
+  /** Arguments after the Node executable, e.g. `['server.js']`. */
+  args: string[];
+  /** Path polled until the app answers; defaults to `/`. */
+  ready?: string;
+  /** Path read once as JSON after startup, kept in `app.probe` for the scenario's own assertions. */
+  probe?: string;
+};
+
+/**
+ * An exploration scenario: the run is given a goal, the app and its usage endpoint, and nothing about
+ * what to fix. The usage sample is an object of features keyed by id, each carrying the fields a real
+ * usage report would have, and a policy classifies them itself:
+ *
+ * | 字段 | 含义 |
+ * | --- | --- |
+ * | `title` | 功能名，用来写可读的事项标题 |
+ * | `visits` | 窗口内的访问次数 |
+ * | `completionRate` | 完成率 |
+ * | `abandonStep` | 放弃集中在第几步；0 表示没有集中放弃的步骤 |
+ * | `askedFor` | 目标用户访谈里是否要求过这个功能 |
+ * | `emptyStateNextAction` | 空状态里是否给了下一步 |
+ * | `copyMatchesBehaviour` | 文案与实际行为是否一致 |
+ *
+ * `askedFor` is what separates "使用率低是缺陷" from "使用率低是因为目标用户不需要"; a policy that
+ * ignores it cannot tell the counterexample apart, which is exactly what the attribution metric
+ * measures.
+ */
+export type ExploreSpec = {
+  /** JSON Pointer of the features object inside a usage sample, e.g. `/features`. */
+  features: string;
+  /** Fewer visits than this in the window counts as underused. */
+  lowVisits: number;
+  /** A completion rate below this counts as losing people. */
+  lowCompletion: number;
 };
 
 export type FeedbackSpec = {
@@ -175,6 +254,13 @@ export type Scenario = {
    */
   recall?: string;
   /**
+   * Makes this an exploration scenario: the policies read the usage report through the same feedback
+   * watch, classify the features themselves and file one board item per finding before choosing what
+   * to improve. Without it a policy goes straight to its change, which is what every historical
+   * scenario does.
+   */
+  explore?: ExploreSpec;
+  /**
    * Self-check metrics this scenario must actually prove a difference on. A rule the generic check
    * would skip because `careful` produced nothing to compare is still evaluated for these, so a
    * scenario that stops producing its own evidence fails instead of passing by default.
@@ -209,6 +295,23 @@ export function defineScenario(input: ScenarioInput): Scenario {
   const rules = [scenario.feedback.outcome.rule, scenario.feedback.guardrail.rule];
   for (const rule of rules)
     if (!rule.pointer.startsWith('/')) throw new Error(`scenario ${scenario.id}: rule pointer must start with "/"`);
+  if (scenario.explore) {
+    if (!scenario.explore.features.startsWith('/'))
+      throw new Error(`scenario ${scenario.id}: explore.features must be a JSON Pointer`);
+    if (!scenario.project.serve)
+      throw new Error(`scenario ${scenario.id}: an exploration scenario needs project.serve`);
+    const features = scenario.planted.flatMap((row) => (row.feature ? [row.feature] : []));
+    if (features.length !== scenario.planted.length)
+      throw new Error(`scenario ${scenario.id}: every planted problem of an exploration scenario needs a feature id`);
+    for (const row of scenario.planted)
+      if (!row.kind) throw new Error(`scenario ${scenario.id}: planted problem ${row.id} needs a kind`);
+    // The metrics match a finding to a planted problem by looking for the feature id in the item's
+    // own text, so one id may not be contained in another.
+    for (const a of features)
+      for (const b of features)
+        if (a !== b && b.includes(a))
+          throw new Error(`scenario ${scenario.id}: feature id ${a} is contained in ${b}; ids must be distinguishable`);
+  }
   return scenario;
 }
 
@@ -250,8 +353,12 @@ export function readTree(dir: string): Record<string, string> {
   return files;
 }
 
-/** Builds the view a turn policy gets, once the receiver's origin is known. */
-export function policyScenario(scenario: Scenario, receiverURL: string): PolicyScenario {
+/** Builds the view a turn policy gets, once the receiver's origin and the served app are known. */
+export function policyScenario(
+  scenario: Scenario,
+  receiverURL: string,
+  options: { appUrl?: string } = {}
+): PolicyScenario {
   const patches = scenario.project.patches
     ? readPatches(scenario.project.patches, scenario.project.artifactPath)
     : undefined;
@@ -263,6 +370,8 @@ export function policyScenario(scenario: Scenario, receiverURL: string): PolicyS
     checkCommand: scenario.project.tests?.[0] || 'node --test',
     ...(patches ? { patches } : {}),
     ...(scenario.recall === undefined ? {} : { recall: scenario.recall }),
+    ...(scenario.explore === undefined ? {} : { explore: scenario.explore }),
+    ...(options.appUrl === undefined ? {} : { appUrl: options.appUrl }),
     feedback: {
       url: receiverURL + (scenario.feedback.path || '/feedback'),
       releaseUrl: receiverURL + '/deploy',
@@ -275,6 +384,24 @@ export function policyScenario(scenario: Scenario, receiverURL: string): PolicyS
       latencySeconds: scenario.feedback.latencySeconds ?? 60,
     },
   };
+}
+
+/** The absolute URL a scenario's feedback watch reads, once the receiver's origin is known. */
+export const usageURL = (scenario: Scenario, receiverURL: string) =>
+  receiverURL + (scenario.feedback.path || '/feedback');
+
+/**
+ * Fills the two addresses a scenario cannot know in advance into its project brief, which is what a
+ * real model reads: `{{appUrl}}` is the served seed app and `{{usageUrl}}` the usage endpoint the
+ * run may observe. An unknown placeholder is a scenario mistake, not something to leave in the text.
+ */
+export function projectBrief(brief: string, urls: { appUrl?: string; usageUrl: string }): string {
+  const filled = brief
+    .replaceAll('{{appUrl}}', urls.appUrl || '（本次运行没有启动应用）')
+    .replaceAll('{{usageUrl}}', urls.usageUrl);
+  const left = filled.match(/\{\{[a-zA-Z]+\}\}/);
+  if (left) throw new Error(`项目说明里有无法填充的占位符 ${left[0]}；只支持 {{appUrl}} 与 {{usageUrl}}`);
+  return filled;
 }
 
 /** Shorthand for the common invariant shape: a predicate plus the detail it should report. */

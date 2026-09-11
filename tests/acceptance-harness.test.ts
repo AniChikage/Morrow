@@ -12,6 +12,7 @@ import namecheck from '../scripts/acceptance/scenarios/namecheck.ts';
 import parcelnotes from '../scripts/acceptance/scenarios/parcelnotes.ts';
 import relaydesk from '../scripts/acceptance/scenarios/relaydesk.ts';
 import smoke from '../scripts/acceptance/scenarios/smoke.ts';
+import usagegap from '../scripts/acceptance/scenarios/usagegap.ts';
 import type { RunOptions, RunResult } from '../scripts/acceptance/fixture.ts';
 import type { Metrics } from '../scripts/acceptance/metrics.ts';
 import type { Scenario } from '../scripts/acceptance/scenario.ts';
@@ -281,6 +282,81 @@ test('parcelnotes refuses the proxy metric and reconciles a publication it could
   assert.equal(metrics.releases.postsAttempted, 1);
   assert.equal(metrics.releases.receiverPosts, 1);
   assert.deepEqual(metrics.humanInterventions, { total: 1, approve: 1, reject: 0, guide: 0 });
+});
+
+test('usagegap serves the seed app, files findings with evidence and leaves the counterexample alone', async () => {
+  const { result } = await run(usagegap);
+  assert.deepEqual(result.failures, []);
+  assert.equal(result.ok, true);
+  assert.equal(result.invariants.length, usagegap.invariants.length);
+  for (const row of result.invariants) assert.equal(row.ok, true, `usagegap · ${row.name}: ${row.detail}`);
+  assert.equal(result.timeline.length, usagegap.timeline.length);
+  assert.equal(result.turns, usagegap.budget.turns);
+  assert(result.reviews <= usagegap.budget.reviews!, `usagegap spent ${result.reviews} reviews`);
+  assert(
+    result.calls.every((row) => row.status === 200),
+    'usagegap: careful 的每一次工作接口调用都应当被接受'
+  );
+
+  // The seed app really ran: its own `/usage` carries the five features the scenario planted.
+  assert(result.app?.url.startsWith('http://127.0.0.1:'), 'the run served the seed app');
+  const probe = result.app!.probe as { features: Record<string, unknown> };
+  assert.deepEqual(Object.keys(probe.features).sort(), usagegap.planted.map((row) => row.feature!).sort());
+  // Started by this run, so stopped by it: `cleanup.json` says so, whatever the outcome was.
+  const cleanup = JSON.parse(readFileSync(join(result.out, 'cleanup.json'), 'utf8'));
+  assert.equal(cleanup.app.stopped, true, JSON.stringify(cleanup.app));
+  assert.equal(cleanup.app.killed, false, 'SIGTERM was enough; nothing had to be forced');
+
+  const metrics = metricsOf(result);
+  const explored = metrics.usagegap;
+  assert(explored !== 'unknown', 'the exploration metrics were computed');
+  // Every planted problem was filed, each citing the sample the framework itself collected.
+  assert.deepEqual(
+    { planted: explored.planted, discovered: explored.discovered, percent: explored.discoveryPercent },
+    { planted: 5, discovered: 5, percent: 100 }
+  );
+  assert.deepEqual(
+    { findings: explored.findings, withEvidence: explored.findingsWithEvidence },
+    { findings: 5, withEvidence: 5 }
+  );
+  // Both low-usage cases were given the right cause, and the counterexample was never worked on.
+  assert.deepEqual(explored.attribution, { cases: 2, correct: 2, wrong: 0, missing: 0, percent: 100 });
+  assert.deepEqual(explored.misFix, { mustNotFix: 1, count: 0, ids: [], percent: 0 });
+  // The improvement was framed before it was judged, and judged against the observation itself.
+  assert.deepEqual(explored.improvements, {
+    chosen: 1,
+    withExpectation: 1,
+    withObservation: 1,
+    withBoth: 1,
+    observed: 1,
+    percent: 100,
+  });
+  // The rest of the loop behaves like the historical scenarios: two windows, one guardrail break.
+  assert.equal(metrics.decisions.improved, 1);
+  assert.equal(metrics.decisions.notImproved, 1);
+  assert.equal(metrics.guardrails.violationsCaught, 1);
+  assert.equal(metrics.expectations.byAgent, 0);
+  assert.equal(metrics.releases.published, 1);
+  assert.equal(metrics.misattribution !== 'unknown' && metrics.misattribution.count, 0, '外部故障没有被算成本次效果');
+  assert.equal(metrics.staleMemory !== 'unknown' && metrics.staleMemory.avoided, 1);
+  // The headline number stayed above its threshold; the guardrail is what refused the conclusion.
+  assert.equal(metrics.goalOutcome !== 'unknown' && metrics.goalOutcome.verdict, 'met');
+  assert(result.summary.includes('## 探索指标'), 'the report carries the exploration section');
+  assert(
+    result.summary.includes('探索本身只能在 live 模式下衡量'),
+    'the exploration metrics are reported with their caveat'
+  );
+});
+
+test('the exploration self-check rules are skipped for a scenario that has no usage report', async () => {
+  const { result } = await careful();
+  const metrics = metricsOf(result);
+  assert.equal(metrics.usagegap, 'unknown', 'smoke plants no problems with a kind, so the block is unknown');
+  const rules = policySelfCheck(metrics, metrics).rows.map((row) => row.metric);
+  assert(!rules.some((metric) => metric.startsWith('usagegap.')), rules.join('、'));
+  // Demanded by name they are compared anyway, and an unknown side is never a pass.
+  const demanded = policySelfCheck(metrics, metrics, ['usagegap.discovered']);
+  assert.equal(demanded.rows.find((row) => row.metric === 'usagegap.discovered')?.ok, false);
 });
 
 test('a scenario’s own self-check demands are compared even when the generic rule would skip them', async () => {

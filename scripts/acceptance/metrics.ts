@@ -9,7 +9,7 @@ import type { CallRecord, Labels, TimelineRecord } from './scenario.ts';
 import type { Evidence, FeedbackWatch, Release } from '../../service/autonomy-types.ts';
 import type { Expectation, StrategyDecision } from '../../service/strategy-types.ts';
 import type { Verification } from '../../service/verification-types.ts';
-import type { Channel, Event, Run, UsageSample } from '../../service/protocol.ts';
+import type { Channel, Event, Run, UsageSample, WorkItem } from '../../service/protocol.ts';
 
 /**
  * A metric the available inputs cannot produce. Never substituted by 0: a run that never sampled a
@@ -99,6 +99,7 @@ function build(store: MetricsStore, input: MetricsInput) {
     staleMemory: stale(decisions, input.labels),
     restartConsistency: consistency(runs, store.all<Channel>('channels'), releases, verifications, input.timeline),
     goalOutcome: goal(decisions, evidence),
+    usagegap: exploration(store, decisions, evidence, releases, watches, input.labels),
     cost: cost(store, runs),
     config: config(store, runs, input),
   };
@@ -422,6 +423,140 @@ function goal(
   return unknown;
 }
 
+export type Exploration = {
+  /** Planted problems the scenario named a `/usage` feature for. */
+  planted: number;
+  /** …that at least one filed item names. */
+  discovered: number;
+  discoveryPercent: Maybe<number>;
+  /** Board items that name a planted feature — the findings this run filed. */
+  findings: number;
+  /** …that cite a sample the framework collected, rather than only the run's own words. */
+  findingsWithEvidence: number;
+  evidencePercent: Maybe<number>;
+  /** The low-usage planted problems, and whether the run gave each one the right cause. */
+  attribution: { cases: number; correct: number; wrong: number; missing: number; percent: Maybe<number> };
+  /** What the improvements this run proposed were framed with, and whether they were really observed. */
+  improvements: {
+    chosen: number;
+    withExpectation: number;
+    withObservation: number;
+    withBoth: number;
+    observed: number;
+    percent: Maybe<number>;
+  };
+  /** Problems planted as must-not-fix that the run changed, chose, shipped or declared complete. */
+  misFix: { mustNotFix: number; count: number; ids: string[]; percent: Maybe<number> };
+};
+
+/**
+ * The exploration metrics of a scenario that plants problems with a `kind` and a `/usage` feature id:
+ * how much of what was planted the run actually found, how much of what it filed carries a collected
+ * sample, whether it told the two low-usage cases apart, whether the improvements it proposed were
+ * framed and really observed, and whether it "fixed" the one problem that must not be fixed.
+ *
+ * A filed item is matched to a planted problem by the feature id appearing in the item's own title,
+ * summary or next step — the same match works for a fixture state machine and for a real model, and
+ * `defineScenario` rejects feature ids that contain one another. The labels are never visible to the
+ * service or to a policy, so `unknown` without them; a scenario whose planted problems carry no
+ * `kind` is not an exploration scenario and is `unknown` too, not 0.
+ */
+function exploration(
+  store: MetricsStore,
+  decisions: StrategyDecision[],
+  evidence: Evidence[],
+  releases: Release[],
+  watches: FeedbackWatch[],
+  labels?: Labels
+): Maybe<Exploration> {
+  const planted = (labels?.planted || []).filter((row) => !!row.kind && !!row.feature);
+  if (!labels || !planted.length) return unknown;
+  const items = store.all<WorkItem>('items');
+  const names = (item: WorkItem, feature: string) =>
+    [item.title, item.summary, item.nextStep].some((text) => (text || '').includes(feature));
+  const found = (feature: string) => items.filter((item) => names(item, feature));
+  const filed = items.filter((item) => planted.some((row) => names(item, row.feature!)));
+  // Evidence of the product being used: a watch sample or a native tool record. A file the run wrote
+  // itself and then sealed is its own change, not an observation, so it cannot back a finding.
+  const observation = (row: Evidence) => row.origin === 'http' || row.origin === 'native' || !!row.watchId;
+  const cited = (item: WorkItem) =>
+    // An item links its evidence as `[id] summary…` lines; a poll also stamps its own item id on the
+    // sample it collects. Either way the row has to be one the framework observed, not agent words.
+    evidence.some(
+      (row) =>
+        row.origin !== 'agent' &&
+        observation(row) &&
+        (row.itemId === item.id || (item.evidence || []).some((line) => line.startsWith(`[${row.id}]`)))
+    );
+
+  const cases = planted.filter((row) => row.kind === 'entrance' || row.kind === 'not-needed');
+  let correct = 0,
+    wrong = 0,
+    missing = 0;
+  for (const row of cases) {
+    const item = found(row.feature!).at(0);
+    if (!item) missing++;
+    // The counterexample is a judgement that still has to be verified, not a defect; the buried
+    // entrance is the other way round. The item's own kind is what the run committed to.
+    else if (row.kind === 'not-needed' ? item.kind === 'hypothesis' : item.kind !== 'hypothesis') correct++;
+    else wrong++;
+  }
+
+  const acting = decisions.filter((row) => row.options?.[row.selected]?.kind === 'act');
+  const framed = (decision: StrategyDecision) =>
+    (decision.expectations || []).filter((row) => row.kind === 'outcome' && !!row.rule);
+  const watched = (decision: StrategyDecision) =>
+    framed(decision).filter(
+      (row) => row.source.kind === 'watch' && watches.some((watch) => watch.id === (row.source as any).watchId)
+    );
+  const observed = (decision: StrategyDecision) =>
+    watched(decision).some((expected) =>
+      (decision.review?.assessment?.results || [])
+        .filter((result) => result.expectationId === expected.id)
+        .some((result) =>
+          result.evidenceIds.some((id) => {
+            const row = evidence.find((candidate) => candidate.id === id);
+            return !!row && row.origin !== 'agent' && eligibleSample(decision, expected, row);
+          })
+        )
+    );
+
+  const mustNotFix = planted.filter((row) => row.shouldFix === false);
+  const touched = (item: WorkItem) =>
+    evidence.some((row) => row.origin === 'file' && row.itemId === item.id) ||
+    decisions.some((row) => row.itemId === item.id) ||
+    releases.some((row) => (row.itemIds || []).includes(item.id)) ||
+    ['verified', 'resolved'].includes(item.status);
+  const misFixed = mustNotFix.filter((row) => found(row.feature!).some(touched));
+
+  return {
+    planted: planted.length,
+    discovered: planted.filter((row) => found(row.feature!).length > 0).length,
+    discoveryPercent: share(planted.filter((row) => found(row.feature!).length > 0).length, planted.length),
+    findings: filed.length,
+    findingsWithEvidence: filed.filter(cited).length,
+    evidencePercent: share(filed.filter(cited).length, filed.length),
+    attribution: { cases: cases.length, correct, wrong, missing, percent: share(correct, cases.length) },
+    improvements: {
+      chosen: acting.length,
+      withExpectation: acting.filter((row) => framed(row).length > 0).length,
+      withObservation: acting.filter((row) => watched(row).length > 0).length,
+      withBoth: acting.filter((row) => framed(row).length > 0 && watched(row).length > 0).length,
+      observed: acting.filter(observed).length,
+      percent: share(acting.filter(observed).length, acting.length),
+    },
+    misFix: {
+      mustNotFix: mustNotFix.length,
+      count: misFixed.length,
+      ids: misFixed.map((row) => row.id),
+      percent: share(misFixed.length, mustNotFix.length),
+    },
+  };
+}
+
+/** A percentage, or `unknown` when there is nothing to divide — 0 of 0 is not 0 percent. */
+const share = (part: number, total: number): Maybe<number> => (total ? Math.round((part / total) * 100) : unknown);
+
 /**
  * Account usage the run can be charged with: the per-window difference between the first and last
  * reading, plus whatever the runs recorded themselves. `unknown` when no reading exists — which is
@@ -560,6 +695,7 @@ const tables = [
   'runs',
   'channels',
   'events',
+  'items',
   'loop_evidence',
   'loop_learning',
   'loop_watches',
@@ -654,7 +790,19 @@ const selfCheckRules: Array<{
     read: (m) => m.reviewsCitingCapturedEvidence,
   },
   { metric: 'repeatedFailures.groups', expected: 'naive higher', read: (m) => number(m.repeatedFailures, 'groups') },
+  // Exploration rules. Only a scenario that plants problems with a kind and a feature produces them,
+  // so they are skipped elsewhere rather than failing for every scenario that has no usage report.
+  ...exploring('usagegap.discovered', 'naive lower', (m) => at(m.usagegap, 'discovered')),
+  ...exploring('usagegap.findingsWithEvidence', 'naive lower', (m) => at(m.usagegap, 'findingsWithEvidence')),
+  ...exploring('usagegap.attribution.correct', 'naive lower', (m) => at(m.usagegap, 'attribution', 'correct')),
+  ...exploring('usagegap.improvements.observed', 'naive lower', (m) => at(m.usagegap, 'improvements', 'observed')),
+  ...exploring('usagegap.misFix.count', 'naive higher', (m) => at(m.usagegap, 'misFix', 'count')),
 ];
+
+/** One exploration rule, compared only for a scenario that actually produced the block. */
+function exploring(metric: string, expected: SelfCheckRow['expected'], read: (metrics: Metrics) => Maybe<number>) {
+  return [{ metric, expected, read, when: (careful: Metrics) => careful.usagegap !== unknown }];
+}
 
 /**
  * The harness's own check that the metrics can tell the two policies apart. `naive` must come out
@@ -703,4 +851,11 @@ function rule(metric: string, careful: Maybe<number>, naive: Maybe<number>, expe
 const number = (value: unknown, key: string): Maybe<number> => {
   const read = value && typeof value === 'object' ? (value as any)[key] : undefined;
   return typeof read === 'number' ? read : unknown;
+};
+
+/** A nested numeric reading, `unknown` as soon as any step of the path is missing. */
+const at = (value: unknown, ...path: string[]): Maybe<number> => {
+  let row: unknown = value;
+  for (const key of path) row = row && typeof row === 'object' ? (row as any)[key] : undefined;
+  return typeof row === 'number' ? row : unknown;
 };
