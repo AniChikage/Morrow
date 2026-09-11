@@ -222,3 +222,46 @@ test('image references are never silently shortened and inline image URLs retain
     await s.cleanup();
   }
 });
+
+test('failed native tool receipts retain distinct error bodies after the original projection disappears', async () => {
+  const s = await setup([
+    {
+      id: 'failed-mcp',
+      type: 'mcpToolCall',
+      server: 'fixture',
+      tool: 'read',
+      arguments: {},
+      result: null,
+      error: { message: 'denied by upstream' },
+      status: 'failed',
+    },
+  ]);
+  try {
+    const row = s.store.nativeRows<any>('native_items', s.row.threadId).find((row) => row.raw.id === 'failed-mcp');
+    assert.equal(row.raw.error.message, 'denied by upstream');
+    const results: any[] = [];
+    for (const message of ['denied by upstream', 'timeout from upstream']) {
+      s.store.put('native_items', { ...row, raw: { ...row.raw, error: { message } } });
+      const linked = await s.grant.call('evidence.link', { summary: 'failed receipt', nativeItemIds: [row.id] });
+      const evidence = await s.grant.call('evidence.read', { id: linked.id });
+      assert(evidence.data.items[0].error?.text.includes(message));
+      results.push(evidence);
+    }
+    assert.notEqual(results[0].digest, results[1].digest);
+    assert.notEqual(results[0].data.items[0].error.sourceSha256, results[1].data.items[0].error.sourceSha256);
+    s.store.put('native_items', { ...row, present: false, raw: {} });
+    assert.deepEqual(await s.grant.call('evidence.read', { id: results[0].id }), results[0]);
+    s.store.put('native_items', {
+      ...row,
+      output: { text: 'partial output' },
+      raw: { ...row.raw, error: { message: 'failed ' + s.token } },
+    });
+    const partial = await s.grant.call('evidence.link', { summary: 'partial result', nativeItemIds: [row.id] });
+    const stored = (await s.grant.call('evidence.read', { id: partial.id })).data;
+    assert(stored.items[0].output.text.includes('partial output'));
+    assert(stored.items[0].error.text.includes('[REDACTED]'));
+    assert(!JSON.stringify(stored).includes(s.token));
+  } finally {
+    await s.cleanup();
+  }
+});

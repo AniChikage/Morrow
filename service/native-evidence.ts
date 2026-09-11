@@ -152,6 +152,7 @@ export function nativeEvidenceSnapshot(loop: ProjectWorkLoop, scope: Scope, inpu
       target: loop.redact(cut(raw.arguments?.target ?? raw.arguments?.url ?? raw.arguments?.path ?? raw.command, 500)),
       input: summary(row.input ?? raw.arguments ?? raw.command, `${id}/input`),
       output: summary(row.output ?? raw.result ?? row.text, `${id}/output`),
+      ...(raw.error !== undefined ? { error: summary(raw.error, `${id}/error`) } : {}),
     };
   });
   const data = {
