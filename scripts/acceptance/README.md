@@ -53,7 +53,9 @@ live 下 `--policy`、`--repeat` 与 `run all` 一律以退出码 2 被拒绝：
 
 **退出码只说明运行本身有没有出错**：时间线走完、预算用完、额度门禁阻断、某一轮 `needs_input`、停在人工确认都是 0；没等到任务、一轮超时、任务不再就绪、检测到旧转接、墙钟超时、服务抛错或清理失败才是 1。模型的表现全部作为指标报告，`invariants` 逐条评估并写进 `summary.md`，但不决定退出码。
 
-live 运行额外写 `live.json`（绑定的任务、App 与运行时版本、三道闸、缩放比例、运行前后的账户读数与差值、每一轮的真实起止/耗时/`morrow-next` 结论/`native_items` 里出现过的工具类型、停止原因），`cleanup.json` 多出 `app`/`threadId`/`unbound: false`/`usageAfter`，并且**不写 `calls.jsonl`**（见指标一节的 `repeatedFailures`）。`home/` 与 `project/` 原样保留，绑定也不解除：事后要能在 App 里打开那条任务逐条核对。
+真实调度器在 live 下不停，所以它自己也会发起轮次（一轮以 `continue` 结束 30 秒后就有下一轮）。时间线的 `turn` 因此**先接管**这样的轮次：有一轮在 `running` 就等它结束，有一轮已经跑完而 runner 从未等过就直接记下，两者都没有才把频道置为到期开新的一轮。`--budget` 只挡「开新轮」，被接管的轮次照样进「每一轮」表（`live.json` 的 `turns[].adopted`），表的行数与 `spentTurns` 对得上。`advance` 的真实等待切成不超过 5 秒的片，每片之间过一遍停止条件，所以额度门禁、任务掉线、旧转接和墙钟不会被一次长 `sleep` 掩盖到等待结束。
+
+live 运行额外写 `live.json`（绑定的任务、App 与运行时版本、三道闸、缩放比例、运行前后的账户读数与差值、每一轮的真实起止/耗时/`morrow-next` 结论/`native_items` 里出现过的工具类型/是不是接管来的、停止原因），`cleanup.json` 多出 `app`/`threadId`/`unbound: false`/`usageAfter`，并且**不写 `calls.jsonl`**（见指标一节的 `repeatedFailures`）。`home/` 与 `project/` 原样保留，绑定也不解除：事后要能在 App 里打开那条任务逐条核对。
 
 ## 组成
 

@@ -17,7 +17,7 @@
 
 实现期间发现、首跑前要知道的两件事：
 
-- **真实调度器不停，所以它会自己加轮次。** 一轮以 `continue` 结束时 `nextRunAt` 是 30 秒之后，真实调度器会照样发起下一轮——那正是「不停掉 1 秒定时器」的含义。这些轮次一样计入 `--budget`，所以 `--budget 3` 的首跑很可能在时间线第 1–2 步就把预算用完并以退出码 0 停下。这是预期结果，不是失败；要走完整条时间线就得把 `--budget` 提到时间线轮次数以上，并接受调度器额外发起的轮次也在里面。
+- **真实调度器不停，所以它会自己加轮次。** 一轮以 `continue` 结束时 `nextRunAt` 是 30 秒之后，真实调度器会照样发起下一轮——那正是「不停掉 1 秒定时器」的含义。这些轮次一样计入 `--budget`，所以 `--budget 3` 的首跑很可能在时间线第 1–2 步就把预算用完并以退出码 0 停下。这是预期结果，不是失败；要走完整条时间线就得把 `--budget` 提到时间线轮次数以上，并接受调度器额外发起的轮次也在里面。**这些轮次会被时间线的 `turn` 步骤接管**（见第 3 节的 `turn`）：下一个 `turn` 不再另开一轮，而是等那一轮结束（或直接记下已经结束的那一轮），所以它们照样出现在 `summary.md` 的「每一轮」表和 `live.json` 的 `turns` 里，表的行数与 `spentTurns` 对得上；表里用「发起」一列区分哪几轮是时间线开的、哪几轮是接管来的。
 - **`prepare` 与 `run` 之间人要真的去 App 建任务。** `run` 仍然有 `--wait-bind`（缺省 10 分钟）的等待窗口，所以先 `run` 再去建任务也行，只是人得守在终端边上。
 
 fixture 模式验证的是框架机制：调度、预算、观察窗口、事前预期的机械核对、复核门禁、人工上线确认、重启一致性。它不能说明模型会不会自己发现问题、会不会把使用率低归因正确。live 模式的唯一目的就是补上这一半：**同一套场景、同一套指标，换成真实的 Codex App 任务来跑**。
@@ -70,7 +70,7 @@ artifacts/acceptance/<run-id>/
 
 runner 的等待逻辑，全部走已有接口：
 
-1. `GET /api/channels/:id/native/threads`（`native.list`）→ 它只返回 cwd 与项目目录相符的任务。等到**恰好一个**为止：0 个继续等；多于一个就中止并把候选列出来让人删掉多余的（自动挑一个会让「我们测的是哪个任务」变得不可知）。
+1. `GET /api/channels/:id/native/threads`（`native.list`）→ 它只返回 cwd 与项目目录相符的任务。等到**恰好一个**为止：0 个继续等；多于一个就中止并把候选列出来让人删掉多余的（自动挑一个会让「我们测的是哪个任务」变得不可知）。列举本身抛错也继续等（人可能正在建任务，App 可能短暂断连），但**不静默**：第一次失败、以及错误文本变化时各打印一次，超时时把最后一次错误写进 `no-app-task` 的说明里——整整 `--wait-bind` 分钟什么都不说，会让「后台根本没连上」和「人还没建任务」长得一样。
 2. `POST /api/channels/:id/native/bind {threadId}` 关联它。
 3. `GET /api/native/status` 轮询到 `connected === true && boundThreadCount === 1 && readyThreadCount === 1 && restartRequired === false`。`readyThreadCount` 数的是 `transport.threadStatus(threadId).ready` 为真的绑定，也就是「后台连上了」和「这个任务真的加载好了」两件事都成立；只看 `connected` 不够。
 4. 关联前先断言两件事，和 `scripts/probe-app-follower.ts` 一样：`capabilities.create === false`，以及未关联时 `POST /api/channels/:id/action {action:'run'}` 返回 409。断言失败就中止，不继续消耗额度。
@@ -102,10 +102,10 @@ fixture runner 为了可重复做了三件真实 daemon 不会做的事：停掉
 
 | 动词 | live 行为 |
 | --- | --- |
-| `turn` | 仍然把频道置为到期（`nextRunAt` 设到过去）并等一轮 `morrow-schedule` 运行真实结束。等待上限 `--turn-timeout`（缺省 10 分钟，与 App 一轮的常见耗时和复核 5 分钟上限匹配）。**只认本次运行新出现的 `morrow-schedule` 行**——0.9.5 验收踩过的坑：同步进来的历史 `native-app` 轮次会被错认成本轮结果。 |
+| `turn` | **先接管真实调度器自己发起的轮次，没有可接管的才把频道置为到期**（`nextRunAt` 设到过去）。步骤开始时先找本次运行新出现（不在基线）且还没记进 `live.json` 的 `turns` 的 `morrow-schedule` 行：有 `running` 的就等它真实结束并记为本步骤的轮次；有已完成但还没记录的就直接记下，不再开新轮；两者都没有才置为到期并等新行出现。等待上限 `--turn-timeout`（缺省 10 分钟，与 App 一轮的常见耗时和复核 5 分钟上限匹配），接管进行中的那一轮从接管那一刻起算。**只认本次运行新出现的 `morrow-schedule` 行**——0.9.5 验收踩过的坑：同步进来的历史 `native-app` 轮次会被错认成本轮结果。不接管有三个后果，所以不能无条件置为到期：有轮次在跑时置为到期会把频道状态覆写成 `waiting`；调度器自己开的那轮计进 `spentTurns` 却不进「每一轮」表；一个时间线 `turn` 会实际消耗两轮。`--budget` 因此只挡「开新轮」这件事——接管已经发生的轮次不多花额度，被接管的轮次同样记下 `decision`、工具清单与真实起止（起止取 `runs` 行上的 `startedAt`/`finishedAt`，行上没有就用接管时刻，并在记录的 `timesFrom` 里标明）。 |
 | `poll` | 仍然调 `loop.poll(watchId)` 采一次。多采一次无害，而且让时间线里的「此刻应当有样本」是明确的；调度器自己的轮询照常进行。 |
 | `set` / `mode` | **不变**。接收端仍是本机的 `startReceiver()`，使用数据和发布回执都由它给，所以扰动完全可控。这是 live 模式仍然可读的关键：变量只有模型一个。 |
-| `advance` | **虚拟时钟不能用**。见下。改成真实等待：`advance N` 变成 `await sleep(min(N × --advance-scale 分钟, --max-wait))`，并把缩放比例、计划等待和真实耗时都记进 `timeline.jsonl` 与 `live.json`。 |
+| `advance` | **虚拟时钟不能用**。见下。改成真实等待：`advance N` 等 `min(N × --advance-scale 分钟, --max-wait)`，并把缩放比例、计划等待和真实耗时都记进 `timeline.jsonl` 与 `live.json`。等待**切成不超过 5 秒的片，每片之间过一遍第 6 节的停止条件**：`--max-wait` 最长 10 分钟，一次睡到底会让这期间调度器自己发起的轮次不被计数，预算、额度门禁（频道的 `usageWait`）、`readyThreadCount` 掉 0、`restartRequired` 与墙钟也都要等到睡醒才被发现。真实耗时仍按时钟差值记录，`waitedMs` 与 `cappedByMaxWait` 的含义不变。 |
 | `verify` | **fixture 专用，live 下是 no-op**。独立复核走真实 `codex exec`（只读、临时会话、5 分钟硬上限）。runner 只在需要时等 `loop_verifications` 从 `queued`/`running` 落到终态，上限 `--review-timeout`（缺省 6 分钟）。 |
 | `approve` / `reject` | 见第 5 节：**不自动批准**，也没有开关可以让它自动批准。打印发布信息、暂停频道、以「停在人工确认」退出 0。 |
 | `guide` | 保留：以 `source:'chat'` 向同一条原生任务发一条指导。它会真的消耗一轮 App 对话（不计编排预算）。 |
@@ -155,7 +155,7 @@ fixture 的 `careful`/`naive` 是写死的状态机，它们直接调 `/api/agen
 
 **`--allow-approve` 不实现。** `approve`（以及 `reject`）一律打印发布的标题、`reviewHash`、事项、封存产物与改动摘要，暂停频道，以「停在人工确认」退出 0。理由是让 runner 自己批准会把「人工上线确认」这道门禁测空，而它正是 Morrow 要证明的东西之一。
 
-runner 另外自己数**本次运行新出现**的 `morrow-schedule` 行（关联时同步进来的历史轮次不算，它们在编排开始前就被记进基线）。超过 `--budget` 就立刻暂停频道并停止，退出 0，报告写明剩余步数。注意真实调度器不停：一轮以 `continue` 结束时 `nextRunAt` 是 30 秒之后，它会自己再发起一轮，这些轮次一样计入 `--budget`。
+runner 另外自己数**本次运行新出现**的 `morrow-schedule` 行（关联时同步进来的历史轮次不算，它们在编排开始前就被记进基线）。超过 `--budget` 就立刻暂停频道并停止，退出 0，报告写明剩余步数。注意真实调度器不停：一轮以 `continue` 结束时 `nextRunAt` 是 30 秒之后，它会自己再发起一轮，这些轮次一样计入 `--budget`；下一个时间线 `turn` 会接管它们而不是另开一轮，所以 `--budget` 只挡「开新轮」，「每一轮」表不会比 `spentTurns` 少行。
 
 ## 6. 停止条件
 
@@ -245,7 +245,7 @@ npm run acceptance -- run usagegap --mode live --run-id <prepare 打印的 run-i
 这次运行**不要求模型发现任何问题**。它要证明的是 live 通道本身通了：
 
 1. `prepare` 打印了那四步，人在 App 里建好任务并发了首条消息，runner 自己发现并关联了它，`GET /api/native/status` 报 `connected=true`、`connectionMode='app-follower'`、`boundThreadCount=1`、`readyThreadCount=1`、`capabilities.create=false`，未关联时的 `run` 返回过 409。
-2. 真实 `morrow-schedule` 运行全部由真实调度器发起并正常结束（`status='completed'`），每一轮的 `runs` 行带真实的 `sessionId`/`nativeTurnId`，`permission` 为 `native`，`model` 不是 `scripted-native-model`。真实调度器不停，所以它自己发起的后续轮次也算在这三轮里。
+2. 真实 `morrow-schedule` 运行全部由真实调度器发起并正常结束（`status='completed'`），每一轮的 `runs` 行带真实的 `sessionId`/`nativeTurnId`，`permission` 为 `native`，`model` 不是 `scripted-native-model`。真实调度器不停，所以它自己发起的后续轮次也算在这三轮里，并且会被时间线的 `turn` 步骤接管、和时间线自己开的轮次一起出现在「每一轮」表里（`live.json` 的 `turns[].adopted` 标出哪几轮是接管来的）。
 3. 这三轮里模型真的调过工作接口：`events` 里有 `decision.chosen` 或 `feature.upsert` 类的审计记录；不要求它走到发布。
 4. 种子应用在整个运行期间可访问，`/usage` 与接收端上的样本形状一致（`app.probe` 对照，和 fixture 同一条 invariant）。
 5. 轮次不超过 3（`live.json` 的 `spentTurns`），项目额度上限与保留线都没被触发（如果触发了，运行以 0 结束并在报告里说明——这也是通过）。预算用完导致时间线没走完同样以 0 结束，`summary.md` 写明剩余步数。
