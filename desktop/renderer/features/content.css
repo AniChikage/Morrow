@@ -594,6 +594,19 @@
   font-size: 13px;
   line-height: 1.7;
 }
+.brief-help {
+  margin: 16px 0;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.7;
+}
+.brief-help > summary {
+  cursor: pointer;
+  width: fit-content;
+}
+.brief-help p {
+  margin: 8px 0;
+}
 .brief-body .markdown {
   font-size: 14px;
   line-height: 1.9;

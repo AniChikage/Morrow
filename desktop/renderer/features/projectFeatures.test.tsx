@@ -187,6 +187,12 @@ describe('the project brief is the user-owned document between the board and Cod
     expect(screen.getByRole('tab', { name: '项目说明' }).getAttribute('aria-selected')).toBe('true');
     expect(await screen.findByRole('heading', { level: 2, name: '目标与成功标准' })).toBeTruthy();
     expect(screen.getByText('提升到 40%').tagName).toBe('STRONG');
+    expect(screen.getByText('不得改动计费。').closest('details')).toBeNull();
+    const help = screen.getByText('编写帮助', { selector: 'summary' });
+    expect(help.closest('details')?.open).toBe(false);
+    await user.click(help);
+    expect(help.closest('details')?.open).toBe(true);
+    expect(api.updateProject).not.toHaveBeenCalled();
     expect(screen.getByRole('heading', { level: 2, name: '约束与红线' })).toBeTruthy();
     expect(screen.getByText(/当前为版本 2/)).toBeTruthy();
     expect(api.getProjectBrief).toHaveBeenCalledWith('project-atlas');
@@ -257,6 +263,7 @@ describe('the project brief is the user-owned document between the board and Cod
     });
     expect((screen.getByRole('button', { name: '保存' }) as HTMLButtonElement).disabled).toBe(true);
     expect(brief.value).toBe('旧说明，我的补充');
+    expect(alert.closest('details')).toBeNull();
     await user.click(screen.getByRole('button', { name: '载入最新版本' }));
     expect(screen.queryByRole('alert')).toBeNull();
     expect((screen.getByRole('textbox', { name: /^项目说明/ }) as HTMLTextAreaElement).value).toBe('别人写的新说明');
@@ -275,6 +282,11 @@ describe('the project brief is the user-owned document between the board and Cod
     expect(await screen.findByRole('heading', { level: 2, name: '还没有项目说明' })).toBeTruthy();
     expect(screen.getByText(/目标与成功标准、目标用户与场景、当前阶段与已知问题/)).toBeTruthy();
     await user.click(screen.getByRole('button', { name: '编辑' }));
+    const help = screen.getByText('编写帮助', { selector: 'summary' });
+    expect(help.closest('details')?.open).toBe(false);
+    await user.click(help);
+    await user.click(help);
+    expect((screen.getByRole('textbox', { name: /^项目说明/ }) as HTMLTextAreaElement).value).toBe('');
     await user.click(screen.getByRole('button', { name: '插入模板' }));
     const brief = screen.getByRole('textbox', { name: /^项目说明/ }) as HTMLTextAreaElement;
     expect(brief.value.startsWith('## 目标与成功标准\n')).toBe(true);

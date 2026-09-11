@@ -117,6 +117,13 @@ export function ProjectBrief({
       </div>
     );
   if (!loaded) return <p className="subtle">正在读取项目说明…</p>;
+  const writingHelp = (
+    <details className="brief-help" key={draft ? 'editing-help' : 'reading-help'}>
+      <summary>编写帮助</summary>
+      <p>{briefRule}</p>
+      <p>写下你知道而仓库里没有的东西：{briefHeadings.join('、')}。支持 Markdown。</p>
+    </details>
+  );
   if (draft)
     return (
       <div className="feature-scroll finding-document-scroll">
@@ -132,6 +139,7 @@ export function ProjectBrief({
               </Button>
             </div>
           </div>
+          <p className="subtle brief-intro">保存你的要求，Codex 后续轮次会读取。当前为版本 {draft.revision}。</p>
           {stale && (
             <p role="alert" className="form-error">
               项目说明已在别处更新（版本 {loaded.briefRevision}）。载入最新版本会放弃当前未保存的修改。
@@ -157,10 +165,10 @@ export function ProjectBrief({
               value={draft.brief}
               onChange={(event) => setDraft({ ...draft, brief: event.target.value })}
               maxLength={65536}
-              placeholder={briefPlaceholder}
+              placeholder="写下项目要求，支持 Markdown。"
             />
-            <small>{briefRule}</small>
           </label>
+          {writingHelp}
           {!draft.brief.trim() && (
             <Button variant="ghost" disabled={busy} onClick={() => setDraft({ ...draft, brief: briefTemplate })}>
               插入模板
@@ -175,14 +183,14 @@ export function ProjectBrief({
         <div className="brief-heading">
           <h1>项目说明</h1>
           {canEdit && (
-            <Button disabled={busy} onClick={edit}>
+            <Button variant="primary" disabled={busy} onClick={edit}>
               <Pencil size={13} />
               编辑
             </Button>
           )}
         </div>
         <p className="subtle brief-intro">
-          {briefRule}
+          {canEdit ? '通过「编辑」更新项目要求。' : '项目要求由作者维护。'}
           {loaded.briefRevision > 0 ? ` 当前为版本 ${loaded.briefRevision}。` : ''}
         </p>
         <section className="finding-section">
@@ -197,11 +205,11 @@ export function ProjectBrief({
           <section className="finding-section">
             <h2>还没有项目说明</h2>
             <p className="subtle">
-              这里放你知道而仓库里没有的东西：{briefHeadings.join('、')}。
-              {canEdit ? '点击右上角的「编辑」写下它们。' : project.isDemo ? '示例项目不能编辑。' : ''}
+              {canEdit ? '点击「编辑」写下项目要求。' : project.isDemo ? '示例项目不能编辑。' : ''}
             </p>
           </section>
         )}
+        {writingHelp}
       </article>
     </div>
   );
