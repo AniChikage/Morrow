@@ -595,6 +595,20 @@
   font-size: 13px;
   line-height: 1.7;
 }
+/* Reserve space for conflicts so scrolling text and its caret never pass under the notice. */
+.brief-editor-layout {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+.brief-conflict {
+  flex-shrink: 0;
+  align-self: center;
+  width: calc(100% - 48px);
+  max-width: 820px;
+}
 .brief-help {
   margin: 16px 0;
   color: var(--muted);
