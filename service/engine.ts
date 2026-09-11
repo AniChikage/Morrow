@@ -643,12 +643,13 @@ export class Engine {
       }
     });
   }
-  /** The last scheduled turn on this channel, ignoring native chat, App-owned turns and `exceptId`. */
+  /**
+   * The last scheduled turn on this channel, ignoring native chat, App-owned turns and `exceptId`.
+   * Selected in SQL: chat turns on the same channel must not push it out of reach and make the next
+   * turn look like a first turn.
+   */
   previousScheduledRun(channelId: string, exceptId?: string) {
-    return this.store
-      .channelRuns(channelId, 40)
-      .filter((row) => row.id !== exceptId && scheduledRun(row))
-      .at(-1);
+    return this.store.latestScheduledRun({ channelId, exceptId });
   }
   /**
    * Records the project's shared working tree as this turn leaves it, so the next turn of another
@@ -666,15 +667,13 @@ export class Engine {
    * Why this channel must not start now: the shared working tree is dirty and the project's most
    * recent finalized scheduled turn belongs to another channel that left it dirty. The same channel
    * may continue on its own changes, and a tree only a human touched (no scheduled turn recorded it
-   * dirty) never blocks anyone.
+   * dirty) never blocks anyone. That turn is read straight from storage, so no amount of native chat
+   * recorded after it can quietly turn the guard off.
    */
   treeConflict(project: Project, channelId: string) {
     const tree = projectTreeState(project.path);
     if (!tree.dirty) return undefined;
-    const last = this.store
-      .runPage({ projectId: project.id, limit: 40 })
-      .runs.filter((row) => row.treeState && scheduledRun(row))
-      .at(-1);
+    const last = this.store.latestScheduledRun({ projectId: project.id, withTreeState: true });
     if (!last || last.channelId === channelId || !last.treeState!.dirty) return undefined;
     const name = this.store.get<Channel>('channels', last.channelId)?.name || '已移除的频道';
     return {

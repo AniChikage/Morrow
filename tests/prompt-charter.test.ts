@@ -202,6 +202,32 @@ test('a turn that never started, failed or saved no decision cannot be assumed t
   }
 });
 
+test('a busy day of native chat on the channel does not make the next turn forget the previous one', async () => {
+  const s = await setup();
+  try {
+    const first = s.step();
+    assert(first.text.includes(charterMark));
+    // Native chat and App-owned turns are projected onto the same channel as its scheduled turns.
+    // Forty-five of them must not look like "no previous run" and cost a full charter resend.
+    for (let index = 0; index < 45; index++)
+      s.store.put('runs', {
+        ...first.run,
+        id: randomUUID(),
+        source: index % 9 === 0 ? 'native-app' : 'morrow-chat',
+        status: 'completed',
+        finishedAt: now(),
+        summary: `原生对话轮次 ${index}`,
+      });
+    assert(!s.store.channelRuns(s.ids.channelId, 40).some((row) => row.id === first.run.id));
+    const next = s.turn();
+    assert(!next.text.includes(charterMark));
+    assert(next.text.includes(noteMark));
+    assert.equal(s.channel().promptCharter!.turnsSince, 2);
+  } finally {
+    await s.cleanup();
+  }
+});
+
 test('the board digest lists open items compactly and only expands the ones a turn must react to', async () => {
   const s = await setup(0);
   try {
