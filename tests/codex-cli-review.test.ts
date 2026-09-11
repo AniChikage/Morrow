@@ -15,6 +15,24 @@ const runner = (maxBytes?: number) =>
     env: { ...process.env, MORROW_SECRET_GRANT: 'must-not-leak', CODEX_APP_TOOLS_PIPE_PATH: '/private/app.sock' },
     maxBytes,
   });
+/**
+ * The pid of the CLI the fixture started. `writeFileSync` creates the file before it holds the pid,
+ * so a test that only waits for the path can read `''`, and `process.kill(0, 0)` addresses this
+ * process group instead of a dead CLI — it never throws. Waiting for the digits reads the real pid.
+ */
+const ownedPid = (pidFile: string, timeoutMs = 5000) =>
+  until(() => {
+    const text = existsSync(pidFile) ? readFileSync(pidFile, 'utf8').trim() : '';
+    return /^[0-9]+$/.test(text) ? Number(text) : 0;
+  }, timeoutMs);
+const gone = (pid: number) => {
+  try {
+    process.kill(pid, 0);
+    return false;
+  } catch {
+    return true;
+  }
+};
 async function run(mode: string, maxBytes?: number) {
   const observations: ReviewObservation[] = [];
   const r = runner(maxBytes).start({
@@ -53,12 +71,12 @@ test('review cancellation stops only the owned CLI and the worker deadline indep
         timeoutMs: deadline ? 600 : 5000,
         observe: (o) => observations.push(o),
       });
-      await until(() => existsSync(pidFile), 4000, 20);
-      const pid = Number(readFileSync(pidFile, 'utf8'));
+      const pid = await ownedPid(pidFile, 4000);
       if (!deadline) execution.cancel();
       await execution.done;
       assert.equal(observations.at(-1)!.status, 'failed');
-      assert.throws(() => process.kill(pid, 0));
+      // The kill is bounded, not instant: the CLI may still be on its way out when `done` resolves.
+      await until(() => gone(pid), 5000);
     }
   } finally {
     rmSync(root, { recursive: true, force: true });
@@ -71,21 +89,9 @@ test('a killed service cannot leave its review CLI running', async () => {
   const code = `const {CodexCliReviewRunner}=await import(${JSON.stringify(module)}); await new CodexCliReviewRunner({executable:()=>${JSON.stringify(executable)}}).start({cwd:${JSON.stringify(root)},prompt:${JSON.stringify(JSON.stringify({ mode: 'hang', pidFile }))},timeoutMs:10000,observe:()=>{}}).done;`;
   const parent = spawn(process.execPath, ['--input-type=module', '-e', code], { stdio: 'ignore' });
   try {
-    await until(() => existsSync(pidFile), 5000, 20);
-    const pid = Number(readFileSync(pidFile, 'utf8'));
+    const pid = await ownedPid(pidFile);
     parent.kill('SIGKILL');
-    await until(
-      () => {
-        try {
-          process.kill(pid, 0);
-          return false;
-        } catch {
-          return true;
-        }
-      },
-      5000,
-      20
-    );
+    await until(() => gone(pid), 5000);
   } finally {
     parent.kill('SIGKILL');
     rmSync(root, { recursive: true, force: true });

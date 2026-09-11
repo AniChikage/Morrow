@@ -20,6 +20,11 @@ export type IsolatedOptions = {
   home?: string;
   /** The build this service should report as the one it runs; a dev identity is derived otherwise. */
   identity?: BuildIdentity;
+  /**
+   * `false` stops the daemon's own one-second loop, here and after every `restart()`, for a test that
+   * drives each step itself. Nothing else changes: every gate still runs when the test calls it.
+   */
+  scheduler?: boolean;
 };
 export type IsolatedService = Service & {
   /** Temporary directory holding `home` (unless supplied) and the project directory `path`. */
@@ -38,6 +43,17 @@ export type IsolatedService = Service & {
 };
 
 const origin = (port: number) => `http://127.0.0.1:${port}`;
+
+/**
+ * Stops the daemon's own one-second loop, the way the acceptance fixture does. A test that drives the
+ * engine itself (`engine.tick()`, `loop.tick()`, `loop.poll()`, `verification.start()`) then sees no
+ * turn, review or poll start at a moment it did not ask for, which a busy machine would otherwise
+ * make a coin flip. It removes no gate: the tick only decides when the same code runs.
+ */
+export function stopScheduler(service: Pick<Service, 'engine'>) {
+  if (service.engine.timer) clearInterval(service.engine.timer);
+  service.engine.timer = undefined;
+}
 
 /**
  * One Morrow service on a temporary data directory with a temporary project directory. Nothing here
@@ -59,14 +75,17 @@ export async function startIsolated(options: IsolatedOptions = {}): Promise<Isol
     typeof options.nativeTransport === 'function'
       ? options.nativeTransport({ root, home, path })
       : options.nativeTransport;
-  const start = () =>
-    startServer({
+  const start = async () => {
+    const service = await startServer({
       home,
       port: 0,
       nativeTransport: transport,
       reviewTransport: transport,
       ...(options.identity ? { identity: options.identity } : {}),
     });
+    if (options.scheduler === false) stopScheduler(service);
+    return service;
+  };
   let current = await start();
   const token = readFileSync(join(home, 'token'), 'utf8');
   const api: Api = async (method, url, body, status = 200, auth = token) => {

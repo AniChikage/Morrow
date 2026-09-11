@@ -135,7 +135,10 @@ if ! git -C "$MORROW_PROJECT_PATH" cat-file -e "$COMMIT^{commit}" 2>/dev/null; t
   exit 1
 fi
 
-# 3. Build and test that exact commit in a throwaway detached worktree, never the live checkout.
+# 3. Build and test that exact commit in a throwaway detached worktree, never the live checkout. A
+#    release runs on whatever else the machine is doing, so the service tests run one file at a time
+#    (`--test-concurrency=1`): the gate must fail on the build, not on parallel timing. `npm test`
+#    puts the file list first, where a later flag is ignored, so the runner is called directly.
 TEMP_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/morrow-release-XXXXXX")"
 WORKTREE="$TEMP_ROOT/source"
 gate "创建临时工作树" git -C "$MORROW_PROJECT_PATH" worktree add --detach "$WORKTREE" "$COMMIT"
@@ -147,7 +150,7 @@ fi
 
 gate "安装依赖 npm ci" in_worktree npm ci
 gate "类型检查 npm run typecheck" in_worktree npm run typecheck
-gate "服务测试 npm test" in_worktree npm test
+gate "服务测试 node --test（串行）" in_worktree bash -c '"$0" --test --test-concurrency=1 tests/*.test.ts' "$NODE_BIN"
 gate "打包 npm run build:app" in_worktree npm run build:app
 gate "安装到 ~/Applications" in_worktree bash scripts/install-app.sh
 INSTALLED_BUNDLE="$HOME/Applications/Morrow.app"

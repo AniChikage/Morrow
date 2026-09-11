@@ -24,6 +24,9 @@ async function fixture() {
       goal: '让一次多事项发布只付一次复核',
       files: { 'release.txt': 'build one\n', 'checks.log': '2 tests passed\n' },
     },
+    // Every review here is started by `settle`, so the daemon's one-second tick must not start a
+    // queued one first: a review it picks up finishes and finalizes on its own schedule.
+    scheduler: false,
   });
   s.engine.loop.verification.connect(reviewer, (v) => v);
   const grant = grantFor(s, {

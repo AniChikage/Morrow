@@ -61,7 +61,9 @@ export async function startReleaseFixture(
     // The release gate needs one execution capture, which needs a native task and turn to bind to.
     overrides: { sessionId: 'isolated-test', nativeTurnId: 'isolated-turn' },
   });
-  const call = (operation: string, input: unknown, requestId = randomUUID(), expected = 200) =>
+  // `requestId` is annotated because `randomUUID()` narrows it to its template-literal type, which no
+  // longer accepts the plain `string` every caller (and `ReleaseFixture['call']`) passes.
+  const call = (operation: string, input: unknown, requestId: string = randomUUID(), expected = 200) =>
     grant.call(operation, input, expected, requestId);
   // Every project file has to exist before the review passes: a later write changes the source
   // fingerprint and `release.propose` would then reject for a stale verification.

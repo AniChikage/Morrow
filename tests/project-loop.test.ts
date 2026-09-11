@@ -14,7 +14,12 @@ import { startReceiver } from './harness/receiver.ts';
 async function setup() {
   const receiver = await startReceiver({ feedback: { activation: 0.2 } });
   const remoteURL = receiver.url;
-  const s = await startIsolated({ project: { name: '闭环验收', goal: '持续改善首次使用体验' } });
+  // Every step below is driven explicitly (`loop.tick`, `loop.poll`, `verification.start`), so the
+  // daemon's one-second tick must not start a queued review or a scheduled turn in between.
+  const s = await startIsolated({
+    project: { name: '闭环验收', goal: '持续改善首次使用体验' },
+    scheduler: false,
+  });
   await s.api(
     'POST',
     '/api/channels',
