@@ -195,17 +195,19 @@ export class UpgradeManager {
    * button never becomes a way to interrupt a turn.
    */
   restart(input: Record<string, any>): UpgradeState {
-    let active = this.record();
-    if (!active) {
-      // A retry of a switch this same boot failed at: the bundle and identity are checked again.
-      const failed = this.latest();
-      if (failed?.phase === 'blocked' && failed.fromBootId === this.identity.bootId) {
-        if (failed.targetFingerprint === this.identity.fingerprint)
-          throw new APIError(409, '已在运行该版本，无需再次切换');
-        active = this.save({ ...failed, phase: 'draining', error: undefined, blockers: [] });
-      }
-    }
-    const row = this.handshake(input, active);
+    const active = this.record();
+    // A retry of a switch this same boot failed at: identity and target are checked again first, so
+    // a mismatched request cannot revive a request nobody is driving.
+    const failed = !active ? this.latest() : undefined;
+    const retry =
+      failed?.phase === 'blocked' && failed.fromBootId === this.identity.bootId
+        ? this.handshake(input, failed)
+        : undefined;
+    if (retry && retry.targetFingerprint === this.identity.fingerprint)
+      throw new APIError(409, '已在运行该版本，无需再次切换');
+    const row = retry
+      ? this.save({ ...retry, phase: 'draining', error: undefined, blockers: [] })
+      : this.handshake(input, active);
     if (this.exiting || row.phase === 'exiting') return this.state();
     const blockers = this.blockers();
     if (blockers.length)

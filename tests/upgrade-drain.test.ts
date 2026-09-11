@@ -262,6 +262,12 @@ test('a failed handover keeps its reason and can be retried by hand without anot
     // A blocked switch no longer holds back work: the refusals are lifted.
     assert.equal(s.engine.upgrade.draining(), false);
     await s.api('POST', `/api/channels/${s.channel.id}/action`, { action: 'pause' });
+    // A retry naming another version or another boot cannot revive a request nobody is driving.
+    const mismatch = await s.api('POST', '/api/upgrade/restart', { ...body, targetFingerprint: 'f'.repeat(64) }, 409);
+    assert.match(mismatch.error, /目标版本/);
+    await s.api('POST', '/api/upgrade/restart', { ...body, fromBootId: 'other-boot' }, 409);
+    assert.equal(record(fixture).phase, 'blocked');
+    assert.equal(s.engine.upgrade.draining(), false);
     // Retrying re-checks identity and target rather than running the release script again.
     const retried = await s.api('POST', '/api/upgrade/restart', body);
     assert.equal(retried.upgrade.phase, 'exiting');
