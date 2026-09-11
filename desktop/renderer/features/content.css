@@ -201,7 +201,8 @@
 }
 .finding-row {
   display: grid;
-  grid-template-columns: 16px 48px minmax(130px, 1fr) 48px 100px 30px;
+  /* The owner cell is always present, empty while nobody is responsible, so rows stay aligned. */
+  grid-template-columns: 16px 48px minmax(130px, 1fr) 48px 100px 92px 30px;
   align-items: center;
   gap: 9px;
   width: 100%;
@@ -1256,7 +1257,8 @@
     gap: 8px;
   }
   .finding-id,
-  .finding-kind {
+  .finding-kind,
+  .finding-owner {
     display: none;
   }
   .finding-channel {
@@ -1404,6 +1406,20 @@
   text-overflow: ellipsis;
   white-space: nowrap;
   color: #83848d;
+}
+/* Which channel is responsible for an item; the same muted, compact tag as the source label. */
+.feature-owner-tag {
+  display: inline-block;
+  max-width: 130px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11px;
+  color: #83848d;
+}
+.feature-owner-select {
+  width: 100%;
+  font-size: 12px;
 }
 .feature-contributor-link {
   display: block;

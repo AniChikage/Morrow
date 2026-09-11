@@ -77,7 +77,11 @@ export async function measurePrompts(): Promise<Measurement> {
 const project = (s: { store: any; project: Project }) => s.store.get('projects', s.project.id) as Project;
 const channel = (s: { store: any; channel: Channel }) => s.store.get('channels', s.channel.id) as Channel;
 
-/** Items with realistic field lengths: the first is human-created, the second the previous run touched. */
+/**
+ * Items with realistic field lengths: the first is human-created, the second the previous run
+ * touched, and every unresolved one is this channel's responsibility, the way a working board looks
+ * after the channel advanced them.
+ */
 export function seedBoard(
   s: { store: any; project: Project; channel: Channel },
   count: number,
@@ -86,10 +90,12 @@ export function seedBoard(
   const time = now();
   const items: WorkItem[] = [];
   for (let index = 0; index < count; index++) {
+    const resolved = index % 5 === 4;
     const item: WorkItem = {
       id: `prompt-size-item-${index}`,
       projectId: s.project.id,
       origin: index === 0 ? 'human' : 'agent',
+      ...(resolved ? {} : { ownerChannelId: s.channel.id }),
       number: index + 1,
       channelId: s.channel.id,
       sourceChannelIds: [s.channel.id],
@@ -97,7 +103,7 @@ export function seedBoard(
       revision: index + 1,
       title: filler(`事项 ${index + 1}`, 40),
       summary: filler(`事项 ${index + 1} 摘要`, 380),
-      status: index % 5 === 4 ? 'resolved' : index % 3 === 0 ? 'investigating' : 'open',
+      status: resolved ? 'resolved' : index % 3 === 0 ? 'investigating' : 'open',
       kind: index % 4 === 0 ? 'issue' : index % 3 === 0 ? 'hypothesis' : 'feature',
       evidence: Array.from({ length: 4 }, (_, e) => filler(`[evidence-${index}-${e}] 观测`, 90)),
       nextStep: filler(`事项 ${index + 1} 下一步`, 300),

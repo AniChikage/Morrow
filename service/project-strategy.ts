@@ -562,6 +562,9 @@ export class ProjectStrategy {
       if (active.some((r) => r.channelId === channel.id))
         throw new APIError(409, '先复盘本频道上次的选择，再建立下一次行动');
       const item = this.loop.item(scope, input.itemId);
+      // Choosing an action on an item is advancing it: only this channel's or an unowned item, and
+      // an unowned one becomes this channel's responsibility.
+      if (item) this.loop.requireOwner(scope, item);
       if (item && active.some((r) => r.itemId === item.id))
         throw new APIError(409, '另一个频道正在推进这个 feature，请先协调已有行动');
       if (!Array.isArray(input.options) || !input.options.length || input.options.length > 6)
@@ -633,6 +636,7 @@ export class ProjectStrategy {
       ];
       this.checkpoint('decision', row);
       this.prepare(this.store.get<Run>('runs', scope.runId)!);
+      if (item) this.loop.assign(scope, item);
       this.loop.audit(scope, 'decision.chosen', `选择下一步：${options[selected].title}`, item?.id, row);
       return this.decisionView(row, scope.runId);
     }

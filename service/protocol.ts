@@ -114,6 +114,13 @@ export type WorkItem = {
   number: number;
   /** Who opened the item. Older rows are inferred once from their `item.created` audit event. */
   origin?: 'human' | 'agent';
+  /**
+   * The channel responsible for this item right now; absent means 无人负责. A channel claims an
+   * unowned item by advancing it through the work interface and releases it once it is resolved; a
+   * human assigns or releases it through `PATCH /api/items/:id`. Only the owner (or nobody) may
+   * advance it, so two channels of one project cannot work on the same item.
+   */
+  ownerChannelId?: string;
   channelId: string;
   sourceChannelIds: string[];
   lastRunId: string;
@@ -127,8 +134,16 @@ export type WorkItem = {
   createdAt: string;
   updatedAt: string;
 };
+/**
+ * What one scheduled turn left in the project's shared working tree, read with `git status` when the
+ * turn is finalized. `unknown` marks a reading that could not be taken (no repository, git failure),
+ * which never blocks another channel.
+ */
+export type TreeState = { dirty: boolean; files: string[]; unknown?: boolean };
 export type Run = {
   workDirection?: string;
+  /** The working tree as this turn left it; absent on rows written before it was recorded. */
+  treeState?: TreeState;
   id: string;
   projectId: string;
   channelId: string;

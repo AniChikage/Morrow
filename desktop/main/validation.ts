@@ -127,7 +127,7 @@ export function channelInput(value: unknown): CreateChannel {
   if (!result.name || !result.goal || !result.runtime) throw new Error('请填写频道名称、目标和运行引擎。');
   return { ...result, projectId: id(projectId) } as CreateChannel;
 }
-const itemKeys = ['title', 'summary', 'kind', 'status', 'evidence', 'nextStep', 'revision'];
+const itemKeys = ['title', 'summary', 'kind', 'status', 'evidence', 'nextStep', 'revision', 'ownerChannelId'];
 export function itemPatch(value: unknown): ItemPatch {
   const data = record(value, itemKeys),
     result: ItemPatch = {};
@@ -141,11 +141,18 @@ export function itemPatch(value: unknown): ItemPatch {
     result.evidence = data.evidence.map((value) => text(value, '证据', 5000));
   }
   if (data.revision !== undefined) result.revision = integer(data.revision, 1, Number.MAX_SAFE_INTEGER);
+  // `null` releases the item to 无人负责; a channel id assigns it. Absent leaves the owner untouched.
+  if (Object.hasOwn(data, 'ownerChannelId'))
+    result.ownerChannelId = data.ownerChannelId === null ? null : id(data.ownerChannelId);
   if (!Object.keys(result).some((key) => key !== 'revision')) throw new Error('请至少修改一个功能字段。');
   return result;
 }
 export function itemInput(value: unknown): CreateItem {
-  const data = record(value, ['projectId', 'channelId', ...itemKeys.filter((key) => key !== 'revision')]);
+  const data = record(value, [
+    'projectId',
+    'channelId',
+    ...itemKeys.filter((key) => !['revision', 'ownerChannelId'].includes(key)),
+  ]);
   const { projectId, channelId, ...fields } = data;
   const result = itemPatch(fields);
   if (!result.title) throw new Error('请填写功能标题。');

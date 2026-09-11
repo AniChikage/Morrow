@@ -775,7 +775,7 @@ export async function startServer(
       }
       const itemMatch = path.match(/^\/api\/items\/([^/]+)$/);
       if (req.method === 'PATCH' && itemMatch) {
-        keys(data, ['status', 'title', 'summary', 'kind', 'evidence', 'nextStep', 'revision']);
+        keys(data, ['status', 'title', 'summary', 'kind', 'evidence', 'nextStep', 'revision', 'ownerChannelId']);
         const item = store.get<WorkItem>('items', itemMatch[1]);
         if (!item) throw new APIError(404, '事项不存在');
         if (
@@ -783,9 +783,17 @@ export async function startServer(
           integer(data.revision, 'revision', 1, Number.MAX_SAFE_INTEGER) !== item.revision
         )
           throw new APIError(409, '事项已被更新，请刷新后再保存');
+        // The human decides responsibility: `null` releases it, and reassigning an item a channel
+        // currently owns is allowed. `undefined` leaves the current owner untouched.
+        const assigning = Object.hasOwn(data, 'ownerChannelId');
+        const ownerChannelId =
+          !assigning || data.ownerChannelId === null ? undefined : string(data.ownerChannelId, 'ownerChannelId', 100);
+        if (ownerChannelId && store.get<Channel>('channels', ownerChannelId)?.projectId !== item.projectId)
+          throw new APIError(404, '负责频道不属于该项目');
         const updated = {
           ...item,
           ...itemFields(data, item),
+          ...(assigning ? { ownerChannelId } : {}),
           revision: item.revision + 1,
           updatedAt: now(),
         };
@@ -801,6 +809,19 @@ export async function startServer(
             before: item,
             after: updated,
           });
+          if (assigning && ownerChannelId !== item.ownerChannelId)
+            engine.audit({
+              projectId: item.projectId,
+              channelId: ownerChannelId || item.channelId,
+              itemId: item.id,
+              actor: 'human',
+              action: 'item.assigned',
+              text: ownerChannelId
+                ? `事项 #${item.number}「${updated.title}」分派给频道「${engine.loop.channelName(ownerChannelId)}」。`
+                : `事项 #${item.number}「${updated.title}」已改为无人负责。`,
+              before: { ownerChannelId: item.ownerChannelId ?? null },
+              after: { ownerChannelId: ownerChannelId ?? null },
+            });
         });
         respond(res, 200, updated);
         return;

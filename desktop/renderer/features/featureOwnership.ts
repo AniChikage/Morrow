@@ -9,6 +9,15 @@ export function featureSourceLabel(item: WorkItem, channels: Channel[]): string 
   if (!item.channelId) return '手动创建';
   return channels.find((channel) => channel.id === item.channelId)?.name || '来源频道已移除';
 }
+/** The channel responsible for the item right now, when it is still one of this workspace's channels. */
+export function featureOwner(item: WorkItem, channels: Channel[]): Channel | undefined {
+  return item.ownerChannelId ? channels.find((channel) => channel.id === item.ownerChannelId) : undefined;
+}
+/** Short owner label for a board row: empty when nobody is responsible (无人负责). */
+export function featureOwnerLabel(item: WorkItem, channels: Channel[]): string {
+  if (!item.ownerChannelId) return '';
+  return featureOwner(item, channels)?.name || '已移除的频道';
+}
 export function featureNumber(item: WorkItem): string {
   return item.number ? `#${item.number}` : item.id.slice(0, 6).toUpperCase();
 }

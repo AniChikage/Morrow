@@ -18,7 +18,13 @@ import type { Channel, WorkItem } from '../../shared/types';
 import type { FeatureProps } from './types';
 import { Button, EmptyState, IconButton, Markdown, PropertyPanel, StatusIcon } from '../components/ui';
 import { formatDate, kindLabel, statusLabel } from '../components/format';
-import { featureNumber, featureProjectId, featureSourceIds, featureSourceLabel } from './featureOwnership';
+import {
+  featureNumber,
+  featureOwnerLabel,
+  featureProjectId,
+  featureSourceIds,
+  featureSourceLabel,
+} from './featureOwnership';
 import { ProjectRecords } from './ProjectRecords';
 import { ProjectReleases, ProjectThinking } from './ProjectWork';
 import { ProjectBrief } from './ProjectBrief';
@@ -421,6 +427,7 @@ export function ProjectView(props: FeatureProps & { id: string }) {
                               {item.channelId ? '# ' : ''}
                               {featureSourceLabel(item, channels)}
                             </span>
+                            <FeatureOwnerTag item={item} channels={channels} />
                             <span>
                               <Link2 size={12} />
                               {item.evidence.length}
@@ -550,6 +557,7 @@ export function FindingRow({
   channels?: Channel[];
   onClick: () => void;
 }) {
+  const ownerLabel = featureOwnerLabel(item, channels);
   return (
     <button className="finding-row" onClick={onClick} title={item.title}>
       <StatusIcon status={item.status} />
@@ -559,11 +567,24 @@ export function FindingRow({
       <span className="finding-channel feature-source-tag" title={`来源：${featureSourceLabel(item, channels)}`}>
         {featureSourceLabel(item, channels)}
       </span>
+      <span className="finding-owner feature-owner-tag" title={ownerLabel ? `负责频道：${ownerLabel}` : undefined}>
+        {ownerLabel ? `负责 ${ownerLabel}` : ''}
+      </span>
       <span className="finding-evidence">
         <Link2 size={12} />
         {item.evidence.length}
       </span>
     </button>
+  );
+}
+/** Which channel is responsible for this item; nothing at all while nobody is. */
+export function FeatureOwnerTag({ item, channels }: { item: WorkItem; channels: Channel[] }) {
+  const owner = featureOwnerLabel(item, channels);
+  if (!owner) return null;
+  return (
+    <span className="feature-owner-tag" title={`负责频道：${owner}`}>
+      负责 {owner}
+    </span>
   );
 }
 export function Property({ label, children }: { label: string; children: ReactNode }) {

@@ -157,6 +157,8 @@ export interface WorkItem {
   number?: number;
   /** Who opened the item; absent on rows written before it was recorded. */
   origin?: 'human' | 'agent';
+  /** The channel responsible for the item right now; absent means 无人负责. */
+  ownerChannelId?: string;
   sourceChannelIds?: string[];
   lastRunId?: string;
   revision?: number;
@@ -173,6 +175,8 @@ export interface WorkItem {
 }
 export interface Run {
   log?: import('../../service/run-log').RunLog;
+  /** The shared working tree as the turn left it; absent on rows written before it was recorded. */
+  treeState?: { dirty: boolean; files: string[]; unknown?: boolean };
   projectId?: string;
   model?: string;
   permission?: Channel['permission'] | 'native';
@@ -297,7 +301,10 @@ export interface CreateItem {
 }
 export type ItemPatch = Partial<
   Pick<WorkItem, 'title' | 'summary' | 'kind' | 'status' | 'evidence' | 'nextStep' | 'revision'>
->;
+> & {
+  /** Assign the item to a channel of the same project, or `null` to leave it 无人负责. */
+  ownerChannelId?: string | null;
+};
 export interface RunsQuery {
   projectId?: string;
   channelId?: string;

@@ -345,13 +345,15 @@ test('shared feature ownership prevents duplicate work and relevant feedback wak
     const scope = s.engine.loop.authenticate(`Bearer ${secret.token}`);
     const context = s.engine.loop.context(scope, {});
     assert.equal(context.strategy.decisions.length, 1);
+    // The first channel's own decision made it responsible for the item, so another channel is
+    // refused by ownership before the duplicate-action guard is even reached.
     await assert.rejects(
       s.engine.loop.call(scope, {
         operation: 'decision.choose',
         input: { ...s.decisionInput, objectiveVersion: context.strategy.objective.version, itemId: item.id },
         requestId: randomUUID(),
       }),
-      /另一个频道/
+      /由频道「自主推进」负责；只能推进分派给本频道或无人负责的事项/
     );
     s.engine.setControl(s.channel.id, { enabled: true });
     s.store.put('channels', { ...s.channel, nextRunAt: future() });

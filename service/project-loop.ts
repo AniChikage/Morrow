@@ -202,7 +202,7 @@ const workContract = {
     'understanding.upsert':
       '{id?, revision?(更新必需), kind:fact|assumption|unknown|capability|constraint, title, statement, relevance, verification, status:active|invalidated|retired, evidenceIds:[], reviewAt:ISO时间}；只保存影响决策的认识，事实与推翻需证据；沿用旧 ID 保留版本。verification 写明如何复查，过期认识需要更新后才能成为行动依据。',
     'decision.choose':
-      '{objectiveVersion:strategy.objective.version, options:[{title,kind:act|investigate|build_capability|observe|stop,benefit,cost,uncertainty}], selected:从0开始的索引, rationale, nextStep, expectedOutcome, evaluation, stopWhen, expectations:[{id,kind:outcome|guardrail,claim,scope,source:{kind:file,path}|{kind:watch,watchId}|{kind:execution,command},verification,disconfirm,notBefore?:ISO时间,deadline:ISO时间,rule?:{pointer:JSON-Pointer,operator:gte|lte|equals,expected:标量},measurement?:{metric,goalRelation,limitation,comparison:absolute|delta,baseline:{evidenceId}|{unavailable:具体原因},freshness:{pointer:原数据ISO时间字段,maxAgeSeconds:1..2592000},checks:[{label,pointer,operator:gte|lte|equals,expected:标量}]}}], understandingRefs:[{id,revision}], memoryRefs?:[{kind:understanding|decision|learning,id,revision,use:apply|adapt|avoid|not_applicable,reason}], evidenceIds:[], watchIds:[], reviewAt:ISO时间, maxRuns:1..32, itemId?}；expectations 需要 1..8 项，至少一项 outcome；stop 可为空。事先约定观察的实际文件（可以尚未创建）或现有 watch，以及适用对象/版本、验证办法、反证和观察期限。notBefore 默认选择时刻；需要等样本成熟时明确设置。测试/构建使用 execution 来源并先 execution.prepare，rule 核对 /exitCode equals 0；watch 证据保存完整 HTTP JSON 响应，rule.pointer 从原始响应字段开始，例如 /checkStatus，不会包装成 /value；其他可核对数值用 rule，定性结果省略 rule 并说明验证办法；不能虚构量化收益。观测业务或运行指标时一起设计 measurement：metric 写清单位与分母/统计口径，goalRelation 说明与目标的关系，limitation 记录代理指标局限；checks 需要 1..8 项与本项目相关的数据质量条件（如足够样本、完整采集、同一人群或版本），用字段规则而非主观声明。baseline 引用选择前同一来源的最新真实证据；没有基线写 unavailable 并先补齐能力。absolute 核对原值，delta 核对原值减基线（非相对百分比）；delta 没有合格基线不能得到确定结果，原基线不得事后补写。freshness 从原始数据时间算起，采集时间不能冒充数据时间。将不能牺牲的目标条件列为 guardrail。原始预期不可修改，变更口径需复盘后建立新行动并说明差异。每频道一个选择，不重复占用 feature；参考经验保存版本与适用理由。',
+      '{objectiveVersion:strategy.objective.version, options:[{title,kind:act|investigate|build_capability|observe|stop,benefit,cost,uncertainty}], selected:从0开始的索引, rationale, nextStep, expectedOutcome, evaluation, stopWhen, expectations:[{id,kind:outcome|guardrail,claim,scope,source:{kind:file,path}|{kind:watch,watchId}|{kind:execution,command},verification,disconfirm,notBefore?:ISO时间,deadline:ISO时间,rule?:{pointer:JSON-Pointer,operator:gte|lte|equals,expected:标量},measurement?:{metric,goalRelation,limitation,comparison:absolute|delta,baseline:{evidenceId}|{unavailable:具体原因},freshness:{pointer:原数据ISO时间字段,maxAgeSeconds:1..2592000},checks:[{label,pointer,operator:gte|lte|equals,expected:标量}]}}], understandingRefs:[{id,revision}], memoryRefs?:[{kind:understanding|decision|learning,id,revision,use:apply|adapt|avoid|not_applicable,reason}], evidenceIds:[], watchIds:[], reviewAt:ISO时间, maxRuns:1..32, itemId?}；expectations 需要 1..8 项，至少一项 outcome；stop 可为空。事先约定观察的实际文件（可以尚未创建）或现有 watch，以及适用对象/版本、验证办法、反证和观察期限。notBefore 默认选择时刻；需要等样本成熟时明确设置。测试/构建使用 execution 来源并先 execution.prepare，rule 核对 /exitCode equals 0；watch 证据保存完整 HTTP JSON 响应，rule.pointer 从原始响应字段开始，例如 /checkStatus，不会包装成 /value；其他可核对数值用 rule，定性结果省略 rule 并说明验证办法；不能虚构量化收益。观测业务或运行指标时一起设计 measurement：metric 写清单位与分母/统计口径，goalRelation 说明与目标的关系，limitation 记录代理指标局限；checks 需要 1..8 项与本项目相关的数据质量条件（如足够样本、完整采集、同一人群或版本），用字段规则而非主观声明。baseline 引用选择前同一来源的最新真实证据；没有基线写 unavailable 并先补齐能力。absolute 核对原值，delta 核对原值减基线（非相对百分比）；delta 没有合格基线不能得到确定结果，原基线不得事后补写。freshness 从原始数据时间算起，采集时间不能冒充数据时间。将不能牺牲的目标条件列为 guardrail。原始预期不可修改，变更口径需复盘后建立新行动并说明差异。每频道一个选择，不重复占用 feature；参考经验保存版本与适用理由。itemId 只能是分派给本频道或无人负责的事项，选择行动即接手；别的频道负责的事项不要改动。',
     'decision.review':
       '{id,revision,outcome:improved|not_improved|inconclusive|abandoned,conclusion,evidenceIds:[],nextDirection,assessment:{results:[{expectationId,verdict:met|not_met|unknown,reason,evidenceIds:[]}],conditions:matched|changed|unknown,conditionReason,diagnosis:expected|pending|measurement|execution|assumption|environment|uncertain,explanation,adjustment:continue|observe|measurement|method|assumption|stop,understandingRefs?:[{id,revision}]}}；新行动必须逐项核对全部 expectations。引用约定来源、观察窗口内的新证据，包含最新观察，旧基线和 agent 陈述不能证明效果。rule 由系统核对实际 JSON 字段；缺字段/类型不符为 unknown。条件不可比、数据未到或采集故障用 inconclusive；全部预期和 guardrail 有证据支持才可 improved。原因不明可以明确 uncertain，观测到变化不等于因果已证明。诊断记录应区分执行、假设、环境与观测问题；adjustment=assumption 时先用 understanding.upsert 保存新认识/修订，再引用准确版本。旧行动无 evaluationVersion 时仍按旧格式复盘，不伪造事前预期。',
     'observation.read':
@@ -214,7 +214,7 @@ const workContract = {
     'memory.read':
       '{kind:understanding|decision|learning,id,beforeRevision?}；读取完整记录及分页版本历史。只读，无需 requestId。',
     'feature.upsert':
-      '{id?, revision?(更新必需), title, summary, kind:feature|issue|opportunity|hypothesis, status:open|investigating|verified|resolved|blocked, evidenceIds:[], nextStep}；同一 feature 沿用 ID，引用真实证据。',
+      '{id?, revision?(更新必需), title, summary, kind:feature|issue|opportunity|hypothesis, status:open|investigating|verified|resolved|blocked, evidenceIds:[], nextStep}；同一 feature 沿用 ID，引用真实证据。只推进 ownerChannelId 为本频道或为空的事项；别的频道负责的事项不要改动，可以在正文提出建议。写入无人负责的事项即接手（ownerChannelId 记为本频道），resolved 后自动交回无人负责，blocked 保留负责频道。',
     'evidence.record': '{itemId?, summary, source, observedAt, data?}；记录为 agent 陈述，不能伪装为系统观测。',
     'evidence.capture': '{itemId?, summary, path}；读取项目内实际文件，保存内容与 SHA256，可用于测试日志或分析数据。',
     'evidence.read':
@@ -397,6 +397,56 @@ export class ProjectWorkLoop {
     if (!item || item.projectId !== scope.projectId) throw new APIError(404, 'feature 不属于当前项目');
     return item;
   }
+  /** The channel name an ownership message names; a removed channel still produces a readable refusal. */
+  channelName(channelId: string) {
+    return this.store.get<Channel>('channels', channelId)?.name || '已移除的频道';
+  }
+  /** Channel id → name for one project, so an id in a record can be named without another read. */
+  channelNames(projectId: string): Record<string, string> {
+    return Object.fromEntries(
+      this.store
+        .all<Channel>('channels')
+        .filter((row) => row.projectId === projectId)
+        .map((row) => [row.id, row.name])
+    );
+  }
+  /** Refuses a work-interface write on an item another channel of this project is responsible for. */
+  requireOwner(scope: Scope, item: WorkItem) {
+    if (item.ownerChannelId && item.ownerChannelId !== scope.channelId)
+      throw new APIError(
+        409,
+        `事项 #${item.number} 由频道「${this.channelName(item.ownerChannelId)}」负责；只能推进分派给本频道或无人负责的事项`
+      );
+  }
+  /**
+   * Item ownership (事项归属) after this channel advanced `item` to `status`: an unowned item becomes
+   * this channel's, a resolved one is released, and anything else (including `blocked`) keeps the
+   * owner it has. An item another channel is responsible for is refused, so two channels of one
+   * project never advance the same item. Reads are never affected, and the human assignment route
+   * can override any of this. The caller stores the returned owner; `assign` writes it for an
+   * operation that does not write the item row itself.
+   */
+  owner(scope: Scope, item: WorkItem, status = item.status): string | undefined {
+    this.requireOwner(scope, item);
+    const next = status === 'resolved' ? undefined : item.ownerChannelId || scope.channelId;
+    if (next !== item.ownerChannelId)
+      this.audit(
+        scope,
+        next ? 'item.claimed' : 'item.released',
+        next ? `#${item.number}「${item.title}」由本频道负责` : `#${item.number}「${item.title}」已解决，交回无人负责`,
+        item.id,
+        { ownerChannelId: next ?? null },
+        // Morrow assigns responsibility as a consequence of the write; the write itself is audited
+        // separately as the agent's, and a human assignment is audited as the human's.
+        'system'
+      );
+    return next;
+  }
+  /** `owner`, for an operation whose own write does not carry the item row. Keeps `revision` untouched. */
+  assign(scope: Scope, item: WorkItem) {
+    const next = this.owner(scope, item);
+    if (next !== item.ownerChannelId) this.store.put('items', { ...item, ownerChannelId: next });
+  }
   refs(scope: Scope, ids: unknown) {
     const result = list(ids, 'evidenceIds');
     for (const id of result)
@@ -467,6 +517,8 @@ export class ProjectWorkLoop {
         briefRevision: project.briefRevision || 0,
       },
       channel: { id: channel.id, goal: channel.goal },
+      // `features[].ownerChannelId` and other channels' records carry ids; this maps them to names.
+      channelNames: this.channelNames(project.id),
       budget: this.usage?.budgetContext(project, channel),
       strategy: this.strategy.context(scope, item?.id),
       learningCoverage: {
@@ -541,7 +593,13 @@ export class ProjectWorkLoop {
     const { project } = this.scope(scope);
     const time = now();
     if (operation === 'execution.prepare') return this.executions.prepare(scope, input);
-    if (operation === 'verification.request') return this.verification.request(scope, input);
+    if (operation === 'verification.request') {
+      // Requesting a review of an item is advancing it, so the same ownership rule applies here.
+      // Internal requests (a deferred `feature.upsert`/`decision.review` completion) already own it.
+      const item = input.itemId === undefined ? undefined : this.item(scope, input.itemId, false);
+      if (item) this.assign(scope, item);
+      return this.verification.request(scope, input);
+    }
     if (operation === 'verification.retry') return this.verification.retry(scope, input);
     if (['understanding.upsert', 'decision.choose', 'decision.review'].includes(operation))
       return this.strategy.mutate(scope, operation, input);
@@ -556,6 +614,7 @@ export class ProjectWorkLoop {
     if (operation === 'feature.upsert') {
       keys(input, ['id', 'revision', 'title', 'summary', 'kind', 'status', 'evidenceIds', 'nextStep']);
       const old = input.id ? this.item(scope, input.id, false) : undefined;
+      if (old) this.requireOwner(scope, old);
       if (old && input.revision !== old.revision) throw new APIError(409, 'feature 已更新，请读取最新版本再合并');
       const evidenceIds = this.refs(scope, input.evidenceIds || []);
       const title = text(input.title, 'title', 300);
@@ -577,6 +636,7 @@ export class ProjectWorkLoop {
         id: old?.id || base.id,
         projectId: project.id,
         origin: old?.origin || 'agent',
+        ...(old?.ownerChannelId ? { ownerChannelId: old.ownerChannelId } : {}),
         number: old?.number || this.store.nextItemNumber(project.id),
         channelId: old?.channelId || scope.channelId,
         sourceChannelIds: [...new Set([...(old?.sourceChannelIds || []), scope.channelId])],
@@ -642,6 +702,10 @@ export class ProjectWorkLoop {
             });
           }
         }
+        // The stored status is what ownership follows: a deferred completion keeps the item claimed.
+        const responsible = this.owner(scope, old ?? item, item.status);
+        if (responsible) item.ownerChannelId = responsible;
+        else delete item.ownerChannelId;
         this.store.put('items', item);
         this.audit(
           scope,
@@ -659,6 +723,8 @@ export class ProjectWorkLoop {
           kind: item.kind,
           status: item.status,
           title: item.title,
+          // Who is responsible now: this channel after a claim, `null` once the item was released.
+          ownerChannelId: item.ownerChannelId ?? null,
           ...(verification
             ? { verificationId: verification.id, pendingVerification: item.status === 'investigating' }
             : {}),

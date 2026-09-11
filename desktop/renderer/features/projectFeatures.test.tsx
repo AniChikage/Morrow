@@ -353,6 +353,45 @@ describe('manual feature details and audit', () => {
     expect(screen.getByText('查看变更').parentElement?.hasAttribute('open')).toBe(true);
   });
 
+  it('names the channel responsible for a feature on the board and lets a person assign or release it', async () => {
+    const user = userEvent.setup();
+    const state = snapshot();
+    state.items = [item({ projectId: 'project-atlas', ownerChannelId: 'channel-growth' })];
+    const { props, api } = featureProps({ snapshot: state });
+    const board = render(<ProjectView {...props} id="project-atlas" />, { wrapper: TestProviders });
+    // Both board layouts show the responsible channel as one small chip.
+    expect(screen.getAllByTitle('负责频道：运营洞察')).toHaveLength(1);
+    await user.click(screen.getByRole('button', { name: '切换为列表' }));
+    expect(screen.getAllByTitle('负责频道：运营洞察')).toHaveLength(1);
+    board.unmount();
+    render(<FindingView {...props} id="finding-import" />, { wrapper: TestProviders });
+    expect(screen.getByTitle('负责频道：运营洞察')).toBeTruthy();
+    const select = screen.getByRole('combobox', { name: '分派给频道' }) as HTMLSelectElement;
+    expect(select.value).toBe('channel-growth');
+    expect([...select.options].map((option) => option.textContent)).toEqual(['无人负责', '系统完善', '运营洞察']);
+    await user.selectOptions(select, 'channel-system');
+    await waitFor(() =>
+      expect(api.patchItem).toHaveBeenCalledWith('finding-import', { ownerChannelId: 'channel-system' })
+    );
+    await user.selectOptions(select, '');
+    await waitFor(() => expect(api.patchItem).toHaveBeenCalledWith('finding-import', { ownerChannelId: null }));
+  });
+
+  it('leaves an unowned feature without a chip and keeps a removed owner readable', async () => {
+    const state = snapshot();
+    state.items = [item({ projectId: 'project-atlas' })];
+    const { props } = featureProps({ snapshot: state });
+    const view = render(<FindingView {...props} id="finding-import" />, { wrapper: TestProviders });
+    expect(screen.queryByTitle(/负责频道/)).toBeNull();
+    expect((screen.getByRole('combobox', { name: '分派给频道' }) as HTMLSelectElement).value).toBe('');
+    props.snapshot.items[0].ownerChannelId = 'channel-removed';
+    view.rerender(<FindingView {...props} id="finding-import" />);
+    expect(screen.getByTitle('负责频道：已移除的频道')).toBeTruthy();
+    const select = screen.getByRole('combobox', { name: '分派给频道' }) as HTMLSelectElement;
+    expect(select.value).toBe('channel-removed');
+    expect(select.selectedOptions[0].textContent).toBe('已移除的频道');
+  });
+
   it('keeps local audit visible and exposes retry if an older remote service cannot load audit', async () => {
     const state = snapshot();
     state.events = [

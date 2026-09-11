@@ -96,6 +96,8 @@ MORROW_HOME="$HOME/.local/share/morrow" npm start
 
 同一项目目录的责任轮次串行执行，并等待已绑定原生任务空闲。每日上限按 UTC 日界计算，已启动的失败/中断轮次也计数；普通对话和外部 App 轮次不消耗编排预算。配置范围为每天 1–100 轮、复查间隔 1–1440 分钟。
 
+一个项目的多个频道共享同一个看板和同一个工作目录，因此有两条分工护栏。**事项归属**：`items` 行新增可选 `ownerChannelId`（缺省为无人负责）。频道通过工作接口推进无人负责的事项即接手（`feature.upsert`、带 `itemId` 的 `decision.choose` 与 `verification.request`，审计 `item.claimed`）；事项存为 `resolved` 时交回（审计 `item.released`），`blocked` 保留负责频道；对别的频道负责的事项执行这三种写操作返回 409，读取和补充证据/经验/观测不受限制。人用 `PATCH /api/items/:id` 的 `ownerChannelId`（同项目频道或 `null`）分派或收回，可覆盖 agent 当前归属，审计 `item.assigned`。**未提交改动隔离**：每个结束的编排轮次在 `runs` 行记录可选 `treeState`（`git status --porcelain` 读出的 `dirty` 与最多 50 个相对路径；无仓库或读取失败记 `unknown`，只读，不执行任何改动仓库的 git 命令）。工作树当前有改动、且项目最近一次结束的编排轮次属于别的频道并记录了 `dirty` 时，该频道不开始：自动调度置 `waiting` 并按复查间隔重试，只写一条系统事件；人工「运行一次」和「持续运行」返回 409 且带同一句说明。同一频道可以在自己的改动上继续；只有人改动的工作树不阻断任何频道。看板摘要会标注负责频道，轮次提示会列出未提交改动的文件。
+
 每日上限之后还有额度门禁：全局的「保留给自己的额度」按共享后台读到的精确账户用量判断，项目的「额度上限」按 Morrow 归因到该项目的轮次估算判断。达到任一条时，新的自动轮次和独立复核不再发起（频道 `waiting`，`nextRunAt` 取窗口重置时间或下一个 UTC 日，写一条系统事件，不计入运行次数；排队中的复核保留 `queued` 并按 `retryAt` 重试），手动运行返回 429。读数不可用时默认放行，设置 `stopWhenUsageUnknown` 后阻断并每 10 分钟重试；进行中的轮次不打断，普通对话不受影响。读数与限制通过 `context.budget` 和每轮的轮次提示提供给 Codex。
 
 有界 CLI 子进程路径只在 `MORROW_TEST_MODE=1` 下作为测试夹具通道可达：单轮超时 15 分钟，stdout/stderr 合计上限 20 MiB，组装提示上限 1 MiB；这些子进程限制不套用到共享 Codex App 轮次。暂停原生自动工作只中断属于该责任轮次的精确 turn ID。
@@ -152,6 +154,7 @@ MORROW_HOME="$HOME/.local/share/morrow" npm start
 | `GET /api/projects/:id/work` | 项目工作记录，可通过 `itemId` 限定事项。 |
 | `GET /api/projects/:id/brief` | 项目目标与用户写下的项目说明及其版本；`/api/state` 只带版本号不带正文。 |
 | `PATCH /api/projects/:id` | `{goal?, brief?, revision}` 修改目标或项目说明，版本不符返回 409；每次保存写入版本记录与审计，并要求进行中的判断重新评估。 |
+| `PATCH /api/items/:id` | `{status?, title?, summary?, kind?, evidence?, nextStep?, revision?, ownerChannelId?}`；`ownerChannelId` 取同项目频道 ID 或 `null`（无人负责），可覆盖 agent 当前归属，写 `item.assigned` 审计；其他频道不属于该项目返回 404。 |
 | `GET /api/settings`、`PATCH /api/settings` | 全局设置：`{usageReserve?: {window:'5h'\|'weekly', keepPercent:1–99} \| null, stopWhenUsageUnknown?: boolean}`；首次读取时创建默认行，改动写审计。 |
 | `PATCH /api/projects/:id/usage-budget` | `{usageBudget: {window, limitPercent:1–100} \| null}` 设置或清除项目额度上限（归因估算）；示例项目返回 409。 |
 | `GET /api/projects/:id/usage` | 最近账户读数与是否过期、是否尝试过读取（`attempted`）与最近一次失败原因（`lastError`，已脱敏、最多 200 字）、适用的保留线与项目上限、本项目在窗口内的估算用量，以及当前门禁判断。 |
