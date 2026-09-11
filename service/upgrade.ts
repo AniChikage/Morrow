@@ -1,4 +1,5 @@
 import { realpathSync } from 'node:fs';
+import { APIError, keys, string } from './protocol.ts';
 import { now } from './store.ts';
 import type { Store } from './store.ts';
 import { buildIdentity, isCommit, isFingerprint, unknownFingerprint } from './build-identity.ts';
@@ -73,6 +74,14 @@ export class UpgradeManager {
   identity: UpgradeIdentity;
   /** Real work in progress right now, as the engine sees it. Empty means idle. */
   blockersOf: () => UpgradeBlocker[] = () => [];
+  /**
+   * Installed by the server: stop accepting requests, drain through the normal close path, release
+   * the lock and leave with `upgradeExitCode`. Absent (a service embedded in a test) keeps the
+   * record at `exiting` and changes nothing else.
+   */
+  beginExit?: (record: UpgradeRecord) => void;
+  /** Set the moment this daemon decided to leave, before the phase is written. */
+  exiting = false;
   constructor(store: Store, dataDirectory: string, identity?: BuildIdentity) {
     this.store = store;
     this.identity = { ...(identity ?? buildIdentity()), dataDirectory };
@@ -93,6 +102,130 @@ export class UpgradeManager {
   }
   blockers(): UpgradeBlocker[] {
     return this.blockersOf();
+  }
+  /**
+   * True from the moment a switch is requested until a new daemon runs the new build: new work is
+   * refused, work already running is left alone. Every entry point checks this synchronously, so
+   * nothing can start between the last idle check and the exit.
+   */
+  draining(): boolean {
+    return !!this.record();
+  }
+  /** The sentence a refused entry point carries, so a 409 names the switch instead of failing blankly. */
+  refusal(action: string): string {
+    const row = this.record();
+    return `${row?.phase === 'exiting' ? '正在切换到新版本' : '新版本已安装，正在等待当前工作结束后切换'}；${action}`;
+  }
+  /** Refuses one entry point while a switch is on its way. Reads, answers and pause are never refused. */
+  require(action: string) {
+    if (this.draining()) throw new APIError(409, this.refusal(action));
+  }
+  /**
+   * One step of the switch, driven by the engine's scheduler. It moves a fresh request into
+   * draining, records the blockers once the reminder deadline has passed, and — only when the work
+   * is really finished and the local Electron main has taken over — asks the server to step aside.
+   * It never interrupts, signals or kills anything.
+   */
+  tick() {
+    if (this.exiting) return;
+    let row = this.record();
+    if (!row) return;
+    if (row.phase === 'pending') row = this.save({ ...row, phase: 'draining' });
+    if (row.phase === 'exiting') return;
+    const blockers = this.blockers();
+    if (blockers.length) {
+      const due = Date.parse(row.requestedAt) + upgradeReminderMs <= Date.now();
+      const changed = JSON.stringify(row.blockers ?? []) !== JSON.stringify(blockers);
+      const stale = !row.remindedAt || Date.parse(row.remindedAt) + reminderRefreshMs <= Date.now();
+      // The deadline only makes the waiting visible; the switch keeps waiting for real idleness.
+      if (due && (changed || stale)) this.save({ ...row, blockers, remindedAt: now() });
+      return;
+    }
+    if (row.blockers?.length) row = this.save({ ...row, blockers: [] });
+    // Without a local app that took over, the daemon stays pending rather than leaving nobody to
+    // start its replacement. The next time a person opens Morrow, the handover continues.
+    if (!row.acknowledgedAt) return;
+    this.beginExitNow(row);
+  }
+  /**
+   * The final idle check and the decision to leave, with no await between them: `exiting` is set
+   * before the phase is written and before the server is asked to close, so a publication or turn
+   * cannot slip in after the check.
+   */
+  beginExitNow(row: UpgradeRecord): UpgradeRecord | undefined {
+    if (this.exiting || this.blockers().length) return undefined;
+    this.exiting = true;
+    const updated = this.store.transaction(() => this.save({ ...row, phase: 'exiting', blockers: [] }));
+    try {
+      this.beginExit?.(updated);
+    } catch (error) {
+      this.exiting = false;
+      return this.save({
+        ...updated,
+        phase: 'blocked',
+        error: `准备退出失败：${error instanceof Error ? error.message : '未知原因'}`,
+      });
+    }
+    return updated;
+  }
+  /**
+   * The request one handshake call is about. Both routes carry the boot they were issued for and the
+   * target they mean; a call from another boot, or about another version, changes nothing.
+   */
+  private handshake(input: Record<string, any>, row: UpgradeRecord | undefined): UpgradeRecord {
+    keys(input, ['fromBootId', 'targetFingerprint']);
+    const fromBootId = string(input.fromBootId, 'fromBootId', 200);
+    const targetFingerprint = string(input.targetFingerprint, 'targetFingerprint', 200);
+    if (!row) throw new APIError(409, '当前没有待切换的新版本');
+    if (fromBootId !== this.identity.bootId || fromBootId !== row.fromBootId)
+      throw new APIError(409, '切换握手来自其他启动实例，已拒绝；请重新读取当前状态');
+    if (targetFingerprint !== row.targetFingerprint)
+      throw new APIError(409, '切换握手的目标版本与已安装版本不一致，已拒绝');
+    return row;
+  }
+  /** The local Electron main verified identity and target and will restart itself: it may now leave. */
+  acknowledge(input: Record<string, any>): UpgradeState {
+    const row = this.handshake(input, this.record());
+    if (!row.acknowledgedAt) this.save({ ...row, acknowledgedAt: now() });
+    return this.state();
+  }
+  /**
+   * The same handshake, requested early from the interface. Idempotent: while the daemon is already
+   * leaving it just reports that, and while real work is running it refuses and names it, so the
+   * button never becomes a way to interrupt a turn.
+   */
+  restart(input: Record<string, any>): UpgradeState {
+    let active = this.record();
+    if (!active) {
+      // A retry of a switch this same boot failed at: the bundle and identity are checked again.
+      const failed = this.latest();
+      if (failed?.phase === 'blocked' && failed.fromBootId === this.identity.bootId) {
+        if (failed.targetFingerprint === this.identity.fingerprint)
+          throw new APIError(409, '已在运行该版本，无需再次切换');
+        active = this.save({ ...failed, phase: 'draining', error: undefined, blockers: [] });
+      }
+    }
+    const row = this.handshake(input, active);
+    if (this.exiting || row.phase === 'exiting') return this.state();
+    const blockers = this.blockers();
+    if (blockers.length)
+      throw new APIError(
+        409,
+        `仍有工作在进行，不会中断：${blockers.map((blocker) => blocker.label).join('、')}。工作结束后会自动切换。`
+      );
+    this.beginExitNow(row.acknowledgedAt ? row : this.save({ ...row, acknowledgedAt: now() }));
+    return this.state();
+  }
+  /** The local Electron main could not complete the handover; the reason is kept for the interface. */
+  blocked(input: Record<string, any>): UpgradeState {
+    keys(input, ['fromBootId', 'targetFingerprint', 'reason']);
+    const reason = string(input.reason, 'reason', 500);
+    const row = this.handshake(
+      { fromBootId: input.fromBootId, targetFingerprint: input.targetFingerprint },
+      this.record()
+    );
+    this.save({ ...row, phase: 'blocked', error: reason });
+    return this.state();
   }
   state(): UpgradeState {
     const blockers = this.blockers();

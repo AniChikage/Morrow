@@ -290,6 +290,8 @@ export class WorkVerification {
     }
   }
   request(scope: Scope, input: Record<string, unknown>): Verification {
+    // No new review starts while a version switch is waiting; a queued one still runs to completion.
+    this.loop.upgrade?.require('切换完成后再发起独立复核，已排队的复核会照常完成');
     if (input.kind !== undefined && choice(input.kind, 'kind', ['item', 'release'] as const) === 'release')
       return this.requestRelease(scope, input);
     keys(input, ['kind', 'itemId', 'decisionId', 'evidenceIds']);
@@ -485,6 +487,7 @@ file/agent 证据可能由执行者生成，只证明采集了该内容，不证
   }
   retry(scope: Scope, input: Record<string, unknown>) {
     keys(input, ['id']);
+    this.loop.upgrade?.require('切换完成后再重试复核，原记录保持不变');
     this.loop.scope(scope);
     const row = this.loop.store.get<Verification>('loop_verifications', string(input.id, 'id', 200));
     if (row?.projectId !== scope.projectId) throw new APIError(404, '复核不属于当前项目');

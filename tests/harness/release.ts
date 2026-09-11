@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
-import { copyFileSync, readFileSync, writeFileSync } from 'node:fs';
+import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
@@ -10,6 +11,7 @@ import { grantFor } from './grant.ts';
 import type { Grant } from './grant.ts';
 import { startReceiver } from './receiver.ts';
 import type { BuildIdentity } from '../../service/build-identity.ts';
+import type { Release } from '../../service/autonomy-types.ts';
 
 /** `TMPDIR` is the one optional key: passed through when the service has one, absent when it does not. */
 export const releaseEnvKeys = [
@@ -149,6 +151,54 @@ export async function startReleaseFixture(
       await s.close();
       await receiver.close();
       await s.cleanup();
+    },
+  };
+}
+export type InstalledFixture = {
+  s: ReleaseFixture;
+  /** The `.app` this service believes it runs from; it really exists, as it does after an install. */
+  bundlePath: string;
+  identity: BuildIdentity;
+  /** Publishes one `local-script` release, passing `args` through to the fixture script. */
+  publishLocal: (args: string[], title?: string) => Promise<Release>;
+  /** Publishes a release whose receipt reports installing `fingerprint` over this service's bundle. */
+  install: (fingerprint: string, commit?: string, title?: string) => Promise<Release>;
+  cleanup: () => Promise<void>;
+};
+/**
+ * A release fixture whose service believes it runs from `<temp>/Morrow.app`, the way an installed
+ * daemon does, so a receipt can legitimately describe installing over its own bundle. The directory
+ * really exists, so bundle paths are compared by their real path. Nothing is built or installed.
+ */
+export async function startInstalledFixture(
+  options: { fingerprint?: string; bootId?: string; commit?: string } = {}
+): Promise<InstalledFixture> {
+  const install = mkdtempSync(join(tmpdir(), 'morrow-install-'));
+  const bundlePath = join(install, 'Morrow.app');
+  mkdirSync(join(bundlePath, 'Contents', 'Resources'), { recursive: true });
+  const identity: BuildIdentity = {
+    bootId: options.bootId || 'boot-under-test',
+    commit: options.commit || 'd'.repeat(40),
+    version: '0.9.6',
+    fingerprint: options.fingerprint || 'a'.repeat(64),
+    bundlePath,
+  };
+  const s = await startReleaseFixture({ identity });
+  const publishLocal = async (args: string[], title = '安装当前提交') => {
+    const release = await s.call('release.propose', { ...s.local(args), title });
+    await s.approve(release);
+    return s.engine.loop.release(release.id);
+  };
+  return {
+    s,
+    bundlePath,
+    identity,
+    publishLocal,
+    install: (fingerprint, commit = 'c'.repeat(40), title = '安装新版本') =>
+      publishLocal(['publish', bundlePath, fingerprint, commit], title),
+    cleanup: async () => {
+      await s.cleanup();
+      rmSync(install, { recursive: true, force: true });
     },
   };
 }

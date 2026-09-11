@@ -11,49 +11,15 @@ import {
   readBuildInfo,
   validBuildInfo,
 } from '../service/build-identity.ts';
-import type { BuildIdentity } from '../service/build-identity.ts';
 import type { UpgradeRecord } from '../service/upgrade.ts';
-import { startReleaseFixture } from './harness/release.ts';
+import { startInstalledFixture, startReleaseFixture } from './harness/release.ts';
 import type { ReleaseFixture } from './harness/release.ts';
 
 const running = 'a'.repeat(64);
 const installed = 'b'.repeat(64);
 const targetCommit = 'c'.repeat(40);
 
-/**
- * A service that believes it runs from `<temp>/Morrow.app`, the way an installed daemon does. The
- * directory really exists so the bundle path is compared by its real path, as it is after an install
- * replaced it. Nothing is built, installed, signed or restarted.
- */
-async function installedService(fingerprint = running) {
-  const install = mkdtempSync(join(tmpdir(), 'morrow-install-'));
-  const bundlePath = join(install, 'Morrow.app');
-  mkdirSync(join(bundlePath, 'Contents', 'Resources'), { recursive: true });
-  const identity: BuildIdentity = {
-    bootId: 'boot-under-test',
-    commit: 'd'.repeat(40),
-    version: '0.9.6',
-    fingerprint,
-    bundlePath,
-  };
-  const s = await startReleaseFixture({ identity });
-  return {
-    s,
-    bundlePath,
-    identity,
-    cleanup: async () => {
-      await s.cleanup();
-      rmSync(install, { recursive: true, force: true });
-    },
-  };
-}
 const upgrades = (s: ReleaseFixture) => s.store.all<UpgradeRecord>('upgrades');
-/** Publishes one `local-script` release whose receipt carries the given build identity fields. */
-async function publish(s: ReleaseFixture, args: string[], title = '安装当前提交') {
-  const release = await s.call('release.propose', { ...s.local(args), title });
-  await s.approve(release);
-  return s.engine.loop.release(release.id);
-}
 
 test('build identity derives an installed bundle from its own module path and never trusts a broken build-info', () => {
   const bundle = '/Users/someone/Applications/Morrow.app';
@@ -98,9 +64,9 @@ test('build identity derives an installed bundle from its own module path and ne
 });
 
 test('a published receipt for this daemon own bundle records one pending switch and runs nothing', async () => {
-  const { s, bundlePath, identity, cleanup } = await installedService();
+  const { s, bundlePath, identity, publishLocal, cleanup } = await startInstalledFixture();
   try {
-    const row = await publish(s, ['publish', bundlePath, installed, targetCommit]);
+    const row = await publishLocal(['publish', bundlePath, installed, targetCommit]);
     assert.equal(row.status, 'published');
     assert.equal(row.installedBundle, bundlePath);
     assert.equal(row.buildFingerprint, installed);
@@ -145,18 +111,18 @@ test('a published receipt for this daemon own bundle records one pending switch 
 });
 
 test('a receipt that installed another bundle, over HTTP, or without a usable identity requests nothing', async () => {
-  const { s, bundlePath, cleanup } = await installedService();
+  const { s, bundlePath, publishLocal, cleanup } = await startInstalledFixture();
   try {
     // The same script path, the same project: only the bundle it reports installing is different.
-    const other = await publish(s, ['publish', join(bundlePath, '..', 'Other.app'), installed], '别处的安装');
+    const other = await publishLocal(['publish', join(bundlePath, '..', 'Other.app'), installed], '别处的安装');
     assert.equal(other.status, 'published');
     assert.equal(other.installedBundle, join(bundlePath, '..', 'Other.app'));
     assert.deepEqual(upgrades(s), []);
     // A receipt with no build identity at all is an ordinary publication.
-    assert.equal((await publish(s, ['publish'], '没有运行指纹')).buildFingerprint, undefined);
+    assert.equal((await publishLocal(['publish'], '没有运行指纹')).buildFingerprint, undefined);
     assert.deepEqual(upgrades(s), []);
     // Unusable values are not even stored, so they can never be compared against a running build.
-    const malformed = await publish(s, ['publish', 'Applications/Morrow.app', 'not-a-fingerprint'], '无效字段');
+    const malformed = await publishLocal(['publish', 'Applications/Morrow.app', 'not-a-fingerprint'], '无效字段');
     assert.equal(malformed.installedBundle, undefined);
     assert.equal(malformed.buildFingerprint, undefined);
     assert.deepEqual(upgrades(s), []);
@@ -178,15 +144,27 @@ test('a receipt that installed another bundle, over HTTP, or without a usable id
 });
 
 test('the same target is requested once, and a build reinstalled over itself is already applied', async () => {
-  const { s, bundlePath, cleanup } = await installedService();
+  const { s, bundlePath, publishLocal, cleanup } = await startInstalledFixture();
   try {
-    const first = await publish(s, ['publish', bundlePath, installed, targetCommit], '第一次安装');
+    const first = await publishLocal(['publish', bundlePath, installed, targetCommit], '第一次安装');
     const record = upgrades(s)[0];
     assert.equal(record.phase, 'pending');
-    // A second, identical installation neither duplicates the record nor resets the phase it reached.
+    // A second receipt for the same target neither duplicates the record nor resets the phase it
+    // reached. The receipt is delivered directly because approving another publication while a
+    // switch waits is refused (covered by the draining tests).
     s.store.put('upgrades', { ...record, phase: 'draining', acknowledgedAt: new Date().toISOString() });
-    const again = await publish(s, ['publish', bundlePath, installed, targetCommit], '重复安装');
+    const again = await s.call('release.propose', { ...s.local(), title: '重复安装' });
+    s.store.put('loop_releases', { ...s.engine.loop.release(again.id), status: 'publishing' });
+    s.engine.loop.receipt(again.id, {
+      releaseId: again.id,
+      artifactSha256: again.artifact.sha256,
+      status: 'published',
+      installedBundle: bundlePath,
+      buildFingerprint: installed,
+      commit: targetCommit,
+    });
     assert.notEqual(again.id, first.id);
+    assert.equal(s.engine.loop.release(again.id).status, 'published');
     assert.equal(upgrades(s).length, 1);
     assert.equal(upgrades(s)[0].phase, 'draining');
     assert.equal(upgrades(s)[0].releaseId, first.id);
@@ -196,9 +174,9 @@ test('the same target is requested once, and a build reinstalled over itself is 
 });
 
 test('installing the build that is already running is recorded as applied without any restart', async () => {
-  const { s, bundlePath, cleanup } = await installedService();
+  const { s, bundlePath, publishLocal, cleanup } = await startInstalledFixture();
   try {
-    await publish(s, ['publish', bundlePath, running, targetCommit], '重新安装同一版本');
+    await publishLocal(['publish', bundlePath, running, targetCommit], '重新安装同一版本');
     const [record] = upgrades(s);
     assert.equal(record.phase, 'applied');
     assert.equal(record.targetFingerprint, running);
@@ -215,7 +193,11 @@ test('installing the build that is already running is recorded as applied withou
 test('a development service without a bundle identity never turns an installing receipt into a request', async () => {
   const s = await startReleaseFixture();
   try {
-    const row = await publish(s, ['publish', join(s.root, 'Morrow.app'), installed, targetCommit]);
+    const proposal = await s.call('release.propose', {
+      ...s.local(['publish', join(s.root, 'Morrow.app'), installed, targetCommit]),
+    });
+    await s.approve(proposal);
+    const row = s.engine.loop.release(proposal.id);
     assert.equal(row.status, 'published');
     // The fields are preserved as reported; only this service knows they are not about itself.
     assert.equal(row.installedBundle, join(s.root, 'Morrow.app'));
@@ -231,9 +213,9 @@ test('a development service without a bundle identity never turns an installing 
 });
 
 test('a restart reconciles an unfinished request against the build actually running', async () => {
-  const { s, bundlePath, cleanup } = await installedService();
+  const { s, bundlePath, publishLocal, cleanup } = await startInstalledFixture();
   try {
-    await publish(s, ['publish', bundlePath, installed, targetCommit]);
+    await publishLocal(['publish', bundlePath, installed, targetCommit]);
     const pending = upgrades(s)[0];
     // Still the old build after a restart: the reason is kept and nothing relaunches again.
     const stale = await s.restart();
@@ -255,7 +237,7 @@ test('a restart reconciles an unfinished request against the build actually runn
 });
 
 test('the receipt fields reject an oversized, relative or non-absolute installed bundle', async () => {
-  const { s, bundlePath, cleanup } = await installedService();
+  const { s, bundlePath, publishLocal, cleanup } = await startInstalledFixture();
   try {
     const release = await s.call('release.propose', { ...s.local(), title: '字段校验' }, randomUUID());
     const receipt = (fields: Record<string, unknown>) => {

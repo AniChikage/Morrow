@@ -68,6 +68,8 @@ export class Engine {
   usageBefore = new Map<string, Promise<void>>();
   /** The working-tree wait each channel has already announced, so a repeated tick repeats no event. */
   treeWaits = new Map<string, string>();
+  /** The pending version switch each channel has already announced, for the same reason. */
+  upgradeWaits = new Map<string, string>();
   constructor(store: Store, home: string, token: string, identity?: BuildIdentity) {
     this.store = store;
     this.home = home;
@@ -240,6 +242,7 @@ export class Engine {
   }
   tick() {
     if (this.closed) return;
+    this.upgrade.tick();
     this.loop.tick();
     for (const channel of this.store.all<Channel>('channels')) {
       const control = this.control(channel.id);
@@ -406,6 +409,23 @@ export class Engine {
     if (project.isDemo) throw new APIError(409, '示例项目不能执行');
     if (isLegacyRuntime(channel.runtime)) throw new APIError(409, legacyRuntimeMessage);
     if (this.active.has(id)) throw new APIError(409, '频道正在执行');
+    // A newly installed version is waiting for real idleness. No new turn starts, and nothing already
+    // running is interrupted: a scheduled start parks and re-checks, a person hears why.
+    const upgrade = this.upgrade.record();
+    if (upgrade) {
+      if (humanAction) throw new APIError(409, this.upgrade.refusal('切换完成后会自动继续，请稍后再运行'));
+      this.store.put('channels', {
+        ...channel,
+        status: 'waiting',
+        nextRunAt: new Date(Date.now() + 5000).toISOString(),
+      });
+      // One event per channel per switch: the scheduler re-checks this gate on every tick.
+      if (this.upgradeWaits.get(id) !== upgrade.id) {
+        this.upgradeWaits.set(id, upgrade.id);
+        this.event(id, '', 'system', '新版本已安装，本频道等待当前工作结束后随服务切换，再自动继续。');
+      }
+      return;
+    }
     // A queued/running reviewer owns the frozen project source. Existing
     // reassessment signals must not launch another autonomous turn that can
     // invalidate that source or spend a run just to poll the pending review.

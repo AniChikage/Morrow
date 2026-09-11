@@ -1173,6 +1173,8 @@ export class ProjectWorkLoop {
     if (decision === 'approve' && ['approved', 'publishing', 'published', 'unknown'].includes(row.status)) return row;
     if (decision === 'reject' && row.status === 'rejected') return row;
     if (row.status !== 'awaiting_approval') throw new APIError(409, '该版本已经处理');
+    // A new publication would start work the switch is waiting to finish; declining one never does.
+    if (decision === 'approve') this.upgrade?.require('切换完成后再确认上线，本次确认尚未记录');
     if (decision === 'approve') {
       if (digest(readFileSync(this.artifactPath(id))) !== row.artifact.sha256)
         throw new APIError(409, '封存产物校验失败，需要重新准备发布');
@@ -1207,7 +1209,9 @@ export class ProjectWorkLoop {
     void promise.catch(() => {}).finally(() => this.pending.delete(promise));
   }
   async publish(id: string) {
-    if (this.closed || this.inFlight.has(id)) return;
+    // While a switch is on its way, an approved publication keeps waiting: the new daemon publishes
+    // it after the restart instead of starting a release script that would extend the wait.
+    if (this.closed || this.inFlight.has(id) || this.upgrade?.draining()) return;
     const row = this.release(id);
     if (row.status !== 'approved') return;
     this.inFlight.add(id);
@@ -1472,7 +1476,8 @@ export class ProjectWorkLoop {
   }
   async reconcile(id: string) {
     const row = this.release(id);
-    if (!['unknown', 'publishing'].includes(row.status) || this.inFlight.has(id)) return row;
+    if (!['unknown', 'publishing'].includes(row.status) || this.inFlight.has(id) || this.upgrade?.draining())
+      return row;
     this.inFlight.add(id);
     try {
       if (row.target.kind === 'local-script') return this.receipt(id, await this.localOutcome(row));

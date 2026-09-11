@@ -33,6 +33,8 @@ import { now, Store } from './store.ts';
 import { Engine } from './engine.ts';
 import { buildIdentity } from './build-identity.ts';
 import type { BuildIdentity } from './build-identity.ts';
+import { upgradeExitCode } from './upgrade.ts';
+import type { UpgradeRecord } from './upgrade.ts';
 import { eventHistory, runHistory, runOutput, queryID } from './event-history.ts';
 import { runLog } from './run-log.ts';
 import { discoverRuntimes } from './runtimes.ts';
@@ -122,6 +124,8 @@ export async function startServer(
     reviewRunner?: ReviewRunner;
     /** The build this process runs; read from its own bundle when omitted. */
     identity?: BuildIdentity;
+    /** Called after the close path finished for an automatic version switch; the daemon exits here. */
+    onUpgradeExit?: (code: number, record: UpgradeRecord) => void;
   } = {}
 ) {
   if (
@@ -211,15 +215,23 @@ export async function startServer(
     });
     res.end(JSON.stringify(data).replaceAll(token, '[REDACTED]'));
   };
+  /** Set once this daemon is stepping aside for a new build: no request is accepted after that. */
+  let stopping = false;
   const server = createServer(async (req, res) => {
     try {
       const url = new URL(req.url || '/', `http://127.0.0.1:${port}`);
       const path = url.pathname;
       if (req.method === 'GET' && path === '/health') {
-        respond(res, 200, { ok: true, service: 'morrow' });
+        respond(res, 200, { ok: true, service: 'morrow', ...(stopping ? { upgrade: 'exiting' } : {}) });
         return;
       }
       if (!path.startsWith('/api/')) throw new APIError(404, '接口不存在');
+      // A recognisable answer while the switch completes, so the interface shows the handover rather
+      // than an unexplained server failure.
+      if (stopping) {
+        respond(res, 503, { error: '正在切换到新版本，请稍候重新连接。', code: 'upgrade_exiting' });
+        return;
+      }
       if (req.headers.origin) throw new APIError(403, '不接受浏览器跨域请求');
       if (req.method === 'POST' && path === '/api/agent') {
         const scope = engine.loop.authenticate(req.headers.authorization || '');
@@ -380,10 +392,26 @@ export async function startServer(
         respond(res, 200, engine.loop.scriptText(scriptMatch[1]));
         return;
       }
+      // The handshake: only the desktop credential reaches it, it carries the boot it was issued for
+      // and the version it means, and it is idempotent. The work grant can never trigger a restart.
+      const upgradeMatch = path.match(/^\/api\/upgrade\/(acknowledge|restart|blocked)$/);
+      if (req.method === 'POST' && upgradeMatch) {
+        respond(
+          res,
+          200,
+          upgradeMatch[1] === 'acknowledge'
+            ? engine.upgrade.acknowledge(data)
+            : upgradeMatch[1] === 'restart'
+              ? engine.upgrade.restart(data)
+              : engine.upgrade.blocked(data)
+        );
+        return;
+      }
       const reviewMatch = path.match(/^\/api\/releases\/([^/]+)\/(review|reconcile)$/);
       if (req.method === 'POST' && reviewMatch) {
         if (reviewMatch[2] === 'reconcile') {
           keys(data, []);
+          engine.upgrade.require('切换完成后再核对发布结果，记录保持不变');
           respond(res, 200, await engine.loop.reconcile(reviewMatch[1]));
         } else {
           keys(data, ['reviewHash', 'decision', 'feedback']);
@@ -463,6 +491,9 @@ export async function startServer(
           return;
         }
         if (req.method === 'POST' && action === 'messages') {
+          // A chat message starts a native turn. Answers to the task's own questions, interrupts and
+          // reads stay available while a switch waits.
+          engine.upgrade.require('切换完成后再发送消息；当前的提问答复与中断仍可使用');
           keys(data, ['text', 'requestId', 'attachments']);
           if (
             typeof data.text !== 'string' ||
@@ -897,6 +928,25 @@ export async function startServer(
     store.close();
     release();
   };
+  /**
+   * Stepping aside for a build already installed over this bundle: stop accepting requests, let the
+   * ones in flight finish (bounded, then dropped), run the normal close path so persisted work,
+   * receipts and the lock are all released, and only then leave with the dedicated exit code. The
+   * record is already `exiting` before this runs, so a new daemon knows what happened either way.
+   */
+  engine.upgrade.beginExit = (record) => {
+    stopping = true;
+    void (async () => {
+      const drained = new Promise<void>((resolve) => server.close(() => resolve()));
+      server.closeIdleConnections();
+      await Promise.race([drained, new Promise<void>((resolve) => setTimeout(resolve, 5000).unref())]);
+      server.closeAllConnections();
+      await close();
+      options.onUpgradeExit?.(upgradeExitCode, record);
+    })().catch((error) => {
+      console.error(engine.redact(`upgrade exit failed: ${error instanceof Error ? error.message : String(error)}`));
+    });
+  };
   return {
     server,
     store,
@@ -1015,7 +1065,9 @@ function createDemo(store: Store, engine: Engine) {
   });
 }
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  startServer()
+  // The one place a Morrow process leaves for a newly installed build: after the close path above,
+  // with a dedicated exit code, so the Electron main can tell a switch from a crash.
+  startServer({ onUpgradeExit: (code) => process.exit(code) })
     .then((service) => {
       console.log(`Morrow listening on http://127.0.0.1:${service.port}`);
       let closing = false;
