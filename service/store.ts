@@ -4,6 +4,9 @@ import { chmodSync, readFileSync, statSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import type { Channel, Event, EventDetail, Project, Run, RunIO, WorkItem } from './protocol.ts';
 export const now = () => new Date().toISOString();
+/** A Morrow-orchestrated turn, as opposed to native chat or a turn the App itself started. */
+const scheduledSource =
+  "(json_extract(data,'$.source') IS NULL OR json_extract(data,'$.source') IN ('morrow-schedule','nohuman-schedule'))";
 export class Store {
   db: DatabaseSync;
   transactionDepth = 0;
@@ -224,13 +227,42 @@ export class Store {
       .map((r: any) => JSON.parse(r.data))
       .reverse();
   }
+  /**
+   * The latest Morrow-orchestrated turn matching the filter, selected in SQL instead of by filtering
+   * a page of recent runs: native chat and App-owned turns share this table, so any fixed page can
+   * push the scheduled turn a guard depends on out of sight. `withTreeState` keeps only the finalized
+   * turns that recorded the working tree, `exceptId` skips the caller's own run.
+   */
+  latestScheduledRun(filter: {
+    projectId?: string;
+    channelId?: string;
+    exceptId?: string;
+    withTreeState?: boolean;
+  }): Run | undefined {
+    const conditions = [scheduledSource];
+    const values: string[] = [];
+    for (const key of ['projectId', 'channelId'] as const)
+      if (filter[key]) {
+        conditions.push(`json_extract(data,'$.${key}')=?`);
+        values.push(filter[key]!);
+      }
+    if (filter.exceptId) {
+      conditions.push('id<>?');
+      values.push(filter.exceptId);
+    }
+    if (filter.withTreeState) conditions.push("json_type(data,'$.treeState')='object'");
+    const row = this.db
+      .prepare(`SELECT data FROM runs WHERE ${conditions.join(' AND ')} ORDER BY rowid DESC LIMIT 1`)
+      .get(...values) as { data: string } | undefined;
+    return row ? (JSON.parse(row.data) as Run) : undefined;
+  }
   runCount(channelId: string, day: string): number {
     return (
       Number(
         (
           this.db
             .prepare(
-              "SELECT COUNT(*) AS count FROM runs WHERE json_extract(data,'$.channelId')=? AND substr(json_extract(data,'$.startedAt'),1,10)=? AND (json_extract(data,'$.source') IS NULL OR json_extract(data,'$.source') IN ('morrow-schedule','nohuman-schedule'))"
+              `SELECT COUNT(*) AS count FROM runs WHERE json_extract(data,'$.channelId')=? AND substr(json_extract(data,'$.startedAt'),1,10)=? AND ${scheduledSource}`
             )
             .get(channelId, day) as any
         ).count

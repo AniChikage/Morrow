@@ -135,6 +135,69 @@ test('a channel waits out uncommitted changes another channel left, and starts o
   }
 });
 
+test('native chat turns piling up after a dirty scheduled turn neither free the tree nor survive a restart', async () => {
+  const s = await setup();
+  try {
+    writeFileSync(join(s.path, 'source.js'), 'export const value = 2;\n');
+    const left = s.finish(s.channel.id, 'thread-a');
+    assert.deepEqual(left.treeState, { dirty: true, files: ['source.js'] });
+    // Native chat and App-owned turns are projected into the same table as scheduled turns. Fifty of
+    // them push channel A's turn off any fixed page of the project's recent runs, which must not be
+    // what stops the shared tree from being guarded.
+    for (let index = 0; index < 50; index++)
+      s.store.put('runs', {
+        ...left,
+        id: randomUUID(),
+        channelId: index % 2 ? s.second.id : s.channel.id,
+        source: index % 10 === 0 ? 'morrow-chat' : 'native-app',
+        treeState: undefined,
+        summary: `原生对话轮次 ${index}`,
+      });
+    const page = s.store.runPage({ projectId: s.project.id, limit: 40 });
+    assert(page.hasMore);
+    assert(!page.runs.some((row) => row.id === left.id));
+    const message = '工作树有频道「自主推进」未提交的改动（1 个文件），等待其提交或清理后再开始';
+    assert.equal(s.engine.treeConflict(s.projectRow(), s.second.id)?.message, message);
+    // The scheduled start still parks with its own event, and a person still gets the reason.
+    s.engine.setControl(s.second.id, { enabled: true });
+    await s.engine.start(s.second.id, true);
+    assert.equal(s.channelRow(s.second.id).status, 'waiting');
+    assert.equal(s.waits(s.second.id).length, 1);
+    assert.equal(s.waits(s.second.id)[0].text, `${message}。`);
+    assert.equal(
+      (await s.api('POST', `/api/channels/${s.second.id}/action`, { action: 'resume' }, 409)).error,
+      message
+    );
+    const scheduled = (store: typeof s.store) =>
+      store.all<Run>('runs').filter((row) => row.channelId === s.second.id && row.source === 'morrow-schedule');
+    assert.equal(scheduled(s.store).length, 0);
+    // Chat turns on channel A do not make it forget that the uncommitted changes are its own either.
+    assert(s.engine.prompt(s.projectRow(), s.channelRow(s.channel.id)).includes('这是本频道上一轮留下的'));
+    assert(!s.engine.prompt(s.projectRow(), s.channelRow(s.second.id)).includes('这是本频道上一轮留下的'));
+    // The gap does not open after a restart: the guard reads the stored turn, not a page of it.
+    const restarted = await s.restart();
+    const project = () => restarted.store.get<Project>('projects', s.project.id)!;
+    assert.equal(restarted.engine.treeConflict(project(), s.second.id)?.message, message);
+    assert.equal(restarted.engine.treeConflict(project(), s.channel.id), undefined);
+    // Committing channel A's work is still what frees the tree, with all those rows in place.
+    git(s.path, 'add', '-A');
+    git(s.path, 'commit', '-q', '-m', 'channel A commits its work');
+    assert.equal(restarted.engine.treeConflict(project(), s.second.id), undefined);
+    restarted.engine.setControl(s.second.id, { enabled: true });
+    await restarted.engine.start(s.second.id, true);
+    const started = scheduled(restarted.store);
+    assert.equal(started.length, 1);
+    assert.equal(started[0].status, 'running');
+    // A turn recorded before runs carried a `source` is a scheduled turn too, and still blocks.
+    writeFileSync(join(s.path, 'source.js'), 'export const value = 3;\n');
+    restarted.store.put('runs', { ...left, id: randomUUID(), source: undefined, finishedAt: now() });
+    assert.equal(restarted.engine.treeConflict(project(), s.second.id)?.message, message);
+    assert.equal(restarted.engine.treeConflict(project(), s.channel.id), undefined);
+  } finally {
+    await s.cleanup();
+  }
+});
+
 test('a tree only a human touched blocks nobody, and an unreadable reading blocks nobody either', async () => {
   const s = await setup();
   try {
