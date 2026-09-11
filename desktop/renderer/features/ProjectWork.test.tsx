@@ -1170,3 +1170,42 @@ it('the compact item summary shows the latest item review with stale conditions 
   expect(disclosure.open).toBe(true);
   expect(JSON.stringify(f.data.verifications)).toBe(original);
 });
+
+it('labels preserved native tool receipts separately from execution evidence', async () => {
+  const f = fixture();
+  f.data.releases = [];
+  f.data.evidence[0] = {
+    ...f.data.evidence[0],
+    origin: 'native',
+    data: { items: [{ tool: 'browser/screenshot', output: { text: 'fixture receipt' } }] },
+  };
+  f.data.learning = [
+    {
+      id: 'learning-native',
+      projectId: 'project-atlas',
+      channelId: 'channel-system',
+      runId: 'run',
+      kind: 'hypothesis',
+      title: '核对原生记录',
+      rationale: '读取记录',
+      expectedResult: '仍待核对',
+      evaluation: '检查实际来源',
+      conclusion: '',
+      status: 'active',
+      evidenceIds: ['evidence-one'],
+      revision: 1,
+      createdAt: timestamp,
+      updatedAt: timestamp,
+    },
+  ];
+  render(
+    <TestProviders>
+      <FeatureWork api={f.api} projectId="project-atlas" itemId="finding-import" />
+    </TestProviders>
+  );
+  const record = within((await screen.findByText('核对原生记录')).closest('details')!);
+  await userEvent.setup().click(record.getByText('原生工具记录'));
+  expect(record.getByText('原生工具历史快照，不等同于执行检查或验收通过。')).toBeTruthy();
+  expect(record.getByText(/fixture receipt/)).toBeTruthy();
+  expect(screen.queryByText('Agent 记录')).toBeNull();
+});

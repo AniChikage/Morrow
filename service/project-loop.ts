@@ -21,6 +21,7 @@ import { fileURLToPath } from 'node:url';
 import { APIError, choice, integer, keys, object, string, itemKinds, itemStatuses } from './protocol.ts';
 import type { Channel, Project, Run, WorkItem } from './protocol.ts';
 import type { Evidence, Learning, FeedbackWatch, Release, ReleaseScript, ProjectLoop } from './autonomy-types.ts';
+import { nativeEvidenceItems, nativeEvidenceSnapshot } from './native-evidence.ts';
 import { nativeCapabilities } from './native-capabilities.ts';
 import { Store, now } from './store.ts';
 import { ProjectStrategy } from './project-strategy.ts';
@@ -215,6 +216,9 @@ const workContract = {
       '{kind:understanding|decision|learning,id,beforeRevision?}；读取完整记录及分页版本历史。只读，无需 requestId。',
     'feature.upsert':
       '{id?, revision?(更新必需), title, summary, kind:feature|issue|opportunity|hypothesis, status:open|investigating|verified|resolved|blocked, evidenceIds:[], nextStep}；同一 feature 沿用 ID，引用真实证据。只推进 ownerChannelId 为本频道或为空的事项；别的频道负责的事项不要改动，可以在正文提出建议。写入无人负责的事项即接手（ownerChannelId 记为本频道），resolved 后自动交回无人负责，blocked 保留负责频道。',
+    'evidence.native': '{before?,limit?:1..20}；只读列出本频道当前任务的原生工具条目ID，其他频道/任务不可见。',
+    'evidence.link':
+      '{itemId?,summary,nativeItemIds:[1..20]}；读取原生记录并保存有界快照，跨频道/任务404；沿用写操作request-id。内联图片最多384KiB，外部引用不下载，不代表执行或验收通过。',
     'evidence.record': '{itemId?, summary, source, observedAt, data?}；记录为 agent 陈述，不能伪装为系统观测。',
     'evidence.capture': '{itemId?, summary, path}；读取项目内实际文件，保存内容与 SHA256，可用于测试日志或分析数据。',
     'evidence.read':
@@ -556,6 +560,7 @@ export class ProjectWorkLoop {
     if (operation === 'verification.read') return this.verification.read(scope, input);
     if (operation === 'memory.search' || operation === 'memory.read' || operation === 'memory.recall')
       return this.strategy.read(scope, operation, input);
+    if (operation === 'evidence.native') return nativeEvidenceItems(this, scope, input);
     if (operation === 'evidence.read') {
       keys(input, ['id']);
       this.scope(scope);
@@ -735,6 +740,27 @@ export class ProjectWorkLoop {
           ...(completion ? { finalizationId: completion.id } : {}),
         };
       });
+    }
+    if (operation === 'evidence.link') {
+      const item = this.item(scope, input.itemId);
+      const snapshot = nativeEvidenceSnapshot(this, scope, input);
+      const entry: Evidence = {
+        ...base,
+        ...(item ? { itemId: item.id } : {}),
+        summary: text(input.summary, 'summary', 5000),
+        observedAt: time,
+        origin: 'native',
+        ...snapshot,
+      };
+      this.store.put('loop_evidence', entry);
+      this.linkEvidence(entry);
+      this.strategy.evidenceObserved(entry);
+      this.audit(scope, 'evidence.recorded', entry.summary, item?.id, {
+        id: entry.id,
+        origin: entry.origin,
+        source: entry.source,
+      });
+      return evidenceRow(entry);
     }
     if (operation === 'evidence.record' || operation === 'evidence.capture') {
       keys(

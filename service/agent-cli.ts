@@ -20,6 +20,7 @@ try {
       'context',
       'contract',
       'evidence.read',
+      'evidence.native',
       'memory.search',
       'memory.read',
       'memory.recall',

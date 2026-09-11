@@ -288,13 +288,15 @@ function EvidenceReferences({ ids, data }: { ids: string[]; data?: ProjectLoop }
             <summary>
               {e?.summary || `证据 ${id.slice(0, 8)}`}{' '}
               <span className="subtle">
-                {e?.origin === 'execution'
-                  ? '原生执行记录'
-                  : e?.origin === 'http'
-                    ? 'HTTP 采集'
-                    : e?.origin === 'file'
-                      ? '文件采集'
-                      : 'Agent 记录'}
+                {e?.origin === 'native'
+                  ? '原生工具记录'
+                  : e?.origin === 'execution'
+                    ? '原生执行记录'
+                    : e?.origin === 'http'
+                      ? 'HTTP 采集'
+                      : e?.origin === 'file'
+                        ? '文件采集'
+                        : 'Agent 记录'}
               </span>
             </summary>
             {e && (
@@ -302,6 +304,7 @@ function EvidenceReferences({ ids, data }: { ids: string[]; data?: ProjectLoop }
                 <p className="work-source">
                   {e.source} · {formatDate(e.observedAt)}
                 </p>
+                {e.origin === 'native' && <p className="subtle">原生工具历史快照，不等同于执行检查或验收通过。</p>}
                 {e.origin === 'file' && (
                   <p className="subtle">文件采集证明当时保存的内容，不能单独证明命令实际运行。</p>
                 )}
