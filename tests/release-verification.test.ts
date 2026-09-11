@@ -400,3 +400,85 @@ test('a passed bounded retry supersedes only its own unknown scope and does not 
     await f.cleanup();
   }
 });
+
+test('a superseded unknown cannot be retried after the daily limit resets to hide a newer failed or passed review', async () => {
+  for (const verdict of ['fail', 'pass'] as const) {
+    const f = await fixture();
+    try {
+      const item = await f.feature('A');
+      await f.reviewItem(item.item.id, item.evidence.id);
+      const execution = await f.grant.execute('node --test');
+      f.reviewer.verdict = 'unknown';
+      const original = await f.reviewRelease([item.item.id], [execution.id]);
+      f.reviewer.verdict = verdict;
+      const retry = await f.call('verification.retry', { id: original.id });
+      await f.settle(retry.id);
+      // Seed yesterday's attempts only in this disposable database; production history stays immutable.
+      const yesterday = new Date(Date.now() - 86400000).toISOString();
+      for (const id of [original.id, retry.id])
+        f.store.put('loop_verifications', { ...f.stored(id), createdAt: yesterday });
+      const count = f.store.all('loop_verifications').length;
+      const result = await f.call('verification.retry', { id: original.id }, 409);
+      assert.match(result.error, /更新.*复核|已被.*取代/);
+      assert.equal(f.store.all('loop_verifications').length, count);
+      assert.equal(f.stored(original.id).status, 'unknown');
+      assert.equal(f.stored(retry.id).status, verdict === 'fail' ? 'failed' : 'passed');
+    } finally {
+      await f.cleanup();
+    }
+  }
+});
+
+test('only the latest unknown may use the next day retry budget', async () => {
+  const f = await fixture();
+  try {
+    const item = await f.feature('A');
+    await f.reviewItem(item.item.id, item.evidence.id);
+    const execution = await f.grant.execute('node --test');
+    f.reviewer.verdict = 'unknown';
+    const original = await f.reviewRelease([item.item.id], [execution.id]);
+    const newer = await f.call('verification.retry', { id: original.id });
+    await f.settle(newer.id);
+    const yesterday = new Date(Date.now() - 86400000).toISOString();
+    for (const id of [original.id, newer.id])
+      f.store.put('loop_verifications', { ...f.stored(id), createdAt: yesterday });
+    await f.call('verification.retry', { id: original.id }, 409);
+    f.reviewer.verdict = 'pass';
+    const current = await f.call('verification.retry', { id: newer.id });
+    await f.settle(current.id);
+    const proposed = await f.call('release.propose', f.proposal([item.item.id], execution.id));
+    assert.equal(proposed.releaseVerificationId, current.id);
+    assert.equal(f.stored(original.id).status, 'unknown');
+    assert.equal(f.stored(newer.id).status, 'unknown');
+  } finally {
+    await f.cleanup();
+  }
+});
+
+test('changing release scope cannot hide a current failure; a source fix permits a new candidate', async () => {
+  const f = await fixture();
+  try {
+    const a = await f.feature('A'),
+      b = await f.feature('B');
+    for (const item of [a, b]) await f.reviewItem(item.item.id, item.evidence.id);
+    const execution = await f.grant.execute('node --test');
+    f.reviewer.verdict = 'fail';
+    const failure = await f.reviewRelease([a.item.id], [execution.id]);
+    f.reviewer.verdict = 'unknown';
+    const unknown = await f.reviewRelease([a.item.id, b.item.id], [execution.id]);
+    await f.call('verification.retry', { id: unknown.id }, 409);
+    // Seed a hypothetical later pass defensively: neither this row nor its wider scope erases the failure.
+    f.store.put('loop_verifications', { ...f.stored(unknown.id), status: 'passed' });
+    await f.call('release.propose', f.proposal([a.item.id], execution.id), 409);
+    await f.call('release.propose', f.proposal([a.item.id, b.item.id], execution.id), 409);
+    f.editSource('fixed source\n');
+    f.reviewer.verdict = 'pass';
+    const fresh = await f.grant.execute('node --test');
+    const verified = await f.reviewRelease([a.item.id, b.item.id], [fresh.id]);
+    const result = await f.call('release.propose', f.proposal([a.item.id, b.item.id], fresh.id));
+    assert.equal(result.releaseVerificationId, verified.id);
+    assert.equal(f.stored(failure.id).status, 'failed');
+  } finally {
+    await f.cleanup();
+  }
+});

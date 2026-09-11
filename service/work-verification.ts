@@ -490,6 +490,22 @@ file/agent 证据可能由执行者生成，只证明采集了该内容，不证
     if (row?.projectId !== scope.projectId) throw new APIError(404, '复核不属于当前项目');
     if (row.status !== 'unknown' || row.interruptPending || !this.current(row))
       throw new APIError(409, '仅可在原复核已停止、材料仍有效时重试未知结果；失败反例需要先修正');
+    const history = this.rows(scope.projectId);
+    const latest = history.findLast(
+      (r) => r.subjectHash === row.subjectHash && r.version.digest === row.version.digest
+    );
+    if (latest?.id !== row.id) throw new APIError(409, '已有更新的复核，不能重试已被取代的旧未知记录');
+    if (
+      row.kind === 'release' &&
+      history.some(
+        (r) =>
+          r.kind === 'release' &&
+          r.status === 'failed' &&
+          r.itemIds?.some((id) => row.itemIds?.includes(id)) &&
+          this.materialCurrent(r, row.version.digest)
+      )
+    )
+      throw new APIError(409, '当前候选已有相关发布级复核失败，先修正源码反例再复核');
     if (this.rows(scope.projectId).some((r) => !terminal(r))) throw new APIError(409, '项目已有复核待完成');
     const attempts = this.rows(scope.projectId).filter(
       (r) =>
@@ -740,18 +756,24 @@ file/agent 证据可能由执行者生成，只证明采集了该内容，不证
     const project = this.loop.store.get<Project>('projects', scope.projectId)!;
     const digest = sourceVersion(project.path).digest;
     const seen = new Set<string>();
+    let passed: Verification | undefined;
     for (const row of this.rows(scope.projectId).toReversed()) {
       if (row.kind !== 'release' || !this.materialCurrent(row, digest)) continue;
       const covered = row.itemIds || [];
+      const related = itemIds.some((id) => covered.includes(id));
+      // A failed candidate requires a source fix, not a later pass bought through a different scope.
+      if (related && row.status === 'failed')
+        throw new APIError(409, '当前候选已有相关发布级复核失败，先修正源码反例再复核');
       const key = [...covered].sort().join(',');
       // A bounded retry supersedes its own unknown result, never a different review scope.
       if (seen.has(key)) continue;
       seen.add(key);
-      if (!itemIds.some((id) => covered.includes(id))) continue;
+      if (!related) continue;
       if (row.status !== 'passed')
         throw new APIError(409, '有较新的相关发布级复核未通过；先读取最新结果，不能回选较早的通过记录');
-      if (itemIds.every((id) => covered.includes(id))) return row;
+      if (!passed && itemIds.every((id) => covered.includes(id))) passed = row;
     }
+    if (passed) return passed;
     throw new APIError(409, '需要当前源版本的发布级复核通过；先 verification.request kind:release');
   }
   read(scope: Scope, input: Record<string, unknown>) {
