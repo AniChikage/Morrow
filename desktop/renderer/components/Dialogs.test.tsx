@@ -479,6 +479,7 @@ it('keeps a retired-runtime channel editable in name and direction only, without
 it('saves the usage reserve line and the unknown-usage stop from the settings dialog', async () => {
   const user = userEvent.setup();
   render(<Dialogs modal={{ kind: 'settings' }} onClose={() => {}} onNavigate={() => {}} />, { wrapper: TestProviders });
+  await user.click(screen.getByRole('button', { name: '额度规则' }));
   const form = within(await screen.findByRole('form', { name: '保留给自己的额度' }));
   const window = form.getByRole('combobox', { name: '保留额度窗口' }) as HTMLSelectElement;
   await waitFor(() => expect(window.disabled).toBe(false));
@@ -491,6 +492,7 @@ it('saves the usage reserve line and the unknown-usage stop from the settings di
     usageReserve: { window: 'weekly', keepPercent: 20 },
   });
   expect(await form.findByText('已保存保留额度')).toBeTruthy();
+  await user.click(form.getByText('高级规则与说明', { selector: 'summary' }));
   await user.click(form.getByRole('checkbox', { name: '额度未知时也停止自动工作' }));
   expect(context.current.api.updateSettings).toHaveBeenLastCalledWith({ stopWhenUsageUnknown: true });
   await waitFor(() => expect((form.getByRole('checkbox') as HTMLInputElement).checked).toBe(true));
@@ -506,4 +508,35 @@ it('hides the usage section when the bridge has no settings support', async () =
   render(<Dialogs modal={{ kind: 'settings' }} onClose={() => {}} onNavigate={() => {}} />, { wrapper: TestProviders });
   expect(screen.getByRole('button', { name: '连接' })).toBeTruthy();
   expect(screen.queryByRole('form', { name: '保留给自己的额度' })).toBeNull();
+});
+
+it('switches settings sections without losing connection or reserve drafts or invoking operations', async () => {
+  const user = userEvent.setup();
+  const onClose = vi.fn();
+  const view = render(<Dialogs modal={{ kind: 'settings' }} onClose={onClose} onNavigate={() => {}} />, {
+    wrapper: TestProviders,
+  });
+  expect(screen.queryByRole('button', { name: '保存保留额度' })).toBeNull();
+  await user.click(screen.getByRole('button', { name: '远程 SSH' }));
+  await user.type(screen.getByRole('textbox', { name: /SSH 主机/ }), 'draft-host');
+  await user.click(screen.getByRole('button', { name: '额度规则' }));
+  expect(screen.queryByRole('button', { name: '连接' })).toBeNull();
+  const percent = screen.getByRole('spinbutton', { name: '保留百分比' });
+  await waitFor(() => expect((percent as HTMLInputElement).disabled).toBe(false));
+  await user.type(percent, '25');
+  await user.selectOptions(screen.getByRole('combobox', { name: '保留额度窗口' }), 'weekly');
+  expect(screen.getByText('高级规则与说明', { selector: 'summary' }).closest('details')?.open).toBe(false);
+  await user.click(screen.getByRole('button', { name: '执行位置' }));
+  expect((screen.getByRole('textbox', { name: /SSH 主机/ }) as HTMLInputElement).value).toBe('draft-host');
+  await user.click(screen.getByRole('button', { name: '额度规则' }));
+  expect((screen.getByRole('spinbutton', { name: '保留百分比' }) as HTMLInputElement).value).toBe('25');
+  expect((screen.getByRole('combobox', { name: '保留额度窗口' }) as HTMLSelectElement).value).toBe('weekly');
+  context.current.error = '保存失败，请重试';
+  view.rerender(<Dialogs modal={{ kind: 'settings' }} onClose={onClose} onNavigate={() => {}} />);
+  expect(screen.getByRole('alert').textContent).toBe('保存失败，请重试');
+  expect(context.current.api.connect).not.toHaveBeenCalled();
+  expect(context.current.api.updateSettings).not.toHaveBeenCalled();
+  expect(context.current.api.getSettings).toHaveBeenCalledOnce();
+  await user.click(screen.getByRole('button', { name: '完成' }));
+  expect(onClose).toHaveBeenCalledOnce();
 });

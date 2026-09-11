@@ -679,3 +679,23 @@
 .project-brief-options[open] > summary {
   color: var(--text);
 }
+
+.settings-sections {
+  margin: 8px 0 22px;
+}
+.settings-panel .settings-usage {
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+.settings-advanced {
+  margin-top: 16px;
+  font-size: 12px;
+  color: var(--muted);
+}
+.settings-advanced > summary {
+  cursor: pointer;
+}
+.settings-advanced .form-note {
+  margin-top: 10px;
+}

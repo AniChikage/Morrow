@@ -710,9 +710,6 @@ function UsageReserveSettings() {
   return (
     <form className="settings-usage" onSubmit={save} aria-label="保留给自己的额度">
       <div className="settings-section-title">保留给自己的额度</div>
-      <p className="form-note">
-        账户用量达到「100% − 保留」时，Morrow 停止发起新的自动轮次和独立复核，等待窗口重置；普通对话不受影响。
-      </p>
       <div className="usage-form">
         <select
           aria-label="保留额度窗口"
@@ -753,20 +750,27 @@ function UsageReserveSettings() {
           清除
         </Button>
       </div>
-      <label className="checkbox-field">
-        <input
-          type="checkbox"
-          checked={!!settings?.stopWhenUsageUnknown}
-          disabled={busy || !settings}
-          onChange={(e) =>
-            void update(
-              { stopWhenUsageUnknown: e.target.checked },
-              e.target.checked ? '额度未知时将停止自动工作' : '额度未知时继续自动工作'
-            )
-          }
-        />
-        额度未知时也停止自动工作
-      </label>
+      <details className="settings-advanced">
+        <summary>高级规则与说明</summary>
+        <p className="form-note">
+          账户用量达到「100% − 保留」时，Morrow 停止发起新的自动轮次和独立复核，等待窗口重置；普通对话不受影响。
+        </p>
+        <label className="checkbox-field">
+          <input
+            type="checkbox"
+            checked={!!settings?.stopWhenUsageUnknown}
+            disabled={busy || !settings}
+            onChange={(e) =>
+              void update(
+                { stopWhenUsageUnknown: e.target.checked },
+                e.target.checked ? '额度未知时将停止自动工作' : '额度未知时继续自动工作'
+              )
+            }
+          />
+          额度未知时也停止自动工作
+        </label>
+        <p className="form-note">勾选项更改后立即保存。</p>
+      </details>
       {loadError && (
         <p role="alert" className="form-error">
           {loadError}
@@ -786,6 +790,10 @@ function SettingsDialog({ onClose }: { onClose: () => void }) {
   const [config, setConfig] = useState<ConnectionConfig>(
     connection?.config || { mode: 'local', host: '', port: 43821, directory: '~/.local/share/morrow' }
   );
+  const [section, setSection] = useState('connection');
+  const sectionId = useId();
+  const hasUsage = !!api.getSettings && !!api.updateSettings;
+  const activeSection = hasUsage ? section : 'connection';
   const [saved, setSaved] = useState(false);
   const remoteConfig = useRef<ConnectionConfig>(
     connection?.config.mode === 'ssh'
@@ -813,89 +821,123 @@ function SettingsDialog({ onClose }: { onClose: () => void }) {
     if (ok) setSaved(true);
   }
   return (
-    <Modal title="设置" description="管理桌面应用连接的执行位置。" onClose={onClose}>
-      <form onSubmit={submit}>
-        <fieldset className="settings-fields" disabled={busy}>
-          <div className="settings-section-title">执行位置</div>
-          <div className="segmented settings-mode">
-            <button type="button" aria-pressed={config.mode === 'local'} onClick={() => changeMode('local')}>
-              <Laptop size={14} />
-              本机 Mac
-            </button>
-            <button type="button" aria-pressed={config.mode === 'ssh'} onClick={() => changeMode('ssh')}>
-              <Server size={14} />
-              远程 SSH
-            </button>
-          </div>
-          {config.mode === 'ssh' ? (
-            <>
-              <Field title="SSH 主机" hint="使用已有 SSH 配置中的主机别名或 user@host。">
-                <input
-                  value={config.host}
-                  onChange={(e) => {
-                    setSaved(false);
-                    setConfig((c) => ({ ...c, host: e.target.value }));
-                  }}
-                  placeholder="dev-box"
-                  required
-                />
-              </Field>
-              <div className="form-row">
-                <Field title="服务端口">
+    <Modal title="设置" description="选择要调整的设置，连接或保存后生效。" onClose={onClose}>
+      <p className="form-note">
+        当前：{connection?.name || '尚未连接'}
+        {connection ? (connection.connected ? ' · 已连接' : ' · 未连接') : ''}
+      </p>
+      <div className="segmented settings-sections" role="group" aria-label="设置分区">
+        <button
+          type="button"
+          aria-pressed={activeSection === 'connection'}
+          aria-controls={`${sectionId}-connection`}
+          onClick={() => setSection('connection')}
+        >
+          执行位置
+        </button>
+        {hasUsage && (
+          <button
+            type="button"
+            aria-pressed={activeSection === 'usage'}
+            aria-controls={`${sectionId}-usage`}
+            onClick={() => setSection('usage')}
+          >
+            额度规则
+          </button>
+        )}
+      </div>
+      <div className="settings-panel" id={`${sectionId}-connection`} hidden={activeSection !== 'connection'}>
+        <form onSubmit={submit}>
+          <fieldset className="settings-fields" disabled={busy}>
+            <div className="settings-section-title">执行位置</div>
+            <div className="segmented settings-mode">
+              <button type="button" aria-pressed={config.mode === 'local'} onClick={() => changeMode('local')}>
+                <Laptop size={14} />
+                本机 Mac
+              </button>
+              <button type="button" aria-pressed={config.mode === 'ssh'} onClick={() => changeMode('ssh')}>
+                <Server size={14} />
+                远程 SSH
+              </button>
+            </div>
+            {config.mode === 'ssh' ? (
+              <>
+                <Field title="SSH 主机" hint="使用已有 SSH 配置中的主机别名或 user@host。">
                   <input
-                    type="number"
-                    min={1}
-                    max={65535}
-                    value={config.port}
+                    value={config.host}
                     onChange={(e) => {
                       setSaved(false);
-                      setConfig((c) => ({ ...c, port: Number(e.target.value) }));
+                      setConfig((c) => ({ ...c, host: e.target.value }));
                     }}
+                    placeholder="dev-box"
                     required
                   />
                 </Field>
-                <Field title="远程数据目录">
-                  <input
-                    value={config.directory}
-                    onChange={(e) => {
-                      setSaved(false);
-                      setConfig((c) => ({ ...c, directory: e.target.value }));
-                    }}
-                    placeholder="~/.local/share/morrow"
-                    required
-                  />
-                </Field>
-              </div>
-              <p className="form-note">远端需要先启动 Morrow 执行服务。通过已有 SSH 登录连接，执行和数据保留在远端。</p>
-            </>
-          ) : (
-            <p className="form-note">项目和执行记录保存在这台 Mac。关闭界面后，独立执行服务继续运行。</p>
+                <div className="form-row">
+                  <Field title="服务端口">
+                    <input
+                      type="number"
+                      min={1}
+                      max={65535}
+                      value={config.port}
+                      onChange={(e) => {
+                        setSaved(false);
+                        setConfig((c) => ({ ...c, port: Number(e.target.value) }));
+                      }}
+                      required
+                    />
+                  </Field>
+                  <Field title="远程数据目录">
+                    <input
+                      value={config.directory}
+                      onChange={(e) => {
+                        setSaved(false);
+                        setConfig((c) => ({ ...c, directory: e.target.value }));
+                      }}
+                      placeholder="~/.local/share/morrow"
+                      required
+                    />
+                  </Field>
+                </div>
+                <p className="form-note">
+                  远端需要先启动 Morrow 执行服务。通过已有 SSH 登录连接，执行和数据保留在远端。
+                </p>
+              </>
+            ) : (
+              <p className="form-note">项目和执行记录保存在这台 Mac。关闭界面后，独立执行服务继续运行。</p>
+            )}
+          </fieldset>
+          {saved && (
+            <p role="status" className="settings-saved">
+              <Check size={14} />
+              已连接到{config.mode === 'local' ? '本机 Mac' : config.host}
+            </p>
           )}
-        </fieldset>
-        {error && (
-          <p role="alert" className="form-error">
-            {error}
-          </p>
-        )}
-        {saved && (
-          <p role="status" className="settings-saved">
-            <Check size={14} />
-            已连接到{config.mode === 'local' ? '本机 Mac' : config.host}
-          </p>
-        )}
-        <div className="form-actions">
-          <Button variant="ghost" onClick={() => void mutate(() => api.openDataFolder())}>
-            <FolderOpen />
-            数据目录
-          </Button>
-          <span className="spacer" />
-          <Button onClick={onClose}>完成</Button>
-          <Button variant="primary" type="submit" disabled={busy || (config.mode === 'ssh' && !config.host.trim())}>
-            {busy ? '正在连接…' : '连接'}
-          </Button>
-        </div>
-      </form>
-      <UsageReserveSettings />
+          <div className="form-actions">
+            <Button variant="ghost" onClick={() => void mutate(() => api.openDataFolder())}>
+              <FolderOpen />
+              数据目录
+            </Button>
+            <span className="spacer" />
+            <Button variant="primary" type="submit" disabled={busy || (config.mode === 'ssh' && !config.host.trim())}>
+              {busy ? '正在连接…' : '连接'}
+            </Button>
+          </div>
+        </form>
+      </div>
+      <div className="settings-panel" id={`${sectionId}-usage`} hidden={activeSection !== 'usage'}>
+        <UsageReserveSettings />
+      </div>
+      {error && (
+        <p role="alert" className="form-error">
+          {error}
+        </p>
+      )}
+      <div className="form-actions">
+        <Button variant="ghost" onClick={onClose}>
+          完成
+        </Button>
+      </div>
       <div className="settings-about">
         <span>{productName}</span>
         <span>{version} · Electron / React</span>
