@@ -348,6 +348,8 @@ export async function runLive(
   let runner: LiveRunner | undefined;
   /** 报告要给出每条发现的原文，所以在关服务之前把事项读出来。 */
   let items: ItemView[] = [];
+  /** 算一次，指标和 `run.json` 用同一份，否则 `metrics <运行目录>` 会得到不同的 `wallMs`。 */
+  let runFacts: LiveRunFacts | undefined;
   let stop: { reason: LiveStopReason; detail: string } = { reason: 'error', detail: '运行还没有走到任何停止条件' };
   const live: LiveFacts = {
     runId: settings.runId,
@@ -558,6 +560,7 @@ export async function runLive(
       cleanup.notes.push('绑定有意保留：事后要能在 Codex App 里打开这条任务逐条核对模型真的做了什么。');
       cleanup.notes.push('未向原任务发别的停止请求：CLI 复核如果是未知结局，按 0.9.5 的约定保持未知。');
       cleanup.notes.push('home/ 与 project/ 原样留在产物目录里，这是唯一一份现场。');
+      runFacts = facts(scenario, settings, startedAt, deps.clock.now());
       try {
         metrics = computeMetrics({
           home: session.home,
@@ -565,7 +568,7 @@ export async function runLive(
           labels,
           // 决定 6：不从 events 重建 calls.jsonl，`repeatedFailures` 在 live 下保持 unknown。
           timeline,
-          run: facts(scenario, settings, startedAt, deps.clock.now()),
+          run: runFacts,
         });
       } catch (error) {
         failures.push(`metrics failed: ${message(error)}`);
@@ -602,7 +605,7 @@ export async function runLive(
   writeFileSync(join(out, 'labels.json'), JSON.stringify(labels, null, 2) + '\n');
   writeFileSync(
     join(out, 'run.json'),
-    JSON.stringify(facts(scenario, settings, startedAt, deps.clock.now()), null, 2) + '\n'
+    JSON.stringify(runFacts ?? facts(scenario, settings, startedAt, deps.clock.now()), null, 2) + '\n'
   );
   writeFileSync(join(out, liveFile), JSON.stringify(live, null, 2) + '\n');
   writeFileSync(join(out, 'cleanup.json'), JSON.stringify(cleanup, null, 2) + '\n');

@@ -568,8 +568,7 @@ async function executeLive(runner: LiveRunner, step: Step, index: number): Promi
     case 'verify':
       return liveVerify(runner);
     case 'restart':
-      await runner.session.restart();
-      return { channelStatus: runner.session.channel().status };
+      return liveRestart(runner);
     case 'pause':
       await runner.session.pause();
       return { channelStatus: runner.session.channel().status };
@@ -719,6 +718,36 @@ async function liveVerify(runner: LiveRunner) {
     runner.limits.reviewTimeoutMs
   );
   return { pending, verdicts: runner.session.reviewStatuses(), note: 'live 下 verify 只等真实复核结束' };
+}
+
+/**
+ * 关服务再在同一 `home` 上打开：绑定、历史与待核对回执都应当还在。重开之后原生连接要花一点时间
+ * 才重新就绪，所以这里自己等到就绪再往下走——否则下一个步骤的 `guard` 会把正在重连的状态当成
+ * 「任务不再就绪」。等待本身不过 `guard`，它检查的正是这件事。
+ */
+async function liveRestart(runner: LiveRunner): Promise<Record<string, unknown>> {
+  await runner.session.restart();
+  runner.status = undefined;
+  runner.statusAt = undefined;
+  const end = runner.clock.now() + runner.limits.turnTimeoutMs;
+  for (;;) {
+    const status = await runner.session.nativeStatus();
+    if (status.restartRequired)
+      throw new LiveStop('restart-required', `重开服务后检测到旧转接：${status.detail || '需要重开 Codex App'}`);
+    if (status.connected && status.boundThreadCount === 1 && status.readyThreadCount === 1)
+      return {
+        channelStatus: runner.session.channel().status,
+        boundThreadCount: status.boundThreadCount,
+        readyThreadCount: status.readyThreadCount,
+        running: runner.session.runs().filter((row) => row.status === 'running').length,
+      };
+    if (runner.clock.now() >= end)
+      throw new LiveStop(
+        'thread-not-ready',
+        `重开服务后没有等到关联恢复：connected=${status.connected} boundThreadCount=${status.boundThreadCount ?? '未知'} readyThreadCount=${status.readyThreadCount ?? '未知'}`
+      );
+    await runner.clock.sleep(bindPollMs);
+  }
 }
 
 /**

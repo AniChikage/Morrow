@@ -133,6 +133,8 @@ type Knobs = {
   /** `pendingReviews()` 依次返回的数；最后一项重复。 */
   reviews?: number[];
   usageWaitAfterTurns?: number;
+  /** restart 之后原生连接一直恢复不了。 */
+  notReadyAfterRestart?: boolean;
 };
 
 type Fake = {
@@ -171,6 +173,7 @@ function fake(knobs: Knobs = {}): Fake {
   let statusCall = 0;
   let reviewCall = 0;
   let paused = false;
+  let restarted = false;
   let turnsRun = 0;
   const next = <T>(rows: T[] | undefined, index: number, fallback: T): T =>
     rows && rows.length ? rows[Math.min(index, rows.length - 1)] : fallback;
@@ -186,7 +189,7 @@ function fake(knobs: Knobs = {}): Fake {
     },
     nativeStatus: async () => {
       order.push('status');
-      return status(next(knobs.statuses, statusCall++, {}));
+      return status({ ...next(knobs.statuses, statusCall++, {}), ...(restarted ? { readyThreadCount: 0 } : {}) });
     },
     runUnbound: async () => {
       order.push('run-unbound');
@@ -288,6 +291,7 @@ function fake(knobs: Knobs = {}): Fake {
     },
     restart: async () => {
       order.push('restart');
+      if (knobs.notReadyAfterRestart) restarted = true;
     },
     items: () => {
       order.push('items');
@@ -722,6 +726,15 @@ test('guide、pause、resume、restart 在 live 下照旧走同一条原生任�
   assert.ok(instance.order.includes('resume'));
   assert.ok(instance.order.includes('restart'));
   assert.equal(result.timeline[0].result.state, 'queued');
+  // 重开服务之后 runner 自己等到关联恢复才继续，否则下一步的 guard 会把重连当成「任务不再就绪」。
+  assert.equal(result.timeline[3].result.readyThreadCount, 1);
+});
+
+test('restart 之后关联恢复不了就以退出码 1 结束', async () => {
+  const { result } = await live([{ verb: 'restart' }], { notReadyAfterRestart: true }, { turnTimeoutMinutes: 1 });
+  assert.equal(result.stop.reason, 'thread-not-ready');
+  assert.equal(result.exitCode, 1);
+  assert.match(result.stop.detail, /重开服务后没有等到关联恢复/);
 });
 
 /* --------------------------------- 清理 --------------------------------- */
@@ -792,7 +805,12 @@ test('live 的指标口径：mode=live、policy=live，repeatedFailures 保持 u
   assert.notEqual(metrics.cost, 'unknown');
   assert.deepEqual(metrics.cost === 'unknown' ? undefined : metrics.cost.byWindow, { '5h': 3.5 });
   assert.equal(existsSync(join(out, 'calls.jsonl')), false, '不从 events 重建 calls.jsonl');
-  assert.deepEqual(JSON.parse(readFileSync(join(out, 'run.json'), 'utf8')).mode, 'live');
+  const facts = JSON.parse(readFileSync(join(out, 'run.json'), 'utf8'));
+  assert.equal(facts.mode, 'live');
+  assert.equal(facts.policy, 'live');
+  assert.deepEqual(facts.budget, { turns: 3 });
+  // 同一份身份既进指标又写文件，所以 `metrics <运行目录>` 会得到同一个 wallMs。
+  assert.equal(metrics.time.wallMs, facts.wallMs);
   assert.deepEqual(JSON.parse(readFileSync(join(out, 'labels.json'), 'utf8')).staleMemoryIds, ['stale-0']);
 });
 
