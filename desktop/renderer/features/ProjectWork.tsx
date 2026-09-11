@@ -976,7 +976,12 @@ export function ProjectReleases(props: FeatureProps & { projectId: string }) {
   const releases = (snapshot.releases || [])
     .filter((row) => row.projectId === projectId)
     .slice()
-    .reverse();
+    .reverse()
+    .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  const ongoing = releases.filter((r) => ['awaiting_approval', 'approved', 'publishing', 'unknown'].includes(r.status));
+  ongoing.sort((a, b) => Number(b.status === 'awaiting_approval') - Number(a.status === 'awaiting_approval'));
+  const visible = ongoing.length ? ongoing : releases.slice(0, 1);
+  const previous = releases.filter((r) => !visible.includes(r));
   const [selected, setSelected] = useState<string>();
   const [feedback, setFeedback] = useState('');
   const [pending, setPending] = useState(false);
@@ -999,28 +1004,47 @@ export function ProjectReleases(props: FeatureProps & { projectId: string }) {
     if (!ok) setLocalError('操作未完成，请核对错误后重试；不会自动重复提交。');
     setPending(false);
   };
+  const releaseEntry = (release: Release) => (
+    <button
+      key={release.id}
+      onClick={() => {
+        setSelected(release.id);
+        setFeedback('');
+        setLocalError('');
+      }}
+      className="release-row"
+    >
+      <span className={`release-status release-${release.status}`}>{releaseLabels[release.status]}</span>
+      <strong>{release.title}</strong>
+      <span className="subtle">{release.itemIds.length} 个功能</span>
+      <ArrowUpRight size={14} />
+    </button>
+  );
   if (!row)
     return (
       <div className="feature-scroll">
         {releases.length ? (
-          <div className="release-list">
-            {releases.map((release) => (
-              <button
-                key={release.id}
-                onClick={() => {
-                  setSelected(release.id);
-                  setFeedback('');
-                  setLocalError('');
-                }}
-                className="release-row"
-              >
-                <span className={`release-status release-${release.status}`}>{releaseLabels[release.status]}</span>
-                <strong>{release.title}</strong>
-                <span className="subtle">{release.itemIds.length} 个功能</span>
-                <ArrowUpRight size={14} />
-              </button>
-            ))}
-          </div>
+          <article className="finding-document release-document">
+            <h1>上线确认</h1>
+            <p className="subtle">
+              {ongoing.some((r) => r.status === 'awaiting_approval')
+                ? '先打开待审版本，核对变更与风险后再确认。'
+                : ongoing.length
+                  ? '查看发布进度；结果未知时先核对回执。'
+                  : '查看最近发布结果，之前的版本在历史中。'}
+            </p>
+            <section aria-label={ongoing.length ? '待确认与发布进度' : '最近发布结果'}>
+              {visible.map(releaseEntry)}
+            </section>
+            {!!previous.length && (
+              <details className="work-record release-history" key={projectId}>
+                <summary>
+                  历史发布 <span className="subtle">{previous.length}</span>
+                </summary>
+                {previous.map(releaseEntry)}
+              </details>
+            )}
+          </article>
         ) : (
           <EmptyState
             title="AI 准备好后，在这里确认上线"
@@ -1031,7 +1055,7 @@ export function ProjectReleases(props: FeatureProps & { projectId: string }) {
     );
   return (
     <div className="feature-scroll">
-      <article className="finding-document release-document">
+      <article className="finding-document release-document" key={row.id}>
         <Button variant="ghost" onClick={() => setSelected(undefined)}>
           <ArrowLeft size={14} />
           所有发布
@@ -1041,28 +1065,43 @@ export function ProjectReleases(props: FeatureProps & { projectId: string }) {
           <span className="subtle">{formatDate(row.createdAt)}</span>
         </div>
         <h1>{row.title}</h1>
-        <div className="release-features">
-          {row.itemIds.map((id) => {
-            const item = snapshot.items.find((v) => v.id === id);
-            return (
-              <button key={id} onClick={() => onNavigate({ kind: 'finding', id })}>
-                #{item?.number || '—'} {item?.title || '查看功能'}
-              </button>
-            );
-          })}
-        </div>
+        {row.error && (
+          <p role="alert" className="form-error">
+            {row.error}
+          </p>
+        )}
+        <section className="finding-section">
+          <h2>本次确认的版本</h2>
+          <p className="work-source">
+            {row.artifact.name} · {row.artifact.bytes.toLocaleString()} 字节
+          </p>
+          <p className="work-source">SHA256 {row.artifact.sha256}</p>
+          <p className="work-source">审核标识 {row.reviewHash}</p>
+          <p className="subtle">发布使用这份封存产物，后续修改需要重新准备版本。</p>
+        </section>
+        <details className="work-record">
+          <summary>
+            关联事项 <span className="subtle">{row.itemIds.length}</span>
+          </summary>
+          <div className="release-features">
+            {row.itemIds.map((id) => {
+              const item = snapshot.items.find((v) => v.id === id);
+              return (
+                <button key={id} onClick={() => onNavigate({ kind: 'finding', id })}>
+                  #{item?.number || '—'} {item?.title || '查看功能'}
+                </button>
+              );
+            })}
+          </div>
+        </details>
         <section className="finding-section">
           <h2>这次改了什么</h2>
           <Markdown>{row.changes}</Markdown>
         </section>
         <section className="finding-section">
-          <h2>为什么做</h2>
-          <Markdown>{row.rationale}</Markdown>
-        </section>
-        <section className="finding-section">
-          <h2>预期收益</h2>
-          <Markdown>{row.expectedBenefit}</Markdown>
-          <p className="subtle">这是待验证的预期，上线后的实际效果会单独记录。</p>
+          <h2>影响范围与回退</h2>
+          <Markdown>{row.risks}</Markdown>
+          <Markdown>{row.rollback}</Markdown>
         </section>
         <section className="finding-section">
           <h2>验证情况</h2>
@@ -1085,11 +1124,6 @@ export function ProjectReleases(props: FeatureProps & { projectId: string }) {
             </p>
           )}
         </section>
-        <section className="finding-section">
-          <h2>影响范围与回退</h2>
-          <Markdown>{row.risks}</Markdown>
-          <Markdown>{row.rollback}</Markdown>
-        </section>
         {!!row.releaseVerificationId && (
           <p className="work-source">
             发布级复核：
@@ -1103,10 +1137,29 @@ export function ProjectReleases(props: FeatureProps & { projectId: string }) {
           </p>
         )}
         {!!row.verificationIds?.length && data && (
-          <VerificationRecords
-            data={{ ...data, verifications: data.verifications?.filter((v) => row.verificationIds!.includes(v.id)) }}
-          />
+          <details className="work-record">
+            <summary>
+              事项历史复核 <span className="subtle">{row.verificationIds.length}</span>
+            </summary>
+            <VerificationRecords
+              data={{ ...data, verifications: data.verifications?.filter((v) => row.verificationIds!.includes(v.id)) }}
+            />
+          </details>
         )}
+        <details className="work-record">
+          <summary>背景与预期收益</summary>
+          <div className="work-record-body">
+            <section className="finding-section">
+              <h2>为什么做</h2>
+              <Markdown>{row.rationale}</Markdown>
+            </section>
+            <section className="finding-section">
+              <h2>预期收益</h2>
+              <Markdown>{row.expectedBenefit}</Markdown>
+              <p className="subtle">这是待验证的预期，上线后的实际效果会单独记录。</p>
+            </section>
+          </div>
+        </details>
         <section className="finding-section">
           <h2>上线后如何判断效果</h2>
           <Markdown>{row.observationPlan}</Markdown>
@@ -1132,14 +1185,6 @@ export function ProjectReleases(props: FeatureProps & { projectId: string }) {
           ) : (
             <p className="work-source">{row.target.url}</p>
           )}
-          <details className="work-record">
-            <summary>本次确认的版本</summary>
-            <p className="work-source">
-              {row.artifact.name} · {row.artifact.bytes.toLocaleString()} 字节
-            </p>
-            <p className="work-source">SHA256 {row.artifact.sha256}</p>
-            <p className="subtle">发布使用这份封存产物，后续修改需要重新准备版本。</p>
-          </details>
         </section>
         {row.feedback && (
           <section className="finding-section">
@@ -1156,13 +1201,9 @@ export function ProjectReleases(props: FeatureProps & { projectId: string }) {
             <pre className="release-log">{row.log.slice(-4000)}</pre>
           </details>
         )}
-        {row.error && (
-          <p role="alert" className="form-error">
-            {row.error}
-          </p>
-        )}
         {row.status === 'unknown' && (
           <Button
+            variant="primary"
             disabled={busy || pending || !api.reconcileRelease}
             onClick={() => void onMutate(() => api.reconcileRelease!(row.id))}
           >

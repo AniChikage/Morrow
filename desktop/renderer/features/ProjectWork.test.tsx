@@ -893,6 +893,12 @@ describe('AI work and release review', () => {
     await user.click(screen.getByRole('tab', { name: /上线确认/ }));
     await user.click(screen.getByRole('button', { name: /导入失败恢复/ }));
     expect(await screen.findByText('sealed-sha256', { exact: false })).not.toBeNull();
+    for (const text of ['sealed-sha256', 'reviewed-content', '影响导入重试路径。', '恢复上一版本。']) {
+      expect(screen.getByText(text, { exact: false }).closest('details')).toBeNull();
+    }
+    const background = screen.getByText('背景与预期收益', { selector: 'summary' });
+    expect(background.closest('details')?.open).toBe(false);
+    await user.click(background);
     expect(screen.getByRole('heading', { name: '预期收益' })).not.toBeNull();
     expect(screen.getByRole('heading', { name: '上线后如何判断效果' })).not.toBeNull();
     expect(f.reviewRelease).not.toHaveBeenCalled();
@@ -901,6 +907,58 @@ describe('AI work and release review', () => {
     await waitFor(() =>
       expect(f.reviewRelease).toHaveBeenCalledWith('release-one', 'reviewed-content', 'approve', '关注重复提交')
     );
+  });
+  it('prioritizes pending releases while retaining every historical outcome and progress state', async () => {
+    const f = fixture();
+    const statuses = ['published', 'failed', 'rejected', 'unknown', 'publishing', 'approved'] as const;
+    f.props.snapshot.releases = [
+      f.release,
+      ...statuses.map((status, i) => ({
+        ...f.release,
+        id: status,
+        title: status,
+        status,
+        createdAt: `2026-09-${20 + i}T00:00:00Z`,
+      })),
+    ];
+    const original = structuredClone(f.props.snapshot.releases);
+    const view = render(<ProjectReleases {...f.props} projectId="project-atlas" />, { wrapper: TestProviders });
+    const current = screen.getByRole('region', { name: '待确认与发布进度' });
+    expect(within(current).getAllByRole('button')[0].textContent).toContain(f.release.title);
+    expect(within(current).getAllByRole('button')).toHaveLength(4);
+    expect(screen.getByRole('button', { name: /published/ }).closest('details')?.open).toBe(false);
+    const user = userEvent.setup();
+    await user.click(screen.getByText('历史发布', { selector: 'summary' }));
+    await user.click(screen.getByRole('button', { name: /failed/ }));
+    expect(screen.getByRole('heading', { name: 'failed' })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: '确认这个版本上线' })).toBeNull();
+    expect(f.reviewRelease).not.toHaveBeenCalled();
+    expect(f.props.snapshot.releases).toEqual(original);
+    await user.click(screen.getByRole('button', { name: '所有发布' }));
+    f.props.snapshot.releases = f.props.snapshot.releases!.filter((r) =>
+      ['published', 'failed', 'rejected'].includes(r.status)
+    );
+    view.rerender(<ProjectReleases {...f.props} projectId="project-atlas" />);
+    expect(within(screen.getByRole('region', { name: '最近发布结果' })).getAllByRole('button')).toHaveLength(1);
+    expect(screen.getByRole('button', { name: /rejected/ })).toBeTruthy();
+    expect(screen.getByText('历史发布', { selector: 'summary' }).closest('details')?.open).toBe(false);
+  });
+  it('resets release feedback and disclosures when selecting another version', async () => {
+    const f = fixture();
+    f.props.snapshot.releases!.push({ ...f.release, id: 'second', title: '第二个候选' });
+    render(<ProjectReleases {...f.props} projectId="project-atlas" />, { wrapper: TestProviders });
+    const user = userEvent.setup();
+    await user.click(screen.getByRole('button', { name: /导入失败恢复/ }));
+    await user.type(screen.getByRole('textbox', { name: '上线指导意见' }), '只针对第一个版本');
+    await user.click(screen.getByText('背景与预期收益', { selector: 'summary' }));
+    await user.click(screen.getByText('关联事项', { selector: 'summary' }));
+    await user.click(screen.getByRole('button', { name: /CSV 重试会重复提交/ }));
+    expect(f.props.onNavigate).toHaveBeenCalledWith({ kind: 'finding', id: 'finding-import' });
+    await user.click(screen.getByRole('button', { name: '所有发布' }));
+    await user.click(screen.getByRole('button', { name: /第二个候选/ }));
+    expect((screen.getByRole('textbox', { name: '上线指导意见' }) as HTMLTextAreaElement).value).toBe('');
+    expect(screen.getByText('背景与预期收益', { selector: 'summary' }).closest('details')?.open).toBe(false);
+    expect(f.reviewRelease).not.toHaveBeenCalled();
   });
   it('returns a concrete revision to the agent with feedback without approving it', async () => {
     const f = fixture();
