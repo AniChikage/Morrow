@@ -1749,3 +1749,40 @@
   height: auto;
   padding-block: 6px;
 }
+
+.project-filters {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 8px 16px;
+  border-bottom: 1px solid var(--line-soft);
+  flex-shrink: 0;
+}
+.project-filters select {
+  height: 30px;
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  background: var(--canvas);
+  color: var(--text);
+  font: inherit;
+  font-size: 12px;
+  padding: 0 8px;
+  max-width: 220px;
+}
+.project-filters .feature-search {
+  flex: 1;
+  min-width: 120px;
+}
+.current-board {
+  min-height: 0;
+}
+.project-history {
+  margin-top: 8px;
+  border-top: 1px solid var(--line-soft);
+}
+.project-board-empty {
+  margin: 18px;
+  color: var(--muted);
+  font-size: 13px;
+}

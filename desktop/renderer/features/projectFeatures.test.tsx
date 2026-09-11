@@ -111,7 +111,7 @@ describe('one project-owned feature board', () => {
     expect(screen.queryByText('明确属于其他项目')).toBeNull();
     expect(screen.queryByRole('tab', { name: /持续频道/ })).toBeNull();
     await user.click(screen.getByRole('button', { name: '筛选' }));
-    await user.click(screen.getByRole('menuitem', { name: '手动创建' }));
+    await user.selectOptions(screen.getByRole('combobox', { name: '来源频道筛选' }), 'manual');
     expect(screen.getByRole('button', { name: /人工创建的功能/ })).toBeTruthy();
     expect(screen.queryByText('CSV 重试会重复提交')).toBeNull();
     await user.click(screen.getByRole('button', { name: '新建功能' }));
@@ -125,7 +125,7 @@ describe('one project-owned feature board', () => {
     const { props } = featureProps({ snapshot: state });
     render(<ProjectView {...props} id="project-atlas" />, { wrapper: TestProviders });
     await user.click(screen.getByRole('button', { name: '筛选' }));
-    await user.click(screen.getByRole('menuitem', { name: '运营洞察' }));
+    await user.selectOptions(screen.getByRole('combobox', { name: '来源频道筛选' }), 'channel-growth');
     expect(screen.getByRole('button', { name: /CSV 重试会重复提交/ })).toBeTruthy();
     expect(screen.getByTitle('来源：系统完善')).toBeTruthy();
   });
@@ -481,4 +481,81 @@ describe('channels are execution sources, not separate boards', () => {
     expect(screen.getByRole('article', { name: /轮次/ })).toBeTruthy();
     expect(api.openNativeSession).not.toHaveBeenCalled();
   });
+});
+
+for (const layout of ['list', 'board']) {
+  it(`keeps resolved history accessible and search results visible in ${layout} view`, async () => {
+    localStorage.setItem('morrow.project-view.project-atlas', JSON.stringify({ layout }));
+    const user = userEvent.setup();
+    const { props } = featureProps();
+    const done = item({
+      id: 'done',
+      projectId: 'project-atlas',
+      title: '已完成的恢复任务',
+      status: 'resolved',
+      evidence: ['历史唯一关键词'],
+    });
+    props.snapshot.items.push(done);
+    const original = JSON.stringify(props.snapshot.items);
+    render(<ProjectView {...props} id="project-atlas" />, { wrapper: TestProviders });
+    expect(screen.queryByText(done.title)).toBeNull();
+    expect(screen.queryByRole('textbox', { name: '搜索功能和证据' })).toBeNull();
+    const history = screen.getByRole('button', { name: '已解决历史 1' });
+    expect(history.getAttribute('aria-expanded')).toBe('false');
+    await user.click(history);
+    await user.click(screen.getByRole('button', { name: new RegExp(done.title) }));
+    expect(props.onNavigate).toHaveBeenCalledWith({ kind: 'finding', id: 'done' });
+    await user.click(history);
+    await user.click(screen.getByRole('button', { name: '筛选' }));
+    const search = screen.getByRole('textbox', { name: '搜索功能和证据' });
+    await user.type(search, '历史唯一关键词');
+    expect(screen.getByRole('button', { name: new RegExp(done.title) })).toBeTruthy();
+    expect(screen.queryByRole('region', { name: '已解决历史' })).toBeNull();
+    await user.clear(search);
+    await user.type(search, '   ');
+    expect(screen.queryByText(done.title)).toBeNull();
+    await user.clear(search);
+    await user.selectOptions(screen.getByRole('combobox', { name: '状态筛选' }), 'resolved');
+    expect(screen.getByRole('button', { name: new RegExp(done.title) })).toBeTruthy();
+    expect(JSON.stringify(props.snapshot.items)).toBe(original);
+  });
+}
+
+it('handles all-resolved boards, live status changes and project-local disclosure', async () => {
+  const { props } = featureProps();
+  props.snapshot.items = props.snapshot.items.map((item) => ({ ...item, status: 'resolved' }));
+  const view = render(<ProjectView {...props} id="project-atlas" />, { wrapper: TestProviders });
+  expect(screen.getByText('当前没有未解决事项，历史记录保留在下方。')).toBeTruthy();
+  expect(screen.queryByText('还没有项目功能')).toBeNull();
+  await userEvent.setup().click(screen.getByRole('button', { name: '已解决历史 3' }));
+  expect(screen.getAllByRole('button', { name: /CSV 重试会重复提交/ })).toHaveLength(1);
+  props.snapshot.items[0].status = 'investigating';
+  view.rerender(<ProjectView {...props} id="project-atlas" />);
+  expect(screen.getAllByRole('button', { name: /CSV 重试会重复提交/ })).toHaveLength(1);
+  expect(screen.getByRole('button', { name: '已解决历史 2' })).toBeTruthy();
+  view.rerender(<ProjectView {...props} id="project-other" />);
+  expect(screen.getByRole('button', { name: '已解决历史 1' }).getAttribute('aria-expanded')).toBe('false');
+  expect(screen.queryByText('其他项目的发现')).toBeNull();
+  expect(screen.queryByText('CSV 重试会重复提交')).toBeNull();
+});
+
+it('shows unavailable saved filters explicitly and offers one clear action', async () => {
+  localStorage.setItem(
+    'morrow.project-view.project-atlas',
+    JSON.stringify({ layout: 'list', status: 'retired-state', channel: 'deleted-channel' })
+  );
+  const { props } = featureProps();
+  render(<ProjectView {...props} id="project-atlas" />, { wrapper: TestProviders });
+  expect(screen.getByText('没有符合条件的功能')).toBeTruthy();
+  await userEvent.setup().click(screen.getByRole('button', { name: '已筛选' }));
+  expect((screen.getByRole('combobox', { name: '状态筛选' }) as HTMLSelectElement).selectedOptions[0].textContent).toBe(
+    '原状态筛选已不可用'
+  );
+  expect(
+    (screen.getByRole('combobox', { name: '来源频道筛选' }) as HTMLSelectElement).selectedOptions[0].textContent
+  ).toBe('原频道筛选已不可用');
+  expect(screen.getAllByRole('button', { name: '清除筛选' })).toHaveLength(1);
+  await userEvent.setup().click(screen.getByRole('button', { name: '清除筛选' }));
+  expect(screen.getByRole('button', { name: /CSV 重试会重复提交/ })).toBeTruthy();
+  expect(screen.queryByText('没有符合条件的功能')).toBeNull();
 });
