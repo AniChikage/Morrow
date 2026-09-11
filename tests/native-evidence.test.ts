@@ -151,7 +151,7 @@ test('native discovery filters before pagination and snapshots explicitly bound 
     s.store.put('native_items', {
       ...s.row,
       id: 'huge-image',
-      output: { content: [{ type: 'image', mimeType: 'image/png', data: 'a'.repeat(384 * 1024 + 1) }] },
+      output: { content: [{ type: 'image', mimeType: 'image/png', data: 'a'.repeat(384 * 1024 + 4) }] },
     });
     await s.grant.call('evidence.link', { summary: 'too big', nativeItemIds: ['huge-image'] }, 413);
   } finally {
@@ -195,6 +195,29 @@ test('depth-limited summaries disclose omission and retain distinct source finge
     assert.notEqual(first.sourceSha256, second.sourceSha256);
     assert.notEqual(results[0].digest, results[1].digest);
     assert.deepEqual(await s.grant.call('evidence.read', { id: results[0].id }), results[0]);
+  } finally {
+    await s.cleanup();
+  }
+});
+
+test('image references are never silently shortened and inline image URLs retain their bytes', async () => {
+  const s = await setup();
+  try {
+    const longURL = 'https://images.example.test/' + 'x'.repeat(5000);
+    s.store.put('native_items', { ...s.row, output: { content: [{ type: 'image', image_url: longURL }] } });
+    const before = s.store.all('loop_evidence').length;
+    await s.grant.call('evidence.link', { summary: 'long reference', nativeItemIds: [s.row.id] }, 413);
+    assert.equal(s.store.all('loop_evidence').length, before);
+    const dataURL = 'data:image/png;base64,' + 'a'.repeat(6000);
+    s.store.put('native_items', { ...s.row, output: { content: [{ type: 'image', image_url: dataURL }] } });
+    const linked = await s.grant.call('evidence.link', { summary: 'inline URL', nativeItemIds: [s.row.id] });
+    const preserved = (await s.grant.call('evidence.read', { id: linked.id })).data;
+    assert.equal(preserved.images[0].retained, 'inline');
+    assert.equal(preserved.images[0].dataUrl, dataURL);
+    const url = 'https://images.example.test/p.png?signature=original';
+    s.store.put('native_items', { ...s.row, output: { content: [{ type: 'image', image_url: { url } }] } });
+    const ref = await s.grant.call('evidence.link', { summary: 'reference URL', nativeItemIds: [s.row.id] });
+    assert.equal((await s.grant.call('evidence.read', { id: ref.id })).data.images[0].source, url);
   } finally {
     await s.cleanup();
   }

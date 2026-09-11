@@ -77,17 +77,35 @@ export function nativeEvidenceSnapshot(loop: ProjectWorkLoop, scope: Scope, inpu
     }
     if (typeof value === 'string') return loop.redact(value);
     if (!value || typeof value !== 'object') return value;
-    if (value.type === 'image' || value.type === 'localImage') {
+    if (['image', 'localImage', 'image_url'].includes(value.type)) {
       const image: Record<string, unknown> = { ref: path };
-      if (typeof value.data === 'string' && /^image\/(png|jpeg|gif|webp)$/.test(value.mimeType || '')) {
-        imageBytes += value.data.length;
+      const reference = value.path ?? value.image_url ?? value.url;
+      const source = reference && typeof reference === 'object' ? reference.url : reference;
+      let mimeType = value.mimeType;
+      let encoded = typeof value.data === 'string' ? value.data : undefined;
+      if (typeof source === 'string' && source.startsWith('data:')) {
+        const inline = /^data:(image\/(?:png|jpeg|gif|webp));base64,([A-Za-z0-9+/]*={0,2})$/.exec(source);
+        if (!inline) throw new APIError(400, '内联图片格式不支持');
+        [, mimeType, encoded] = inline;
+      }
+      if (encoded !== undefined) {
+        if (
+          !/^image\/(png|jpeg|gif|webp)$/.test(mimeType || '') ||
+          !/^[A-Za-z0-9+/]*={0,2}$/.test(encoded) ||
+          encoded.length % 4 !== 0
+        )
+          throw new APIError(400, '内联图片编码格式无效');
+        imageBytes += encoded.length;
         if (imageBytes > 384 * 1024) throw new APIError(413, '内联图片合计超过384 KiB，请减少条目');
-        image.mimeType = value.mimeType;
-        image.dataUrl = `data:${value.mimeType};base64,${value.data}`;
-        image.sha256 = hash(value.data);
+        image.mimeType = mimeType;
+        image.dataUrl = `data:${mimeType};base64,${encoded}`;
+        image.sha256 = hash(encoded);
         image.retained = 'inline';
       } else {
-        image.source = loop.redact(cut(value.path ?? value.image_url ?? value.url, 4096));
+        if (typeof source !== 'string' || !source) throw new APIError(400, '图片引用缺少地址');
+        if (Buffer.byteLength(source) > 4096) throw new APIError(413, '图片引用超过4096字节，不能截断保存');
+        image.source = loop.redact(source);
+        if (image.source !== source) image.redacted = true;
         image.retained = 'reference_only';
       }
       if (images.length >= 20) throw new APIError(413, '图片引用超过20条');
