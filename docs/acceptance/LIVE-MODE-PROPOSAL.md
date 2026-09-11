@@ -1,10 +1,28 @@
-# 验收 harness 的 live 模式：待确认的设计
+# 验收 harness 的 live 模式：设计与决定记录
 
-**这是提案，不是实现。** 在负责人明确确认之前不要开始写 live 模式。`npm run acceptance -- run <场景> --mode live` 目前只打印这份文件的路径并以退出码 2 结束。
+**负责人已经拍板，live 模式已实现。** 下面第 1–10 节是设计正文（原提案），每一节末尾原来的「待确认」已经换成对应的决定；第 11 节是决定记录本身。实现在 `scripts/acceptance/live.ts`（编排与生产 deps 工厂）、`scripts/acceptance/timeline.ts`（动词的 live 分支）、`scripts/acceptance/run.ts`（`prepare` 与 `--mode live`）、`scripts/acceptance/metrics.ts` 与 `report.ts`（模式分支），测试在 `tests/acceptance-live.test.ts`（全部用注入的假依赖，不连真实 App、不消耗额度）。
+
+## 2026-09-11 的决定与实现状态
+
+| # | 决定 | 实现 |
+| --- | --- | --- |
+| 1 | **作者自己的自主频道由人先暂停。** runner 跨不了数据目录，只在 `prepare` 和 `run` 开头打印提醒。 | `pauseOwnChannelsReminder`，写成「步骤 0」。 |
+| 2 | **两步调用。** `prepare` 建目录、写种子与 `prepared.json`、打印人要做的四步后退出 0；`run` 再起服务、关联、跑时间线。`run` 拒绝：没有 `prepared.json` 的目录、已有 `home/` 的目录、缺 `--run-id`、场景与 `prepared.json` 不符。 | `prepareLive()` / `readPrepared()`。 |
+| 3 | **`--advance-scale` 缺省 0.1**（20 分钟压成 2 分钟），可显式设 `1`；比例写进 `run.json`/`live.json`，`summary.md` 明写压缩倍数与「`adjustmentLatency` 的绝对分钟数不可与 fixture 直接比较」。 | `liveDefaults.advanceScale`、`scaleNote()`。 |
+| 4 | **只有运行本身出错才非零退出**（第 6 节的表逐条照做）。模型的表现全部进指标；`invariants` 逐条评估并写进报告，但不决定退出码。 | `stopExitCodes`，`summary.md` 的 Invariants 小节明写这一点。 |
+| 5 | **三道闸都显式设好：**`--budget N` 必填（缺了退出 2）；`--project-limit` 缺省 5、`--project-window` 缺省 `5h`；`--reserve` 缺省 20、`--reserve-window` 缺省 `weekly`，并置 `stopWhenUsageUnknown: true`。频道 `maxRunsPerDay = budget × 2`；runner 自己另外数**本次运行新出现**的 `morrow-schedule` 行，超过 `--budget` 立即暂停频道并停止（退出 0，报告写明剩余步数）。三项参数在开头原样打印并写进 `live.json`。**不实现 `--allow-approve`**：`approve` 一律打印发布信息、暂停频道、以「停在人工确认」退出 0。 | `liveSettings()`、`live.gates`、`guard()`、`liveDecide()`。 |
+| 6 | **`repeatedFailures` 在 live 下保持 `unknown`**，`metrics.json` 的 `repeatedFailuresSource` 写明原因。不从 `events` 重建 `calls.jsonl`——live 运行的产物目录里根本没有这个文件。 | `metrics.ts` 的 `liveRepeatedNote`。 |
+| 7 | **人工评分留到第一次运行之后**，本次不实现；但 `summary.md` 必须列出每条发现的原文，并写明「发现率是文本匹配得出的下限判据，不是人工评分」。 | `findingsSection()`。 |
+| 8 | **浏览器/Computer Use 在 follower 轮次已实测可用**（见 [`../CODEX-CONNECTION-VALIDATION-2026-09-09.md`](../CODEX-CONNECTION-VALIDATION-2026-09-09.md)）。每一轮 `native_items` 里出现过的工具类型清单记进 `live.json`。 | `LiveSession.turnTools()`、`live.turns[].tools`。 |
+
+实现期间发现、首跑前要知道的两件事：
+
+- **真实调度器不停，所以它会自己加轮次。** 一轮以 `continue` 结束时 `nextRunAt` 是 30 秒之后，真实调度器会照样发起下一轮——那正是「不停掉 1 秒定时器」的含义。这些轮次一样计入 `--budget`，所以 `--budget 3` 的首跑很可能在时间线第 1–2 步就把预算用完并以退出码 0 停下。这是预期结果，不是失败；要走完整条时间线就得把 `--budget` 提到时间线轮次数以上，并接受调度器额外发起的轮次也在里面。
+- **`prepare` 与 `run` 之间人要真的去 App 建任务。** `run` 仍然有 `--wait-bind`（缺省 10 分钟）的等待窗口，所以先 `run` 再去建任务也行，只是人得守在终端边上。
 
 fixture 模式验证的是框架机制：调度、预算、观察窗口、事前预期的机械核对、复核门禁、人工上线确认、重启一致性。它不能说明模型会不会自己发现问题、会不会把使用率低归因正确。live 模式的唯一目的就是补上这一半：**同一套场景、同一套指标，换成真实的 Codex App 任务来跑**。
 
-本文要回答的是「跑起来到底会发生什么、谁按哪个按钮、花多少额度、什么时候停、失败了留下什么」。每一节末尾的「待确认」是需要负责人拍板的点。
+本文要回答的是「跑起来到底会发生什么、谁按哪个按钮、花多少额度、什么时候停、失败了留下什么」。每一节末尾原来的「待确认」现在是**已决定**，对应上面那张表里的一条。
 
 ## 1. 隔离范围：隔离什么，不隔离什么
 
@@ -14,8 +32,9 @@ fixture 模式验证的是框架机制：调度、预算、观察窗口、事前
 artifacts/acceptance/<run-id>/
   home/          MORROW_HOME：workspace.sqlite、runs/、releases/、native-images/、daemon.lock
   project/       隔离项目目录：场景种子（usagegap 的 11 个文件）按原样写进来
-  timeline.jsonl calls.jsonl labels.json run.json metrics.json summary.md cleanup.json
-  live.json      live 专属：绑定的任务 ID、真实起止时间、额度前后读数、每一轮的真实耗时
+  prepared.json  prepare 留给 run 的交接：场景、场景版本、run-id、创建时间、绝对项目路径
+  timeline.jsonl labels.json run.json metrics.json summary.md cleanup.json
+  live.json      live 专属：绑定的任务 ID、三道闸、真实起止时间、额度前后读数、每一轮的真实耗时与工具清单、停止原因
 ```
 
 服务用 `startServer({ home: <run-id>/home, port: 0 })` 起，随机端口，只监听 127.0.0.1。**不复用 `tests/harness/service.ts` 的 `startIsolated`，也不 import `tests/harness/env.ts`** —— 后者在 import 时就设了 `MORROW_TEST_MODE=1` 和 `MORROW_TEST_CODEX_PATH`，那会让 `NativeConversations` 构造出桌面夹具 transport 而不是生产的 `CodexNativeTransport`。live runner 必须像 `scripts/probe-app-follower.ts` 那样，先断言 `process.env.MORROW_TEST_MODE !== '1'`，再 `startServer`，**不传 `nativeTransport`，也不传 `reviewTransport`**：不传才会走生产的 App follower 和官方 `codex exec` 只读复核。
@@ -31,20 +50,20 @@ artifacts/acceptance/<run-id>/
 
 绝不做：不碰 `~/Library/Application Support`，不调 `/api/native/background/setup`（已返回 410），不设 `CODEX_CLI_PATH`，不启动或终止 Codex App，不对用户的正式数据目录跑任何东西。
 
-**待确认**：live 运行是否允许与作者正在使用的安装版 Morrow 同时开着？（两者数据目录不同、端口不同、`daemon.lock` 不同，技术上可以；但它们会抢同一个账号的额度，也会抢同一个 App 的任务并发。建议：不允许，live 运行期间作者的自主频道先暂停。）
+**已决定（1）**：不允许同时跑。两者数据目录不同、端口不同、`daemon.lock` 不同，技术上可以并存，但它们会抢同一个账号的额度，也会抢同一个 App 的任务并发，所以 **live 运行期间作者的自主频道由人先暂停**。runner 管不到作者的正式数据目录，所以它只在 `prepare` 和 `run` 开头把这件事作为「步骤 0」打印出来。
 
 ## 2. Morrow 不能创建 App 任务：人要做的四步
 
 `CodexNativeTransport` 没有 `createThread`，所以 `GET /api/native/status` 的 `capabilities.create` 恒为 `false`，未关联就启动会返回 409。这不是缺陷，是 0.9.5 的接入形态。于是一次 live 运行必须由人开头。
 
-runner 起服务、建项目、写好项目说明、起种子应用之后，**把下面这段原样打到 stdout，然后阻塞等待**：
+`prepare` 先把下面这段用绝对路径原样打到 stdout 并退出；`run` 起服务、建项目、写好项目说明、起种子应用之后，如果任务还没出现，会再打一遍并阻塞等待：
 
 ```
 1. 打开 Codex App，新建一个任务，目录选：
      /Users/…/Morrow-harness/artifacts/acceptance/usagegap-live-<stamp>/project
 2. 在这个任务里发一条首条消息（例如「准备好了」），等它回完。
 3. 保持这个任务打开，不要关闭窗口，也不要在它里面继续手动提问。
-4. 回到这个终端；runner 会自己发现并关联它。
+4. 回到终端执行 run（同一个 --run-id，带 --budget）；runner 会自己发现并关联它。
 
 等待中：每 3 秒检查一次，最多等 <--wait-bind> 分钟。
 ```
@@ -59,7 +78,15 @@ runner 的等待逻辑，全部走已有接口：
 
 超时（缺省 10 分钟）就走第 7 节的清理并以退出码 1 结束，明确说「没有等到可用的 App 任务」。
 
-**待确认**：等待是否要做成两次调用（先 `--prepare` 打印目录并退出，人建好任务后再 `--run`）？一次调用阻塞等待更简单，也不会出现「目录已经被别的运行覆盖」的问题，但要求人守在终端边上。建议一次调用。
+**已决定（2）**：**两次调用**。
+
+```bash
+npm run acceptance -- prepare usagegap --mode live [--run-id <id>]
+# 人去 Codex App 里建任务、发首条消息
+npm run acceptance -- run usagegap --mode live --run-id <id> --budget 3
+```
+
+`prepare` 建 `artifacts/acceptance/<run-id>/`，把场景种子写进 `project/`，留下 `prepared.json`（场景、场景版本、run-id、创建时间、绝对项目路径、种子文件数），把人要做的四步用绝对路径打出来，然后退出 0。它不起服务，也不建数据目录。`run` 拒绝四种情况：目录里没有 `prepared.json`、目录已经有 `home/`（跑过了，现场不覆盖）、缺 `--run-id`、`prepared.json` 里的场景或 run-id 与命令行不符。`run` 里仍然保留 `--wait-bind` 的等待窗口，所以人先 `run` 再去建任务也行。
 
 ## 3. 真实调度器 + 脚本化时间线
 
@@ -78,9 +105,9 @@ fixture runner 为了可重复做了三件真实 daemon 不会做的事：停掉
 | `turn` | 仍然把频道置为到期（`nextRunAt` 设到过去）并等一轮 `morrow-schedule` 运行真实结束。等待上限 `--turn-timeout`（缺省 10 分钟，与 App 一轮的常见耗时和复核 5 分钟上限匹配）。**只认本次运行新出现的 `morrow-schedule` 行**——0.9.5 验收踩过的坑：同步进来的历史 `native-app` 轮次会被错认成本轮结果。 |
 | `poll` | 仍然调 `loop.poll(watchId)` 采一次。多采一次无害，而且让时间线里的「此刻应当有样本」是明确的；调度器自己的轮询照常进行。 |
 | `set` / `mode` | **不变**。接收端仍是本机的 `startReceiver()`，使用数据和发布回执都由它给，所以扰动完全可控。这是 live 模式仍然可读的关键：变量只有模型一个。 |
-| `advance` | **虚拟时钟不能用**。见下。改成真实等待：`advance N` 变成 `await sleep(min(N 分钟, --max-wait))`，并把真实耗时记进 `timeline.jsonl`。 |
+| `advance` | **虚拟时钟不能用**。见下。改成真实等待：`advance N` 变成 `await sleep(min(N × --advance-scale 分钟, --max-wait))`，并把缩放比例、计划等待和真实耗时都记进 `timeline.jsonl` 与 `live.json`。 |
 | `verify` | **fixture 专用，live 下是 no-op**。独立复核走真实 `codex exec`（只读、临时会话、5 分钟硬上限）。runner 只在需要时等 `loop_verifications` 从 `queued`/`running` 落到终态，上限 `--review-timeout`（缺省 6 分钟）。 |
-| `approve` | 见第 5 节：缺省**不自动批准**，运行停在这里。 |
+| `approve` / `reject` | 见第 5 节：**不自动批准**，也没有开关可以让它自动批准。打印发布信息、暂停频道、以「停在人工确认」退出 0。 |
 | `guide` | 保留：以 `source:'chat'` 向同一条原生任务发一条指导。它会真的消耗一轮 App 对话（不计编排预算）。 |
 | `restart` | 保留：关服务再在同一 `home` 上打开。绑定、历史与待核对回执都应当还在。 |
 | `pause` / `resume` | 不变。 |
@@ -93,10 +120,10 @@ fixture runner 为了可重复做了三件真实 daemon 不会做的事：停掉
 
 代替方案：**真实时钟 + 真实等待 + 压缩过的窗口**。
 - runner 用真实 `Date`，`advance` 变成有上限的真实 `sleep`。
-- 场景里那些「一个采样周期」「让违反到反应有真实时长」的 `advance 15/20` 分钟，在 live 里直接等 15/20 分钟太贵。提供 `--advance-scale`（缺省 `1`，可设 `0.1` 把 20 分钟压成 2 分钟），把缩放比例记进 `run.json`，并在 `summary.md` 明写「观察窗口被压缩了 N 倍，`adjustmentLatency` 的绝对分钟数不可与 fixture 直接比较」。
+- 场景里那些「一个采样周期」「让违反到反应有真实时长」的 `advance 15/20` 分钟，在 live 里直接等 15/20 分钟太贵。`--advance-scale`（**缺省 `0.1`**，设 `1` 表示不压缩）把 20 分钟压成 2 分钟，`--max-wait`（缺省 10 分钟）再给单个 `advance` 一个硬上限；缩放比例记进 `run.json` 与 `live.json`，`summary.md` 明写「观察窗口被压缩了 N 倍，`adjustmentLatency` 的绝对分钟数不可与 fixture 直接比较」。
 - 策略要求的 deadline（careful 的 6 小时观察窗口、7 天 understanding 复查）是**未来时刻**而不是等待，真实时钟下照常成立，不需要改。但 live 模式下这些 deadline 由模型自己给，runner 不干预。
 
-**待确认**：`--advance-scale` 的缺省值。建议第一次 live 运行用 `1`（不压缩）但配合 `--budget 3`，这样时间线根本走不到第一个 `advance`；等要跑完整条时间线时再决定压缩比例。
+**已决定（3）**：`--advance-scale` **缺省 `0.1`**（20 分钟压成 2 分钟），可以显式设 `1` 表示不压缩；单个 `advance` 的真实等待再被 `--max-wait`（缺省 10 分钟）截断。比例写进 `run.json` 与 `live.json`，`summary.md` 明写压缩了几倍，以及「`adjustmentLatency` 的绝对分钟数**不可**与 fixture 直接比较，只能与同样缩放比例的另一次 live 运行比较」。`--budget 3` 的首跑本来就走不到第一个 `advance`，缺省值对它没有影响。
 
 ## 4. 没有 policy：模型就是策略
 
@@ -104,10 +131,10 @@ fixture 的 `careful`/`naive` 是写死的状态机，它们直接调 `/api/agen
 
 - `--policy` 在 live 模式下**被拒绝**（退出码 2），`run.json`/`config.policy` 写 `live`。
 - `policySelfCheck` **不适用**：它比较的是两种策略，live 只有一个。`run all --mode live` 同样拒绝——一次 live 运行只跑一个场景。
-- `calls.jsonl` 仍然有内容：它记的是「这一轮通过工作接口做了什么、哪些被拒了」。live 模式下这些调用来自真实模型，所以 `repeatedFailures` 第一次有了真正的含义（模型有没有把被拒的材料原样再发一次）。记录方式要换：fixture 是 `ScriptedNativeTransport` 在自己发 fetch 时记下来的，live 模式下模型走 `agent-cli.ts`，runner 看不到。**需要一个新的来源**：`loop_calls` 表已经按 `runId:requestId` 存了每次写操作的 hash 与结果，但不存状态码；被拒的调用只在审计事件里。建议 live 模式下的 `calls.jsonl` 从 `events` 重建，并在 `metrics.json` 里把 `repeatedFailures` 的来源写清楚，或者干脆保持 `unknown` 而不是给一个来源不同、没法与 fixture 比较的数。
+- **`calls.jsonl` 在 live 模式下不写**（已决定 6）。fixture 的那份是 `ScriptedNativeTransport` 在自己发 fetch 时记下来的；真实模型走 `agent-cli.ts`，runner 看不到状态码：`loop_calls` 按 `runId:requestId` 存了每次写操作的 hash 与结果但不存状态码，被拒的调用只在审计事件里。从别的来源重建出的数字没法与 fixture 比较，所以 `repeatedFailures` 保持 `unknown`，并在 `metrics.json` 的 `repeatedFailuresSource` 里写明为什么。
 - `invariants` 里那些编码「正确使用协议」的条目（例如 `decision-has-frozen-expectations`）在 live 模式下**变成被测量的对象**，不再是「应当为真」的断言。runner 仍然逐条评估并写进报告，但 live 运行的 `ok` 不应当只因为某条 invariant 不成立就算失败——那正是我们想知道的结果。
 
-**待确认**：live 运行的成败判据。建议：**只有运行本身出错才算失败**（没等到任务、超预算、服务崩溃、清理失败）；模型的表现全部作为指标报告，不决定退出码。否则第一次 live 运行几乎必然「失败」，而那不是有用的信号。
+**已决定（4）**：**只有运行本身出错才算失败**（没等到任务、一轮超时、任务不再就绪、旧转接、墙钟兜底、服务抛错、清理失败）。模型的表现全部作为指标报告，不决定退出码；`invariants` 逐条评估并写进 `summary.md`，但同样不决定退出码——某一条不成立正是我们想知道的结果。退出码严格按第 6 节的表。
 
 ## 5. 预算：三道闸，一条也不能省
 
@@ -122,9 +149,13 @@ fixture 的 `careful`/`naive` 是写死的状态机，它们直接调 `/api/agen
 
 运行开始前 `await engine.usage.refresh()` 取一次读数，结束时再取一次，两者与差值一起写进 `live.json`；`metrics.cost` 因此**不再是 `unknown`**：它来自 `usage_samples` 的窗口差值加 `runs[].usage.delta`。这是 live 模式相对 fixture 的一个真实增量。
 
-**发布确认不自动做。** `approve` 动词在 live 模式下缺省行为是：把发布的标题、改动、`reviewHash` 和产物摘要打到 stdout，暂停频道，写报告，以「停在人工确认」结束。`--allow-approve` 可以让 runner 用隔离目录里的桌面凭证自己批准，但报告必须写明「本次上线确认由 runner 执行，不代表人工审阅」，否则「人工上线确认」这道门禁就被测空了。`--budget 3` 的第一次运行根本走不到 `approve`（`usagegap` 的 `approve` 在第 6 轮之后）。
+**发布确认不自动做，而且没有开关能让它自动做。** `approve`（以及 `reject`）在 live 模式下的行为是：把发布的标题、改动、`reviewHash` 和产物摘要打到 stdout，暂停频道，写报告，以「停在人工确认」退出 0。**`--allow-approve` 不实现**——让 runner 自己批准会把「人工上线确认」这道门禁测空，而它正是 Morrow 要证明的东西之一。`--budget 3` 的第一次运行本来也走不到 `approve`（`usagegap` 的 `approve` 在第 6 轮之后）。
 
-**待确认**：三道闸的具体数值，以及 `--allow-approve` 是否要存在。
+**已决定（5）**：三道闸的缺省值是 `--budget`（**必填，无缺省，缺了退出 2**）、`--project-limit 5` / `--project-window 5h`、`--reserve 20` / `--reserve-window weekly` 并置 `stopWhenUsageUnknown: true`。频道 `maxRunsPerDay` 设为 `budget × 2`（复核与轮次共用日预算）。三项参数在运行开头原样打印，并写进 `live.json` 的 `gates`。
+
+**`--allow-approve` 不实现。** `approve`（以及 `reject`）一律打印发布的标题、`reviewHash`、事项、封存产物与改动摘要，暂停频道，以「停在人工确认」退出 0。理由是让 runner 自己批准会把「人工上线确认」这道门禁测空，而它正是 Morrow 要证明的东西之一。
+
+runner 另外自己数**本次运行新出现**的 `morrow-schedule` 行（关联时同步进来的历史轮次不算，它们在编排开始前就被记进基线）。超过 `--budget` 就立刻暂停频道并停止，退出 0，报告写明剩余步数。注意真实调度器不停：一轮以 `continue` 结束时 `nextRunAt` 是 30 秒之后，它会自己再发起一轮，这些轮次一样计入 `--budget`。
 
 ## 6. 停止条件
 
@@ -170,7 +201,7 @@ fixture 的 `careful`/`naive` 是写死的状态机，它们直接调 `/api/agen
 | `usagegap.improvements.observed` | 状态机有没有把预期冻结在观测上 | 模型提的改进有没有事前预期与真实观测，且复盘真的拿那个观测的样本核对过 |
 | `usagegap.misFix.count` / `ids` | 状态机有没有挑错对象 | **模型有没有去"修"那个不该修的功能** |
 | `cost` | 永远 `unknown`（脚本化后台不报额度） | 真实账户用量差值 |
-| `repeatedFailures` | 从 `calls.jsonl` 算，来源是策略自己发的 fetch | 需要换来源（见第 4 节），否则保持 `unknown` |
+| `repeatedFailures` | 从 `calls.jsonl` 算，来源是策略自己发的 fetch | **保持 `unknown`**（见第 4 节）；`repeatedFailuresSource` 写明为什么不给数字 |
 | `policySelfCheck` | careful 必须在约定指标上胜过 naive | **不适用**，只有一个"策略" |
 | `compare --ignore-volatile` 零差异 | 必须成立 | **不成立**。真实模型不可重复；两次 live 运行的差异本身是要看的东西，不是要消灭的东西。 |
 
@@ -178,7 +209,7 @@ fixture 的 `careful`/`naive` 是写死的状态机，它们直接调 `/api/agen
 
 `summary.md` 的固定标注在 live 模式下换成：**live 结果是隔离环境下的模型验证，不是真实业务效果。** 一次运行是一次抽样；反馈样本、接收端和使用数据都是本机构造的。
 
-**待确认**：要不要在第一次 live 运行之后加一轮人工评分（人读五条发现原文，逐条判对错），并把人工评分与文本匹配的结果一起放进报告作为对照？建议要，但那是第一次运行之后的事。
+**已决定（7）**：要加，但那是第一次运行之后的事，本次不实现。现在 `summary.md` 必须把每条发现的**原文**列出来（标题、正文、下一步、证据、命中的埋入功能与它的 `kind`），并写明「发现率是**文本匹配**得出的下限判据，不是人工评分」——模型可能提到功能 ID 却没真的理解那个问题，也可能理解了却没写那个 ID。
 
 ## 9. 风险
 
@@ -186,7 +217,7 @@ fixture 的 `careful`/`naive` 是写死的状态机，它们直接调 `/api/agen
 | --- | --- | --- |
 | **真实额度** | 一次运行真的花账号额度；`--budget 3` 也包含复核 CLI 的调用。 | 三道闸（第 5 节）+ 运行前后各取一次读数 + `stopWhenUsageUnknown: true`。 |
 | **App 权限与目录合并** | 0.9.5 起沿用 App 的沙箱与审批；App 可能把已有目录合并进任务的可写范围，所以「只含隔离项目目录」不能被声称为事实。模型理论上能写到隔离目录之外。 | 隔离目录在 `artifacts/` 下、与工作树源码分开；`execution.prepare` 的护栏拒绝「服务目录位于项目之内」；运行后 `git status` 核对工作树没被改动。**这一条没有硬隔离，必须写进报告的边界。** |
-| **应用内浏览器 / Computer Use 是否可用** | 0.4 的探测结论是：Morrow 自己创建的任务里浏览器插件不可用；本模式的任务由人在 App 里创建，理应带 App 自己的工具，但**没有在 Morrow 跟随的轮次上验证过**。如果不可用，模型只能读 `/usage` 而不能真的走页面，`empty-state` 和 `misleading-copy` 这两条基本不可能被发现。 | 第一次 live 运行先只要求 `/usage` 路线能跑通；把「工具清单与实际可用性」记进 `live.json`（每轮的 `native_items` 里有哪些工具类型），据此再决定要不要为走查单独加一条能力缺口记录。 |
+| **应用内浏览器 / Computer Use** | **已验证可用**：2026-09-09 的连接实测在 Morrow 跟随的真实轮次上打开了本机合成页面、读取随机 marker、真实点击按钮并读回对应结果，`get_usage_limits` 与 Computer Use 的 `sky.list_apps()` 也实际调用成功——见 [`../CODEX-CONNECTION-VALIDATION-2026-09-09.md`](../CODEX-CONNECTION-VALIDATION-2026-09-09.md)。0.4 那次「浏览器插件不可用」只适用于 Morrow 自己创建的任务。 | 仍然把每一轮 `native_items` 里出现过的工具类型清单记进 `live.json`：可用不等于模型这一轮真的用了，走查路线有没有被走过要看这份清单。Computer Use 只验证过列举接口，不代表所有桌面交互已经验收。 |
 | **非确定性** | 同一场景两次 live 运行结果不同，`compare` 零差异不成立。 | 明确不比较；报告写明「一次运行是一次抽样」。多次运行用 `--repeat` 给均值极值，但每次都要单独付额度。 |
 | **复核 5 分钟硬上限** | 官方 `codex exec` 复核有 5 分钟上限，超时保持未知。真实项目的完整检查可能跑不完。 | `--review-timeout` 略大于 5 分钟；未知结局按既有策略处理，不重跑。 |
 | **人守在终端边上** | 建任务、发首条消息、可能还要按上线确认，都要人。 | 一次调用阻塞等待 + 把要做的四步原样打出来；`--budget 3` 让第一次运行走不到 `approve`。 |
@@ -196,38 +227,51 @@ fixture 的 `careful`/`naive` 是写死的状态机，它们直接调 `/api/agen
 
 ## 10. 第一次 live 运行的验收标准
 
-命令：
+命令（两步，外加人先做的步骤 0）：
 
 ```bash
-npm run acceptance -- run usagegap --mode live --budget 3
-```
+# 步骤 0：人先暂停自己安装版 Morrow 里的自主频道。prepare 与 run 都会把这句提醒打出来。
 
-（加上第 5 节要确认的额度上限与保留线参数。）
+npm run acceptance -- prepare usagegap --mode live
+#   → 建 artifacts/acceptance/<run-id>/，写 11 个种子文件与 prepared.json，
+#     打印要在 Codex App 里做的四步（绝对项目路径就在里面），退出 0。
+# 人在 Codex App 里新建任务（目录选打印出来的 project/），发一条首条消息，等它回完，任务保持打开。
+
+npm run acceptance -- run usagegap --mode live --run-id <prepare 打印的 run-id> --budget 3
+#   缺省已经带上三道闸：--project-limit 5 --project-window 5h --reserve 20 --reserve-window weekly
+#   要改就显式传；三项参数会在开头原样打印，并写进 live.json。
+```
 
 这次运行**不要求模型发现任何问题**。它要证明的是 live 通道本身通了：
 
-1. runner 打印了那四步，人在 App 里建好任务并发了首条消息，runner 自己发现并关联了它，`GET /api/native/status` 报 `connected=true`、`connectionMode='app-follower'`、`boundThreadCount=1`、`readyThreadCount=1`、`capabilities.create=false`，未关联时的 `run` 返回过 409。
-2. 三轮真实 `morrow-schedule` 运行全部由真实调度器发起并正常结束（`status='completed'`），每一轮的 `runs` 行带真实的 `sessionId`/`nativeTurnId`，`permission` 为 `native`，`model` 不是 `scripted-native-model`。
+1. `prepare` 打印了那四步，人在 App 里建好任务并发了首条消息，runner 自己发现并关联了它，`GET /api/native/status` 报 `connected=true`、`connectionMode='app-follower'`、`boundThreadCount=1`、`readyThreadCount=1`、`capabilities.create=false`，未关联时的 `run` 返回过 409。
+2. 真实 `morrow-schedule` 运行全部由真实调度器发起并正常结束（`status='completed'`），每一轮的 `runs` 行带真实的 `sessionId`/`nativeTurnId`，`permission` 为 `native`，`model` 不是 `scripted-native-model`。真实调度器不停，所以它自己发起的后续轮次也算在这三轮里。
 3. 这三轮里模型真的调过工作接口：`events` 里有 `decision.chosen` 或 `feature.upsert` 类的审计记录；不要求它走到发布。
 4. 种子应用在整个运行期间可访问，`/usage` 与接收端上的样本形状一致（`app.probe` 对照，和 fixture 同一条 invariant）。
-5. 轮次不超过 3，项目额度上限与保留线都没被触发（如果触发了，运行以 0 结束并在报告里说明——这也是通过）。
+5. 轮次不超过 3（`live.json` 的 `spentTurns`），项目额度上限与保留线都没被触发（如果触发了，运行以 0 结束并在报告里说明——这也是通过）。预算用完导致时间线没走完同样以 0 结束，`summary.md` 写明剩余步数。
 6. `metrics.cost` 不是 `unknown`：运行前后的账户读数差值落在 `live.json` 与 `cost.byWindow` 里。
 7. `usagegap` 的五项探索指标都算得出来（哪怕是 0/5），并且 `summary.md` 同时给出每条发现的原文和 live 的固定标注。
 8. `cleanup.json` 显示：种子应用已停止（`stopped: true`）、频道已暂停（`channelsPaused >= 1`）、服务已关闭（`serviceClosed: true`）、目录保留（`directoriesRemoved: false`）、绑定保留（`unbound: false`）。
 9. 运行结束后：`pgrep` 无残留进程、端口无残留监听、`git status` 显示工作树未被改动、作者的正式数据目录 `~/Library/Application Support/Morrow` 修改时间未变。
 10. 整个过程没有调用 `/api/native/background/setup`，没有设置 `CODEX_CLI_PATH`，没有 `npm run build:app`。
 
-做完这一次，再决定要不要跑完整条时间线（11 轮 + 3 次复核 + 一次人工确认），以及 `--advance-scale` 取多少。
+11. `live.json` 里有每一轮的真实起止与耗时，以及每一轮 `native_items` 出现过的工具类型清单——据此看模型这一轮到底用了什么（浏览器、Computer Use 在 follower 轮次上已实测可用，但可用不等于它用了）。
 
-## 11. 需要负责人拍板的清单
+做完这一次，再决定要不要跑完整条时间线（11 轮 + 3 次复核 + 一次人工确认，`--budget` 要相应提高），以及要不要按决定 7 加一轮人工评分作为文本匹配的对照。
 
-1. live 运行期间是否暂停作者自己的自主频道（第 1 节）。
-2. 一次调用阻塞等待，还是 `--prepare` / `--run` 两次调用（第 2 节）。
-3. `--advance-scale` 的缺省值与第一次运行的取值（第 3 节）。
-4. live 运行的成败判据：是否只有「运行本身出错」才算失败（第 4 节）。
-5. `--budget`、项目额度上限、保留线的具体数值；`--allow-approve` 要不要存在（第 5 节）。
-6. `repeatedFailures` 在 live 模式下换来源，还是保持 `unknown`（第 4、8 节）。
-7. 是否在第一次运行后加一轮人工评分作为文本匹配的对照（第 8 节）。
-8. 应用内浏览器/Computer Use 在 Morrow 跟随的轮次里是否可用——这一条要先实测，不能靠推断（第 9 节）。
+## 11. 决定记录：八条原来要拍板的问题，现在的答案
 
-确认之后才动手。实现范围预计是一个新文件 `scripts/acceptance/live.ts`（不 import `tests/harness/env.ts`）、`run.ts` 里把 `--mode live` 接到它上面、`timeline.ts` 里按模式分支那几个动词，以及 `metrics.ts` 里 `config.mode` 与 `repeatedFailures` 来源的处理。
+原来这一节是「需要负责人拍板的清单」。2026-09-11 全部拍板，逐条如下（顶部那张表是同一份决定的摘要与实现位置）：
+
+| # | 原来的问题 | 决定 | 写在哪一节 |
+| --- | --- | --- | --- |
+| 1 | live 运行期间是否暂停作者自己的自主频道 | 暂停，由人先做；runner 只打印「步骤 0」提醒 | 第 1 节 |
+| 2 | 一次调用阻塞等待，还是两次调用 | **两次调用**：`prepare` 然后 `run --run-id` | 第 2 节 |
+| 3 | `--advance-scale` 的缺省值 | 缺省 **0.1**，可显式设 1；比例写进报告并说明不可与 fixture 比较 | 第 3 节 |
+| 4 | live 运行的成败判据 | **只有运行本身出错才算失败**；invariants 逐条评估但不决定退出码 | 第 4、6 节 |
+| 5 | 三道闸的数值；`--allow-approve` 要不要存在 | `--budget` 必填；项目上限 5%/5h；保留线 20%/weekly + `stopWhenUsageUnknown`；**`--allow-approve` 不实现** | 第 5 节 |
+| 6 | `repeatedFailures` 换来源还是保持 unknown | **保持 `unknown`**，不重建 `calls.jsonl`，在 `repeatedFailuresSource` 写明原因 | 第 4、8 节 |
+| 7 | 第一次运行后是否加人工评分 | 要加，但在第一次运行之后；现在先在 `summary.md` 给出每条发现的原文与「文本匹配是下限判据」的说明 | 第 8 节 |
+| 8 | 浏览器/Computer Use 在 follower 轮次是否可用 | **已实测可用**（2026-09-09）；每轮的工具类型清单仍然记进 `live.json` | 第 9 节 |
+
+实现落在：新文件 `scripts/acceptance/live.ts`（编排核心 + 生产 deps 工厂，不 import `tests/harness/env.ts`）、`run.ts` 的 `prepare` 子命令与 `--mode live`、`timeline.ts` 里按模式分支的动词、`metrics.ts` 的 `config.mode`/`repeatedFailures` 与 `report.ts` 的 live 标注与发现原文。编排核心接受一个 `deps` 对象（起服务的工厂、时钟与 sleep、输出、任务列举/关联/状态查询、种子应用启停、额度读取），`tests/acceptance-live.test.ts` 用假依赖跑完整条编排——**没有任何测试连真实 App 或消耗额度**；生产工厂里的 `MORROW_TEST_MODE !== '1'` 断言本身也有一条测试。

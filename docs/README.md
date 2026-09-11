@@ -19,7 +19,8 @@
 | [项目工作协议](PROJECT-WORK-CONTRACT.md) | AI 管理项目时使用的接口、字段与约束。 |
 | [执行服务](../service/README.md) | 本机与 SSH 部署、服务配置、恢复和运行边界。 |
 | [开发指南](DEVELOPMENT.md) | 隔离开发、测试、构建和品牌资源。 |
-| [验收 harness](../scripts/acceptance/README.md) | 可重复的场景验收：场景 DSL、fixture 运行方式，以及它能与不能证明什么。 |
+| [验收 harness](../scripts/acceptance/README.md) | 可重复的场景验收：场景 DSL、fixture 与 live 两种运行方式，以及各自能与不能证明什么。 |
+| [live 模式的设计与决定](acceptance/LIVE-MODE-PROPOSAL.md) | 把同一套场景接到真实 Codex App 任务上：隔离范围、人要做的两步、三道预算闸、停止条件与清理，以及 2026-09-11 拍板的八条决定。 |
 | [品牌资源](../assets/brand/README.md) | Logo 图稿、导出方法与生成提示词。 |
 
 ## 产品方向与研究

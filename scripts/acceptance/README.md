@@ -13,10 +13,47 @@ npm run acceptance -- compare <目录A> <目录B> --ignore-volatile
 npm run acceptance -- metrics <运行目录|数据目录> [--out metrics.json]
 ```
 
-参数：`--mode fixture`（默认，也是唯一实现了的模式）、`--policy careful|naive`（默认 careful；`run all` 接受 `careful,naive`）、`--repeat N`、`--out <目录>`、`--keep`、`--seed <n>`。
-退出码：0 通过，1 场景未通过或自检未通过，2 用法错误或未实现。`run all` 只在 **careful** 运行失败或自检失败时返回 1——naive 失败是预期结果。
+参数：`--mode fixture`（默认）、`--policy careful|naive`（默认 careful；`run all` 接受 `careful,naive`）、`--repeat N`、`--out <目录>`、`--keep`、`--seed <n>`。
+退出码：0 通过，1 场景未通过或自检未通过，2 用法错误。`run all` 只在 **careful** 运行失败或自检失败时返回 1——naive 失败是预期结果。
 
-`--mode live` 是**未实现**的：它会驱动真实的 Codex App 任务并真的消耗账户额度，所以隔离范围、人要做的手工步骤、预算闸、停止条件和清理都要先由负责人确认。现在传它只会打印 [`docs/acceptance/LIVE-MODE-PROPOSAL.md`](../../docs/acceptance/LIVE-MODE-PROPOSAL.md) 的路径并以退出码 2 结束，不启动任何东西。
+## live 模式
+
+`--mode live` 把同一套场景和同一套指标接到**真实的 Codex App 任务**上：它真的驱动模型、真的消耗账户额度。设计与负责人 2026-09-11 拍板的八条决定见 [`docs/acceptance/LIVE-MODE-PROPOSAL.md`](../../docs/acceptance/LIVE-MODE-PROPOSAL.md)。
+
+因为 Morrow 不能创建 App 任务（`capabilities.create` 恒为 `false`），一次 live 运行**分两步**，前面还有一个人要先做的步骤 0：
+
+```bash
+# 步骤 0（人）：暂停你自己安装版 Morrow 里的自主频道。两条命令都会把这句提醒打出来。
+
+npm run acceptance -- prepare usagegap --mode live [--run-id <id>] [--budget 3]
+#   建 artifacts/acceptance/<run-id>/，把场景种子写进 project/，留下 prepared.json，
+#   打印要在 Codex App 里做的四步（含绝对项目路径），退出 0。不起服务，不建数据目录。
+
+# 人在 Codex App 里新建任务（目录选打印出来的 project/），发一条首条消息，等它回完，任务保持打开。
+
+npm run acceptance -- run usagegap --mode live --run-id <id> --budget 3
+```
+
+`run` 的参数（时间单位都是分钟，`--project-limit` 与 `--reserve` 是百分比）：
+
+| 参数 | 缺省 | 作用 |
+| --- | --- | --- |
+| `--run-id` | 无，**必填** | `prepare` 建好的那个目录。缺了、目录里没有 `prepared.json`、目录已经有 `home/`（跑过了）、场景对不上，都以退出码 2 拒绝。 |
+| `--budget N` | 无，**必填** | 本次运行允许出现的 `morrow-schedule` 轮次总数。频道 `maxRunsPerDay` 设为 `N × 2`（复核与轮次共用日预算）；runner 自己另外数本次运行新出现的轮次，超了就暂停频道并以退出码 0 停下。 |
+| `--project-limit` / `--project-window` | `5` / `5h` | 项目额度上限（Morrow 归到本项目的估算用量）。 |
+| `--reserve` / `--reserve-window` | `20` / `weekly` | 保留线（按精确账户读数判断），并置 `stopWhenUsageUnknown: true`。 |
+| `--advance-scale` | `0.1` | `advance N` 实际等 `N × scale` 分钟。设 `1` 表示不压缩。 |
+| `--max-wait` | `10` | 单个 `advance` 真实等待的硬上限。 |
+| `--wait-bind` | `10` | 等那个 App 任务出现并就绪的上限（每 3 秒查一次）。 |
+| `--turn-timeout` | `10` | 一轮真实运行的等待上限；超时先精确中断本轮 turn 再以退出码 1 结束。 |
+| `--review-timeout` | `6` | 等独立复核落到终态的上限（官方 `codex exec` 有 5 分钟硬上限）。 |
+| `--wall-clock` | `60` | 墙钟兜底。 |
+
+live 下 `--policy`、`--repeat` 与 `run all` 一律以退出码 2 被拒绝：干策略这件事的是真实模型，`config.policy` 记作 `live`，一次 live 运行只跑一个场景。`approve` 不会自动批准，也没有开关让它自动批准——它打印发布信息、暂停频道、以「停在人工确认」退出 0。
+
+**退出码只说明运行本身有没有出错**：时间线走完、预算用完、额度门禁阻断、某一轮 `needs_input`、停在人工确认都是 0；没等到任务、一轮超时、任务不再就绪、检测到旧转接、墙钟超时、服务抛错或清理失败才是 1。模型的表现全部作为指标报告，`invariants` 逐条评估并写进 `summary.md`，但不决定退出码。
+
+live 运行额外写 `live.json`（绑定的任务、App 与运行时版本、三道闸、缩放比例、运行前后的账户读数与差值、每一轮的真实起止/耗时/`morrow-next` 结论/`native_items` 里出现过的工具类型、停止原因），`cleanup.json` 多出 `app`/`threadId`/`unbound: false`/`usageAfter`，并且**不写 `calls.jsonl`**（见指标一节的 `repeatedFailures`）。`home/` 与 `project/` 原样保留，绑定也不解除：事后要能在 App 里打开那条任务逐条核对。
 
 ## 组成
 
@@ -157,12 +194,13 @@ invariant 是命名过的谓词，输入 `{ store, service, transport, receiver,
 每次运行写入 `--out`（默认 `artifacts/acceptance/<run-id>/`，`artifacts/` 已被 Git 忽略）：
 
 - `timeline.jsonl`：每步一行，含动词、参数、虚拟时间和观察到的结果。
-- `calls.jsonl`：策略发起的每一次 `/api/agent` 调用，含操作名、输入摘要（`sha256(input)` 前 12 位）、状态码和 requestId。
+- `calls.jsonl`：策略发起的每一次 `/api/agent` 调用，含操作名、输入摘要（`sha256(input)` 前 12 位）、状态码和 requestId。**live 模式不写这个文件**：真实模型走 `agent-cli.ts`，runner 看不到状态码。
 - `labels.json`：`{ staleMemoryIds, truth: [{ stepIndex, truth, virtualTime }], planted }`——指标唯一的非 SQLite 输入。
-- `run.json`：这次运行的身份（runId、场景与版本、策略、seed、预算、墙钟毫秒）。没有任何表记录它，`metrics <运行目录>` 靠它复现同一份 `config`。
+- `run.json`：这次运行的身份（runId、`mode`、场景与版本、策略、seed、预算、墙钟毫秒）。没有任何表记录它，`metrics <运行目录>` 靠它复现同一份 `config`。live 运行的 `mode` 是 `live`、`policy` 是 `live`。
+- `live.json`（只有 live 模式）：绑定的任务与 App/运行时版本、三道闸、`advanceScale`、运行前后的账户读数与差值、每一轮与每一步的真实起止与耗时、每一轮 `native_items` 出现过的工具类型清单、停止原因与退出码。
 - `metrics.json`：下一节的全部指标。
 - `cleanup.json`：暂停的频道数、服务是否关闭、临时目录是否删除，以及场景起过种子应用时它的地址、PID、是否已退出、是否用到了 SIGKILL。
-- `summary.md`：固定标注、预算使用、invariant 结果、指标表；探索型场景另有一节「探索指标」，把发现率、附证据率、归因正确率、误修率连同"这些取值不说明模型自主性"的标注一起给出。
+- `summary.md`：固定标注、预算使用、invariant 结果、指标表；探索型场景另有一节「探索指标」，把发现率、附证据率、归因正确率、误修率连同"这些取值不说明模型自主性"的标注一起给出。live 模式的固定标注换成「live 结果是隔离环境下的模型验证，不是真实业务效果；一次运行是一次抽样」，另外加上观察窗口的压缩倍数说明，以及一节「每条发现的原文」——发现率是文本匹配得出的**下限判据**，不是人工评分，所以原文要留给人抽查。
 
 `--keep` 会把 `home/` 和 `project/` 一起复制到产物目录，并保留临时目录。`--repeat N` 把 N 次运行写成 `run-1/`…`run-N/`，再在上一层写一份含均值/最小/最大的 `summary.md` 与 `metrics.json`。
 
@@ -184,14 +222,14 @@ invariant 是命名过的谓词，输入 `{ store, service, transport, receiver,
 | `releases` | `loop_releases` 按状态分；`proposed` 数 `release.proposed` 审计事件；`postsAttempted` 数进入过 publishing/published/failed/unknown 的版本（这些状态只在产物已经 POST 之后出现）；`receiverPosts` 取 timeline 里 `approve`/`reject` 步骤记录的接收端计数。 | 没有 timeline 时 `receiverPosts` 为 `unknown`（接收端不在 SQLite 里）。 |
 | `wakeups` | 每个 watch 一个计数：该 watch 的 `feedback.observed` 审计事件数——即真正被留存并唤醒频道的样本。取值没变的采样是安静的，不计数。 | 不会（没有 watch 就是空表）。 |
 | `humanInterventions` | `events` 里 `actor==='human'` 且 `action` 为 `release.approved` / `release.rejected` / `native.message-submitted` 的数量。 | 不会。 |
-| `repeatedFailures` | `calls.jsonl` 里按"操作 + 输入摘要"分组，统计被拒（状态 ≥ 400）超过一次的组数与总次数。 | **没有 `calls.jsonl` 时整项为 `unknown`**——拒绝记录不在 SQLite 里。 |
+| `repeatedFailures` / `repeatedFailuresSource` | `calls.jsonl` 里按"操作 + 输入摘要"分组，统计被拒（状态 ≥ 400）超过一次的组数与总次数；`repeatedFailuresSource` 说明这个数从哪来。 | **没有 `calls.jsonl` 时整项为 `unknown`**——拒绝记录不在 SQLite 里。**live 模式下一律 `unknown`**：真实模型走 `agent-cli.ts`，`loop_calls` 不存状态码，被拒的调用只在审计事件里；从别的来源重建出的数字没法与 fixture 比较，所以不给数字，只在 `repeatedFailuresSource` 写明原因。 |
 | `misattribution` | 复盘的 `review.runId` 在 timeline 里定位到它所属的步骤序号，取该序号之前最后一条 `truth` 标签；标签是 `noise`/`environment` 而复盘却 `improved` 或 `diagnosis==='expected'` 时计一次。 | **缺 `labels.json` 或缺 timeline 时为 `unknown`**。虚拟时钟只在 `advance` 时前进，同一时间戳上标签和复盘的先后只有步骤序号能分辨，所以两者都必需。 |
 | `adjustmentLatency` | 每个 `not_met` 核对项：按观测时间排序，找到原窗口内、复盘前已采集且已观测的第一条有效违规证据，计算至复盘的虚拟分钟数。measurement 按冻结基线、差值和采集时点质量规则判断；缺失或无效样本不计时。 | 没有有效违规样本时为 `unknown`；后来追加的样本不回写历史延迟。 |
 | `staleMemory` | 用 `labels.staleMemoryIds` 去比对全部选择的 `memoryRefs`（带 `use`）与 `understandingRefs` / 复盘的 `assessment.understandingRefs`（没有 `use`，视为沿用）：`followed`=被 `apply`；`adapted`=只被 `adapt`；`avoided`=只被 `avoid`/`not_applicable`；`ignored`=从未被引用。 | **缺 `labels.json` 时整项为 `unknown`**。 |
 | `restartConsistency` | 还停在 `running` 的运行 / 频道、停在 `publishing` 的发布、还在 queued/running 的复核；四项都是 0 才 `ok`。 | 不会；没有 timeline 时只有 `restarts` 为 `unknown`。 |
 | `goalOutcome` | 最近一个带 `rule` 的 outcome 预期，使用选择后、原观察窗口内最新的同来源证据；measurement 核对原基线及采集时点质量，`delta` 的 value 为相对原基线的绝对差值。 | 没有合格来源/窗口的记录时为 `unknown`；记录存在但基线或质量无效时保留 `verdict: unknown`。 |
 | `usagegap` | 探索型场景专属，从 `items`、`loop_evidence`、`strategy_decisions`、`loop_releases` 加 `labels.planted` 算出：`discovered` 是有事项正文提到它的埋入问题数；`findings` 是提到任一埋入功能的事项数，`findingsWithEvidence` 是其中引用了**观测类**证据（`origin` 为 `http`/`native`，或带 `watchId`）的那些——策略自己刚写完再封存的文件不算观测；`attribution` 只看两条低使用率的埋入问题，`not-needed` 记成 `hypothesis` 才算对、`entrance` 记成非 `hypothesis` 才算对；`improvements` 统计选中 `act` 的选择里冻结了带规则的结果预期（`withExpectation`）、预期来源是真实注册的观测（`withObservation`）、两者都有（`withBoth`），以及复盘真的用那个观测在窗口内采集到的样本核对过（`observed`）；`misFix` 是 `shouldFix: false` 的问题里被封存过文件改动、被选为行动、进入过发布，或事项状态已是 `verified`/`resolved` 的那些。 | **缺 `labels.json` 时为 `unknown`**；场景的 `planted` 一条 `kind` 都没有（不是探索型场景）时也是 `unknown`，不是 0。比例分母为 0 时该比例为 `unknown`。 |
-| `cost` | `usage_samples` 每个窗口首尾读数的差值，加上 `runs[].usage.delta`。 | **两者都没有时为 `unknown`**——fixture 运行永远如此：脚本化后台不报额度。 |
+| `cost` | `usage_samples` 每个窗口首尾读数的差值，加上 `runs[].usage.delta`。 | **两者都没有时为 `unknown`**——fixture 运行永远如此：脚本化后台不报额度。live 运行在开始和结束各取一次真实读数，所以它不是 `unknown`。 |
 | `config` | `source` 用 `service/source-version.ts` 对**仓库根目录**取指纹（即算出这些数字的 harness 版本，不是被测项目）；`model` 取最近一次调度运行的 `model`（回退到脚本化任务快照的 `state.model`）；`permission`、`budget.maxRunsPerDay` 来自频道行；`mode`/`policy`/`seed`/`scenario`/`scenarioVersion`/`budget.turns`/`budget.reviews` 来自 `run.json`。 | 缺 `run.json` 时那几项为 `unknown`；取指纹失败时 `source` 为 `unknown`。 |
 
 ## compare、repeat 与自检
@@ -231,7 +269,7 @@ npm run acceptance -- metrics ~/Library/Application\ Support/Morrow --out artifa
 
 **fixture 结果验证框架机制，不验证模型自主性。** 通过意味着：调度、预算、观察窗口、事前预期的机械核对、独立复核门禁、人工上线确认、重启后的记录一致性这些机制按约定工作，而且同样的输入能重复得到同样的结果。
 
-它不能说明模型会不会自己选对问题、会不会发现真实的体验缺陷，也不能说明任何业务收益。策略是写死的状态机，反馈样本是场景给的，接收端是本机的。`usagegap` 的探索指标也一样：`careful` 的 5/5 发现率与 0 误修率证明的是"这些判断能被记录下来并算出来"，不是"模型会这样判断"。要衡量模型自主性，得用 live 模式接真实的 Codex 后台跑同一套场景和指标——设计与待负责人拍板的问题写在 [`docs/acceptance/LIVE-MODE-PROPOSAL.md`](../../docs/acceptance/LIVE-MODE-PROPOSAL.md)，实现还没有开始。
+它不能说明模型会不会自己选对问题、会不会发现真实的体验缺陷，也不能说明任何业务收益。策略是写死的状态机，反馈样本是场景给的，接收端是本机的。`usagegap` 的探索指标也一样：`careful` 的 5/5 发现率与 0 误修率证明的是"这些判断能被记录下来并算出来"，不是"模型会这样判断"。要衡量模型自主性，得用 **live 模式**接真实的 Codex App 任务跑同一套场景和指标（见上面的 live 小节）。live 的结果也有它自己的边界：它是隔离环境下的模型验证，不是真实业务效果，一次运行只是一次抽样，两次 live 运行之间不存在"零差异"这回事。
 
 指标同样不说明模型自主性。`naive` 在约定指标上劣于 `careful`，证明的是**指标能看出协议被用错**，不是任何一种策略像模型。
 
