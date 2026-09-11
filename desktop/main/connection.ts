@@ -11,6 +11,8 @@ import type {
   EventsPage,
   EventsQuery,
   Snapshot,
+  UpgradeHandshake,
+  UpgradeState,
   WorkspaceEvent,
 } from '../shared/types';
 import { connectionConfig } from './validation';
@@ -42,6 +44,8 @@ export class ServiceConnection {
   private error = '';
   private remoteToken = '';
   private tunnel?: ChildProcess;
+  /** The local daemon this app started, when it started one; an adopted daemon has no child here. */
+  private daemon?: ChildProcess;
   private generation = 0;
   private transitioning = false;
   private initialized?: Promise<void>;
@@ -206,6 +210,11 @@ export class ServiceConnection {
         child.once('error', reject);
       });
       child.unref(); // The independent daemon intentionally survives app shutdown.
+      // Kept only to observe its exit during a version switch; nothing here ever signals it.
+      this.daemon = child;
+      child.once('exit', () => {
+        if (this.daemon === child) this.daemon = undefined;
+      });
     } finally {
       await log.close();
     }
@@ -367,6 +376,44 @@ export class ServiceConnection {
   }
   async state(): Promise<Snapshot> {
     return this.request<Snapshot>('state');
+  }
+  /** Which connection is in use, so a remote session never drives this Mac's version switch. */
+  currentMode(): ConnectionConfig['mode'] {
+    return this.config.mode;
+  }
+  /** The exit of the daemon this app started, or undefined for a daemon it adopted. */
+  daemonExit(): Promise<void> | undefined {
+    const child = this.daemon;
+    if (!child || child.exitCode !== null || child.signalCode !== null) return child ? Promise.resolve() : undefined;
+    return new Promise<void>((resolve) => child.once('exit', () => resolve()));
+  }
+  /**
+   * Whether the local daemon has really gone: it stopped answering health and its lock is no longer
+   * held by a live process. Nothing is signalled; a stale lock from a crash still counts as gone.
+   */
+  async daemonAbsent(): Promise<boolean> {
+    if ((await this.probe(this.localPort)) === 'online') return false;
+    try {
+      const lock = JSON.parse(await readFile(join(this.dataDirectory, 'daemon.lock'), 'utf8')) as { pid?: number };
+      if (!Number.isInteger(lock.pid) || (lock.pid as number) <= 0) return true;
+      process.kill(lock.pid as number, 0);
+      return false;
+    } catch (error) {
+      return (error as NodeJS.ErrnoException).code !== 'EPERM';
+    }
+  }
+  /** The lifecycle state of the local daemon; the handshake routes accept the desktop credential only. */
+  upgradeState(): Promise<UpgradeState> {
+    return this.requestDirect<UpgradeState>('upgrade');
+  }
+  acknowledgeUpgrade(body: UpgradeHandshake): Promise<UpgradeState> {
+    return this.requestDirect<UpgradeState>('upgrade/acknowledge', 'POST', body);
+  }
+  restartUpgrade(body: UpgradeHandshake): Promise<UpgradeState> {
+    return this.requestDirect<UpgradeState>('upgrade/restart', 'POST', body);
+  }
+  reportUpgradeBlocked(body: UpgradeHandshake & { reason: string }): Promise<UpgradeState> {
+    return this.requestDirect<UpgradeState>('upgrade/blocked', 'POST', body);
   }
   async events(query: EventsQuery): Promise<EventsPage> {
     await this.initialize();

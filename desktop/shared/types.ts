@@ -19,6 +19,12 @@ export type {
   FeedbackWatch,
 } from '../../service/autonomy-types';
 export type { Understanding, StrategyDecision, DecisionView, StrategyView } from '../../service/strategy-types';
+export type { UpgradeBlocker, UpgradePhase, UpgradeRecord, UpgradeState } from '../../service/upgrade';
+/** Both handshake routes carry the boot they were issued for and the version they mean. */
+export interface UpgradeHandshake {
+  fromBootId: string;
+  targetFingerprint: string;
+}
 export type RuntimeID = 'codex';
 /** Runtimes that older records may still reference. Their records stay readable but never execute. */
 export type LegacyRuntimeID = 'claude' | 'trae';
@@ -241,6 +247,8 @@ export interface Snapshot {
   releases?: Release[];
   settings?: Settings;
   usage?: UsageStatus;
+  /** The automatic version switch; absent from services older than this field. */
+  upgrade?: import('../../service/upgrade').UpgradeState;
 }
 export const emptySnapshot: Snapshot = { projects: [], channels: [], items: [], runs: [], events: [], runtimes: [] };
 export interface ConnectionConfig {
@@ -443,6 +451,9 @@ export interface DesktopAPI {
   reconcileRelease?(id: string): Promise<Release>;
   /** The sealed script text of a `local-script` release, so a human can read it before approving. */
   getReleaseScript?(id: string): Promise<ReleaseScript>;
+  /** The automatic version switch: its state, and asking for it now. Absent on older desktops. */
+  getUpgrade?(): Promise<import('../../service/upgrade').UpgradeState>;
+  requestUpgradeRestart?(): Promise<void>;
   getState(): Promise<Snapshot>;
   getConnection(): Promise<ConnectionInfo>;
   connect(config: ConnectionConfig): Promise<ConnectionInfo>;

@@ -39,6 +39,7 @@ import {
 
 import { launchNativeSession } from './native-session';
 import { codexAppLink } from './codex-link';
+import { bundleFromResources, readInstalledFingerprint, UpgradeHandover } from './upgrade';
 import type { NativeSessionTarget } from '../shared/types';
 
 const dirname = fileURLToPath(new URL('.', import.meta.url));
@@ -58,6 +59,33 @@ app.setPath('userData', explicitDataDirectory ? join(explicitDataDirectory, 'des
 app.enableSandbox();
 const service = new ServiceConnection();
 let window: BrowserWindow | null = null;
+let relaunching = false;
+/**
+ * This app's half of the automatic version switch. It polls the local daemon in the main process, so
+ * a closed window or a hidden app still completes a handover, and it only ever relaunches this app
+ * after the old daemon has really gone. Nothing here signals or kills a process.
+ */
+const handover = new UpgradeHandover({
+  state: () => service.upgradeState().catch(() => undefined),
+  acknowledge: (body) => service.acknowledgeUpgrade(body),
+  restart: (body) => service.restartUpgrade(body),
+  blocked: (body) => service.reportUpgradeBlocked(body),
+  bundlePath: app.isPackaged ? bundleFromResources(process.resourcesPath) : '',
+  dataDirectory: service.dataDirectory,
+  mode: () => service.currentMode(),
+  installedFingerprint: readInstalledFingerprint,
+  childExit: () => service.daemonExit(),
+  daemonGone: () => service.daemonAbsent(),
+  relaunch: async () => {
+    if (relaunching) return;
+    relaunching = true;
+    // Close what this app owns before leaving: `app.exit` does not run the before-quit handler.
+    await service.stopTunnel().catch(() => undefined);
+    app.relaunch();
+    app.exit(0);
+  },
+  log: (message) => console.log(`Morrow upgrade: ${message}`),
+});
 
 function trustedURL(value: string): boolean {
   try {
@@ -292,6 +320,9 @@ function registerIPC(): void {
     const target = await service.request<NativeSessionTarget>(`channels/${id(channelId)}/native-handoff`, 'POST', {});
     await launchNativeSession(target);
   });
+  handle('get-upgrade', 0, () => service.upgradeState());
+  // The person asking for the switch runs the same verified handover, never a separate shortcut.
+  handle('request-upgrade-restart', 0, () => handover.request());
   handle('load-demo', 0, () => service.request('demo', 'POST', {}));
   handle('refresh-runtimes', 0, () => service.request('runtimes/refresh', 'POST', {}));
   handle('get-events', 1, (query) => service.events(eventsInput(query)));
@@ -423,7 +454,8 @@ else {
         copyright: 'Morrow · 本地优先的持续 Agent 工作空间',
       });
       createWindow();
-      void service.initialize();
+      // The handover polls only after the first connection attempt settled, so it reads a real mode.
+      void service.initialize().finally(() => handover.start());
       app.on('activate', () => {
         if (!BrowserWindow.getAllWindows().length) createWindow();
       });
@@ -437,9 +469,10 @@ else {
   });
   let quitting = false;
   app.on('before-quit', (event) => {
-    if (quitting) return;
+    if (quitting || relaunching) return;
     event.preventDefault();
     quitting = true;
+    handover.stop();
     // Wait only for the SSH tunnel owned by this app. The independent daemon stays running.
     void service.stopTunnel().finally(() => app.quit());
   });

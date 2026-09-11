@@ -30,7 +30,7 @@ test('while a switch waits, every entry point that would start work is refused a
   try {
     captureExit(fixture);
     await fixture.install(installed);
-    assert.equal(record(fixture).phase, 'pending');
+    assert(['pending', 'draining'].includes(record(fixture).phase));
     const refused = async (method: string, url: string, body?: unknown) => {
       const value = await s.api(method, url, body, 409);
       assert.match(value.error, switching, url);

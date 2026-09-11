@@ -80,7 +80,6 @@ test('a published receipt for this daemon own bundle records one pending switch 
         targetCommit: record.targetCommit,
         installedBundle: record.installedBundle,
         fromBootId: record.fromBootId,
-        phase: record.phase,
       },
       {
         id: installed,
@@ -89,14 +88,15 @@ test('a published receipt for this daemon own bundle records one pending switch 
         targetCommit,
         installedBundle: bundlePath,
         fromBootId: identity.bootId,
-        phase: 'pending',
       }
     );
+    // The scheduler moves a fresh request into draining on its own; both phases refuse new work.
+    assert(['pending', 'draining'].includes(record.phase));
     // The request is a record, not an action: nothing was posted, and the service keeps serving.
     assert.equal(s.posts, 0);
     const state = await s.api('GET', '/api/upgrade');
     assert.deepEqual(state.identity, { ...identity, dataDirectory: s.home });
-    assert.equal(state.upgrade.phase, 'pending');
+    assert(['pending', 'draining'].includes(state.upgrade.phase));
     assert.equal(state.idle, true);
     assert.deepEqual(state.blockers, []);
     assert.equal(state.exitCode, 75);
@@ -148,11 +148,12 @@ test('the same target is requested once, and a build reinstalled over itself is 
   try {
     const first = await publishLocal(['publish', bundlePath, installed, targetCommit], '第一次安装');
     const record = upgrades(s)[0];
-    assert.equal(record.phase, 'pending');
+    assert(['pending', 'draining'].includes(record.phase));
     // A second receipt for the same target neither duplicates the record nor resets the phase it
     // reached. The receipt is delivered directly because approving another publication while a
     // switch waits is refused (covered by the draining tests).
-    s.store.put('upgrades', { ...record, phase: 'draining', acknowledgedAt: new Date().toISOString() });
+    // Draining, but not yet handed over, so the scheduler leaves the record where this test put it.
+    s.store.put('upgrades', { ...record, phase: 'draining' });
     const again = await s.call('release.propose', { ...s.local(), title: '重复安装' });
     s.store.put('loop_releases', { ...s.engine.loop.release(again.id), status: 'publishing' });
     s.engine.loop.receipt(again.id, {
@@ -217,6 +218,7 @@ test('a restart reconciles an unfinished request against the build actually runn
   try {
     await publishLocal(['publish', bundlePath, installed, targetCommit]);
     const pending = upgrades(s)[0];
+    assert(['pending', 'draining'].includes(pending.phase));
     // Still the old build after a restart: the reason is kept and nothing relaunches again.
     const stale = await s.restart();
     const blocked = stale.store.all<UpgradeRecord>('upgrades')[0];

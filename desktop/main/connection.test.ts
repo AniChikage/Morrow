@@ -47,6 +47,44 @@ afterEach(async () => {
   await rm(directory, { recursive: true, force: true });
 });
 
+test('the lifecycle routes use the local daemon and the desktop credential', async () => {
+  const seen: Array<{ url: string; method?: string; body?: unknown }> = [];
+  reply = (url, init) => {
+    seen.push({ url, method: init?.method, body: init?.body });
+    if (url.endsWith('/health')) return json({ ok: true, service: 'morrow' });
+    return json({ identity: { bootId: 'boot-1' }, idle: true, blockers: [], exitCode: 75, reminderMs: 600000 });
+  };
+  expect((await service.upgradeState()).identity.bootId).toBe('boot-1');
+  await service.acknowledgeUpgrade({ fromBootId: 'boot-1', targetFingerprint: 'b'.repeat(64) });
+  await service.restartUpgrade({ fromBootId: 'boot-1', targetFingerprint: 'b'.repeat(64) });
+  await service.reportUpgradeBlocked({ fromBootId: 'boot-1', targetFingerprint: 'b'.repeat(64), reason: '超时' });
+  expect(seen.map((entry) => `${entry.method || 'GET'} ${entry.url.split('/api/')[1]}`)).toEqual([
+    'GET upgrade',
+    'POST upgrade/acknowledge',
+    'POST upgrade/restart',
+    'POST upgrade/blocked',
+  ]);
+  expect(service.currentMode()).toBe('local');
+});
+
+test('an adopted daemon counts as gone only once health is offline and its lock is free', async () => {
+  // Answering health means the daemon is still there, whatever the lock file says.
+  expect(await service.daemonAbsent()).toBe(false);
+  reply = () => {
+    throw new TypeError('fetch failed', { cause: { code: 'ECONNREFUSED' } });
+  };
+  expect(await service.daemonAbsent()).toBe(true);
+  await writeFile(join(directory, 'daemon.lock'), JSON.stringify({ pid: process.pid, nonce: 'n' }));
+  expect(await service.daemonAbsent()).toBe(false);
+  // A stale lock from a crashed daemon still counts as gone; nothing is ever signalled to check.
+  await writeFile(join(directory, 'daemon.lock'), JSON.stringify({ pid: 0x7ffffff, nonce: 'n' }));
+  expect(await service.daemonAbsent()).toBe(true);
+  await writeFile(join(directory, 'daemon.lock'), 'not json');
+  expect(await service.daemonAbsent()).toBe(true);
+  // This app adopted a running daemon, so it has no child exit to watch.
+  expect(service.daemonExit()).toBeUndefined();
+});
+
 test('a running legacy NoHuman service remains usable after the Morrow rename', async () => {
   reply = (url) => (url.endsWith('/health') ? json({ ok: true, service: 'nohuman' }) : json(snapshot));
   const legacyService = new ServiceConnection();
