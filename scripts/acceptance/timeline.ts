@@ -459,6 +459,13 @@ export type LiveRunner = {
     finishedAt: string;
     wallMs: number;
     tools: string[];
+    /**
+     * 这一轮不是本步骤 `makeDue` 开的，而是真实调度器自己发起、被这个 `turn` 步骤接管的：
+     * `running` 是接管时还在跑，`completed` 是接管时已经跑完而 runner 从未等过。
+     */
+    adopted?: 'running' | 'completed';
+    /** 接管的轮次起止取自哪里：`run` 是 `runs` 行上的时间，`clock` 是行上没有、用了接管时的当前时刻。 */
+    timesFrom?: 'run' | 'clock' | 'mixed';
   }>;
   stop?: { reason: LiveStopReason; detail: string };
   /** 原生状态的节流缓存：每次等待都查一遍会变成一串真实 IPC 往返。 */
@@ -472,12 +479,25 @@ const livePollMs = 1_000;
 export const bindPollMs = 3_000;
 /** 轮询原生状态是一次真实 IPC 往返，等待中最多这么频繁地查。 */
 const statusEveryMs = 5_000;
+/** `advance` 的真实等待切成不超过这么长的片，每片之间过一遍 `guard`。 */
+const advanceSliceMs = 5_000;
 
 /** 本次运行里**新出现**的 `morrow-schedule` 行；真实调度器自己发起的轮次也算。 */
 function observeRuns(runner: LiveRunner) {
   for (const row of runner.session.runs())
     if (row.source === 'morrow-schedule' && !runner.baseline.has(row.id)) runner.seen.add(row.id);
   return runner.seen.size;
+}
+
+/**
+ * 本次运行新出现（不在 `baseline`）、而且还没有被任何时间线步骤记进 `runner.turns` 的
+ * `morrow-schedule` 行。真实调度器自己发起的轮次就在这里等着被下一个 `turn` 步骤接管。
+ */
+function unrecordedRuns(runner: LiveRunner): RunView[] {
+  const recorded = new Set(runner.turns.map((turn) => turn.runId));
+  return runner.session
+    .runs()
+    .filter((row) => row.source === 'morrow-schedule' && !runner.baseline.has(row.id) && !recorded.has(row.id));
 }
 
 /**
@@ -581,49 +601,65 @@ async function executeLive(runner: LiveRunner, step: Step, index: number): Promi
 }
 
 /**
- * 一轮真实轮次：把频道置为到期，剩下的交给真实调度器，然后只等**本次运行新出现**的
- * `morrow-schedule` 行结束。0.9.5 验收踩过的坑是同步进来的历史 `native-app` 轮次被错认成本轮结果，
- * 所以既按来源过滤，也按"运行开始前就存在的行"排除。
+ * 一轮真实轮次。真实调度器不停，所以一轮以 `continue` 结束 30 秒后它会自己开下一轮：走到这个步骤时
+ * 可能已经有一轮在 `running`，也可能已经跑完了一轮 runner 从未等过。所以先**接管**那样的轮次，而不是
+ * 无条件 `makeDue`——不接管有三个后果：`makeDue` 会把正在跑的频道状态覆写成 `waiting`；调度器自己开
+ * 的那轮计进 `seen` 却不进 `runner.turns`，于是「每一轮」表比 `spentTurns` 少行；一个时间线 `turn` 实
+ * 际消耗两轮。
+ *
+ * 顺序是：先找本次运行新出现（不在 `baseline`）且尚未记进 `runner.turns` 的 `morrow-schedule` 行——有
+ * `running` 的就等它结束并记为本步骤的轮次，有已完成但未记录的就直接记下（不再开新轮）；两者都没有
+ * 才 `makeDue` 并等新行。`--budget` 因此只挡"开新轮"这件事：接管已经发生的轮次不多花额度。
+ *
+ * 0.9.5 验收踩过的坑是同步进来的历史 `native-app` 轮次被错认成本轮结果，所以既按来源过滤，也按"运行
+ * 开始前就存在的行"排除。
  */
 async function liveTurn(runner: LiveRunner, stepIndex: number): Promise<Record<string, unknown>> {
   const before = new Set(runner.seen);
-  if (observeRuns(runner) >= runner.budget)
-    throw new LiveStop('budget-exhausted', `已经用掉 ${runner.seen.size}/${runner.budget} 轮，下一轮会超出 --budget`);
-  const known = new Set(runner.session.runs().map((row) => row.id));
-  runner.session.makeDue();
-  const startedAt = runner.clock.now();
-  const started = await waitLive(
-    runner,
-    () => runner.session.runs().find((row) => !known.has(row.id) && row.source === 'morrow-schedule'),
-    () => `真实调度器发起一轮 morrow-schedule 运行（${liveGateDetail(runner)}）`,
-    runner.limits.turnTimeoutMs
-  ).catch((error) => {
-    throw error instanceof LiveStop ? error : new LiveStop('turn-timeout', message(error));
-  });
+  observeRuns(runner);
+  const unrecorded = unrecordedRuns(runner);
+  const takeover = unrecorded.find((row) => row.status === 'running') || unrecorded[0];
+  const adopted: 'running' | 'completed' | undefined = takeover
+    ? takeover.status === 'running'
+      ? 'running'
+      : 'completed'
+    : undefined;
+  let startedAt = runner.clock.now();
+  let started: RunView;
+  if (takeover) {
+    started = takeover;
+    runner.log(
+      adopted === 'running'
+        ? `真实调度器已经在跑 ${takeover.id}，这一步接管它并等它结束，不再 makeDue。`
+        : `真实调度器自己跑完了 ${takeover.id} 而 runner 从未等过，这一步直接把它记为本步骤的轮次，不再开新轮。`
+    );
+  } else {
+    if (runner.seen.size >= runner.budget)
+      throw new LiveStop('budget-exhausted', `已经用掉 ${runner.seen.size}/${runner.budget} 轮，下一轮会超出 --budget`);
+    const known = new Set(runner.session.runs().map((row) => row.id));
+    runner.session.makeDue();
+    startedAt = runner.clock.now();
+    started = await waitLive(
+      runner,
+      () => runner.session.runs().find((row) => !known.has(row.id) && row.source === 'morrow-schedule'),
+      () => `真实调度器发起一轮 morrow-schedule 运行（${liveGateDetail(runner)}）`,
+      runner.limits.turnTimeoutMs
+    ).catch((error) => {
+      throw error instanceof LiveStop ? error : new LiveStop('turn-timeout', message(error));
+    });
+  }
   runner.seen.add(started.id);
-  const finished = await waitLive(
-    runner,
-    () => {
-      const row = runner.session.runs().find((candidate) => candidate.id === started.id);
-      return row && row.status !== 'running' ? row : undefined;
-    },
-    () => `轮次 ${started.id} 真实结束（当前 ${runner.session.runs().find((row) => row.id === started.id)?.status}）`,
-    runner.limits.turnTimeoutMs - (runner.clock.now() - startedAt)
-  ).catch(async (error) => {
-    if (error instanceof LiveStop) throw error;
-    // 超时先精确中断本轮的 turn，再中止；不给原任务发别的停止请求。
-    const row = runner.session.runs().find((candidate) => candidate.id === started.id);
-    const interrupted = row?.nativeTurnId
-      ? await runner.session
-          .interrupt(row.nativeTurnId)
-          .then(() => '已请求停止本轮')
-          .catch((reason) => `中断失败：${message(reason)}`)
-      : '本轮还没有 nativeTurnId，未发中断';
-    throw new LiveStop('turn-timeout', `${message(error)}；${interrupted}`);
-  });
+  const finished = adopted === 'completed' ? started : await waitFinished(runner, started, startedAt);
   await runner.session.drain();
   const decision = runner.session.turnDecision(finished.id);
   const endedAt = runner.clock.now();
+  const times = adopted
+    ? adoptedTimes(finished, startedAt, endedAt)
+    : {
+        startedAt: new Date(startedAt).toISOString(),
+        finishedAt: new Date(endedAt).toISOString(),
+        wallMs: endedAt - startedAt,
+      };
   runner.turns.push({
     stepIndex,
     runId: finished.id,
@@ -634,10 +670,9 @@ async function liveTurn(runner: LiveRunner, stepIndex: number): Promise<Record<s
     ...(finished.nativeTurnId === undefined ? {} : { nativeTurnId: finished.nativeTurnId }),
     ...(finished.permission === undefined ? {} : { permission: finished.permission }),
     ...(finished.model === undefined ? {} : { model: finished.model }),
-    startedAt: new Date(startedAt).toISOString(),
-    finishedAt: new Date(endedAt).toISOString(),
-    wallMs: endedAt - startedAt,
+    ...times,
     tools: runner.session.turnTools(finished),
+    ...(adopted ? { adopted } : {}),
   });
   const result = {
     runId: finished.id,
@@ -647,7 +682,8 @@ async function liveTurn(runner: LiveRunner, stepIndex: number): Promise<Record<s
     channelStatus: runner.session.channel().status,
     spentTurns: runner.seen.size,
     newThisRun: runner.seen.size - before.size,
-    wallMs: endedAt - startedAt,
+    wallMs: times.wallMs,
+    ...(adopted ? { adopted } : {}),
   };
   if (decision === 'needs_input') {
     const work = runner.session.channel().work;
@@ -663,6 +699,56 @@ async function liveTurn(runner: LiveRunner, stepIndex: number): Promise<Record<s
   }
   return result;
 }
+
+/**
+ * 等一轮真实结束。超时就先精确中断本轮的 turn，再中止；不给原任务发别的停止请求。接管进行中的轮次
+ * 走的也是这里，所以 `--turn-timeout` 从接管那一刻起算。
+ */
+async function waitFinished(runner: LiveRunner, started: RunView, startedAt: number): Promise<RunView> {
+  return waitLive(
+    runner,
+    () => {
+      const row = runner.session.runs().find((candidate) => candidate.id === started.id);
+      return row && row.status !== 'running' ? row : undefined;
+    },
+    () => `轮次 ${started.id} 真实结束（当前 ${runner.session.runs().find((row) => row.id === started.id)?.status}）`,
+    runner.limits.turnTimeoutMs - (runner.clock.now() - startedAt)
+  ).catch(async (error) => {
+    if (error instanceof LiveStop) throw error;
+    const row = runner.session.runs().find((candidate) => candidate.id === started.id);
+    const interrupted = row?.nativeTurnId
+      ? await runner.session
+          .interrupt(row.nativeTurnId)
+          .then(() => '已请求停止本轮')
+          .catch((reason) => `中断失败：${message(reason)}`)
+      : '本轮还没有 nativeTurnId，未发中断';
+    throw new LiveStop('turn-timeout', `${message(error)}；${interrupted}`);
+  });
+}
+
+/**
+ * 被接管的轮次不是 runner 开的，runner 的时钟量不到它的真实起止，所以优先取 `runs` 行上的
+ * `startedAt`/`finishedAt`；行上没有就退回接管时的当前时刻，并在 `timesFrom` 里标明哪一半是这么来的。
+ */
+function adoptedTimes(row: RunView, from: number, to: number) {
+  const start = msAt(row.startedAt) ?? from;
+  const end = msAt(row.finishedAt) ?? to;
+  const sources: Array<'run' | 'clock'> = [
+    msAt(row.startedAt) ? 'run' : 'clock',
+    msAt(row.finishedAt) ? 'run' : 'clock',
+  ];
+  return {
+    startedAt: new Date(start).toISOString(),
+    finishedAt: new Date(end).toISOString(),
+    wallMs: Math.max(0, end - start),
+    timesFrom: (sources[0] === sources[1] ? sources[0] : 'mixed') as 'run' | 'clock' | 'mixed',
+  };
+}
+
+const msAt = (text?: string) => {
+  const at = text ? Date.parse(text) : Number.NaN;
+  return Number.isFinite(at) ? at : undefined;
+};
 
 /**
  * 发布确认不自动做，也没有 `--allow-approve`：把发布信息打出来、暂停频道、以"停在人工确认"结束。
@@ -753,19 +839,29 @@ async function liveRestart(runner: LiveRunner): Promise<Record<string, unknown>>
 /**
  * 虚拟时钟不能用（见提案第 3 节），所以 `advance N` 是真实 `sleep(min(N × scale, --max-wait))`，真实
  * 耗时记进时间线。缩放意味着 `adjustmentLatency` 的绝对分钟数不可与 fixture 直接比较。
+ *
+ * 等待切成不超过 `advanceSliceMs` 的片，每片之间过一遍 `guard`：`--max-wait` 最长 10 分钟，一次
+ * `sleep` 到底会让这段时间里真实调度器自己发起的轮次不被计数，预算、额度门禁（`usageWait`）、
+ * `readyThreadCount` 掉 0、`restartRequired` 和墙钟也都要等到 sleep 结束才被发现。分片之后这些条件
+ * 最迟 5 秒就会被看到，`waitedMs` 仍然是 `clock.now()` 的真实差值，语义不变。
  */
 async function liveAdvance(runner: LiveRunner, minutes: number) {
   const wanted = minutes * runner.limits.advanceScale * 60_000;
   const waitMs = Math.min(wanted, runner.limits.maxWaitMs);
   const from = runner.clock.now();
   runner.log(`advance ${minutes} 分钟 × ${runner.limits.advanceScale} = 真实等待 ${Math.round(waitMs / 1000)} 秒`);
-  await runner.clock.sleep(waitMs);
+  const end = from + waitMs;
+  for (let left = waitMs; left > 0; left = end - runner.clock.now()) {
+    await runner.clock.sleep(Math.min(left, advanceSliceMs));
+    await guard(runner);
+  }
   return {
     minutes,
     advanceScale: runner.limits.advanceScale,
     plannedMs: Math.round(wanted),
     waitedMs: runner.clock.now() - from,
     cappedByMaxWait: wanted > runner.limits.maxWaitMs,
+    sliceMs: advanceSliceMs,
     at: new Date(runner.clock.now()).toISOString(),
   };
 }

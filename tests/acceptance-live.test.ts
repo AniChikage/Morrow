@@ -118,6 +118,8 @@ type Knobs = {
   decision?: string;
   /** `native.list` 依次返回的候选；最后一项重复。 */
   threads?: ThreadCandidate[][];
+  /** `native.list` 依次抛出的错误文本；`undefined` 表示这次照 `threads` 返回。最后一项重复。 */
+  threadErrors?: Array<string | undefined>;
   /** `native/status` 依次返回的状态；最后一项重复。 */
   statuses?: Array<Partial<NativeStatusView>>;
   /** 未关联时启动一轮的状态码。 */
@@ -133,6 +135,24 @@ type Knobs = {
   /** `pendingReviews()` 依次返回的数；最后一项重复。 */
   reviews?: number[];
   usageWaitAfterTurns?: number;
+  /** 第 N 次假时钟 `sleep` 之后频道被额度门禁挡住；用来在等待中途（例如 `advance` 里）触发门禁。 */
+  usageWaitAfterSleeps?: number;
+  /** 第 N 次假时钟 `sleep` 之后 `readyThreadCount` 掉到 0。 */
+  notReadyAfterSleeps?: number;
+  /**
+   * 真实调度器自己发起的一轮：到了第 `afterPolls` 次 `poll`（或第 `afterSleeps` 次 `sleep`）就往 `runs`
+   * 里塞一行 `morrow-schedule`，runner 从来没有 `makeDue` 过它。`status: 'running'` 的那行再过
+   * `finishAfterSleeps`（缺省 2）次 `sleep` 落到 `completed`。
+   */
+  schedulerRun?: {
+    afterPolls?: number;
+    afterSleeps?: number;
+    status: 'running' | 'completed';
+    finishAfterSleeps?: number;
+    decision?: string;
+    /** 已完成的那行带不带 `startedAt`/`finishedAt`；不带时接管的记录要标明起止取自接管时刻。 */
+    withTimes?: boolean;
+  };
   /** restart 之后原生连接一直恢复不了。 */
   notReadyAfterRestart?: boolean;
 };
@@ -175,8 +195,51 @@ function fake(knobs: Knobs = {}): Fake {
   let paused = false;
   let restarted = false;
   let turnsRun = 0;
+  let sleeps = 0;
+  let polls = 0;
   const next = <T>(rows: T[] | undefined, index: number, fallback: T): T =>
     rows && rows.length ? rows[Math.min(index, rows.length - 1)] : fallback;
+
+  /**
+   * 真实调度器自己开的一轮。runner 没有 `makeDue` 过它，所以它只能被时间线的下一个 `turn` 步骤接管；
+   * 塞进去的时机按 `poll` 或 `sleep` 的次数算，好让它落在某个步骤的中间。
+   */
+  let scheduled: RunView | undefined;
+  let scheduledAtSleep = 0;
+  const schedulerTick = () => {
+    const spec = knobs.schedulerRun;
+    if (!spec) return;
+    if (!scheduled) {
+      const due =
+        (spec.afterPolls !== undefined && polls >= spec.afterPolls) ||
+        (spec.afterSleeps !== undefined && sleeps >= spec.afterSleeps);
+      if (!due) return;
+      scheduledAtSleep = sleeps;
+      const withTimes = spec.withTimes !== false;
+      scheduled = {
+        id: 'run-scheduler',
+        source: 'morrow-schedule',
+        status: spec.status,
+        reportStatus: 'valid',
+        sessionId: 'thread-1',
+        nativeTurnId: 'turn-scheduler',
+        permission: 'native',
+        model: 'gpt-5.3-codex',
+        ...(withTimes ? { startedAt: new Date(now - 90_000).toISOString() } : {}),
+        ...(spec.status === 'completed' && withTimes ? { finishedAt: new Date(now - 30_000).toISOString() } : {}),
+      };
+      runs.push(scheduled);
+      tables.runs = runs.slice();
+      if (spec.status === 'completed') decisions.set(scheduled.id, spec.decision || 'continue');
+      return;
+    }
+    if (scheduled.status === 'running' && sleeps >= scheduledAtSleep + (spec.finishAfterSleeps ?? 2)) {
+      scheduled.status = 'completed';
+      scheduled.finishedAt = new Date(now).toISOString();
+      tables.runs = runs.slice();
+      decisions.set(scheduled.id, spec.decision || 'continue');
+    }
+  };
 
   const session: LiveSession = {
     home: '/nonexistent/home',
@@ -189,7 +252,12 @@ function fake(knobs: Knobs = {}): Fake {
     },
     nativeStatus: async () => {
       order.push('status');
-      return status({ ...next(knobs.statuses, statusCall++, {}), ...(restarted ? { readyThreadCount: 0 } : {}) });
+      const dropped = knobs.notReadyAfterSleeps !== undefined && sleeps >= knobs.notReadyAfterSleeps;
+      return status({
+        ...next(knobs.statuses, statusCall++, {}),
+        ...(restarted ? { readyThreadCount: 0 } : {}),
+        ...(dropped ? { readyThreadCount: 0, detail: '任务窗口已关闭' } : {}),
+      });
     },
     runUnbound: async () => {
       order.push('run-unbound');
@@ -197,6 +265,11 @@ function fake(knobs: Knobs = {}): Fake {
     },
     listThreads: async () => {
       order.push('list');
+      const failure = next<string | undefined>(knobs.threadErrors, threadCall, undefined);
+      if (failure) {
+        threadCall++;
+        throw new Error(failure);
+      }
       return next(knobs.threads, threadCall++, [{ id: 'thread-1', title: '任务', cwd: '/nonexistent/project' }]);
     },
     bind: async (threadId) => {
@@ -260,7 +333,8 @@ function fake(knobs: Knobs = {}): Fake {
       nextRunAt: '',
       maxRunsPerDay: 6,
       runsToday: turnsRun,
-      ...(knobs.usageWaitAfterTurns !== undefined && turnsRun >= knobs.usageWaitAfterTurns
+      ...((knobs.usageWaitAfterTurns !== undefined && turnsRun >= knobs.usageWaitAfterTurns) ||
+      (knobs.usageWaitAfterSleeps !== undefined && sleeps >= knobs.usageWaitAfterSleeps)
         ? { usageWait: { kind: 'reserve', window: 'weekly', resetsAt: '2026-09-15T00:00:00.000Z', since: '' } }
         : {}),
       ...(knobs.decision === 'needs_input'
@@ -272,6 +346,8 @@ function fake(knobs: Knobs = {}): Fake {
     turnDecision: (runId) => decisions.get(runId) || 'none',
     pollWatches: async () => {
       order.push('poll');
+      polls++;
+      schedulerTick();
       return { polled: 1, evidence: 1, statuses: ['watching'] };
     },
     pendingReviews: () => next(knobs.reviews, reviewCall++, 0),
@@ -338,6 +414,8 @@ function fake(knobs: Knobs = {}): Fake {
       now: () => now,
       sleep: async (ms) => {
         now += Math.max(0, ms);
+        sleeps++;
+        schedulerTick();
       },
     },
     log: (text) => logs.push(text),
@@ -502,6 +580,29 @@ test('列举到多于一个任务时中止并列出候选，不自动挑一个',
   assert.match(result.stop.detail, /thread-b/);
 });
 
+test('listThreads 抛错时继续等但不静默：打印一次错误，超时把最后一次错误写进 detail', async () => {
+  const failed = (instance: Fake) => instance.logs.filter((line) => line.includes('列举 App 任务失败'));
+
+  const recovered = await live([{ verb: 'turn' }], { threadErrors: ['ECONNREFUSED 127.0.0.1:1455', undefined] });
+  assert.equal(recovered.result.exitCode, 0);
+  assert.equal(recovered.result.live.threadId, 'thread-1', '一次失败之后仍然关联成功');
+  assert.equal(failed(recovered.fake).length, 1, '同一条错误只打印一次');
+  assert.match(failed(recovered.fake)[0], /ECONNREFUSED 127\.0\.0\.1:1455/);
+
+  const changed = await live([{ verb: 'turn' }], { threadErrors: ['后台还没连上', '任务列举超时', undefined] });
+  assert.deepEqual(
+    failed(changed.fake).map((line) => line.split('：').at(-1)),
+    ['后台还没连上', '任务列举超时'],
+    '错误文本变化时再打印一次'
+  );
+
+  const timedOut = await live([{ verb: 'turn' }], { threadErrors: ['后台还没连上'] }, { waitBindMinutes: 1 });
+  assert.equal(timedOut.result.stop.reason, 'no-app-task');
+  assert.equal(timedOut.result.exitCode, 1);
+  assert.match(timedOut.result.stop.detail, /最后一次列举失败：后台还没连上/);
+  assert.equal(failed(timedOut.fake).length, 1, '一直是同一条错误就不重复打印');
+});
+
 test('--wait-bind 内没等到任务就以退出码 1 结束', async () => {
   const { result } = await live([{ verb: 'turn' }], { threads: [[]] }, { waitBindMinutes: 1 });
   assert.equal(result.stop.reason, 'no-app-task');
@@ -563,6 +664,96 @@ test('turn 只认本次运行新出现的 morrow-schedule 行', async () => {
   assert.equal(result.timeline[0].result.runId, 'run-1', '同步进来的历史轮次不能被当成本轮结果');
   assert.equal(result.live.spentTurns, 1, '关联前就存在的轮次不计预算');
   assert.deepEqual(result.live.turns[0].tools, ['commandExecution', 'webSearch', 'toolCall:browser']);
+});
+
+test('turn 接管真实调度器已经在跑的那一轮，不再 makeDue', async () => {
+  const { result, fake: instance } = await live([{ verb: 'poll' }, { verb: 'turn' }], {
+    schedulerRun: { afterPolls: 1, status: 'running', finishAfterSleeps: 2 },
+  });
+  assert.equal(result.exitCode, 0);
+  assert.equal(result.stop.reason, 'timeline-finished');
+  assert.equal(
+    instance.order.filter((row) => row === 'make-due').length,
+    0,
+    '有轮次正在跑时不能 makeDue：那会把频道状态覆写成 waiting'
+  );
+  assert.equal(result.live.turns.length, 1);
+  assert.equal(result.live.turns[0].runId, 'run-scheduler');
+  assert.equal(result.live.turns[0].adopted, 'running');
+  assert.equal(result.live.turns[0].decision, 'continue');
+  assert.equal(result.live.turns[0].timesFrom, 'run');
+  assert.deepEqual(result.live.turns[0].tools, ['commandExecution', 'webSearch', 'toolCall:browser']);
+  assert.ok(
+    Date.parse(result.live.turns[0].startedAt) < Date.parse(result.live.steps[1].startedAt),
+    '接管的轮次起止取自 runs 行：它在这个步骤开始之前就起跑了'
+  );
+  assert.equal(result.timeline[1].result.runId, 'run-scheduler');
+  assert.equal(result.timeline[1].result.adopted, 'running');
+  assert.equal(result.live.spentTurns, 1);
+});
+
+test('turn 接管调度器自己跑完、runner 从未等过的那一轮，不再开新轮', async () => {
+  const { result, fake: instance } = await live([{ verb: 'poll' }, { verb: 'turn' }], {
+    schedulerRun: { afterPolls: 1, status: 'completed' },
+  });
+  assert.equal(result.exitCode, 0);
+  assert.equal(instance.order.filter((row) => row === 'make-due').length, 0, '已经跑完的那轮不该再开一轮');
+  assert.equal(result.live.turns.length, 1);
+  assert.equal(result.live.turns[0].runId, 'run-scheduler');
+  assert.equal(result.live.turns[0].adopted, 'completed');
+  assert.equal(result.live.turns[0].decision, 'continue');
+  assert.equal(result.live.turns[0].timesFrom, 'run');
+  assert.equal(result.live.turns[0].wallMs, 60_000, '起止取自 runs 行上的 startedAt/finishedAt');
+  assert.equal(result.live.spentTurns, 1);
+  assert.match(instance.logs.join('\n'), /直接把它记为本步骤的轮次/);
+
+  // 行上没有起止时退回接管时刻，并在记录里标明。
+  const noTimes = await live([{ verb: 'poll' }, { verb: 'turn' }], {
+    schedulerRun: { afterPolls: 1, status: 'completed', withTimes: false },
+  });
+  assert.equal(noTimes.result.live.turns[0].timesFrom, 'clock');
+  assert.equal(noTimes.result.live.turns[0].wallMs, 0);
+});
+
+test('被接管的轮次也进「每一轮」表：表行数与 spentTurns 对得上', async () => {
+  const { result, fake: instance } = await live(
+    [{ verb: 'turn' }, { verb: 'poll' }, { verb: 'turn' }],
+    { schedulerRun: { afterPolls: 1, status: 'completed' } },
+    { budget: 3 }
+  );
+  assert.equal(result.exitCode, 0);
+  assert.equal(result.stop.reason, 'timeline-finished');
+  assert.equal(
+    instance.order.filter((row) => row === 'make-due').length,
+    1,
+    '第二个 turn 接管调度器那轮，一个时间线 turn 不该消耗两轮'
+  );
+  assert.equal(result.live.spentTurns, 2);
+  assert.equal(result.live.turns.length, result.live.spentTurns, '「每一轮」表不能比 spentTurns 少行');
+  assert.deepEqual(
+    result.live.turns.map((turn) => [turn.runId, turn.adopted]),
+    [
+      ['run-1', undefined],
+      ['run-scheduler', 'completed'],
+    ]
+  );
+  assert.match(result.summary, /调度器（接管已完成）/);
+  assert.match(result.summary, /一样出现在这张表里/);
+});
+
+test('预算用完的那一刻仍然接管调度器已经跑过的轮次，挡住的是下一步要开的新轮', async () => {
+  const { result, fake: instance } = await live(
+    [{ verb: 'turn' }, { verb: 'poll' }, { verb: 'turn' }, { verb: 'turn' }],
+    { schedulerRun: { afterPolls: 1, status: 'completed' } },
+    { budget: 2 },
+    3
+  );
+  assert.equal(result.stop.reason, 'budget-exhausted');
+  assert.equal(result.exitCode, 0);
+  assert.equal(result.live.spentTurns, 2);
+  assert.equal(result.live.turns.length, 2, '第 3 步接管了调度器那轮，第 4 步才被预算挡住');
+  assert.equal(instance.order.filter((row) => row === 'make-due').length, 1);
+  assert.equal(result.live.remainingSteps, 1);
 });
 
 test('新出现的 native-app 轮次不算一轮，turn 会超时并精确中断', async () => {
@@ -701,6 +892,35 @@ test('--advance-scale 1 表示不压缩，报告如实说明', async () => {
   const { result } = await live([{ verb: 'advance', minutes: 5 }], {}, { advanceScale: 1 });
   assert.equal(result.timeline[0].result.waitedMs, 300_000);
   assert.match(result.summary, /观察窗口没有被压缩/);
+});
+
+test('advance 的等待分片过 guard：额度门禁与任务掉线在整段等待结束之前就被发现', async () => {
+  const blocked = await live(
+    [{ verb: 'advance', minutes: 20 }, { verb: 'turn' }],
+    { usageWaitAfterSleeps: 3 },
+    { advanceScale: 0.1, maxWaitMinutes: 10 }
+  );
+  assert.equal(blocked.result.stop.reason, 'usage-blocked');
+  assert.equal(blocked.result.exitCode, 0);
+  assert.match(blocked.result.stop.detail, /reserve（weekly 窗口）/);
+  assert.equal(blocked.result.timeline.length, 1, '后面的步骤不再执行');
+  assert.ok(
+    blocked.result.live.steps[0].wallMs < 120_000,
+    `advance 应当在整段 120 秒等待结束之前停下，实际等了 ${blocked.result.live.steps[0].wallMs}ms`
+  );
+
+  const notReady = await live(
+    [{ verb: 'advance', minutes: 20 }, { verb: 'turn' }],
+    { notReadyAfterSleeps: 2 },
+    { advanceScale: 0.1, maxWaitMinutes: 10 }
+  );
+  assert.equal(notReady.result.stop.reason, 'thread-not-ready');
+  assert.equal(notReady.result.exitCode, 1);
+  assert.match(notReady.result.stop.detail, /readyThreadCount=0/);
+  assert.ok(
+    notReady.result.live.steps[0].wallMs < 120_000,
+    `任务掉线应当在整段等待结束之前被发现，实际等了 ${notReady.result.live.steps[0].wallMs}ms`
+  );
 });
 
 /* ------------------------------- verify 与指导 ------------------------------- */

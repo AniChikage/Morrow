@@ -625,6 +625,10 @@ const stepFacts = (index: number, verb: string, from: number, to: number) => ({
 /**
  * 等到**恰好一个** cwd 与项目目录相符的 App 任务：0 个继续等，多于一个就中止并把候选列出来。自动挑
  * 一个会让「我们测的是哪个任务」变得不可知。
+ *
+ * `listThreads` 抛错时仍然继续等——人可能正在建任务，App 也可能短暂断连——但不静默：第一次失败、以及
+ * 错误文本变化时各打印一次，超时时把最后一次错误写进 `no-app-task` 的 detail。整整 `--wait-bind` 分钟
+ * 什么都不说，会让"后台根本没连上"和"人还没建任务"长得一样。
  */
 async function waitForThread(
   scenario: Scenario,
@@ -646,10 +650,16 @@ async function waitForThread(
     ].join('\n')
   );
   const end = deps.clock.now() + settings.waitBindMinutes * 60_000;
+  let lastError = '';
   for (;;) {
-    const threads = await session.listThreads().catch(() => []);
-    if (threads.length === 1) return threads[0].id;
-    if (threads.length > 1)
+    const threads = await session.listThreads().catch((error) => {
+      const text = message(error);
+      if (text !== lastError) deps.log(`列举 App 任务失败，继续等到 --wait-bind 用完：${text}`);
+      lastError = text;
+      return undefined;
+    });
+    if (threads?.length === 1) return threads[0].id;
+    if (threads && threads.length > 1)
       throw new LiveStop(
         'no-app-task',
         [
@@ -660,7 +670,8 @@ async function waitForThread(
     if (deps.clock.now() >= end)
       throw new LiveStop(
         'no-app-task',
-        `等了 ${settings.waitBindMinutes} 分钟也没有在 ${prepared.projectPath} 下看到 App 任务（场景 ${scenario.id}）`
+        `等了 ${settings.waitBindMinutes} 分钟也没有在 ${prepared.projectPath} 下看到 App 任务（场景 ${scenario.id}）` +
+          (lastError ? `；最后一次列举失败：${lastError}` : '')
       );
     await deps.clock.sleep(bindPollMs);
   }
@@ -759,13 +770,21 @@ function liveSummary(scenario: Scenario, result: LiveResult, settings: LiveSetti
     '',
     ...(live.turns.length
       ? [
-          '| 轮次 | 状态 | morrow-next | 真实耗时 | 模型 | 出现过的工具类型 |',
-          '| --- | --- | --- | --- | --- | --- |',
+          '| 轮次 | 发起 | 状态 | morrow-next | 真实耗时 | 模型 | 出现过的工具类型 |',
+          '| --- | --- | --- | --- | --- | --- | --- |',
           ...live.turns.map(
             (turn, index) =>
-              `| ${index + 1} | ${turn.status}${turn.reportStatus ? `/${turn.reportStatus}` : ''} | ${turn.decision} | ${Math.round(turn.wallMs / 1000)}s | ${turn.model || '未记录'} | ${turn.tools.join('、') || '无记录'} |`
+              `| ${index + 1} | ${initiator(turn)} | ${turn.status}${turn.reportStatus ? `/${turn.reportStatus}` : ''} | ${turn.decision} | ${Math.round(turn.wallMs / 1000)}s | ${turn.model || '未记录'} | ${turn.tools.join('、') || '无记录'} |`
           ),
           '',
+          ...(live.turns.some((turn) => turn.adopted)
+            ? [
+                '真实调度器不停，所以它自己也会发起轮次（一轮以 `continue` 结束 30 秒后就有下一轮）。标成「调度器」' +
+                  '的那几轮不是时间线 `makeDue` 开的，而是被时间线的 `turn` 步骤接管的：它们一样计入 `--budget`，' +
+                  '也一样出现在这张表里，所以表的行数与 `spentTurns` 对得上。',
+                '',
+              ]
+            : []),
         ]
       : ['- 没有轮次真实跑起来。', '']),
     '## Invariants（逐条评估，但不决定退出码）',
@@ -781,6 +800,12 @@ function liveSummary(scenario: Scenario, result: LiveResult, settings: LiveSetti
     ...(result.failures.length ? ['## 失败原因', '', ...result.failures.map((row) => `- ${row}`), ''] : []),
   ].join('\n');
 }
+
+/** 这一轮是时间线开的，还是真实调度器自己开、被某个 `turn` 步骤接管的。 */
+const initiator = (turn: LiveRunner['turns'][number]) =>
+  turn.adopted === undefined
+    ? '时间线'
+    : `调度器（接管${turn.adopted === 'running' ? '进行中' : '已完成'}${turn.timesFrom === 'run' ? '' : `，起止${turn.timesFrom === 'clock' ? '' : '部分'}取接管时刻`}）`;
 
 const reading = (value: UsageReading | 'unknown') =>
   value === 'unknown'
