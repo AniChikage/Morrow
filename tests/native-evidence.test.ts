@@ -6,7 +6,7 @@ import { startIsolated } from './harness/service.ts';
 import { FakeReviewer } from './harness/fake-reviewer.ts';
 import { grantFor } from './harness/grant.ts';
 
-async function setup() {
+async function setup(extraItems: any[] = []) {
   const native = new FakeReviewer();
   const s = await startIsolated({ nativeTransport: native });
   const snapshot = await native.createThread(s.path);
@@ -30,6 +30,7 @@ async function setup() {
           },
           status: 'completed',
         },
+        ...extraItems,
       ],
     },
   ] as any;
@@ -153,6 +154,47 @@ test('native discovery filters before pagination and snapshots explicitly bound 
       output: { content: [{ type: 'image', mimeType: 'image/png', data: 'a'.repeat(384 * 1024 + 1) }] },
     });
     await s.grant.call('evidence.link', { summary: 'too big', nativeItemIds: ['huge-image'] }, 413);
+  } finally {
+    await s.cleanup();
+  }
+});
+
+test('reasoning projected with a tool role is neither discoverable nor linkable', async () => {
+  const s = await setup([
+    { id: 'reasoning-input', type: 'reasoning', summary: [{ type: 'summary_text', text: 'not a tool invocation' }] },
+  ]);
+  try {
+    const reasoning = s.store.nativeRows<any>('native_items', s.row.threadId).find((row) => row.type === 'reasoning');
+    assert(reasoning);
+    assert.equal(reasoning.role, 'tool');
+    const list = await s.grant.call('evidence.native');
+    assert(!list.items.some((row: any) => row.id === reasoning.id));
+    await s.grant.call('evidence.link', { summary: 'not a tool', nativeItemIds: [reasoning.id] }, 404);
+    await s.grant.call('evidence.native', { before: reasoning.id }, 404);
+    const valid = await s.grant.call('evidence.link', { summary: 'actual MCP', nativeItemIds: [s.row.id] });
+    assert.equal(valid.origin, 'native');
+  } finally {
+    await s.cleanup();
+  }
+});
+
+test('depth-limited summaries disclose omission and retain distinct source fingerprints', async () => {
+  const s = await setup();
+  try {
+    const deep = (marker: string) => Array.from({ length: 16 }).reduce<object>((child) => ({ child }), { marker });
+    const results: any[] = [];
+    for (const marker of ['first', 'second']) {
+      s.store.put('native_items', { ...s.row, output: deep(marker) });
+      const linked = await s.grant.call('evidence.link', { summary: 'deep receipt', nativeItemIds: [s.row.id] });
+      results.push(await s.grant.call('evidence.read', { id: linked.id }));
+    }
+    const [first, second] = results.map((row) => row.data.items[0].output);
+    assert.equal(first.truncated, true);
+    assert(first.truncationReasons.includes('depth'));
+    assert.equal(first.text, second.text);
+    assert.notEqual(first.sourceSha256, second.sourceSha256);
+    assert.notEqual(results[0].digest, results[1].digest);
+    assert.deepEqual(await s.grant.call('evidence.read', { id: results[0].id }), results[0]);
   } finally {
     await s.cleanup();
   }

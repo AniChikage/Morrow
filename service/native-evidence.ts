@@ -2,6 +2,8 @@ import { createHash } from 'node:crypto';
 import { APIError, integer, keys, string } from './protocol.ts';
 import type { ProjectWorkLoop, Scope } from './project-loop.ts';
 
+// The native projection's fallback role is also 'tool' for reasoning and other non-tool records.
+// Only recognized native tool types establish this evidence source.
 const toolTypes = ['commandExecution', 'mcpToolCall', 'dynamicToolCall', 'webSearch', 'fileChange'];
 const hash = (text: string) => createHash('sha256').update(text).digest('hex');
 const cut = (value: unknown, limit: number) => String(value ?? '').slice(0, limit);
@@ -13,13 +15,7 @@ function task(loop: ProjectWorkLoop, scope: Scope) {
   return run.sessionId;
 }
 function owned(loop: ProjectWorkLoop, scope: Scope, threadId: string, row: any) {
-  if (
-    !row ||
-    row.threadId !== threadId ||
-    row.present === false ||
-    !(row.role === 'tool' || toolTypes.includes(row.type))
-  )
-    return false;
+  if (!row || row.threadId !== threadId || row.present === false || !toolTypes.includes(row.type)) return false;
   return !!loop.store.db
     .prepare(
       "SELECT 1 FROM runs WHERE json_extract(data,'$.projectId')=? AND json_extract(data,'$.channelId')=? AND json_extract(data,'$.sessionId')=? AND json_extract(data,'$.nativeTurnId')=? LIMIT 1"
@@ -42,7 +38,7 @@ export function nativeEvidenceItems(loop: ProjectWorkLoop, scope: Scope, input: 
     .prepare(
       `SELECT n.data FROM native_items n WHERE json_extract(n.data,'$.threadId')=?
     AND COALESCE(json_extract(n.data,'$.present'),1)=1
-    AND (json_extract(n.data,'$.role')='tool' OR json_extract(n.data,'$.type') IN (${toolTypes.map(() => '?').join(',')}))
+    AND json_extract(n.data,'$.type') IN (${toolTypes.map(() => '?').join(',')})
     AND EXISTS (SELECT 1 FROM runs r WHERE json_extract(r.data,'$.projectId')=? AND json_extract(r.data,'$.channelId')=? AND json_extract(r.data,'$.sessionId')=? AND json_extract(r.data,'$.nativeTurnId')=json_extract(n.data,'$.turnId'))
     ${before ? 'AND n.rowid < (SELECT rowid FROM native_items WHERE id=?)' : ''}
     ORDER BY n.rowid DESC LIMIT ?`
@@ -73,8 +69,12 @@ export function nativeEvidenceSnapshot(loop: ProjectWorkLoop, scope: Scope, inpu
   if (new Set(ids).size !== ids.length) throw new APIError(400, 'nativeItemIds 不得重复');
   const images: Array<Record<string, unknown>> = [];
   let imageBytes = 0;
+  let depthLimited = false;
   function sanitize(value: any, path: string, depth = 0): any {
-    if (depth > 12) return '[depth limit]';
+    if (depth > 12) {
+      depthLimited = true;
+      return '[depth limit]';
+    }
     if (typeof value === 'string') return loop.redact(value);
     if (!value || typeof value !== 'object') return value;
     if (value.type === 'image' || value.type === 'localImage') {
@@ -108,8 +108,18 @@ export function nativeEvidenceSnapshot(loop: ProjectWorkLoop, scope: Scope, inpu
     );
   }
   function summary(value: any, path: string) {
+    depthLimited = false;
+    // Distinguish omitted source content without copying it into the bounded display summary.
+    const sourceSha256 = hash(JSON.stringify(value ?? null));
     const text = JSON.stringify(sanitize(value ?? null, path));
-    return { text: text.slice(0, 6000), truncated: text.length > 6000, sha256: hash(text) };
+    const truncationReasons = [...(depthLimited ? ['depth'] : []), ...(text.length > 6000 ? ['length'] : [])];
+    return {
+      text: text.slice(0, 6000),
+      truncated: truncationReasons.length > 0,
+      truncationReasons,
+      sha256: hash(text),
+      sourceSha256,
+    };
   }
   const items = ids.map((id) => {
     const row = loop.store.get<any>('native_items', id);
