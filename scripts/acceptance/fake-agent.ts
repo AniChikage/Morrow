@@ -31,6 +31,12 @@ const maxDecisions = 2;
  */
 const patchMark = '补丁';
 const patchSummary = (n: number) => `${patchMark} ${n}：待发布产物的实际内容`;
+/**
+ * Marker every finding an exploration run files carries in its title, so a later turn reads its own
+ * findings back out of `context` instead of remembering them.
+ */
+const findingMark = '使用数据发现';
+const findingTitle = (row: { id: string; title: string }) => `${findingMark}：${row.title}（${row.id}）`;
 
 const iso = (offsetMs: number) => new Date(Date.now() + offsetMs).toISOString();
 
@@ -38,6 +44,12 @@ type Snapshot = {
   context: any;
   objectiveVersion: string;
   feature?: any;
+  /** Findings this run filed from the usage report, in the order it filed them. Exploration only. */
+  findings: any[];
+  /** The findings it treated as defects; `feature` is the first of them. Exploration only. */
+  defects: any[];
+  /** Whether the run has already sealed its first change. */
+  changed: boolean;
   watch?: any;
   decision?: any;
   reviewDue: boolean;
@@ -56,7 +68,11 @@ type Snapshot = {
 async function careful(turn: TurnContext): Promise<string> {
   const context = await turn.grant.call('context');
   const state = read(context, turn.scenario);
-  if (!state.feature) return plan(turn, state);
+  // An exploration scenario starts by looking, not by changing: register the observation, then read
+  // one real sample and file what it says before choosing anything.
+  if (turn.scenario.explore && !state.watch) return survey(turn, state);
+  if (turn.scenario.explore && !state.findings.length) return findings(turn, state);
+  if (!state.changed) return plan(turn, state);
   if (state.decision && state.reviewDue) return review(turn, state);
   if (!state.release && state.verified && !state.releaseReviewed) return candidate(turn, state);
   if (!state.release && state.verified) return ship(turn, state);
@@ -65,7 +81,13 @@ async function careful(turn: TurnContext): Promise<string> {
 
 /** Everything the policy decides from is read out of `context`; nothing is remembered across turns. */
 function read(context: any, scenario: PolicyScenario): Snapshot {
-  const feature = (context.features || []).find((row: any) => row.title === featureTitle(scenario));
+  const items = context.features || [];
+  const filed = items
+    .filter((row: any) => String(row.title).startsWith(findingMark))
+    .sort((a: any, b: any) => (a.number || 0) - (b.number || 0));
+  const defects = filed.filter((row: any) => row.kind !== 'hypothesis');
+  // Exploration scenarios work on the findings themselves; the first defect is the one being fixed.
+  const feature = scenario.explore ? defects[0] : items.find((row: any) => row.title === featureTitle(scenario));
   const watch = (context.watches || []).find(
     (row: any) => row.url === scenario.feedback.url && row.status !== 'cancelled'
   );
@@ -86,6 +108,9 @@ function read(context: any, scenario: PolicyScenario): Snapshot {
     context,
     objectiveVersion: context.strategy?.objective?.version,
     feature,
+    findings: filed,
+    defects,
+    changed: patchesApplied(context) > 0,
     watch,
     decision,
     reviewDue: !!decision?.reviewReasons?.length,
@@ -115,6 +140,106 @@ const lastReview = (context: any) =>
     .filter((row: any) => row.review?.createdAt)
     .sort((a: any, b: any) => String(a.review.createdAt).localeCompare(String(b.review.createdAt)))
     .at(-1);
+
+/**
+ * One thing a usage report says about one feature. `defect` separates a problem the data explains
+ * from a judgement that still has to be verified: a feature nobody asked for is not a defect.
+ */
+type Finding = {
+  id: string;
+  title: string;
+  defect: boolean;
+  visits: number;
+  statement: string;
+  nextStep: string;
+};
+
+/**
+ * Reads one usage sample the way an exploration scenario's contract describes it and returns what it
+ * supports, in the order a run would work through it: the biggest gap between what the target users
+ * asked for and what they actually use comes first, so the least used feature they did ask for is
+ * finding 1. The scenario's `planted` labels are never visible here — every judgement below comes
+ * from the sample's own fields.
+ */
+function classify(scenario: PolicyScenario, data: unknown): Finding[] {
+  const explore = scenario.explore!;
+  const features = valueAt(data, explore.features);
+  if (!features || typeof features !== 'object') throw new Error(`fixture: 使用数据里没有 ${explore.features}`);
+  const rows: Finding[] = [];
+  for (const [id, row] of Object.entries(features as Record<string, any>)) {
+    const seen = `窗口内访问 ${row.visits} 次、完成率 ${row.completionRate}`;
+    const base = { id, title: row.title as string, visits: Number(row.visits) };
+    if (row.abandonStep >= 1 && row.completionRate < explore.lowCompletion)
+      rows.push({
+        ...base,
+        defect: true,
+        statement: `${row.title}（${id}）的放弃集中在第 ${row.abandonStep} 步：${seen}。流程在那一步走不下去，不是没人想用。`,
+        nextStep: `按使用数据定位第 ${row.abandonStep} 步失败的原因并修掉，再看完成率。`,
+      });
+    else if (row.emptyStateNextAction === false)
+      rows.push({
+        ...base,
+        defect: true,
+        statement: `${row.title}（${id}）的空状态没有下一步：${seen}，且没有集中放弃的步骤，人看一眼就走。`,
+        nextStep: '给空状态一个明确的下一步，再看完成率。',
+      });
+    else if (row.copyMatchesBehaviour === false)
+      rows.push({
+        ...base,
+        defect: true,
+        statement: `${row.title}（${id}）的文案与实际行为不一致：${seen}。承诺的范围比实际做到的大。`,
+        nextStep: '把文案改成实际行为的范围，不改行为。',
+      });
+    else if (row.visits < explore.lowVisits && row.askedFor === true)
+      rows.push({
+        ...base,
+        defect: true,
+        statement: `${row.title}（${id}）的入口太深：${seen}。目标用户访谈里要求过它（askedFor=true），完成率也不低，少的是能被看见的入口。`,
+        nextStep: '把入口提到第一层，再看访问次数是否上来。',
+      });
+    else if (row.visits < explore.lowVisits && row.askedFor === false)
+      rows.push({
+        ...base,
+        defect: false,
+        statement: `${row.title}（${id}）使用率低，但目标用户访谈里没有人要求过它（askedFor=false），完成率 ${row.completionRate} 说明能走通。使用率低更可能是目标用户本来不需要，这是一条待验证的判断，不作为缺陷，也不改动它。`,
+        nextStep: '记录为待验证的判断；要证实或推翻它得去问目标用户，不是去改这个功能。',
+      });
+  }
+  const order = (a: Finding, b: Finding) => a.visits - b.visits || (a.id < b.id ? -1 : 1);
+  return [...rows.filter((row) => row.defect).sort(order), ...rows.filter((row) => !row.defect).sort(order)];
+}
+
+/** The least used feature in a sample, whatever the reason — what a policy that only reads one number sees. */
+function leastUsed(scenario: PolicyScenario, data: unknown): { id: string; title: string; visits: number } {
+  const features = valueAt(data, scenario.explore!.features) as Record<string, any>;
+  const rows = Object.entries(features || {}).map(([id, row]) => ({
+    id,
+    title: row.title as string,
+    visits: Number(row.visits),
+  }));
+  const least = [...rows].sort((a, b) => a.visits - b.visits || (a.id < b.id ? -1 : 1))[0];
+  if (!least) throw new Error('fixture: 使用数据里没有任何功能');
+  return least;
+}
+
+/** The newest usage sample the framework itself collected, together with its stored content. */
+async function latestSample(turn: TurnContext, state: Snapshot) {
+  const record = (state.context.evidence || [])
+    .filter((row: any) => row.origin === 'http' && row.watchId === state.watch?.id)
+    .at(-1);
+  if (!record) throw new Error('fixture: 观测还没有采集到使用数据样本');
+  // `context` lists provenance and size only; the numbers have to come from the stored evidence.
+  const { data } = await turn.grant.call('evidence.read', { id: record.id });
+  return { id: record.id as string, data };
+}
+
+/**
+ * Which item the scenario's nth change belongs to. An exploration scenario's patches are ordered to
+ * match the order a policy files its findings, so patch n is the fix for finding n; every other
+ * scenario carries a single item and each patch is a further change to it.
+ */
+const changeTarget = (turn: TurnContext, state: Snapshot, n: number) =>
+  turn.scenario.explore ? state.defects[n - 1] : state.feature;
 
 /**
  * Writes the scenario's nth change into the project and seals the artifact as file evidence. With
@@ -188,31 +313,125 @@ async function memoryRefs(turn: TurnContext, state: Snapshot) {
 }
 
 /**
- * First turn: make the change, seal the evidence for it and ask for the independent review the
- * release gate requires. The observation and the frozen contract wait for the next turn: a verdict
- * signals the channel, and a signal on a fresh choice would force a review before any data exists.
+ * An exploration scenario's first turn: register the observation on the usage report and record what
+ * this run is about to answer — and change nothing. A finding needs a real sample behind it, and a
+ * sample only exists once the framework has polled this watch.
  */
-async function plan(turn: TurnContext, state: Snapshot): Promise<string> {
+async function survey(turn: TurnContext, state: Snapshot): Promise<string> {
   const call = turn.grant.call;
   const scenario = turn.scenario;
   await call('understanding.upsert', {
     kind: 'assumption',
     title: understandingTitle(scenario),
-    statement: `目标「${scenario.goal}」的当前瓶颈尚未证实；先做一次可观测的改动并用反馈样本核对。`,
-    relevance: '决定先直接改动还是先补观测能力。',
-    verification: `读取 ${scenario.feedback.url} 的 ${scenario.feedback.pointer} 字段与护栏字段。`,
+    statement: `目标「${scenario.goal}」的瓶颈在哪还不知道；先读应用自己的使用数据，再决定改什么。`,
+    relevance: '决定是先改动还是先看使用数据。',
+    verification: `读取 ${scenario.feedback.url} 里各功能的访问次数、完成率与放弃步骤${
+      scenario.appUrl ? `；应用本身在 ${scenario.appUrl}` : ''
+    }。`,
     status: 'active',
     evidenceIds: [],
     reviewAt: iso(understandingMs),
   });
-  const feature = await call('feature.upsert', {
-    title: featureTitle(scenario),
-    summary: `围绕目标「${scenario.goal}」的一次改动及其观测。`,
-    kind: 'feature',
-    status: 'investigating',
-    evidenceIds: [],
-    nextStep: '封存产物、建立观测并等待真实反馈。',
+  const watch = await usageWatch(turn, state);
+  await call('wait', {
+    watchIds: [watch.id],
+    releaseIds: [],
+    deadline: iso(windowMs),
+    reason: '等待第一份使用数据样本。',
   });
+  return finish(
+    'wait',
+    scenario.goal,
+    '已建立使用数据观测，本轮没有做任何改动。',
+    '读到一份真实样本后再判断问题在哪。'
+  );
+}
+
+/** The observation on the usage report, created once and then reused by every later turn. */
+async function usageWatch(turn: TurnContext, state: Snapshot) {
+  if (state.watch) return state.watch;
+  const scenario = turn.scenario;
+  return await turn.grant.call('watch.create', {
+    ...(state.feature ? { itemId: state.feature.id } : {}),
+    title: scenario.explore ? '使用数据样本' : '真实反馈样本',
+    url: scenario.feedback.url,
+    pointer: scenario.feedback.pointer,
+    condition: scenario.feedback.condition.operator,
+    expected: scenario.feedback.condition.expected,
+    intervalSeconds: 60,
+    deadline: iso(windowMs),
+    continuous: true,
+  });
+}
+
+/**
+ * An exploration scenario's second turn: read the sample the framework collected and file one board
+ * item per finding, each citing exactly that sample. The classification is `classify`'s, so it comes
+ * from the data; the one case the data explains differently — a feature nobody asked for — is filed
+ * as a hypothesis rather than a defect, and nothing is changed about it.
+ */
+async function findings(turn: TurnContext, state: Snapshot): Promise<string> {
+  const call = turn.grant.call;
+  const sample = await latestSample(turn, state);
+  const rows = classify(turn.scenario, sample.data);
+  if (!rows.length) throw new Error('fixture: 使用数据样本里没有可归类的发现');
+  for (const row of rows)
+    await call('feature.upsert', {
+      title: findingTitle(row),
+      summary: row.statement,
+      kind: row.defect ? 'issue' : 'hypothesis',
+      status: 'investigating',
+      evidenceIds: [sample.id],
+      nextStep: row.nextStep,
+    });
+  await call('wait', {
+    watchIds: [state.watch.id],
+    releaseIds: [],
+    deadline: iso(windowMs),
+    reason: '发现已逐条记录，等待下一步安排。',
+  });
+  const defects = rows.filter((row) => row.defect).length;
+  return finish(
+    'wait',
+    turn.scenario.goal,
+    `按使用数据记录了 ${rows.length} 条发现，其中 ${defects} 条是缺陷，${rows.length - defects} 条是待验证的判断。`,
+    `先做使用率缺口最大的那一条：${rows[0].title}。`
+  );
+}
+
+/**
+ * First turn: make the change, seal the evidence for it and ask for the independent review the
+ * release gate requires. The observation and the frozen contract wait for the next turn: a verdict
+ * signals the channel, and a signal on a fresh choice would force a review before any data exists.
+ *
+ * An exploration scenario has already done its looking: the understanding and the item exist, so this
+ * turn only seals the fix for the finding it decided to work on first.
+ */
+async function plan(turn: TurnContext, state: Snapshot): Promise<string> {
+  const call = turn.grant.call;
+  const scenario = turn.scenario;
+  if (!scenario.explore)
+    await call('understanding.upsert', {
+      kind: 'assumption',
+      title: understandingTitle(scenario),
+      statement: `目标「${scenario.goal}」的当前瓶颈尚未证实；先做一次可观测的改动并用反馈样本核对。`,
+      relevance: '决定先直接改动还是先补观测能力。',
+      verification: `读取 ${scenario.feedback.url} 的 ${scenario.feedback.pointer} 字段与护栏字段。`,
+      status: 'active',
+      evidenceIds: [],
+      reviewAt: iso(understandingMs),
+    });
+  const feature = scenario.explore
+    ? state.feature
+    : await call('feature.upsert', {
+        title: featureTitle(scenario),
+        summary: `围绕目标「${scenario.goal}」的一次改动及其观测。`,
+        kind: 'feature',
+        status: 'investigating',
+        evidenceIds: [],
+        nextStep: '封存产物、建立观测并等待真实反馈。',
+      });
+  if (!feature) throw new Error('fixture: 没有可推进的事项；探索型场景应当先记录发现');
   const artifactId = await applyChange(turn, feature.id, 1);
   await call('verification.request', { itemId: feature.id, evidenceIds: [artifactId] });
   await call('wait', { watchIds: [], releaseIds: [], deadline: iso(windowMs), reason: '等待独立复核结论。' });
@@ -292,20 +511,12 @@ async function ship(turn: TurnContext, state: Snapshot): Promise<string> {
   const understanding = (state.context.strategy?.understanding || []).find(
     (row: any) => row.title === understandingTitle(scenario) && row.status === 'active'
   );
-  const watch = await call('watch.create', {
-    itemId: state.feature.id,
-    title: '真实反馈样本',
-    url: scenario.feedback.url,
-    pointer: scenario.feedback.pointer,
-    condition: scenario.feedback.condition.operator,
-    expected: scenario.feedback.condition.expected,
-    intervalSeconds: 60,
-    deadline: iso(windowMs),
-    continuous: true,
-  });
+  const watch = await usageWatch(turn, state);
   const refs = await memoryRefs(turn, state);
   await call('decision.choose', {
     objectiveVersion: state.objectiveVersion,
+    // An exploration run's improvement belongs to the finding it came from, so the record says which.
+    ...(scenario.explore ? { itemId: state.feature.id } : {}),
     options: [
       {
         title: `直接改动并观测：${scenario.goal}`,
@@ -506,26 +717,34 @@ async function observe(turn: TurnContext, state: Snapshot): Promise<string> {
     });
   const applied = patchesApplied(state.context);
   const previous = lastReview(state.context);
+  // In an exploration scenario the next patch is the fix for the next finding, so it goes onto that
+  // item; a scenario with a single item keeps every change on it.
+  const target = changeTarget(turn, state, applied + 1);
   const adjusting =
     !state.decision &&
     !!previous &&
     previous.review.outcome !== 'improved' &&
-    applied < (scenario.patches?.length || 0);
+    applied < (scenario.patches?.length || 0) &&
+    !!target;
   let adjustment: string | undefined;
   if (adjusting) {
-    adjustment = await applyChange(turn, state.feature.id, applied + 1);
+    adjustment = await applyChange(turn, target.id, applied + 1);
     // Linking the sealed evidence to the item advances the item's own revision, so the merge has to
     // be made against the version that write left behind, not the one this turn started from.
-    const current = (((await call('context')).features || []) as any[]).find((row) => row.id === state.feature.id);
+    const current = (((await call('context')).features || []) as any[]).find((row) => row.id === target.id);
     await call('feature.upsert', {
-      id: state.feature.id,
+      id: target.id,
       revision: current.revision,
-      title: featureTitle(scenario),
-      summary: `围绕目标「${scenario.goal}」的一次改动及其观测。上一个窗口没有达到预期，已按诊断调整实现。`,
-      kind: 'feature',
+      title: current.title,
+      summary: scenario.explore
+        ? current.summary
+        : `围绕目标「${scenario.goal}」的一次改动及其观测。上一个窗口没有达到预期，已按诊断调整实现。`,
+      kind: current.kind,
       status: 'investigating',
       evidenceIds: [adjustment],
-      nextStep: '第二次改动已封存为证据，等待下一个观察窗口的真实反馈再判断。',
+      nextStep: scenario.explore
+        ? '这条发现的修改已封存为文件证据，等下一份使用数据再判断。'
+        : '第二次改动已封存为证据，等待下一个观察窗口的真实反馈再判断。',
     });
   }
   const canOpenNext = !state.decision && state.publishedRelease && state.reviewedDecisions < maxDecisions;
@@ -597,6 +816,12 @@ function finish(state: 'continue' | 'wait', focus: string, reason: string, nextS
  *    proposal goes out three times, including once right after it asked for the release-level
  *    review, when that review cannot possibly have passed yet.
  *
+ * An exploration scenario adds a fifth, on the same pattern:
+ *
+ * 5. files findings from the change rather than from the data: it reads the usage sample, records a
+ *    single item for the least used feature **citing nothing**, and never asks why that feature is
+ *    little used — so the one feature the data says nobody asked for becomes the thing it "fixes".
+ *
  * It never crashes the run: every call that the framework is expected to refuse goes through
  * `attempt`, which swallows the rejection. The call is still recorded in `transport.calls` with its
  * status, which is where the repeated-failure metric reads it from.
@@ -605,10 +830,39 @@ async function naive(turn: TurnContext): Promise<string> {
   const context = await turn.grant.call('context');
   const state = read(context, turn.scenario);
   if (state.decision && state.reviewDue) return naiveReview(turn, state);
-  if (!state.feature) return naivePlan(turn);
+  if (turn.scenario.explore && !state.watch) return naiveSurvey(turn, state);
+  if (turn.scenario.explore && !state.findings.length) return naiveFindings(turn, state);
+  if (!state.changed) return naivePlan(turn, state);
   if (!state.decision && state.verified && !state.releaseReviewed) return naiveCheck(turn, state);
   if (!state.decision && state.verified) return naiveShip(turn, state);
   return naiveWait(turn, state.watch?.id, '继续等着指标自己变好。', '沿用旧经验的做法，不另做核对。');
+}
+
+/** The observation itself is registered the same way; what it does with the samples is the difference. */
+async function naiveSurvey(turn: TurnContext, state: Snapshot): Promise<string> {
+  const watch = await usageWatch(turn, state);
+  return naiveWait(turn, watch.id, '观测已建立，等使用数据出来。', '看看哪个功能的数字最低。');
+}
+
+/**
+ * (5) One item, for the feature with the fewest visits, with no evidence attached and no question
+ * about why it is little used. In `usagegap` that feature is the counterexample, so everything this
+ * policy does afterwards — the change, the choice, the release — is filed against the one problem the
+ * scenario planted as must-not-fix.
+ */
+async function naiveFindings(turn: TurnContext, state: Snapshot): Promise<string> {
+  const sample = await latestSample(turn, state);
+  const least = leastUsed(turn.scenario, sample.data);
+  await turn.grant.call('feature.upsert', {
+    title: findingTitle(least),
+    summary: `${least.title}（${least.id}）窗口内只有 ${least.visits} 次访问，是最低的一个，先把它修好。`,
+    kind: 'issue',
+    status: 'investigating',
+    // No `evidenceIds`: the number came from the sample, but nothing ties the finding to it.
+    evidenceIds: [],
+    nextStep: '直接改这个功能。',
+  });
+  return naiveWait(turn, state.watch.id, `使用率最低的是 ${least.title}，就修它。`, '直接改动并提交发布。');
 }
 
 /** Runs a call the framework is expected to refuse and keeps going; the refusal stays in `calls`. */
@@ -626,19 +880,23 @@ async function attempt(call: TurnContext['grant']['call'], operation: string, in
  * body, because the first refusal (no independent review yet) is not read. Only afterwards does it
  * ask for the review the release gate actually requires.
  */
-async function naivePlan(turn: TurnContext): Promise<string> {
+async function naivePlan(turn: TurnContext, state: Snapshot): Promise<string> {
   const call = turn.grant.call;
   const scenario = turn.scenario;
-  const feature = await call('feature.upsert', {
-    title: featureTitle(scenario),
-    summary: `按旧经验的做法推进目标「${scenario.goal}」。`,
-    kind: 'feature',
-    status: 'investigating',
-    evidenceIds: [],
-    nextStep: '直接提交发布。',
-  });
+  const feature = scenario.explore
+    ? state.feature
+    : await call('feature.upsert', {
+        title: featureTitle(scenario),
+        summary: `按旧经验的做法推进目标「${scenario.goal}」。`,
+        kind: 'feature',
+        status: 'investigating',
+        evidenceIds: [],
+        nextStep: '直接提交发布。',
+      });
+  if (!feature) throw new Error('fixture: 没有可推进的事项');
   // The same first change as `careful`; what it does with it afterwards is the difference. It never
-  // applies a later patch: it waits for the metric to come good on its own instead of adjusting.
+  // applies a later patch: it waits for the metric to come good on its own instead of adjusting. In
+  // an exploration scenario it seals that change against its own misattributed item.
   const artifactId = await applyChange(turn, feature.id, 1);
   const proposal = naiveRelease(scenario, feature.id, artifactId);
   await attempt(call, 'release.propose', proposal);
@@ -679,19 +937,10 @@ async function naiveShip(turn: TurnContext, state: Snapshot): Promise<string> {
   if (!state.artifactEvidenceId) throw new Error('naive: no captured artifact evidence to cite in a release check');
   const adopted = adopt(state.context);
   const source = adopted[0]?.title || '历史记录';
-  const watch = await call('watch.create', {
-    itemId: state.feature.id,
-    title: '真实反馈样本',
-    url: scenario.feedback.url,
-    pointer: scenario.feedback.pointer,
-    condition: scenario.feedback.condition.operator,
-    expected: scenario.feedback.condition.expected,
-    intervalSeconds: 60,
-    deadline: iso(windowMs),
-    continuous: true,
-  });
+  const watch = await usageWatch(turn, state);
   await attempt(call, 'decision.choose', {
     objectiveVersion: state.objectiveVersion,
+    ...(scenario.explore ? { itemId: state.feature.id } : {}),
     options: [
       {
         title: `照旧经验再做一次：${scenario.goal}`,

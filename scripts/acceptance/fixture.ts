@@ -9,12 +9,14 @@ import { startReceiver } from '../../tests/harness/receiver.ts';
 import { grantFor } from '../../tests/harness/grant.ts';
 import { ScriptedNativeTransport } from '../../tests/harness/scripted-native.ts';
 import { policies } from './fake-agent.ts';
-import { policyScenario, readTree } from './scenario.ts';
+import { policyScenario, projectBrief, readTree, usageURL } from './scenario.ts';
 import { computeMetrics } from './metrics.ts';
 import { metricsSection, writeMetrics } from './report.ts';
+import { freePort, startApp } from './serve.ts';
 import { drain, runStep, stopScheduler } from './timeline.ts';
 import type { Runner } from './timeline.ts';
-import type { CallRecord, InvariantResult, Labels, Scenario, TimelineRecord } from './scenario.ts';
+import type { AppStop, RunningApp } from './serve.ts';
+import type { CallRecord, InvariantResult, Labels, Scenario, ServedApp, TimelineRecord } from './scenario.ts';
 import type { Metrics } from './metrics.ts';
 import type { IsolatedService } from '../../tests/harness/service.ts';
 import type { Run } from '../../service/protocol.ts';
@@ -50,6 +52,8 @@ export type RunResult = {
   /** Undefined only when the run failed before a data directory existed. */
   metrics?: Metrics;
   invariants: InvariantReport[];
+  /** The seed app this run served, when the scenario has a `project.serve` block. */
+  app?: ServedApp;
   failures: string[];
   summary: string;
 };
@@ -74,8 +78,11 @@ const repoRoot = fileURLToPath(new URL('../../', import.meta.url));
  * backend is `ScriptedNativeTransport` and the outside world is a local receiver.
  */
 export async function runScenario(scenario: Scenario, options: RunOptions = {}): Promise<RunResult> {
+  // The CLI already refuses `--mode live`; this is the second line of defence for a direct caller.
+  // A live run needs its own runner (a real App task, real quota, real clock) — see the design in
+  // `docs/acceptance/LIVE-MODE-PROPOSAL.md`, which has to be confirmed before anything is built.
   if (options.mode && options.mode !== 'fixture')
-    throw new Error(`mode ${options.mode} is not implemented in this step; only fixture runs exist`);
+    throw new Error(`mode ${options.mode} 尚未实现；先确认 docs/acceptance/LIVE-MODE-PROPOSAL.md`);
   const policyName = options.policy || 'careful';
   const turnPolicy = policies[policyName];
   if (!turnPolicy) throw new Error(`unknown policy ${policyName}; available: ${Object.keys(policies).join(', ')}`);
@@ -93,18 +100,28 @@ export async function runScenario(scenario: Scenario, options: RunOptions = {}):
   let runFacts: RunFacts | undefined;
   let service: IsolatedService | undefined;
   let transport: ScriptedNativeTransport | undefined;
+  let app: RunningApp | undefined;
   const cleanup = {
     channelsPaused: 0,
     serviceClosed: false,
     directoriesRemoved: false,
     root: '',
     keep: !!options.keep,
+    /** The served seed app, when the scenario has one: its address and how it was stopped. */
+    app: undefined as undefined | ({ url: string; pid?: number } & Partial<AppStop> & { note?: string }),
   };
 
   mock.timers.enable({ apis: ['Date'], now: new Date(virtualStart) });
   const receiver = await startReceiver({ feedback: scenario.feedback.initial });
   try {
-    const view = policyScenario(scenario, receiver.url);
+    // The app's address goes into the project brief, so its port is reserved before the project
+    // directory exists and the process itself is started once that directory carries the seed.
+    const appUrl = scenario.project.serve ? `http://127.0.0.1:${await freePort()}` : undefined;
+    const view = policyScenario(scenario, receiver.url, { ...(appUrl ? { appUrl } : {}) });
+    const brief =
+      scenario.brief === undefined
+        ? undefined
+        : projectBrief(scenario.brief, { ...(appUrl ? { appUrl } : {}), usageUrl: usageURL(scenario, receiver.url) });
     service = await startIsolated({
       nativeTransport: ({ home, path }) => {
         transport = new ScriptedNativeTransport({ home, projectPath: path, scenario: view, turnPolicy });
@@ -113,11 +130,13 @@ export async function runScenario(scenario: Scenario, options: RunOptions = {}):
       project: {
         name: scenario.title,
         goal: scenario.goal,
-        ...(scenario.brief === undefined ? {} : { brief: scenario.brief }),
+        ...(brief === undefined ? {} : { brief }),
         files: seedFiles(scenario),
       },
     });
     cleanup.root = service.root;
+    if (scenario.project.serve && appUrl)
+      app = await startApp(scenario.project.serve, { cwd: service.path, port: Number(new URL(appUrl).port) });
     stopScheduler(service);
     transport!.attach(service);
     await service.api('POST', `/api/channels/${service.channel.id}/native/bind`, { threadId: transport!.threadId });
@@ -165,12 +184,24 @@ export async function runScenario(scenario: Scenario, options: RunOptions = {}):
       failures.push(`spent ${transport!.reviews} reviews against a budget of ${scenario.budget.reviews}`);
     invariants = scenario.invariants.map((row) => ({
       name: row.name,
-      ...safeCheck(row, { store: service!.store, service: service!, transport: transport!, receiver, timeline }),
+      ...safeCheck(row, {
+        store: service!.store,
+        service: service!,
+        transport: transport!,
+        receiver,
+        timeline,
+        ...(app ? { app: { url: app.url, ...(app.probe === undefined ? {} : { probe: app.probe }) } } : {}),
+      }),
     }));
     failures.push(...invariants.filter((row) => !row.ok).map((row) => `invariant ${row.name}: ${row.detail}`));
   } catch (error) {
     failures.push(message(error));
   } finally {
+    // The app the run started is its own to stop, before anything else, whether the run passed or not.
+    if (app) {
+      const stopped = await app.stop().catch((error) => ({ stopped: false, note: message(error) }));
+      cleanup.app = { url: app.url, ...(app.pid === undefined ? {} : { pid: app.pid }), ...stopped };
+    }
     if (service) cleanup.channelsPaused = await pauseChannels(service);
     runFacts = facts(scenario, runId, policyName, options, startedAt);
     if (service) {
@@ -214,6 +245,7 @@ export async function runScenario(scenario: Scenario, options: RunOptions = {}):
     labels,
     ...(metrics ? { metrics } : {}),
     invariants,
+    ...(app ? { app: { url: app.url, ...(app.probe === undefined ? {} : { probe: app.probe }) } } : {}),
     failures,
     summary: '',
   };
@@ -320,6 +352,7 @@ function summaryMarkdown(scenario: Scenario, result: RunResult, options: RunOpti
     `- 轮次：${result.turns}/${scenario.budget.turns} · 独立复核：${result.reviews}/${scenario.budget.reviews ?? '未设上限'}`,
     `- 工作接口调用：${result.calls.length} 次 · 时间线步骤：${result.timeline.length}/${scenario.timeline.length}`,
     `- 步骤分布：${[...verbs].map(([verb, count]) => `${verb}×${count}`).join('、') || '无'}`,
+    ...(result.app ? [`- 种子应用：${result.app.url}（本次运行期间真实运行，结束时已停止）`] : []),
     `- 产物目录：${result.out}`,
     '',
     '## Invariants',

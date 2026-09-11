@@ -27,8 +27,14 @@ export type PolicyScenario = {
   patches?: PatchFiles[];
   /** The question the policy re-checks the project's memory against; absent means it makes no reference. */
   recall?: string;
+  /** Origin of the seed app the runner started, when the scenario serves one. */
+  appUrl?: string;
+  /** Present for an exploration scenario; see `scripts/acceptance/scenario.ts`'s `ExploreSpec`. */
+  explore?: PolicyExplore;
   feedback: PolicyFeedback;
 };
+/** How a policy reads the usage report of an exploration scenario. */
+export type PolicyExplore = { features: string; lowVisits: number; lowCompletion: number };
 export type PolicyRule = { pointer: string; operator: 'gte' | 'lte' | 'equals'; expected: string | number | boolean };
 export type PolicyExpectation = {
   id: string;
