@@ -1,8 +1,18 @@
 import { existsSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
-import { unknown } from './metrics.ts';
+import { namesFeature, unknown } from './metrics.ts';
 import type { Metrics, MetricsInput } from './metrics.ts';
 import type { CallRecord, Labels, TimelineRecord } from './scenario.ts';
+
+/** Which runner produced a report. It changes the fixed caveat, not the metrics. */
+export type ReportMode = 'fixture' | 'live';
+
+/**
+ * The sentence every live report carries. A live run is one sample of one model in one isolated
+ * environment: the feedback samples, the receiver and the usage data are all built on this machine.
+ */
+export const liveNotice =
+  'live 结果是隔离环境下的模型验证，不是真实业务效果；一次运行是一次抽样。反馈样本、接收端和使用数据都是本机构造的。';
 
 export type Scalar = string | number | boolean | null;
 export type Flat = Record<string, Scalar>;
@@ -135,8 +145,74 @@ export function aggregate(runs: unknown[]): Aggregate {
   return result;
 }
 
-/** The metrics section `summary.md` carries, under the report's fixed fixture sentence. */
-export function metricsSection(metrics: Metrics | undefined): string[] {
+/**
+ * How much the live run compressed the scenario's observation waits, and what that makes
+ * incomparable. A scale of 1 is no compression, and says so rather than staying silent.
+ */
+export function scaleNote(advanceScale: number): string[] {
+  if (advanceScale >= 1)
+    return ['观察窗口没有被压缩（`--advance-scale 1`）：每个 `advance` 都真实等了场景写的分钟数。'];
+  return [
+    `观察窗口被压缩了 ${Math.round(10 / (advanceScale * 10)) === 0 ? (1 / advanceScale).toFixed(1) : String(Math.round(1 / advanceScale))} 倍（\`--advance-scale ${advanceScale}\`）：` +
+      '每个 `advance N` 只真实等了 `N × ' +
+      advanceScale +
+      '` 分钟。因此 `adjustmentLatency` 的绝对分钟数**不可**与 fixture 直接比较，只能与同样缩放比例的另一次 live 运行比较。',
+  ];
+}
+
+/**
+ * Every finding this run filed, verbatim, so a person can spot-check it. The discovery rate is a
+ * text match on the `/usage` feature id — a lower bound, not a human score: a run may name the id
+ * without having understood the problem, and a run may have understood it without naming the id.
+ */
+export function findingsSection(
+  labels: Labels | undefined,
+  items: Array<{
+    id: string;
+    title: string;
+    summary: string;
+    nextStep: string;
+    kind: string;
+    status: string;
+    evidence: string[];
+  }>
+): string[] {
+  const planted = (labels?.planted || []).filter((row) => !!row.feature);
+  if (!planted.length) return [];
+  const matched = items.filter((item) => planted.some((row) => namesFeature(item, row.feature!)));
+  return [
+    '## 每条发现的原文',
+    '',
+    '发现率是**文本匹配**得出的下限判据，不是人工评分：匹配规则是「事项正文里出现了那个 `/usage` 功能 ID」，' +
+      '对夹具状态机和真实模型是同一条规则。模型可能提到功能 ID 却没真的理解那个问题，也可能理解了却没写那个 ID——' +
+      '所以下面给出原文，请人抽查。',
+    '',
+    ...(matched.length
+      ? matched.flatMap((item) => [
+          `### ${item.title}`,
+          '',
+          `- 种类：${item.kind} · 状态：${item.status} · 命中的埋入功能：${planted
+            .filter((row) => namesFeature(item, row.feature!))
+            .map((row) => `${row.feature}（${row.id}/${row.kind}${row.shouldFix ? '' : '，反例：不该修'}）`)
+            .join('、')}`,
+          `- 正文：${item.summary || '（空）'}`,
+          `- 下一步：${item.nextStep || '（空）'}`,
+          ...(item.evidence.length
+            ? [`- 证据：${item.evidence.map((line) => oneLine(line)).join(' · ')}`]
+            : ['- 证据：无']),
+          '',
+        ])
+      : ['- 本次运行没有记录任何提到埋入功能 ID 的事项。', '']),
+    ...(items.length > matched.length
+      ? [`此外还有 ${items.length - matched.length} 条事项没有提到任何埋入的功能 ID，未列出。`, '']
+      : []),
+  ];
+}
+
+const oneLine = (text: string) => text.replaceAll('\n', ' ').replaceAll('|', '\\|').slice(0, 300);
+
+/** The metrics section `summary.md` carries, under the report's fixed caveat for its mode. */
+export function metricsSection(metrics: Metrics | undefined, mode: ReportMode = 'fixture'): string[] {
   if (!metrics) return ['## 指标', '', '- 未计算（运行提前失败，没有可读的数据目录）', ''];
   const flat = flatten(metrics);
   // The exploration block gets its own readable section below, so it is not repeated here.
@@ -157,7 +233,7 @@ export function metricsSection(metrics: Metrics | undefined): string[] {
     '',
     `配置：${config.join(' · ')}`,
     '',
-    ...explorationSection(metrics),
+    ...explorationSection(metrics, mode),
   ];
 }
 
@@ -165,17 +241,21 @@ export function metricsSection(metrics: Metrics | undefined): string[] {
  * The exploration metrics of a scenario like `usagegap`, with the caveat they must never be read
  * without. A fixture policy is a hardwired state machine, so these numbers say the framework can
  * record and compute "what was found, how it was attributed, what was wrongly fixed" — they do not
- * say a model would find any of it on its own. That is what live mode is for.
+ * say a model would find any of it on its own. That is what live mode is for; there the same numbers
+ * describe one real model in one isolated run, as a text-matched lower bound rather than a score.
  */
-export function explorationSection(metrics: Metrics | undefined): string[] {
+export function explorationSection(metrics: Metrics | undefined, mode: ReportMode = 'fixture'): string[] {
   const rows = metrics?.usagegap;
   if (!rows || typeof rows !== 'object') return [];
   const rate = (value: number | string) => (typeof value === 'number' ? `${value}%` : value);
   return [
     '## 探索指标',
     '',
-    'fixture 结果验证框架机制，不验证模型自主性：这些取值只说明「发现、附证据、归因、误修」这类判断' +
-      '能被真实记录下来并算出来。两种策略都是写死的状态机，探索本身只能在 live 模式下衡量。',
+    mode === 'live'
+      ? 'live 下这些取值来自真实模型的一次运行：一次抽样，不可重复，也不能与另一次运行比"零差异"。' +
+        '判定规则是事项正文里出现了埋入的 `/usage` 功能 ID，是**下限判据**，不是人工评分——每条发现的原文见下一节。'
+      : 'fixture 结果验证框架机制，不验证模型自主性：这些取值只说明「发现、附证据、归因、误修」这类判断' +
+        '能被真实记录下来并算出来。两种策略都是写死的状态机，探索本身只能在 live 模式下衡量。',
     '',
     '| 指标 | 取值 | 指标键 |',
     '| --- | --- | --- |',

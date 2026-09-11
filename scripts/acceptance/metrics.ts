@@ -93,7 +93,8 @@ function build(store: MetricsStore, input: MetricsInput) {
     releases: releaseCounts(releases, events, input.timeline),
     wakeups: wakeupCounts(watches, events),
     humanInterventions: humanCounts(events),
-    repeatedFailures: repeated(input.calls),
+    repeatedFailures: live(input) ? unknown : repeated(input.calls),
+    repeatedFailuresSource: live(input) ? liveRepeatedNote : fixtureRepeatedNote,
     misattribution: misattributed(reviewed, input.labels, input.timeline),
     adjustmentLatency: latency(decisions, evidence),
     staleMemory: stale(decisions, input.labels),
@@ -242,6 +243,22 @@ function humanCounts(events: Event[]) {
   const guide = human.filter((row) => row.action === 'native.message-submitted').length;
   return { total: approve + reject + guide, approve, reject, guide };
 }
+
+/** A live run: the runner is `live.ts`, the "policy" is a real model in a real Codex App task. */
+const live = (input: MetricsInput) => input.run?.mode === 'live';
+
+const fixtureRepeatedNote = 'calls.jsonl：策略自己发出的工作接口调用，连同服务返回的状态码。';
+/**
+ * Why `repeatedFailures` stays `unknown` in live mode (decision 6). In fixture mode the number comes
+ * from `ScriptedNativeTransport`, which records the status of every call it makes itself. A real
+ * model calls the work interface through `agent-cli.ts`, so the runner never sees those statuses:
+ * `loop_calls` stores a hash and a result per write but no status code, and the refusals live only
+ * in the audit events. A number rebuilt from a different source could not be compared with a fixture
+ * run, so the metric says `unknown` instead of giving one.
+ */
+const liveRepeatedNote =
+  'unknown：真实模型通过 agent-cli 调用工作接口，runner 看不到状态码（loop_calls 不存状态码，被拒的调用只在审计事件里）。' +
+  '从别的来源重建出的数字无法与 fixture 比较，所以不给数字。';
 
 /**
  * Material the service refused more than once under the same operation and input digest. Without a
@@ -472,10 +489,8 @@ function exploration(
   const planted = (labels?.planted || []).filter((row) => !!row.kind && !!row.feature);
   if (!labels || !planted.length) return unknown;
   const items = store.all<WorkItem>('items');
-  const names = (item: WorkItem, feature: string) =>
-    [item.title, item.summary, item.nextStep].some((text) => (text || '').includes(feature));
-  const found = (feature: string) => items.filter((item) => names(item, feature));
-  const filed = items.filter((item) => planted.some((row) => names(item, row.feature!)));
+  const found = (feature: string) => items.filter((item) => namesFeature(item, feature));
+  const filed = items.filter((item) => planted.some((row) => namesFeature(item, row.feature!)));
   // Evidence of the product being used: a watch sample or a native tool record. A file the run wrote
   // itself and then sealed is its own change, not an observation, so it cannot back a finding.
   const observation = (row: Evidence) => row.origin === 'http' || row.origin === 'native' || !!row.watchId;
@@ -553,6 +568,15 @@ function exploration(
     },
   };
 }
+
+/**
+ * Whether a filed item names a planted `/usage` feature, which is what counts as having discovered
+ * that problem. One rule for a fixture state machine, for a real model in live mode, and for the
+ * findings `summary.md` prints verbatim; `defineScenario` rejects feature ids that contain one
+ * another so the match cannot be ambiguous.
+ */
+export const namesFeature = (item: { title?: string; summary?: string; nextStep?: string }, feature: string): boolean =>
+  [item.title, item.summary, item.nextStep].some((text) => (text || '').includes(feature));
 
 /** A percentage, or `unknown` when there is nothing to divide — 0 of 0 is not 0 percent. */
 const share = (part: number, total: number): Maybe<number> => (total ? Math.round((part / total) * 100) : unknown);
