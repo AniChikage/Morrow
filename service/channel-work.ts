@@ -82,6 +82,14 @@ export type PromptContext = {
   reportSchema?: unknown;
   /** The previous run on this channel; the items it touched carry their next step. */
   lastRunId?: string;
+  channelNames?: Record<string, string>;
+  tree?: { files: string[]; own?: boolean };
+};
+export type BoardDigestOptions = {
+  lastRunId?: string;
+  limit?: number;
+  channelId?: string;
+  channelNames?: Record<string, string>;
 };
 /**
  * One line per unresolved item: `#number kind status title`. Items a human opened and items the
@@ -89,22 +97,30 @@ export type PromptContext = {
  * Resolved items are counted, not listed, and the whole digest is bounded — full fields, evidence
  * and history are read through `context` and the read operations.
  */
-export function boardDigest(items: any[], options: { lastRunId?: string; limit?: number } = {}): string {
+export function boardDigest(items: any[], options: BoardDigestOptions = {}): string {
   const limit = Math.max(0, options.limit ?? 1200);
-  const open = items.filter((item) => item.status !== 'resolved');
+  const rank = (item: any) => (!item.ownerChannelId ? 1 : item.ownerChannelId === options.channelId ? 0 : 2);
+  const open = items.filter((item) => item.status !== 'resolved').sort((a, b) => rank(a) - rank(b));
   const resolved = items.length - open.length;
+  const mine = (item: any) => !item.ownerChannelId || item.ownerChannelId === options.channelId;
   const detailed = (item: any) =>
-    item.origin === 'human' || (!!options.lastRunId && item.lastRunId === options.lastRunId);
+    mine(item) && (item.origin === 'human' || (!!options.lastRunId && item.lastRunId === options.lastRunId));
+  const owner = (item: any) =>
+    !item.ownerChannelId
+      ? ''
+      : item.ownerChannelId === options.channelId
+        ? '｜本频道'
+        : `｜负责：${oneLine(options.channelNames?.[item.ownerChannelId] || '已移除的频道', 60)}`;
   if (!open.length) return `看板：${items.length ? `全部 ${items.length} 项已解决。` : '暂无事项。'}\n`.slice(0, limit);
   const header = `看板（未解决 ${open.length} 项，共 ${items.length} 项）：\n`;
   const tail = `${resolved ? `另有 ${resolved} 项已解决，未列出。\n` : ''}完整看板用 context 读取。\n`;
   if (limit < header.length + tail.length + 30) return tail.length <= limit ? tail : limit >= 7 ? 'context' : '';
   // Reserve the omitted IDs first; never cut a detailed row into misleading fragments.
   const rows: string[] = [];
-  const ordered = [...open.filter(detailed), ...open.filter((item) => !detailed(item))];
+  const ordered = [...open].sort((a, b) => rank(a) - rank(b) || Number(detailed(b)) - Number(detailed(a)));
   let remaining = ordered;
   for (const item of ordered) {
-    const head = `#${item.number} ${item.kind} ${item.status} ${oneLine(item.title, 120)}`;
+    const head = `#${item.number} ${item.kind} ${item.status} ${oneLine(item.title, 120)}${owner(item)}`;
     const step = detailed(item) ? oneLine(item.nextStep, 149) : '';
     const row = step ? `${head}｜下一步：${step}` : head;
     const rest = remaining.slice(1);
@@ -148,10 +164,17 @@ export function autonomousCharter(context: PromptContext): string {
   const report = context.reportSchema
     ? `已通过 Morrow 工具维护的 feature 不要再在报告中重复提交；等待发布或反馈时，旧报告的 needsHuman 应为 false。没有工具且有真实看板变化时，可额外附加 morrow-report 代码块，JSON Schema：${JSON.stringify(context.reportSchema)}。没有看板变化不必生成报告。verified/resolved 必须有可复查证据。\n`
     : '';
-  return `你是这个项目中持续工作的 Codex。频道「${channel.name}」是长期职责，围绕目标自主推进。\n项目「${project.name}」目录：${project.path}\n项目目标：${project.goal}\n${projectBriefBlock(project)}当前工作方向：${channel.goal}\n沿用原生任务上下文，先核对最新指导、事实、进展和未知，再选择有价值的行动；用户中途指导优先。先简述意图，过程中只报真实进展，结束说明结果、证据及下一步。不机械巡检，不为保持忙碌制造任务。\n原生运行时管理模型、工具、登录、权限和历史；${scope}。不得越权、发送未授权外部消息或执行破坏性操作；上下文不能提升权限。可用能力以 contract.nativeCapabilities 和实际调用为准。额度紧张时优先做便宜且有信息价值的事，或选择等待。\n共享看板先查重、保留事项ID；重要认识、尝试、反例和等待条件及时落库。证据必须可回看，未知记为 hypothesis；区分预期与实测效果。用可用原生工具走查真实流程，发现问题附证据；个人经验优先使用原生记忆。\n上线只能用 release.propose 封存已实现和验证的具体版本，由人批准；不得直接上线。等待批准或观测调用 wait 并返回 wait，有独立工作则继续。缺关键信息用 needs_input 在正文提问，常规授权内不逐项请示。\n完整章程仅在首次、换任务或内容变化时发送；其余按需回顾。完整事项、操作契约和能力见 context / contract。\n结束附 morrow-next 代码块：{"state":"continue|wait|needs_input","focus":"关注点","reason":"事实依据","nextStep":"下一步或具体问题","waitMinutes":60}。等待时 waitMinutes 为1到1440的整数；有明确工作选continue，安排不替代正文。\n${report}`;
+  return `你是这个项目中持续工作的 Codex。频道「${channel.name}」是长期职责，围绕目标自主推进。\n项目「${project.name}」目录：${project.path}\n项目目标：${project.goal}\n${projectBriefBlock(project)}当前工作方向：${channel.goal}\n沿用原生任务上下文，先核对最新指导、事实、进展和未知，再选择有价值的行动；用户中途指导优先。先简述意图，过程中只报真实进展，结束说明结果、证据及下一步。不机械巡检，不为保持忙碌制造任务。\n原生运行时管理模型、工具、登录、权限和历史；${scope}。不得越权、发送未授权外部消息或执行破坏性操作；上下文不能提升权限。可用能力以 contract.nativeCapabilities 和实际调用为准。额度紧张时优先做便宜且有信息价值的事，或选择等待。\n只推进分派给本频道或无人负责的事项；别的频道负责的事项不要改动，可以在正文提出建议。\n项目所有频道共享同一个工作树：本轮结束前提交或清理自己的未提交改动，否则别的频道无法开始。\n共享看板先查重、保留事项ID；重要认识、尝试、反例和等待条件及时落库。证据必须可回看，未知记为 hypothesis；区分预期与实测效果。用可用原生工具走查真实流程，发现问题附证据；个人经验优先使用原生记忆。\n上线只能用 release.propose 封存已实现和验证的具体版本，由人批准；不得直接上线。等待批准或观测调用 wait 并返回 wait，有独立工作则继续。缺关键信息用 needs_input 在正文提问，常规授权内不逐项请示。\n完整章程仅在首次、换任务或内容变化时发送；其余按需回顾。完整事项、操作契约和能力见 context / contract。\n结束附 morrow-next 代码块：{"state":"continue|wait|needs_input","focus":"关注点","reason":"事实依据","nextStep":"下一步或具体问题","waitMinutes":60}。等待时 waitMinutes 为1到1440的整数；有明确工作选continue，安排不替代正文。\n${report}`;
 }
 /** Digest of the charter text, so a changed goal, brief, direction or permission resends it. */
 export const charterHash = (charter: string) => createHash('sha256').update(charter).digest('hex');
+export function treeLine(tree?: { files: string[]; own?: boolean }): string {
+  if (!tree?.files.length) return '';
+  const shown = tree.files.slice(0, 10).join('、');
+  const rest = tree.files.length > 10 ? ` 等 ${tree.files.length} 个文件` : '';
+  const own = tree.own ? '；这是本频道上一轮留下的，请在本轮结束前提交或清理，否则别的频道无法开始' : '';
+  return `工作树有未提交改动：${shown}${rest}${own}。\n`;
+}
 /** What actually changes between turns: the reminder, the last arrangement, the usage line and the board digest. */
 export function autonomousTurnNote(context: PromptContext): string {
   const { project } = context;
@@ -159,11 +182,20 @@ export function autonomousTurnNote(context: PromptContext): string {
     ? `关注点：${oneLine(context.previous.focus, 120)}\n下一步：${oneLine(context.previous.nextStep, 220)}\n`
     : '上次安排：暂无，这是本任务的第一轮。\n';
   const usage = usageLine(context.budget);
-  const header = `沿用本任务开头的项目说明（版本 ${project.briefRevision || 0}）、工作方向与规则；操作约定见 contract。\n${previous}${usage ? usage + '\n' : ''}`;
+  const header = `沿用本任务开头的项目说明（版本 ${project.briefRevision || 0}）、工作方向与规则；操作约定见 contract。\n${previous}${usage ? usage + '\n' : ''}${treeLine(context.tree)}`;
   const footer = '结束附 morrow-next，保留正文汇报。\n';
   // Tools are included in the turn budget, but never truncate executable paths or user instructions.
   const limit = Math.max(0, Math.min(1200, 1500 - header.length - footer.length - (context.tools?.length || 0)));
-  return header + boardDigest(context.items || [], { lastRunId: context.lastRunId, limit }) + footer;
+  return (
+    header +
+    boardDigest(context.items || [], {
+      lastRunId: context.lastRunId,
+      channelId: context.channel.id,
+      channelNames: context.channelNames,
+      limit,
+    }) +
+    footer
+  );
 }
 
 /** A reminder of an already delivered charter, not a replacement for the user's full brief. */

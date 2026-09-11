@@ -21,8 +21,11 @@ import { sanitizeEventDetail } from './event-details.ts';
 import type { EventDetail } from './protocol.ts';
 import { Store, now } from './store.ts';
 import { decodeLine, diagnoseFailure, invocation } from './runtimes.ts';
+import { projectTreeState } from './source-version.ts';
 import { extractReport } from './reports.ts';
 type Control = { id: string; enabled: boolean; pid: number; runId: string };
+/** A Morrow-orchestrated turn, as opposed to native chat or a turn the App itself started. */
+const scheduledRun = (row: Run) => !row.source || ['morrow-schedule', 'nohuman-schedule'].includes(row.source);
 const legacyRuntimeMessage =
   '此频道使用已停止支持的运行时（Claude Code / Trae）。历史记录保持可读；请新建 Codex 频道继续工作。';
 type Active = {
@@ -57,6 +60,8 @@ export class Engine {
   usage: UsageMonitor;
   /** Before-samples still in flight per run, so the after-sample can wait for its counterpart. */
   usageBefore = new Map<string, Promise<void>>();
+  /** The working-tree wait each channel has already announced, so a repeated tick repeats no event. */
+  treeWaits = new Map<string, string>();
   constructor(store: Store, home: string, token: string) {
     this.store = store;
     this.home = home;
@@ -341,14 +346,19 @@ export class Engine {
     if (action === 'resume') {
       this.setControl(id, { enabled: true });
       try {
-        await this.start(id, true);
+        await this.start(id, true, true);
       } catch (e) {
         this.setControl(id, { enabled: false });
         throw e;
       }
     } else await this.start(id, false);
   }
-  start(id: string, scheduled: boolean) {
+  /**
+   * `scheduled` chooses between parking the channel and refusing; `humanAction` says whether a person
+   * asked for this start, because `resume` is scheduled work a human just requested and must hear
+   * about a blocking working tree instead of silently waiting.
+   */
+  start(id: string, scheduled: boolean, humanAction = !scheduled) {
     if (this.closed) throw new APIError(503, '服务正在关闭');
     const channel = this.store.get<Channel>('channels', id)!;
     const project = this.store.get<Project>('projects', channel.projectId)!;
@@ -379,6 +389,24 @@ export class Engine {
       });
       return;
     }
+    // One shared working tree per project: a channel never starts on another channel's uncommitted
+    // changes, because it can neither see them nor safely commit or revert them.
+    const conflict = this.treeConflict(project, id);
+    if (conflict) {
+      if (humanAction) throw new APIError(409, conflict.message);
+      this.store.put('channels', {
+        ...channel,
+        status: 'waiting',
+        nextRunAt: new Date(Date.now() + channel.intervalMinutes * 60000).toISOString(),
+      });
+      // One event per distinct wait: the scheduler re-checks this gate on every tick.
+      if (this.treeWaits.get(id) !== conflict.key) {
+        this.treeWaits.set(id, conflict.key);
+        this.event(id, '', 'system', `${conflict.message}。`);
+      }
+      return;
+    }
+    this.treeWaits.delete(id);
     if (this.budgetCount(id) >= channel.maxRunsPerDay) {
       if (!scheduled) throw new APIError(429, '已达到每日运行次数上限（UTC 日界），请调整预算或明天继续');
       this.store.put('channels', {
@@ -619,10 +647,40 @@ export class Engine {
   previousScheduledRun(channelId: string, exceptId?: string) {
     return this.store
       .channelRuns(channelId, 40)
-      .filter(
-        (row) => row.id !== exceptId && (!row.source || ['morrow-schedule', 'nohuman-schedule'].includes(row.source))
-      )
+      .filter((row) => row.id !== exceptId && scheduledRun(row))
       .at(-1);
+  }
+  /**
+   * Records the project's shared working tree as this turn leaves it, so the next turn of another
+   * channel does not start on top of uncommitted changes it cannot see. Read-only (`git status`) and
+   * never throwing: an unreadable tree is recorded as `unknown` and blocks nobody. The row is
+   * mutated in place, so the caller's own write carries it.
+   */
+  recordTreeState(run: Run) {
+    if (!scheduledRun(run)) return run;
+    const project = this.store.get<Project>('projects', run.projectId);
+    run.treeState = project?.path ? projectTreeState(project.path) : { dirty: false, files: [], unknown: true };
+    return run;
+  }
+  /**
+   * Why this channel must not start now: the shared working tree is dirty and the project's most
+   * recent finalized scheduled turn belongs to another channel that left it dirty. The same channel
+   * may continue on its own changes, and a tree only a human touched (no scheduled turn recorded it
+   * dirty) never blocks anyone.
+   */
+  treeConflict(project: Project, channelId: string) {
+    const tree = projectTreeState(project.path);
+    if (!tree.dirty) return undefined;
+    const last = this.store
+      .runPage({ projectId: project.id, limit: 40 })
+      .runs.filter((row) => row.treeState && scheduledRun(row))
+      .at(-1);
+    if (!last || last.channelId === channelId || !last.treeState!.dirty) return undefined;
+    const name = this.store.get<Channel>('channels', last.channelId)?.name || '已移除的频道';
+    return {
+      key: `${last.channelId}:${tree.files.length}`,
+      message: `工作树有频道「${name}」未提交的改动（${tree.files.length} 个文件），等待其提交或清理后再开始`,
+    };
   }
   /**
    * Records what this turn delivered so the next one can send only a note. Delivery is recorded at
@@ -649,6 +707,9 @@ export class Engine {
       const tools = run ? this.loop.prepare(run) : '';
       const stored = this.store.get<Channel>('channels', channel.id) || channel;
       const previousRun = this.previousScheduledRun(channel.id, run?.id);
+      // What is uncommitted in the shared tree right now, and whether this channel's own last turn
+      // left it that way; the charter carries the rule, this line carries the current state.
+      const tree = projectTreeState(project.path);
       const context = {
         project,
         channel,
@@ -656,9 +717,11 @@ export class Engine {
         previous: stored.work,
         budget: this.usage.budgetContext(project, channel),
         tools,
+        channelNames: this.loop.channelNames(project.id),
         // Without the work grant the optional board report is the only way a turn can reach the board.
         ...(tools ? {} : { reportSchema: resultSchema }),
         ...(previousRun ? { lastRunId: previousRun.id } : {}),
+        ...(tree.dirty ? { tree: { files: tree.files, own: !!previousRun?.treeState?.dirty } } : {}),
       };
       const charter = autonomousCharter(context);
       const hash = charterHash(charter);
@@ -805,6 +868,7 @@ export class Engine {
     });
   }
   finishWithoutReport(run: Run, finalOutput: string) {
+    this.recordTreeState(run);
     const current = this.store.get<Channel>('channels', run.channelId)!;
     const enabled = this.control(run.channelId).enabled;
     const summary = finalOutput.trim() ? finalOutput.trim().slice(0, 20000) : 'CLI 正常结束，未返回文字总结。';
@@ -827,6 +891,7 @@ export class Engine {
     this.trackUsageAfter(run);
   }
   finishSuccess(run: Run, original: Channel, result: AgentResult, runDir: string, itemRevisions?: Map<string, number>) {
+    this.recordTreeState(run);
     for (const item of result.items)
       if (item.id) {
         const existing = this.store.get<WorkItem>('items', item.id);
@@ -931,6 +996,7 @@ export class Engine {
     this.trackUsageAfter(run);
   }
   finishFailure(run: Run, status: string, summary: string) {
+    this.recordTreeState(run);
     this.store.put('runs', {
       ...run,
       reportStatus: run.reportStatus === 'pending' ? 'missing' : run.reportStatus,

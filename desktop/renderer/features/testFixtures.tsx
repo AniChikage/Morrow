@@ -165,7 +165,10 @@ export function featureProps(patch: Partial<FeatureProps> = {}) {
     getNativeImage: vi.fn(),
     updateItem: vi.fn(async (id: string, status: string) => item({ id, status })),
     createItem: vi.fn(async (data: CreateItem) => item({ ...data, channelId: data.channelId || '' })),
-    patchItem: vi.fn(async (id: string, patch: ItemPatch) => item({ id, ...patch })),
+    patchItem: vi.fn(async (id: string, patch: ItemPatch) => {
+      const { ownerChannelId, ...fields } = patch;
+      return item({ id, ...fields, ...(ownerChannelId ? { ownerChannelId } : {}) });
+    }),
     getRuns: vi.fn(async () => ({ runs: [], hasMore: false })),
     getRun: vi.fn(),
     getRunOutput: vi.fn(async () => ({ chunks: [], hasMore: false })),

@@ -696,11 +696,15 @@ file/agent 证据可能由执行者生成，只证明采集了该内容，不证
             const item = this.loop.item(scope, intent.targetId, false)!;
             if (item.revision !== intent.revision || item.status !== 'investigating')
               throw new APIError(409, 'feature 已更新，保留新内容；读取后重新提交完成请求');
+            const status = intent.input.status as WorkItem['status'];
             const updated = {
               ...item,
-              status: intent.input.status as WorkItem['status'],
+              status,
               revision: item.revision + 1,
               updatedAt: now(),
+              // A completed item is released; a reassignment during the review keeps the completion
+              // request out, because only the responsible channel may advance the item.
+              ownerChannelId: this.loop.owner(scope, item, status),
             };
             this.loop.store.put('items', updated);
             this.loop.audit(

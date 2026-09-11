@@ -296,7 +296,10 @@ test('the board digest in a real turn carries human and last-touched next steps 
     s.store.put('items', { ...s.store.get<any>('items', touched.id), lastRunId: first.run.id });
     const second = s.engine.prompt(s.project(), s.channel(), grant.run);
     assert(second.includes(`#${human.number} issue open 用户提出的问题｜下一步：先复现用户描述的路径`));
-    assert(second.includes(`#${touched.number} feature investigating agent 建立的事项｜下一步：按上一轮计划补齐观测`));
+    // Writing the item made this channel responsible for it, so the digest says so before the step.
+    assert(
+      second.includes(`#${touched.number} feature investigating agent 建立的事项｜本频道｜下一步：按上一轮计划补齐观测`)
+    );
     // The compact digest replaces the full board JSON; the summaries are read through `context`.
     assert(!second.includes('用户在界面里写下的事项'));
     assert(!second.includes('"sourceChannelIds"'));

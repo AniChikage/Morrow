@@ -3,7 +3,7 @@ import { ArrowUpRight, FileText, Hash, History, Link2, Pencil } from 'lucide-rea
 import type { FeatureProps } from './types';
 import { Button, Dropdown, DropdownItem, EmptyState, Markdown, PropertyPanel, StatusLabel } from '../components/ui';
 import { formatDate, kindLabel, statusLabel } from '../components/format';
-import { Property } from './ProjectView';
+import { FeatureOwnerTag, Property } from './ProjectView';
 import { questionExcerpt } from './ChannelQuestion';
 import { ProjectRecords } from './ProjectRecords';
 import { FeatureWork } from './ProjectWork';
@@ -27,6 +27,8 @@ export function FindingView(props: FeatureProps & { id: string }) {
     return (
       <EmptyState icon={<FileText />} title="未找到这个功能" description="它可能已被移除，请返回项目查看其他功能。" />
     );
+  /** Channels of this item's project: the only ones a human may make responsible for it. */
+  const projectChannels = snapshot.channels.filter((channel) => channel.projectId === project?.id);
   const contributors = featureSourceIds(item)
     .filter((id) => id !== item.channelId)
     .map((id) => snapshot.channels.find((channel) => channel.id === id))
@@ -37,6 +39,7 @@ export function FindingView(props: FeatureProps & { id: string }) {
         <div className="feature-toolbar">
           <span className="detail-id">{featureNumber(item)}</span>
           <span className="detail-kind">{kindLabel(item.kind)}</span>
+          <FeatureOwnerTag item={item} channels={snapshot.channels} />
           <StatusLabel status={item.status} />
           {project?.isDemo && <span className="feature-demo-label">示例数据</span>}
           <div className="feature-toolbar-spacer" />
@@ -153,6 +156,27 @@ export function FindingView(props: FeatureProps & { id: string }) {
               </Dropdown>
             </Property>
             <Property label="类型">{kindLabel(item.kind)}</Property>
+            <Property label="负责频道">
+              <select
+                className="feature-owner-select"
+                aria-label="分派给频道"
+                disabled={busy}
+                value={item.ownerChannelId || ''}
+                onChange={(event) =>
+                  void onMutate(() => api.patchItem(item.id, { ownerChannelId: event.target.value || null }))
+                }
+              >
+                <option value="">无人负责</option>
+                {item.ownerChannelId && !projectChannels.some((channel) => channel.id === item.ownerChannelId) && (
+                  <option value={item.ownerChannelId}>已移除的频道</option>
+                )}
+                {projectChannels.map((channel) => (
+                  <option key={channel.id} value={channel.id}>
+                    {channel.name}
+                  </option>
+                ))}
+              </select>
+            </Property>
             <Property label="首次来源">
               {channel ? (
                 <button className="property-link" onClick={() => onNavigate({ kind: 'channel', id: channel.id })}>

@@ -407,7 +407,11 @@ export function previewAPI(): DesktopAPI {
       if (data.revision !== undefined && data.revision !== item.revision) throw new Error('功能已被更新，请重新加载。');
       const before = structuredClone(item),
         revision = (item.revision || 1) + 1;
-      Object.assign(item, data, { revision, updatedAt: new Date().toISOString() });
+      const { ownerChannelId, ...fields } = data;
+      Object.assign(item, fields, { revision, updatedAt: new Date().toISOString() });
+      // `null` releases the item to 无人负责; an absent field leaves the current owner untouched.
+      if (ownerChannelId === null) delete item.ownerChannelId;
+      else if (ownerChannelId !== undefined) item.ownerChannelId = ownerChannelId;
       audit(item.projectId || '', item.channelId, id, '[预览] 更新了功能', 'item.updated', { before, after: item });
       return structuredClone(item);
     },

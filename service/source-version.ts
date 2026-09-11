@@ -3,7 +3,37 @@ import { execFileSync } from 'node:child_process';
 import { closeSync, constants, fstatSync, lstatSync, openSync, readSync, readdirSync, realpathSync } from 'node:fs';
 import { join, relative } from 'node:path';
 import { APIError } from './protocol.ts';
+import type { TreeState } from './protocol.ts';
 import type { SourceVersion } from './verification-types.ts';
+
+/** The same bounded, lock-free `git` invocation the source seal uses; stderr is dropped. */
+function git(root: string, args: string[]) {
+  return execFileSync('git', ['-c', 'core.fsmonitor=false', '-C', root, ...args], {
+    encoding: 'utf8',
+    timeout: 3000,
+    maxBuffer: 2 * 1024 * 1024,
+    stdio: ['ignore', 'pipe', 'ignore'],
+    env: { ...process.env, GIT_OPTIONAL_LOCKS: '0' },
+  });
+}
+/** Paths kept in a tree reading, so one wait event and one turn note stay readable. */
+const treeFileLimit = 50;
+/**
+ * Whether a project directory has uncommitted changes right now, with up to 50 repo-relative paths.
+ * Read-only and never throwing: a directory that is not a repository, or any git failure, reads as
+ * `{dirty:false, files:[], unknown:true}` so a missing reading can never block a channel.
+ */
+export function projectTreeState(directory: string): TreeState {
+  try {
+    const files = git(directory, ['status', '--porcelain', '--untracked-files=normal'])
+      .split('\n')
+      .filter((line) => line.length > 3)
+      .map((line) => line.slice(3).trim());
+    return { dirty: files.length > 0, files: files.slice(0, treeFileLimit) };
+  } catch {
+    return { dirty: false, files: [], unknown: true };
+  }
+}
 
 /** No project commands/hooks are run. Ignored dependencies/build products are outside this source seal. */
 export function sourceVersion(directory: string): SourceVersion {
@@ -13,22 +43,15 @@ export function sourceVersion(directory: string): SourceVersion {
   // Dependencies are outside this source-only seal even when accidentally tracked
   // by Git. Keep assets and tracked build inputs; never silently sample large files.
   const dependencies = new Set(['node_modules', '.pnpm-store']);
-  const git = (args: string[]) =>
-    execFileSync('git', ['-c', 'core.fsmonitor=false', '-C', root, ...args], {
-      encoding: 'utf8',
-      timeout: 3000,
-      maxBuffer: 2 * 1024 * 1024,
-      stdio: ['ignore', 'pipe', 'ignore'],
-      env: { ...process.env, GIT_OPTIONAL_LOCKS: '0' },
-    });
+  const read = (args: string[]) => git(root, args);
   let paths: string[] = [],
     head = '',
     coverage: SourceVersion['coverage'] = 'folder';
   try {
-    const top = realpathSync(git(['rev-parse', '--show-toplevel']).trim());
+    const top = realpathSync(read(['rev-parse', '--show-toplevel']).trim());
     if (top === root) {
-      paths = git(['ls-files', '--cached', '--others', '--exclude-standard', '-z']).split('\0').filter(Boolean);
-      head = git(['rev-parse', '--verify', 'HEAD']).trim();
+      paths = read(['ls-files', '--cached', '--others', '--exclude-standard', '-z']).split('\0').filter(Boolean);
+      head = read(['rev-parse', '--verify', 'HEAD']).trim();
       coverage = 'git-tracked-and-unignored';
     }
   } catch {
