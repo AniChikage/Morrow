@@ -1,22 +1,35 @@
 import { mkdirSync, readdirSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { fixtureNotice, runScenario } from './fixture.ts';
+import { LiveUsageError, liveDefaults, prepareLive, runLive } from './live.ts';
 import { computeMetrics, policySelfCheck, unknown } from './metrics.ts';
 import { aggregate, aggregateSection, compare, reportInput, writeMetrics } from './report.ts';
+import type { LiveOptions } from './live.ts';
 import type { RunOptions, RunResult } from './fixture.ts';
 import type { Scenario } from './scenario.ts';
 
 const usage = `用法：
   node scripts/acceptance/run.ts run <scenario|all> [--mode fixture] [--policy careful|naive|careful,naive]
                                      [--repeat N] [--out <目录>] [--keep] [--seed <n>]
+  node scripts/acceptance/run.ts prepare <scenario> --mode live [--run-id <id>] [--budget N] [--out <目录>]
+  node scripts/acceptance/run.ts run <scenario> --mode live --run-id <id> --budget N
+                                     [--project-limit ${liveDefaults.projectLimit}] [--project-window ${liveDefaults.projectWindow}]
+                                     [--reserve ${liveDefaults.reserve}] [--reserve-window ${liveDefaults.reserveWindow}]
+                                     [--advance-scale ${liveDefaults.advanceScale}] [--max-wait ${liveDefaults.maxWaitMinutes}]
+                                     [--wait-bind ${liveDefaults.waitBindMinutes}] [--turn-timeout ${liveDefaults.turnTimeoutMinutes}]
+                                     [--review-timeout ${liveDefaults.reviewTimeoutMinutes}] [--wall-clock ${liveDefaults.wallClockMinutes}]
   node scripts/acceptance/run.ts compare <运行目录A> <运行目录B> [--ignore-volatile]
   node scripts/acceptance/run.ts metrics <运行目录|数据目录> [--out <文件>]
-  node scripts/acceptance/run.ts list`;
+  node scripts/acceptance/run.ts list
+
+live 模式分两步：prepare 建目录、写种子、打印人要在 Codex App 里做的四步；人做完之后再 run 同一个 --run-id。
+一次 live 运行真的驱动 Codex App 并消耗账户额度：--budget 必填，没有缺省；--policy 和 run all 在 live 下被拒绝。
+时间单位都是分钟；--project-limit / --reserve 是百分比。`;
 
 const scenarioDir = new URL('./scenarios/', import.meta.url);
-/** The design a live run needs confirmed before it may be implemented, let alone spend real quota. */
-const liveProposal = 'docs/acceptance/LIVE-MODE-PROPOSAL.md';
+/** Loaded on demand: `fixture.ts` imports `tests/harness/env.ts`, which sets `MORROW_TEST_MODE=1` at
+ * import time — a live run must never see that, or the service builds a desktop fixture transport. */
+const fixture = () => import('./fixture.ts');
 
 async function main() {
   const [command, ...rest] = process.argv.slice(2);
@@ -24,13 +37,14 @@ async function main() {
   if (command === 'list') return list();
   if (command === 'compare') return compareRuns(rest);
   if (command === 'metrics') return metricsFor(rest);
+  if (command === 'prepare') return prepareRun(rest);
   if (command !== 'run') return finish(`未知子命令 ${command}\n${usage}`, 2);
 
   const id = rest.find((arg) => !arg.startsWith('--'));
   if (!id) return finish(`run 需要场景 ID 或 all\n${usage}`, 2);
   const mode = flag(rest, 'mode') || 'fixture';
-  if (mode === 'live') return finish(liveNotice(), 2);
-  if (mode !== 'fixture') return finish(`未知模式 ${mode}；目前只有 fixture\n${usage}`, 2);
+  if (mode === 'live') return runLiveScenario(id, rest);
+  if (mode !== 'fixture') return finish(`未知模式 ${mode}；只有 fixture 与 live\n${usage}`, 2);
   const policies = (flag(rest, 'policy') || 'careful').split(',').filter(Boolean);
   const repeat = Number(flag(rest, 'repeat') || '1');
   if (!Number.isInteger(repeat) || repeat < 1) return finish('--repeat 需要一个不小于 1 的整数', 2);
@@ -55,23 +69,116 @@ async function main() {
 }
 
 /**
- * `--mode live` is not implemented, on purpose: a live run drives a real Codex App task and really
- * spends account quota, so its isolation, the manual steps it needs from a person, its three budget
- * gates, its stop conditions and its cleanup have to be confirmed by the owner first. This prints
- * where that design lives and stops with the usage exit code; it never starts anything.
+ * Step one of a live run: make the report directory, write the seed project into it, leave
+ * `prepared.json`, and print the four steps a person has to take in the Codex App — Morrow cannot
+ * create an App task, so a live run has to be started by a human. Nothing is launched here.
  */
-function liveNotice() {
-  return [
-    'live 模式尚未实现，也不应当在负责人确认设计之前实现：它会驱动真实的 Codex App 任务并真的消耗账户额度。',
-    `请先阅读并确认这份提案：${resolve(repoRoot, liveProposal)}`,
-    '里面写了隔离范围、人要做的四步（Morrow 不能创建 App 任务）、真实调度器与脚本化扰动怎么共存、',
-    '虚拟时钟为什么不能用以及用什么代替、三道预算闸、停止条件、清理，以及第一次 live 运行的验收标准。',
-    '确认后的第一次运行是：npm run acceptance -- run usagegap --mode live --budget 3',
-  ].join('\n');
+async function prepareRun(rest: string[]) {
+  const id = rest.find((arg) => !arg.startsWith('--'));
+  if (!id) return finish(`prepare 需要场景 ID\n${usage}`, 2);
+  if (id === 'all') return finish('prepare 只接受单个场景；一次 live 运行只跑一个场景', 2);
+  const mode = flag(rest, 'mode') || 'live';
+  if (mode !== 'live') return finish(`prepare 只用于 live 模式（收到 --mode ${mode}）\n${usage}`, 2);
+  let scenario;
+  try {
+    scenario = await load(id);
+  } catch (error) {
+    return finish(error instanceof Error ? error.message : String(error), 2);
+  }
+  const budget = number(rest, 'budget');
+  try {
+    const prepared = prepareLive(scenario, {
+      ...(flag(rest, 'run-id') ? { runId: flag(rest, 'run-id')! } : {}),
+      ...(flag(rest, 'out') ? { out: flag(rest, 'out')! } : {}),
+      ...(budget === undefined ? {} : { budget }),
+    });
+    return finish(`已写入 ${join(prepared.root, 'prepared.json')}`, 0);
+  } catch (error) {
+    return finish(error instanceof Error ? error.message : String(error), error instanceof LiveUsageError ? 2 : 1);
+  }
 }
+
+/**
+ * Step two: start the isolated service with the production App follower, wait for the task the
+ * person created, bind it, and run the timeline against a real model. Only a run that broke itself
+ * exits non-zero (decision 4); what the model did is reported as metrics.
+ */
+async function runLiveScenario(id: string, rest: string[]) {
+  if (id === 'all') return finish('run all 在 live 模式下被拒绝：一次 live 运行只跑一个场景', 2);
+  if (flag(rest, 'policy') !== undefined)
+    return finish('--policy 在 live 模式下被拒绝：干这件事的是真实 App 任务里的模型，config.policy 记作 live', 2);
+  if (flag(rest, 'repeat') !== undefined)
+    return finish('--repeat 在 live 模式下被拒绝：每次 live 运行都要单独 prepare，并单独付额度', 2);
+  const runId = flag(rest, 'run-id');
+  if (!runId) return finish(`--run-id 必填：先 prepare，再用同一个 run-id run\n${usage}`, 2);
+  const budget = number(rest, 'budget');
+  if (budget === undefined)
+    return finish('--budget 必填，没有缺省：一次 live 运行真的消耗账户额度。第一次建议 --budget 3', 2);
+  let scenario;
+  try {
+    scenario = await load(id);
+  } catch (error) {
+    return finish(error instanceof Error ? error.message : String(error), 2);
+  }
+  let options: LiveOptions;
+  try {
+    options = {
+      runId,
+      budget,
+      ...pick(rest, 'project-limit', 'projectLimit'),
+      ...pick(rest, 'reserve', 'reserve'),
+      ...pick(rest, 'advance-scale', 'advanceScale'),
+      ...pick(rest, 'max-wait', 'maxWaitMinutes'),
+      ...pick(rest, 'wait-bind', 'waitBindMinutes'),
+      ...pick(rest, 'turn-timeout', 'turnTimeoutMinutes'),
+      ...pick(rest, 'review-timeout', 'reviewTimeoutMinutes'),
+      ...pick(rest, 'wall-clock', 'wallClockMinutes'),
+      ...window(rest, 'project-window', 'projectWindow'),
+      ...window(rest, 'reserve-window', 'reserveWindow'),
+      ...(flag(rest, 'out') ? { out: flag(rest, 'out')! } : {}),
+    };
+  } catch (error) {
+    return finish(error instanceof Error ? error.message : String(error), 2);
+  }
+  let result;
+  try {
+    result = await runLive(scenario, options);
+  } catch (error) {
+    return finish(error instanceof Error ? error.message : String(error), error instanceof LiveUsageError ? 2 : 1);
+  }
+  console.log(result.summary);
+  if (result.exitCode === 0)
+    return finish(`live 运行结束：${result.stop.reason} · ${result.stop.detail}\n报告写入 ${result.out}`, 0);
+  return finish(
+    `live 运行未完成（${result.stop.reason}）：\n- ${[result.stop.detail, ...result.failures].join('\n- ')}\n报告写入 ${result.out}`,
+    result.exitCode
+  );
+}
+
+/** One numeric live flag, absent when not given; a malformed value is a usage error, not a default. */
+function number(args: string[], name: string): number | undefined {
+  const raw = flag(args, name);
+  if (raw === undefined) return undefined;
+  const value = Number(raw);
+  if (!Number.isFinite(value)) throw new LiveUsageError(`--${name} 需要一个数字，收到 ${raw}`);
+  return value;
+}
+
+const pick = (args: string[], name: string, key: string) => {
+  const value = number(args, name);
+  return value === undefined ? {} : { [key]: value };
+};
+
+const window = (args: string[], name: string, key: string) => {
+  const raw = flag(args, name);
+  if (raw === undefined) return {};
+  if (raw !== '5h' && raw !== 'weekly') throw new LiveUsageError(`--${name} 只能是 5h 或 weekly，收到 ${raw}`);
+  return { [key]: raw };
+};
 
 /** One scenario with one policy, once or `--repeat N` times with a mean/min/max report. */
 async function runOne(scenario: Scenario, policy: string, options: RunOptions, repeat: number) {
+  const { runScenario, fixtureNotice } = await fixture();
   if (repeat === 1) {
     const result = await runScenario(scenario, { ...options, policy });
     console.log(result.summary);
@@ -104,6 +211,7 @@ async function runOne(scenario: Scenario, policy: string, options: RunOptions, r
 
 /** Every scenario under `scenarios/` with every listed policy, plus the harness self-check. */
 async function runAll(policies: string[], options: RunOptions) {
+  const { runScenario } = await fixture();
   const scenarios = await Promise.all(ids().map(load));
   const rows: Array<{ scenario: string; policy: string; result: RunResult }> = [];
   for (const scenario of scenarios)

@@ -78,11 +78,12 @@ const repoRoot = fileURLToPath(new URL('../../', import.meta.url));
  * backend is `ScriptedNativeTransport` and the outside world is a local receiver.
  */
 export async function runScenario(scenario: Scenario, options: RunOptions = {}): Promise<RunResult> {
-  // The CLI already refuses `--mode live`; this is the second line of defence for a direct caller.
-  // A live run needs its own runner (a real App task, real quota, real clock) — see the design in
-  // `docs/acceptance/LIVE-MODE-PROPOSAL.md`, which has to be confirmed before anything is built.
+  // A live run has its own runner: a real App task, real quota, a real clock, and no import of
+  // `tests/harness/env.ts`. This fixture runner must never be handed `--mode live` by mistake —
+  // importing this module already set `MORROW_TEST_MODE=1`, so the service here can only ever build
+  // the desktop fixture transport. See `scripts/acceptance/live.ts`.
   if (options.mode && options.mode !== 'fixture')
-    throw new Error(`mode ${options.mode} 尚未实现；先确认 docs/acceptance/LIVE-MODE-PROPOSAL.md`);
+    throw new Error(`mode ${options.mode} 不走 fixture runner；live 模式在 scripts/acceptance/live.ts`);
   const policyName = options.policy || 'careful';
   const turnPolicy = policies[policyName];
   if (!turnPolicy) throw new Error(`unknown policy ${policyName}; available: ${Object.keys(policies).join(', ')}`);
