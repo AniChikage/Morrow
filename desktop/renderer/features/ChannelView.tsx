@@ -321,8 +321,11 @@ export function ChannelView(props: FeatureProps & { id: string }) {
     native && !!conversation?.threadId && conversation.status.available && conversation.status.readyThreadCount === 0;
   const nativeProblem =
     nativeError ||
-    (native && conversation?.syncError) ||
-    (native && conversation && !conversation.status.connected ? conversation.status.detail : '');
+    (native && conversation
+      ? !conversation.status.available
+        ? conversation.status.detail
+        : conversation.syncError || (!conversation.status.connected ? conversation.status.detail : '')
+      : '');
   const unavailable = demo
     ? '示例频道不能回答'
     : unloaded

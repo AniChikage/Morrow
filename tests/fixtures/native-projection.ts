@@ -37,6 +37,9 @@ try {
   loaded = false;
   const unloaded = await conversation();
   const nativeStatus = await s.api('GET', '/api/native/status');
+  appConnected = false;
+  const unloadedThenOffline = await conversation();
+  appConnected = true;
   loaded = true;
   // A fresh native snapshot is the recovery signal; merely toggling the double is not a sync.
   transport.emit(thread.threadId);
@@ -48,6 +51,7 @@ try {
       project: s.project,
       channel: s.store.get('channels', s.channel.id),
       unloaded,
+      unloadedThenOffline,
       restored,
       offline,
       nativeStatus,

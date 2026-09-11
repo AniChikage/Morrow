@@ -33,6 +33,13 @@ test('the actual conversation API drives the unloaded-task message, recovery and
   await userEvent.setup().click(screen.getByRole('button', { name: /^在 Codex App 中打开$/ }));
   expect(api.openNativeApp).toHaveBeenCalledWith(data.channel.id);
   expect(api.channelAction).not.toHaveBeenCalled();
+  current = data.unloadedThenOffline;
+  expect(current.status.available).toBe(false);
+  expect(current.syncError).toBe(message); // Keep the historical task error; do not use it as the current connection cause.
+  fireEvent.focus(window);
+  await screen.findByText('Codex App 已关闭，请重新打开。');
+  expect(screen.queryByText(message)).toBeNull();
+  expect(screen.queryByRole('button', { name: '继续工作' })).toBeNull();
   current = data.restored;
   fireEvent.focus(window);
   await waitFor(() =>

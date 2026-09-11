@@ -1011,7 +1011,8 @@ export class NativeConversations {
       ? {
           ...status,
           connected: false,
-          detail: syncError,
+          // Preserve the current App connection failure; the stored task sync error remains below.
+          detail: status.connected ? syncError : status.detail,
           capabilities: { ...status.capabilities, read: false, send: false, interrupt: false, respond: false },
         }
       : status;
