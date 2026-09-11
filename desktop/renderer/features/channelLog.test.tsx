@@ -261,3 +261,55 @@ it('shows retrieval failure without claiming that the unavailable summary is abs
   expect(screen.queryByText('结论未记录')).toBeNull();
   expect(screen.getByRole('button', { name: '重试轮次' })).toBeTruthy();
 });
+
+it.each(['empty', 'older'] as const)(
+  'does not let a cached %s detail log hide a later completed list log',
+  async (cached) => {
+    const callbacks: Array<() => void> = [];
+    vi.spyOn(window, 'setInterval').mockImplementation((callback) => {
+      if (typeof callback === 'function') callbacks.push(callback as () => void);
+      return 0 as unknown as ReturnType<typeof window.setInterval>;
+    });
+    const state = snapshot();
+    state.channels[0].work = undefined;
+    const initial = round('cache', {
+      status: 'running',
+      finishedAt: '',
+      log: cached === 'empty' ? { commands: [], files: [], outputs: [], truncated: false } : round('previous').log,
+    });
+    let current = initial;
+    const { props, api } = featureProps({ snapshot: state });
+    vi.mocked(api.getRuns).mockImplementation(async () => ({ runs: [current], hasMore: false }));
+    api.getRun.mockResolvedValue({ run: initial, prompt: '', finalOutput: '缓存的原话' });
+    render(<ChannelView {...props} id="channel-system" />, { wrapper: TestProviders });
+    const entry = within(await screen.findByRole('article', { name: /轮次/ }));
+    const user = userEvent.setup();
+    await user.click(entry.getByText(/^(本轮详情|查看最新轮次)$/));
+    await user.click(entry.getByText('原生工具活动与 Codex 原话'));
+    await entry.findByText('缓存的原话');
+    await user.click(entry.getByText('原生工具活动与 Codex 原话'));
+    await waitFor(() => expect(entry.getByText('缓存的原话').closest('details')?.open).toBe(false));
+    current = round('cache');
+    await act(async () => {
+      callbacks.forEach((callback) => callback());
+    });
+    expect(await entry.findByText('关注 cache')).toBeTruthy();
+    expect(entry.queryByText('未记录本轮关注点')).toBeNull();
+    expect(entry.queryByText('关注 previous')).toBeNull();
+    expect(api.getRun).toHaveBeenCalledTimes(1);
+    expect(initial.status).toBe('running');
+  }
+);
+
+it('uses detailed log as a fallback when the list has no projection', async () => {
+  const { props, api } = featureProps();
+  vi.mocked(props.api.getRuns).mockResolvedValue({ runs: [round('fallback', { log: undefined })], hasMore: false });
+  api.getRun.mockResolvedValue({ run: round('fallback'), prompt: '', finalOutput: '详情原话' });
+  render(<ChannelView {...props} id="channel-system" />, { wrapper: TestProviders });
+  const entry = within(await screen.findByRole('article', { name: /轮次/ }));
+  const user = userEvent.setup();
+  await user.click(entry.getByText(/^(本轮详情|查看最新轮次)$/));
+  await user.click(entry.getByText('原生工具活动与 Codex 原话'));
+  expect(await entry.findByText('关注 fallback')).toBeTruthy();
+  expect(entry.getByText('详情原话')).toBeTruthy();
+});

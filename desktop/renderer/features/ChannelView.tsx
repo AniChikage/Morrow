@@ -76,7 +76,9 @@ function LogEntry({
       cancelled = true;
     };
   }, [expanded, api, run.id, run.status, attempt]);
-  const log = detail?.run.log || run.log;
+  // The polled list owns the summary; a collapsed detail cache may predate completion.
+  // Older services without list projections can still supply the summary through details.
+  const log = run.log || detail?.run.log;
   const work = log?.work || currentWork;
   const duration = run.finishedAt
     ? Math.max(0, Math.round((Date.parse(run.finishedAt) - Date.parse(run.startedAt)) / 1000))
