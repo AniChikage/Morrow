@@ -13,8 +13,10 @@ npm run acceptance -- compare <目录A> <目录B> --ignore-volatile
 npm run acceptance -- metrics <运行目录|数据目录> [--out metrics.json]
 ```
 
-参数：`--mode fixture`（默认，目前只有这一种）、`--policy careful|naive`（默认 careful；`run all` 接受 `careful,naive`）、`--repeat N`、`--out <目录>`、`--keep`、`--seed <n>`。
+参数：`--mode fixture`（默认，也是唯一实现了的模式）、`--policy careful|naive`（默认 careful；`run all` 接受 `careful,naive`）、`--repeat N`、`--out <目录>`、`--keep`、`--seed <n>`。
 退出码：0 通过，1 场景未通过或自检未通过，2 用法错误或未实现。`run all` 只在 **careful** 运行失败或自检失败时返回 1——naive 失败是预期结果。
+
+`--mode live` 是**未实现**的：它会驱动真实的 Codex App 任务并真的消耗账户额度，所以隔离范围、人要做的手工步骤、预算闸、停止条件和清理都要先由负责人确认。现在传它只会打印 [`docs/acceptance/LIVE-MODE-PROPOSAL.md`](../../docs/acceptance/LIVE-MODE-PROPOSAL.md) 的路径并以退出码 2 结束，不启动任何东西。
 
 ## 组成
 
@@ -229,7 +231,7 @@ npm run acceptance -- metrics ~/Library/Application\ Support/Morrow --out artifa
 
 **fixture 结果验证框架机制，不验证模型自主性。** 通过意味着：调度、预算、观察窗口、事前预期的机械核对、独立复核门禁、人工上线确认、重启后的记录一致性这些机制按约定工作，而且同样的输入能重复得到同样的结果。
 
-它不能说明模型会不会自己选对问题、会不会发现真实的体验缺陷，也不能说明任何业务收益。策略是写死的状态机，反馈样本是场景给的，接收端是本机的。`usagegap` 的探索指标也一样：`careful` 的 5/5 发现率与 0 误修率证明的是"这些判断能被记录下来并算出来"，不是"模型会这样判断"。要衡量模型自主性，得用 live 模式接真实的 Codex 后台跑同一套场景和指标——那是后续步骤。
+它不能说明模型会不会自己选对问题、会不会发现真实的体验缺陷，也不能说明任何业务收益。策略是写死的状态机，反馈样本是场景给的，接收端是本机的。`usagegap` 的探索指标也一样：`careful` 的 5/5 发现率与 0 误修率证明的是"这些判断能被记录下来并算出来"，不是"模型会这样判断"。要衡量模型自主性，得用 live 模式接真实的 Codex 后台跑同一套场景和指标——设计与待负责人拍板的问题写在 [`docs/acceptance/LIVE-MODE-PROPOSAL.md`](../../docs/acceptance/LIVE-MODE-PROPOSAL.md)，实现还没有开始。
 
 指标同样不说明模型自主性。`naive` 在约定指标上劣于 `careful`，证明的是**指标能看出协议被用错**，不是任何一种策略像模型。
 

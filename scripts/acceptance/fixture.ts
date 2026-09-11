@@ -78,8 +78,11 @@ const repoRoot = fileURLToPath(new URL('../../', import.meta.url));
  * backend is `ScriptedNativeTransport` and the outside world is a local receiver.
  */
 export async function runScenario(scenario: Scenario, options: RunOptions = {}): Promise<RunResult> {
+  // The CLI already refuses `--mode live`; this is the second line of defence for a direct caller.
+  // A live run needs its own runner (a real App task, real quota, real clock) — see the design in
+  // `docs/acceptance/LIVE-MODE-PROPOSAL.md`, which has to be confirmed before anything is built.
   if (options.mode && options.mode !== 'fixture')
-    throw new Error(`mode ${options.mode} is not implemented in this step; only fixture runs exist`);
+    throw new Error(`mode ${options.mode} 尚未实现；先确认 docs/acceptance/LIVE-MODE-PROPOSAL.md`);
   const policyName = options.policy || 'careful';
   const turnPolicy = policies[policyName];
   if (!turnPolicy) throw new Error(`unknown policy ${policyName}; available: ${Object.keys(policies).join(', ')}`);

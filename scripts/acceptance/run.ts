@@ -15,6 +15,8 @@ const usage = `用法：
   node scripts/acceptance/run.ts list`;
 
 const scenarioDir = new URL('./scenarios/', import.meta.url);
+/** The design a live run needs confirmed before it may be implemented, let alone spend real quota. */
+const liveProposal = 'docs/acceptance/LIVE-MODE-PROPOSAL.md';
 
 async function main() {
   const [command, ...rest] = process.argv.slice(2);
@@ -26,11 +28,14 @@ async function main() {
 
   const id = rest.find((arg) => !arg.startsWith('--'));
   if (!id) return finish(`run 需要场景 ID 或 all\n${usage}`, 2);
+  const mode = flag(rest, 'mode') || 'fixture';
+  if (mode === 'live') return finish(liveNotice(), 2);
+  if (mode !== 'fixture') return finish(`未知模式 ${mode}；目前只有 fixture\n${usage}`, 2);
   const policies = (flag(rest, 'policy') || 'careful').split(',').filter(Boolean);
   const repeat = Number(flag(rest, 'repeat') || '1');
   if (!Number.isInteger(repeat) || repeat < 1) return finish('--repeat 需要一个不小于 1 的整数', 2);
   const options: RunOptions = {
-    mode: (flag(rest, 'mode') || 'fixture') as 'fixture' | 'live',
+    mode: 'fixture',
     keep: rest.includes('--keep'),
     ...(flag(rest, 'out') ? { out: flag(rest, 'out') } : {}),
     ...(flag(rest, 'seed') === undefined ? {} : { seed: Number(flag(rest, 'seed')) }),
@@ -47,6 +52,22 @@ async function main() {
     return finish(error instanceof Error ? error.message : String(error), 2);
   }
   return runOne(scenario, policies[0], options, repeat);
+}
+
+/**
+ * `--mode live` is not implemented, on purpose: a live run drives a real Codex App task and really
+ * spends account quota, so its isolation, the manual steps it needs from a person, its three budget
+ * gates, its stop conditions and its cleanup have to be confirmed by the owner first. This prints
+ * where that design lives and stops with the usage exit code; it never starts anything.
+ */
+function liveNotice() {
+  return [
+    'live 模式尚未实现，也不应当在负责人确认设计之前实现：它会驱动真实的 Codex App 任务并真的消耗账户额度。',
+    `请先阅读并确认这份提案：${resolve(repoRoot, liveProposal)}`,
+    '里面写了隔离范围、人要做的四步（Morrow 不能创建 App 任务）、真实调度器与脚本化扰动怎么共存、',
+    '虚拟时钟为什么不能用以及用什么代替、三道预算闸、停止条件、清理，以及第一次 live 运行的验收标准。',
+    '确认后的第一次运行是：npm run acceptance -- run usagegap --mode live --budget 3',
+  ].join('\n');
 }
 
 /** One scenario with one policy, once or `--repeat N` times with a mean/min/max report. */
