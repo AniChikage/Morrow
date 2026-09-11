@@ -126,55 +126,58 @@ export function ProjectBrief({
   );
   if (draft)
     return (
-      <div className="feature-scroll finding-document-scroll">
-        <form className="finding-document brief-document" onSubmit={save} aria-label="编辑项目说明">
-          <div className="brief-heading">
-            <h1>编辑项目说明</h1>
-            <div className="brief-actions">
-              <Button disabled={busy} onClick={() => setDraft(undefined)}>
-                取消
-              </Button>
-              <Button variant="primary" type="submit" disabled={busy || stale || !changed || !draft.goal.trim()}>
-                {busy ? '正在保存…' : '保存'}
-              </Button>
+      <div className="brief-editor-layout">
+        {stale && (
+          <p role="alert" className="form-error brief-conflict">
+            项目说明已在别处更新（版本 {loaded.briefRevision}）。载入最新版本会放弃当前未保存的修改。
+            <button type="button" onClick={edit}>
+              载入最新版本
+            </button>
+          </p>
+        )}
+        <div className="feature-scroll finding-document-scroll">
+          <form className="finding-document brief-document" onSubmit={save} aria-label="编辑项目说明">
+            <div className="brief-heading">
+              <h1>编辑项目说明</h1>
+              <div className="brief-actions">
+                <Button disabled={busy} onClick={() => setDraft(undefined)}>
+                  取消
+                </Button>
+                <Button variant="primary" type="submit" disabled={busy || stale || !changed || !draft.goal.trim()}>
+                  {busy ? '正在保存…' : '保存'}
+                </Button>
+              </div>
             </div>
-          </div>
-          <p className="subtle brief-intro">保存你的要求，Codex 后续轮次会读取。当前为版本 {draft.revision}。</p>
-          {stale && (
-            <p role="alert" className="form-error">
-              项目说明已在别处更新（版本 {loaded.briefRevision}）。载入最新版本会放弃当前未保存的修改。
-              <button type="button" onClick={edit}>
-                载入最新版本
-              </button>
-            </p>
-          )}
-          <label className="form-field brief-goal-field">
-            <span className="field-label">项目目标</span>
-            <textarea
-              value={draft.goal}
-              onChange={(event) => setDraft({ ...draft, goal: event.target.value })}
-              maxLength={20000}
-              placeholder="一句话说明这个项目要持续达成什么。"
-              required
-            />
-          </label>
-          <label className="form-field">
-            <span className="field-label">项目说明</span>
-            <textarea
-              className="brief-input"
-              value={draft.brief}
-              onChange={(event) => setDraft({ ...draft, brief: event.target.value })}
-              maxLength={65536}
-              placeholder="写下项目要求，支持 Markdown。"
-            />
-          </label>
-          {writingHelp}
-          {!draft.brief.trim() && (
-            <Button variant="ghost" disabled={busy} onClick={() => setDraft({ ...draft, brief: briefTemplate })}>
-              插入模板
-            </Button>
-          )}
-        </form>
+            <p className="subtle brief-intro">保存你的要求，Codex 后续轮次会读取。当前为版本 {draft.revision}。</p>
+
+            <label className="form-field brief-goal-field">
+              <span className="field-label">项目目标</span>
+              <textarea
+                value={draft.goal}
+                onChange={(event) => setDraft({ ...draft, goal: event.target.value })}
+                maxLength={20000}
+                placeholder="一句话说明这个项目要持续达成什么。"
+                required
+              />
+            </label>
+            <label className="form-field">
+              <span className="field-label">项目说明</span>
+              <textarea
+                className="brief-input"
+                value={draft.brief}
+                onChange={(event) => setDraft({ ...draft, brief: event.target.value })}
+                maxLength={65536}
+                placeholder="写下项目要求，支持 Markdown。"
+              />
+            </label>
+            {writingHelp}
+            {!draft.brief.trim() && (
+              <Button variant="ghost" disabled={busy} onClick={() => setDraft({ ...draft, brief: briefTemplate })}>
+                插入模板
+              </Button>
+            )}
+          </form>
+        </div>
       </div>
     );
   return (

@@ -272,6 +272,29 @@ describe('the project brief is the user-owned document between the board and Cod
     expect(api.updateProject).toHaveBeenCalledTimes(1);
   });
 
+  it('keeps typing focus and draft when a polled brief revision introduces a conflict', async () => {
+    const user = userEvent.setup();
+    const state = snapshot();
+    state.projects[0].isDemo = false;
+    state.projects[0].briefRevision = 1;
+    const { props, api } = featureProps({ snapshot: state });
+    api.getProjectBrief.mockResolvedValue({ goal: '原目标', brief: '旧说明', briefRevision: 1 });
+    const view = render(<ProjectView {...props} id="project-atlas" />, { wrapper: TestProviders });
+    await user.click(screen.getByRole('tab', { name: '项目说明' }));
+    await user.click(await screen.findByRole('button', { name: '编辑' }));
+    const brief = screen.getByRole('textbox', { name: /^项目说明/ }) as HTMLTextAreaElement;
+    await user.type(brief, '，本地草稿');
+    api.getProjectBrief.mockResolvedValue({ goal: '原目标', brief: '别人已保存', briefRevision: 2 });
+    const updated = { ...state, projects: state.projects.map((project) => ({ ...project, briefRevision: 2 })) };
+    view.rerender(<ProjectView {...props} snapshot={updated} id="project-atlas" />);
+    expect((await screen.findByRole('alert')).textContent).toContain('版本 2');
+    expect(document.activeElement).toBe(brief);
+    await user.keyboard('，继续输入');
+    expect(brief.value).toBe('旧说明，本地草稿，继续输入');
+    expect((screen.getByRole('button', { name: '保存' }) as HTMLButtonElement).disabled).toBe(true);
+    expect(api.updateProject).not.toHaveBeenCalled();
+  });
+
   it('explains an empty brief and fills the suggested outline while editing', async () => {
     const user = userEvent.setup();
     const state = snapshot();

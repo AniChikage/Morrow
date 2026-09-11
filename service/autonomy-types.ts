@@ -8,7 +8,7 @@ export type Evidence = {
   source: string;
   observedAt: string;
   createdAt: string;
-  origin: 'agent' | 'file' | 'http' | 'execution';
+  origin: 'agent' | 'file' | 'http' | 'execution' | 'native';
   data: unknown;
   digest?: string;
   watchId?: string;
