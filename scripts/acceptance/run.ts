@@ -101,7 +101,7 @@ async function runAll(policies: string[], options: RunOptions) {
     const careful = rows.find((row) => row.scenario === scenario.id && row.policy === 'careful')?.result.metrics;
     const naive = rows.find((row) => row.scenario === scenario.id && row.policy === 'naive')?.result.metrics;
     if (!careful || !naive) continue;
-    const check = policySelfCheck(careful, naive);
+    const check = policySelfCheck(careful, naive, scenario.selfCheck);
     console.log(selfCheckTable(scenario.id, check));
     if (!check.ok)
       problems.push(

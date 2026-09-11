@@ -23,6 +23,8 @@ npm run acceptance -- metrics <运行目录|数据目录> [--out metrics.json]
 | `tests/harness/scripted-native.ts` | `ScriptedNativeTransport`：一个 `NativeTransport` 替身，同时扮演调度轮次的后台和独立复核后台。 |
 | `scenario.ts` | 场景 DSL：`defineScenario`、timeline 动词、invariant 类型。 |
 | `scenarios/<id>.ts` | 具体场景，`export default defineScenario({...})`。 |
+| `scenarios/projects/<id>/` | 场景的种子项目源码：真实可跑的小文件，连同它自己的测试。 |
+| `scenarios/patches/<id>/<n>/` | 第 n 次改动。每个补丁目录是要覆盖写入项目的**文件全文**（不是 diff），必须包含待封存的产物文件。 |
 | `fake-agent.ts` | 确定性策略：`careful` 与 `naive`。 |
 | `timeline.ts` | 执行单个 timeline 步骤。 |
 | `fixture.ts` | 进程内 runner：虚拟时钟、接收端、隔离服务、产物、指标与 invariant 评估。 |
@@ -30,13 +32,27 @@ npm run acceptance -- metrics <运行目录|数据目录> [--out metrics.json]
 | `report.ts` | `metrics.json`、`summary.md` 的指标表、`compare` 差值表、`--repeat` 的均值极值。 |
 | `run.ts` | 命令行入口。 |
 
+## 场景
+
+四个历史场景是对产品真实走过的验收的重建。原始一次性脚本已经丢了，重建依据是 `docs/PRODUCT-V0{60,70,71,80}-VALIDATION.md` 里那几次隔离验收的记录和计划里的描述；具体数值、补丁内容和时间线是为夹具挑的，不是当时的原始数据。每个场景的种子项目都是真实能跑的小程序（`node --test <它自己的测试>` 在种子和每个补丁上都通过），但 fixture 运行不执行它——执行证据由脚本化后台按 `execution.prepare` 的约定报告。
+
+| 场景 | 年代与主题 | 证明什么 | 扰动 | 标签 | 自检要求 |
+| --- | --- | --- | --- | --- | --- |
+| `smoke` | — | 最小闭环：调度、两道复核门禁、人工确认、观察窗口、重启一致性 | 第二个窗口突破护栏；采样与复盘之间 `advance` | `truth: environment` ×1；过期 learning ×1 | 默认五条 |
+| `namecheck` | 0.6.0 反馈驱动的判断修正 | 同一条冻结的 rule 在两个窗口得出相反结论；护栏被突破时复盘说得出来；被标 `noise` 的回落只记为"未达预期、原因未查清"，不记为已证实 | `set` 与 `poll` 之间的采集延迟；第二个窗口采样量掉到 60 | `truth: noise` ×1；过期 learning ×1（0.6.0 还没有召回机制，careful 不引用它 → `ignored`）；`planted` ×3，其中"32 字符上限"是**不该修**的 | 明确要求比较 `guardrails.violationsCaught`、`staleMemory.followed`、`repeatedFailures.groups` |
+| `fieldnote` | 0.7.0 过时记忆 | 旧记录先 `memory.recall`/`memory.read` 读全文再判断适用性，逐条保存 `avoid` / `not_applicable` 的理由与当时版本；可比口径变了就只能是 `inconclusive` | `environment`：第二批样本换了 `cohort`（人工辅助起步） | `truth: environment` ×1；过期 learning ×1 + 干扰 learning ×1；`planted` ×3，其中"按旧笔记重写注册"是**不该做**的改动 | 明确要求比较 `staleMemory.followed` |
+| `relaydesk` | 0.7.1 guardrail + 重启 | 护栏有自己的 rule，被突破时不能被同一次复盘里达标的结果抵消；观察窗口没结束就重启，窗口、冻结的预期和重启前采集的样本都还在 | 观察中途 `restart` | 无 `truth` 标签（指标照样算得出，`misattribution` 为 0 次而不是 unknown）；过期 learning ×1 + 干扰 learning ×1；`planted` ×3，其中"人工对账"是**不该优化掉**的 | 明确要求比较 `guardrails.violationsCaught`、`staleMemory.followed`、`repeatedFailures.groups` |
+| `parcelnotes` | 0.8.0 发布与代理指标误导 | 代理指标（导出条数）翻近三倍买不到"达到预期"——复盘只认冻结的字段；接收端收下产物后断连，发布走 `unknown` → 核对回执 → `published`，产物只上传一次 | `mode: disconnect` 后恢复；`advance` 跨过 unknown 的核对间隔 | `truth: goodhart` ×1；过期 learning ×1（把代理指标当成效的旧结论）；`planted` ×3，其中 `/exported` 是**不该当成目标**的 | 明确要求比较 `guardrails.violationsCaught` |
+
+`planted[].shouldFix: false` 的那一条是每个场景的反例：它是产品有意保留的约束或上游要求，"修掉"它才是错的。fixture 的两种策略都不会去碰它——发现率与误修率要靠 live 模式衡量，这里只是把标签和判断留在 `labels.json` 里。
+
 ## 两种策略
 
 两种策略都是写死的确定性状态机，不是模型模拟。目的不是"像模型"，而是证明指标能看出正确与错误的协议使用之间的差别。
 
 | 策略 | 行为 |
 | --- | --- |
-| `careful` | 按协议使用：先独立复核再封存发布，冻结结果预期**和**护栏，复盘逐项引用观察窗口内实际采集的样本，不沿用未经证实的旧经验。 |
+| `careful` | 按协议使用：先独立复核再封存发布，冻结结果预期**和**护栏，复盘逐项引用观察窗口内实际采集的样本，不沿用未经证实的旧经验。场景给了 `recall` 问题时，它先读自动召回与针对这个问题的 `memory.recall`，再 `memory.read` 读全文，然后逐条记下 `avoid` / `not_applicable` / `adapt` 的理由——它**从不 `apply`**：一个写死的状态机没法判断旧条件是否仍然成立。场景给了 `comparability` 时，冻结当时的口径，后来样本口径不同就只给 `inconclusive`。上一次复盘不是 `improved` 且还有下一个补丁时，在没有未复盘的选择的情况下改一次实现（`method` 类调整），并把改动封存成文件证据。 |
 | `naive` | 同样的 `TurnPolicy` 形状、同样确定、每轮同样给出合法的 `morrow-next`，但故意用错四处：<br>(a) **跟随过期经验**——从 `context` 里读到预置的旧记录就直接 `memoryRefs.use='apply'`，选项与理由都建立在它上面；<br>(b) **不设 guardrail**——只冻结结果预期；<br>(c) **条件不比对**——`decision.review` 声明 `conditions:'matched'` 和确定的 `diagnosis`，不读样本、不引用任何采集证据；<br>(d) **材料不变重复提交**——被拒后原样再发一次，于是再次被拒。 |
 
 `naive` 不会让运行崩溃：预期会被拒的调用都走一个吞掉异常的包装，状态码仍然记录在 `calls.jsonl` 里——`repeatedFailures` 就是从那里读的。它在 `smoke` 上跑完整条时间线、预算内结束，但结果是 `failed`，因为两条编码了"正确使用"的 invariant 对它不成立：`decision-has-frozen-expectations`（它只冻结了结果预期）和 `review-cites-captured-evidence`（它的复盘全部被服务拒绝，一条也没落库）。
@@ -48,17 +64,30 @@ npm run acceptance -- metrics <运行目录|数据目录> [--out metrics.json]
 ```ts
 export default defineScenario({
   id, title, goal, brief?,
-  project: { files | seedDir, artifactPath, artifactBody?, tests?, serve? },
+  project: { files | seedDir, patches?, artifactPath, artifactBody?, tests?, serve? },
   memory?: [{ operation: 'understanding.upsert' | 'learning.upsert', input, note?, stale? }],
-  feedback: { initial, path?, pointer, condition, outcome, guardrail, latencySeconds? },
+  feedback: { initial, path?, pointer, condition, outcome, guardrail, comparability?, latencySeconds? },
+  recall?: '本次要回答的问题',
   budget: { turns, reviews? },
   timeline: [...],
   invariants: [...],
   planted?: [{ id, where, description, shouldFix }],
+  selfCheck?: ['guardrails.violationsCaught', ...],
 });
 ```
 
 `feedback.outcome` 和 `feedback.guardrail` 是策略要冻结成 `decision.choose.expectations` 的两条预期，各自带一条由系统机械核对的 `rule`。
+
+后加的几项：
+
+| 字段 | 作用 |
+| --- | --- |
+| `project.seedDir` | 种子项目目录，原样读进隔离项目目录（`scenarios/projects/<id>/`）。 |
+| `project.patches` | 补丁目录（`scenarios/patches/<id>/`），里面是 `1/`、`2/`… 每个装着要覆盖写入的文件全文，必须包含 `artifactPath`（策略就封存这个文件作为该次改动的证据）。策略在做出改动的那一轮应用补丁 1，在"上一次复盘没有达到预期"的那一轮应用下一个。没有这个字段时策略写 `artifactBody`——`smoke` 就是这样。 |
+| `project.tests[0]` | 策略在候选版本上跑的完整检查命令（`execution.prepare` 的 `command`）。缺省 `node --test`。 |
+| `feedback.comparability` | 决定两个窗口能不能比的字段，以及做选择时它的取值。策略把它冻进预期的 `scope`；后来的样本取值不同，复盘就是 `conditions: 'changed'` + `diagnosis: 'environment'` + `inconclusive`，而不是把变化算成本次效果。 |
+| `recall` | 本次要回答的问题。给了它，策略才会走"自动召回 + 针对问题的 `memory.recall` + `memory.read` 读全文 + 逐条 `memoryRefs`"这条路；不给它，策略完全不引用经验——`namecheck` 重建的 0.6.0 就还没有这套机制。 |
+| `selfCheck` | 这个场景**必须**真的比出差别的指标名。默认自检会跳过"careful 也没产生可比取值"的规则；写进 `selfCheck` 的规则不跳过，于是场景一旦不再产生它本来要产生的证据就会失败，而不是默默通过。写错名字同样算失败。 |
 
 timeline 动词：
 
@@ -143,17 +172,17 @@ invariant 是命名过的谓词，输入 `{ store, service, transport, receiver,
 
 `--repeat N` 跑 N 次同一场景同一策略，然后对每个**数值**指标给出均值、最小、最大（写进上一层的 `summary.md` 与 `metrics.json`）。
 
-`policySelfCheck(careful, naive)` 是 harness 自己的检查：naive 必须在这些指标上确实更差，否则 `run all` 以退出码 1 结束，`tests/acceptance-harness.test.ts` 也会失败。
+`policySelfCheck(careful, naive, scenario.selfCheck)` 是 harness 自己的检查：naive 必须在这些指标上确实更差，否则 `run all` 以退出码 1 结束，`tests/acceptance-harness.test.ts` 也会失败。
 
 | 指标 | 期望 |
 | --- | --- |
 | `guardrails.defined` | naive 更低 |
-| `guardrails.violationsCaught` | naive 更低（只有当 careful > 0，即场景真的产生了违反时才检查） |
+| `guardrails.violationsCaught` | naive 更低（默认只有当 careful > 0，即场景真的产生了违反时才检查；写进场景 `selfCheck` 就一定检查） |
 | `staleMemory.followed` | naive 更高 |
 | `reviewsCitingCapturedEvidence` | naive 更低 |
 | `repeatedFailures.groups` | naive 更高 |
 
-任一侧是 `unknown` 就算这一条不通过：自检不接受"没法比较"。
+任一侧是 `unknown` 就算这一条不通过：自检不接受"没法比较"。场景可以用 `selfCheck` 要求某几条必须被比较——`namecheck` 与 `relaydesk` 按计划要求 `guardrails.violationsCaught`、`staleMemory.followed` 与 `repeatedFailures.groups` 三项都比出差别，于是这三条既不会被跳过，也不会因为场景后来不再产生违反而悄悄消失。
 
 ## 对真实数据目录算指标
 
@@ -173,6 +202,14 @@ npm run acceptance -- metrics ~/Library/Application\ Support/Morrow --out artifa
 
 ## 加一个场景
 
-在 `scenarios/` 下新建 `<id>.ts`，`export default defineScenario({...})`，`id` 只用小写字母、数字和连字符，跟文件名一致。`npm run acceptance -- list` 会自动发现它。
+在 `scenarios/` 下新建 `<id>.ts`，`export default defineScenario({...})`，`id` 只用小写字母、数字和连字符，跟文件名一致；种子项目放 `scenarios/projects/<id>/`，补丁放 `scenarios/patches/<id>/<n>/`。`npm run acceptance -- list` 会自动发现它。
 
 新场景要能同时被两种策略跑完，并让自检成立：至少预置一条 `stale: true` 的 learning（`staleMemory` 的分子），并且让某个窗口真的突破护栏（`guardrails.violationsCaught` 的分子）。`smoke` 为此在第二个窗口把 `errors` 提到 3 并标注 `truth: 'environment'`，又在采样和复盘之间加了一次 `advance`，好让"从违反出现到复盘反应"是一段真实时长；两处改动都没有放宽任何 invariant，careful 依旧全绿。
+
+几个会让新场景当场卡住的坑：
+
+- **预置的 learning 必须是 `apply` 允许的状态**（`active` / `supported` / `inconclusive`）。`naive` 会把 `context` 里的旧记录一并 `apply`，而工作接口拒绝直接沿用 `refuted` / `stopped` / 失效的记录——那样 `naive` 一条选择都留不下，`guardrails.defined` 与 `staleMemory.followed` 全变成 0，自检跟着失败。要表达"这条经验其实站不住"，就写在它的 `conclusion` 里（careful 读全文后标 `avoid`），不要写进 `status`。
+- **`status: 'supported'` 或 `'refuted'` 的 learning 需要证据引用**，而预置阶段还没有任何证据，所以预置只能用不需要证据的状态。
+- **每个场景的 `budget.turns` 就是时间线里 `turn` 的条数**，`budget.reviews` 要算上两道门禁（事项复核 + 发布级复核）和每一次结论为 `improved` 的复盘各占一次。
+- **人工确认（`approve`）会给还没复盘的选择发一条复查信号**，下一轮就会去复盘。想让第一个窗口有样本可比，`set`/`advance`/`poll` 要排在 `approve` 之前（`namecheck`、`relaydesk`）；想重建"本地已验证、业务效果未知"的 `inconclusive`，就故意不给样本（`fieldnote`）。
+- **`unknown` 的发布要过 60 秒才会被 `tick()` 核对**，所以 `mode: 'disconnect'` 之后要 `advance` 到超过这个间隔，下一次 `turn` 才会把回执核对回来（`parcelnotes`）。

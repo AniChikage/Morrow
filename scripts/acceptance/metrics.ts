@@ -632,43 +632,58 @@ export type SelfCheckRow = {
   detail: string;
 };
 
+/** One self-check rule: the metric, the direction, and when it is worth comparing at all. */
+const selfCheckRules: Array<{
+  metric: string;
+  expected: SelfCheckRow['expected'];
+  read(metrics: Metrics): Maybe<number>;
+  /** Absent means always compared. */
+  when?(careful: Metrics): boolean;
+}> = [
+  { metric: 'guardrails.defined', expected: 'naive lower', read: (m) => m.guardrails.defined },
+  {
+    metric: 'guardrails.violationsCaught',
+    expected: 'naive lower',
+    read: (m) => m.guardrails.violationsCaught,
+    when: (careful) => careful.guardrails.violationsCaught > 0,
+  },
+  { metric: 'staleMemory.followed', expected: 'naive higher', read: (m) => number(m.staleMemory, 'followed') },
+  {
+    metric: 'reviewsCitingCapturedEvidence',
+    expected: 'naive lower',
+    read: (m) => m.reviewsCitingCapturedEvidence,
+  },
+  { metric: 'repeatedFailures.groups', expected: 'naive higher', read: (m) => number(m.repeatedFailures, 'groups') },
+];
+
 /**
  * The harness's own check that the metrics can tell the two policies apart. `naive` must come out
  * measurably worse on every rule below; a scenario that cannot produce a guardrail violation at all
  * skips that one rather than passing it by default.
+ *
+ * `required` names the metrics a scenario declares it must prove a difference on (its `selfCheck`).
+ * A rule that would have been skipped is compared anyway for those, so a scenario whose window
+ * stopped producing the evidence it exists to produce fails instead of quietly passing. A name that
+ * matches no rule is itself a failure: a typo must not read as a satisfied demand.
  */
-export function policySelfCheck(careful: Metrics, naive: Metrics): { ok: boolean; rows: SelfCheckRow[] } {
-  const rows: SelfCheckRow[] = [
-    rule('guardrails.defined', careful.guardrails.defined, naive.guardrails.defined, 'naive lower'),
-    ...(careful.guardrails.violationsCaught > 0
-      ? [
-          rule(
-            'guardrails.violationsCaught',
-            careful.guardrails.violationsCaught,
-            naive.guardrails.violationsCaught,
-            'naive lower'
-          ),
-        ]
-      : []),
-    rule(
-      'staleMemory.followed',
-      number(careful.staleMemory, 'followed'),
-      number(naive.staleMemory, 'followed'),
-      'naive higher'
-    ),
-    rule(
-      'reviewsCitingCapturedEvidence',
-      careful.reviewsCitingCapturedEvidence,
-      naive.reviewsCitingCapturedEvidence,
-      'naive lower'
-    ),
-    rule(
-      'repeatedFailures.groups',
-      number(careful.repeatedFailures, 'groups'),
-      number(naive.repeatedFailures, 'groups'),
-      'naive higher'
-    ),
-  ];
+export function policySelfCheck(
+  careful: Metrics,
+  naive: Metrics,
+  required: string[] = []
+): { ok: boolean; rows: SelfCheckRow[] } {
+  const rows: SelfCheckRow[] = selfCheckRules
+    .filter((row) => !row.when || row.when(careful) || required.includes(row.metric))
+    .map((row) => rule(row.metric, row.read(careful), row.read(naive), row.expected));
+  for (const metric of required)
+    if (!selfCheckRules.some((row) => row.metric === metric))
+      rows.push({
+        metric,
+        careful: unknown,
+        naive: unknown,
+        expected: 'naive lower',
+        ok: false,
+        detail: '场景要求比较这项指标，但自检里没有这条规则',
+      });
   return { ok: rows.every((row) => row.ok), rows };
 }
 

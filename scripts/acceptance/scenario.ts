@@ -1,4 +1,13 @@
-import type { PolicyExpectation, PolicyScenario, TurnRecord, CallRecord } from '../../tests/harness/scripted-native.ts';
+import { readdirSync, readFileSync, statSync } from 'node:fs';
+import { join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import type {
+  PatchFiles,
+  PolicyExpectation,
+  PolicyScenario,
+  TurnRecord,
+  CallRecord,
+} from '../../tests/harness/scripted-native.ts';
 import type { ScriptedNativeTransport } from '../../tests/harness/scripted-native.ts';
 import type { Receiver, ReceiverMode } from '../../tests/harness/receiver.ts';
 import type { IsolatedService } from '../../tests/harness/service.ts';
@@ -95,11 +104,19 @@ export type ProjectSpec = {
   files?: Record<string, string>;
   /** Directory copied into the project directory instead of `files`. */
   seedDir?: string;
+  /**
+   * Directory of numbered patch directories (`1/`, `2/`, …). Each one holds the **full text** of the
+   * project files that change — it is an overwrite, not a diff — and must include `artifactPath`,
+   * because the policy seals exactly that file as the patch's file evidence. A policy applies patch
+   * 1 on the turn it makes its change and the next one on the turn it adjusts after a review that
+   * did not reach its expectation. Without this field the policy writes `artifactBody` instead.
+   */
+  patches?: string;
   /** Project-relative path of the file a release seals. */
   artifactPath: string;
-  /** Text the policy writes into `artifactPath` when it makes its change. */
+  /** Text the policy writes into `artifactPath` when it makes its change, if there are no patches. */
   artifactBody?: string;
-  /** Commands a later step may run as execution evidence; unused in fixture mode. */
+  /** The full check a policy runs on the release candidate. The first entry is the command it uses. */
   tests?: string[];
   /** How to serve the seed project in live mode; unused in fixture mode. */
   serve?: { command: string; port: number };
@@ -118,6 +135,13 @@ export type FeedbackSpec = {
   outcome: PolicyExpectation;
   /** The condition the work may not sacrifice, checked mechanically by its rule. */
   guardrail: PolicyExpectation;
+  /**
+   * The field that says two observation windows are comparable at all, and the value that held when
+   * the work was decided. A policy freezes it into the expectation's scope; when a later sample
+   * carries a different value, the two windows measure different populations, so the review reports
+   * `conditions: 'changed'` and stays inconclusive instead of attributing the move to the change.
+   */
+  comparability?: { pointer: string; expected: string | number | boolean };
   /** How long a change takes to show up in the metric; sizes the observation window. */
   latencySeconds?: number;
 };
@@ -142,10 +166,29 @@ export type Scenario = {
   timeline: Step[];
   invariants: Invariant[];
   planted: PlantedProblem[];
+  /**
+   * The question the work is about to answer. With it, a policy re-checks the project's memory
+   * (`memory.recall` for this question beside the automatic recall in `context`, then `memory.read`
+   * for the full record) and records a `memoryRefs` entry for everything it found. Without it the
+   * policy makes no experience reference at all — which is what a scenario from before the recall
+   * mechanism existed should look like.
+   */
+  recall?: string;
+  /**
+   * Self-check metrics this scenario must actually prove a difference on. A rule the generic check
+   * would skip because `careful` produced nothing to compare is still evaluated for these, so a
+   * scenario that stops producing its own evidence fails instead of passing by default.
+   */
+  selfCheck: string[];
 };
 
-export type ScenarioInput = Omit<Scenario, 'version' | 'memory' | 'planted'> &
-  Partial<Pick<Scenario, 'version' | 'memory' | 'planted'>>;
+export type ScenarioInput = Omit<Scenario, 'version' | 'memory' | 'planted' | 'selfCheck'> &
+  Partial<Pick<Scenario, 'version' | 'memory' | 'planted' | 'selfCheck'>>;
+
+/** Absolute path of a scenario's seed project, `scenarios/projects/<id>/`. */
+export const seedDir = (id: string) => fileURLToPath(new URL(`./scenarios/projects/${id}/`, import.meta.url));
+/** Absolute path of a scenario's patch directories, `scenarios/patches/<id>/<n>/`. */
+export const patchDir = (id: string) => fileURLToPath(new URL(`./scenarios/patches/${id}/`, import.meta.url));
 
 /** Fills the optional parts of a scenario and rejects the mistakes that only surface mid-run. */
 export function defineScenario(input: ScenarioInput): Scenario {
@@ -153,6 +196,7 @@ export function defineScenario(input: ScenarioInput): Scenario {
     version: '1',
     memory: [],
     planted: [],
+    selfCheck: [],
     ...input,
   };
   if (!scenario.id.trim()) throw new Error('scenario.id is required');
@@ -168,13 +212,57 @@ export function defineScenario(input: ScenarioInput): Scenario {
   return scenario;
 }
 
+/**
+ * Reads `patches/<id>/<n>/` verbatim, in numeric order. Every patch must carry the sealed artifact:
+ * the policy captures exactly that file as the patch's evidence, so a patch without it would leave
+ * the change unsealed.
+ */
+export function readPatches(dir: string, artifactPath: string): PatchFiles[] {
+  const names = readdirSync(dir, { withFileTypes: true })
+    .filter((entry) => entry.isDirectory())
+    .map((entry) => entry.name);
+  for (const name of names) if (!/^[1-9][0-9]*$/.test(name)) throw new Error(`补丁目录只能用从 1 开始的序号：${name}`);
+  const patches = names
+    .map(Number)
+    .sort((a, b) => a - b)
+    .map((n) => ({ n, files: readTree(join(dir, String(n))) }));
+  if (!patches.length) throw new Error(`${dir} 里没有补丁目录`);
+  for (const [index, patch] of patches.entries()) {
+    if (patch.n !== index + 1) throw new Error(`补丁序号必须连续：${dir} 缺少 ${index + 1}`);
+    if (!patch.files[artifactPath]) throw new Error(`补丁 ${patch.n} 必须包含待封存产物 ${artifactPath}`);
+  }
+  return patches;
+}
+
+/** Reads a directory verbatim into a project-relative file map. */
+export function readTree(dir: string): Record<string, string> {
+  const files: Record<string, string> = {};
+  const walk = (current: string, prefix: string) => {
+    for (const entry of readdirSync(current, { withFileTypes: true })) {
+      const name = prefix ? `${prefix}/${entry.name}` : entry.name;
+      const next = join(current, entry.name);
+      if (entry.isDirectory()) walk(next, name);
+      else files[name] = readFileSync(next, 'utf8');
+    }
+  };
+  if (!statSync(dir).isDirectory()) throw new Error(`${dir} 不是目录`);
+  walk(resolve(dir), '');
+  return files;
+}
+
 /** Builds the view a turn policy gets, once the receiver's origin is known. */
 export function policyScenario(scenario: Scenario, receiverURL: string): PolicyScenario {
+  const patches = scenario.project.patches
+    ? readPatches(scenario.project.patches, scenario.project.artifactPath)
+    : undefined;
   return {
     id: scenario.id,
     goal: scenario.goal,
     artifactPath: scenario.project.artifactPath,
     artifactBody: scenario.project.artifactBody || `${scenario.id} release\n`,
+    checkCommand: scenario.project.tests?.[0] || 'node --test',
+    ...(patches ? { patches } : {}),
+    ...(scenario.recall === undefined ? {} : { recall: scenario.recall }),
     feedback: {
       url: receiverURL + (scenario.feedback.path || '/feedback'),
       releaseUrl: receiverURL + '/deploy',
@@ -183,6 +271,7 @@ export function policyScenario(scenario: Scenario, receiverURL: string): PolicyS
       condition: scenario.feedback.condition,
       outcome: scenario.feedback.outcome,
       guardrail: scenario.feedback.guardrail,
+      ...(scenario.feedback.comparability === undefined ? {} : { comparability: scenario.feedback.comparability }),
       latencySeconds: scenario.feedback.latencySeconds ?? 60,
     },
   };
@@ -193,4 +282,4 @@ export function invariant(name: string, check: (context: InvariantContext) => In
   return { name, check };
 }
 
-export type { CallRecord, TurnRecord };
+export type { CallRecord, PatchFiles, TurnRecord };
