@@ -19,12 +19,14 @@ export const toolEntryLimit = 250;
 
 const body = '记录当前事实、已验证的部分、仍然未知的部分，以及下一步为什么值得做和怎么核对。';
 /** `label` plus filler text cut to exactly `length` characters, so a fixture field has a stated size. */
-const filler = (label: string, length: number) => (label + '：' + body.repeat(60)).slice(0, length);
+const filler = (label: string, length: number) =>
+  (label + '：' + body.repeat(Math.ceil(length / body.length))).slice(0, length);
 
 /** A brief the size of a real one: goals, users, stage, priorities, constraints and open decisions. */
 export const fixtureBrief = filler('项目说明', 4400);
 
 export type Measurement = {
+  brief: number;
   first: number;
   second: number;
   review: number;
@@ -84,6 +86,7 @@ export async function measurePrompts(): Promise<Measurement> {
     if (!reviewPrompt.includes('章程回顾') || reviewPrompt.includes('项目说明结束'))
       throw new Error('measurement must exercise an expired, delivered charter review');
     return {
+      brief: project(s).brief?.length || 0,
       tools: tools.length,
       review: reviewPrompt.length,
       first: firstPrompt.length,
@@ -137,6 +140,7 @@ if (import.meta.filename === process.argv[1]) {
   const result = await measurePrompts();
   process.stdout.write(
     [
+      `project brief          ${result.brief} chars`,
       `board items            ${result.items}`,
       `full board JSON        ${result.boardJson} chars`,
       `first turn (charter)   ${result.first} chars`,

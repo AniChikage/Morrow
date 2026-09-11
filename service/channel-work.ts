@@ -98,6 +98,7 @@ export function boardDigest(items: any[], options: { lastRunId?: string; limit?:
   if (!open.length) return `看板：${items.length ? `全部 ${items.length} 项已解决。` : '暂无事项。'}\n`.slice(0, limit);
   const header = `看板（未解决 ${open.length} 项，共 ${items.length} 项）：\n`;
   const tail = `${resolved ? `另有 ${resolved} 项已解决，未列出。\n` : ''}完整看板用 context 读取。\n`;
+  if (limit < header.length + tail.length + 30) return tail.length <= limit ? tail : limit >= 7 ? 'context' : '';
   // Reserve the omitted IDs first; never cut a detailed row into misleading fragments.
   const rows: string[] = [];
   const ordered = [...open.filter(detailed), ...open.filter((item) => !detailed(item))];

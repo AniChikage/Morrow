@@ -475,3 +475,16 @@ test('the complete note and review stay bounded with long arrangements, large bo
   assert(note.includes('完整看板用 context 读取'));
   assert(note.includes('morrow-next'));
 });
+
+test('measurement brief has the stated length and a tiny board budget preserves its read path', () => {
+  assert.equal(fixtureBrief.length, 4400);
+  const items = Array.from({ length: 300 }, (_, number) => ({
+    number,
+    kind: 'issue',
+    status: 'open',
+    title: '长标题',
+  }));
+  const digest = boardDigest(items, { limit: 50 });
+  assert(digest.length <= 50);
+  assert(digest.includes('context'));
+});
