@@ -42,7 +42,7 @@ test('the autonomous prompt asks for cheap, informative work under tight usage a
   assert(plain.includes(sentence));
   assert(!plain.includes('当前额度'));
   assert(plain.indexOf(sentence) > plain.indexOf('本频道沿用 Codex App 中此任务的权限设置'));
-  assert(plain.indexOf(sentence) < plain.indexOf('上线必须通过'));
+  assert(plain.indexOf(sentence) < plain.indexOf('上线只能用'));
   const reading = {
     at: '2026-09-09T10:00:00.000Z',
     source: 'protocol' as const,
@@ -79,7 +79,7 @@ test('the autonomous prompt asks for cheap, informative work under tight usage a
   assert.equal(usageLine({ runsToday: 0, maxRunsPerDay: 8, usage: { reading, unknown: false } }), '');
   assert.equal(usageLine(undefined), '');
 });
-test('the inherited App scope, the measured capability line and product exploration are all in the autonomous prompt', () => {
+test('the inherited App scope, capability reference and product exploration are all in the autonomous prompt', () => {
   const project = { name: 'p', path: '/tmp/p', goal: '目标' };
   const channel = { name: '自主推进', goal: '方向', permission: 'native' };
   const prompt = autonomousPrompt({ project, channel, reportSchema: {} });
@@ -89,24 +89,16 @@ test('the inherited App scope, the measured capability line and product explorat
     )
   );
   assert(!prompt.includes('不要假设拥有完整访问'));
-  // The exploration paragraph sits right after the goal/direction block, before the context instructions.
-  const exploration =
-    '产品层面的探索是常规工作的一部分：用可用的原生工具（Computer Use；浏览器插件可用时）走完整流程、看使用数据、找体验问题，把发现记为 feature/issue/hypothesis 并附可回看的证据；优先用原生记忆保存跨轮次的个人经验，Morrow 的记录只放影响决策的认识与证据。';
-  assert(prompt.includes(exploration));
-  assert(prompt.indexOf(exploration) > prompt.indexOf('当前工作方向：方向'));
-  assert(prompt.indexOf(exploration) < prompt.indexOf('沿用这条原生任务的完整上下文'));
-  // One dated line naming what the probe found and what it did not; nothing here is a live check.
-  assert(prompt.includes(`原生能力（${nativeCapabilitiesMeasuredAt} 实测）：`));
-  assert(prompt.includes('可用 应用内浏览器插件、Computer Use（@oai/sky）、Web 搜索、Morrow 工作接口（agent-cli.ts）'));
-  assert(prompt.includes('部分可用 原生记忆'));
-  assert(!prompt.includes('不可用 应用内浏览器插件'));
-  assert(prompt.includes('未实测 Chrome / Edge 浏览器'));
-  // The dated inventory itself moved to the `contract` operation; the line points there.
-  assert(prompt.includes('以 contract 操作返回的 nativeCapabilities 说明为准'));
-  // A read-only channel keeps its own scope sentence and still learns what the native tools can do.
+  assert(prompt.includes('用可用原生工具走查真实流程，发现问题附证据'));
+  assert(prompt.includes('个人经验优先使用原生记忆'));
+  // The dated inventory stays in contract; the prompt points to it without claiming a live probe.
+  assert(prompt.includes('可用能力以 contract.nativeCapabilities 和实际调用为准'));
+  assert(!prompt.includes('可用 应用内浏览器插件'));
   const readOnly = autonomousPrompt({ project, channel: { ...channel, permission: 'read-only' }, reportSchema: {} });
   assert(readOnly.includes('本频道为只读范围：仅调查验证并提出有依据的建议'));
-  assert(readOnly.includes(`原生能力（${nativeCapabilitiesMeasuredAt} 实测）：`));
+  const workspace = autonomousPrompt({ project, channel: { ...channel, permission: 'workspace-write' } });
+  assert(workspace.includes('可在项目内修改和验证，不联网'));
+  assert(readOnly.includes('contract.nativeCapabilities'));
 });
 test('the capability inventory stays a dated record with a reachable status for every entry', () => {
   assert(nativeCapabilities.length >= 6);

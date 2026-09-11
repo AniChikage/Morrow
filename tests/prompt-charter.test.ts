@@ -2,7 +2,14 @@ import './harness/env.ts';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
-import { boardDigest, charterResendReason, charterTurnLimit } from '../service/channel-work.ts';
+import {
+  autonomousCharter,
+  autonomousCharterReview,
+  autonomousTurnNote,
+  boardDigest,
+  charterResendReason,
+  charterTurnLimit,
+} from '../service/channel-work.ts';
 import { now } from '../service/store.ts';
 import { startIsolated, type IsolatedService } from './harness/service.ts';
 import { grantFor } from './harness/grant.ts';
@@ -58,7 +65,7 @@ async function setup(items = 10) {
   return { ...s, ids, project, channel, turn, complete, step, board };
 }
 const charterMark = '你是这个项目中持续工作的 Codex。';
-const noteMark = '沿用本任务开头的项目说明（版本 1）、工作方向与规则；如需重看，运行 contract 操作。';
+const noteMark = '沿用本任务开头的项目说明（版本 1）、工作方向与规则；完整内容见 contract。';
 
 test('the first turn carries the charter and the next unchanged turn is a short note', async () => {
   const s = await setup();
@@ -78,10 +85,10 @@ test('the first turn carries the charter and the next unchanged turn is a short 
     assert(!second.text.includes(fixtureBrief));
     assert(second.text.includes(noteMark));
     // Everything a turn still needs: the reminder, the last arrangement, usage and the board digest.
-    assert(second.text.includes(`"focus":${JSON.stringify(s.board[1].title)}`));
-    assert(second.text.includes(`"runId":"${first.run.id}"`));
+    assert(second.text.includes(`关注点：${s.board[1].title}`));
+    assert(!second.text.includes(`"runId":"${first.run.id}"`));
     assert(second.text.includes('看板（未解决'));
-    assert(second.text.includes('结束时照章程附加 morrow-next 代码块'));
+    assert(second.text.includes('结束附 morrow-next'));
     // This run's own grant path: the previous run's credential is already scoped out.
     assert(second.text.includes(`runs/${second.run.id}/agent-context.json`));
     assert(!second.text.includes(`runs/${first.run.id}/agent-context.json`));
@@ -93,7 +100,7 @@ test('the first turn carries the charter and the next unchanged turn is a short 
   }
 });
 
-test('a new brief version, a different bound thread and a long-lived charter each resend it', async () => {
+test('new requirements or threads resend the full charter; a stale delivered charter gets a review', async () => {
   const s = await setup();
   try {
     s.step();
@@ -119,14 +126,26 @@ test('a new brief version, a different bound thread and a long-lived charter eac
     assert(rebound.text.includes(charterMark));
     assert.equal(s.channel().promptCharter!.threadId, 'other');
     assert.equal(s.channel().promptCharter!.turnsSince, 1);
-    // Eight more turns reuse it, and the tenth turn under one charter sends it again.
+    // Eight more turns reuse it, and the tenth turn reviews the delivered charter.
     for (let index = 2; index < charterTurnLimit; index++) {
       assert(!s.step().text.includes(charterMark), `turn ${index} under one charter should be a note`);
       assert.equal(s.channel().promptCharter!.turnsSince, index);
     }
     const tenth = s.turn();
-    assert.equal(tenth.text.includes(charterMark), true, 'the tenth turn under one charter resends it');
+    assert(!tenth.text.includes(charterMark));
+    assert(tenth.text.includes('章程回顾'));
+    assert(!tenth.text.includes(fixtureBrief));
+    assert.equal(tenth.text.split('项目目标：').length, 2);
     assert.equal(s.channel().promptCharter!.turnsSince, 1);
+    assert.equal(
+      charterResendReason({
+        record: { threadId, hash: 'h', sentAt: now(), turnsSince: 9 },
+        threadId,
+        hash: 'h',
+        previousRun: { id: 'unaccepted', status: 'failed', executionOwner: 'codex-app' },
+      }),
+      'previous-turn-not-started'
+    );
   } finally {
     await s.cleanup();
   }
@@ -140,13 +159,14 @@ test('a turn that never started, failed or saved no decision cannot be assumed t
     // Completed, but the reply carried no `morrow-next` block: the next turn restates the rules.
     s.store.put('runs', { ...first.run, status: 'completed', nativeTurnId: 'accepted', finishedAt: now() });
     const noDecision = s.turn();
-    assert(noDecision.text.includes(charterMark));
+    assert(noDecision.text.includes('章程回顾'));
+    assert(!noDecision.text.includes(fixtureBrief));
     // A turn the native task never accepted clears the record when the run is failed.
     s.engine.finishFailure({ ...noDecision.run, ...scheduled }, 'failed', '原生 App 拒绝了本轮请求');
     assert.equal(s.channel().promptCharter, undefined);
     const afterReject = s.turn();
     assert(afterReject.text.includes(charterMark));
-    // An unfinished previous run resends too; nothing proves that turn read anything.
+    // An accepted unfinished run requests a reminder of its already delivered charter.
     assert.equal(
       charterResendReason({
         record: { threadId, hash: 'h', sentAt: now(), turnsSince: 1 },
@@ -239,13 +259,13 @@ test('the board digest lists open items compactly and only expands the ones a tu
       origin: 'agent',
     }));
     const capped = boardDigest([...items, ...many], { lastRunId: runId, limit: 1200 });
-    assert(capped.length < 1600, `capped digest is ${capped.length} chars`);
+    assert(capped.length <= 1200, `capped digest is ${capped.length} chars`);
     assert(capped.includes('人写下的下一步'));
     assert(capped.includes('上一轮留下的下一步'));
-    assert(capped.includes('其余 201 项未展开：#3 #6 '));
+    assert(capped.includes('项未展开：'));
     assert(!capped.includes('不该展开的下一步'));
     // A digest that is still too long is truncated and says where the full board is.
-    assert(boardDigest([...items, ...many], { limit: 200 }).includes('用 context 读取完整看板'));
+    assert(boardDigest([...items, ...many], { limit: 200 }).includes('完整看板用 context 读取'));
   } finally {
     await s.cleanup();
   }
@@ -370,6 +390,54 @@ test('older item rows learn who opened them from their own audit events, once', 
     restarted.store.put('items', { ...restarted.store.get<any>('items', human.id), origin: 'human' });
     await restarted.restart();
     assert.equal(restarted.store.get<any>('items', human.id).origin, 'human');
+  } finally {
+    await s.cleanup();
+  }
+});
+
+test('long notes and human boards are bounded without changing stored input or exposing bookkeeping', () => {
+  const items = Array.from({ length: 60 }, (_, i) => ({
+    number: i + 1,
+    origin: 'human',
+    kind: 'issue',
+    status: 'open',
+    title: '长标题'.repeat(80),
+    nextStep: '步骤'.repeat(400),
+  }));
+  const previous = { focus: '关注'.repeat(500), nextStep: '动作'.repeat(1000), runId: 'private-bookkeeping' };
+  const before = JSON.stringify({ items, previous });
+  const context = {
+    project: { brief: fixtureBrief, briefRevision: 7, goal: '真实目标' },
+    channel: { name: '自主', goal: '真实方向', permission: 'read-only' },
+    items,
+    previous,
+  };
+  assert(boardDigest(items).length <= 1200);
+  assert(!autonomousTurnNote(context).includes('private-bookkeeping'));
+  assert(!autonomousTurnNote(context).includes('真实方向'));
+  assert.equal(JSON.stringify({ items, previous }), before);
+  const full = autonomousCharter(context);
+  assert(full.includes(fixtureBrief));
+  assert(full.includes('只读范围'));
+  assert(full.replace(fixtureBrief, '').length < 1000);
+  const review = autonomousCharterReview(context);
+  assert(review.includes('真实目标'));
+  assert(review.includes('真实方向'));
+  assert(review.includes('版本 7'));
+  for (const rule of ['release.propose', '证据必须可回看', 'needs_input', '完整章程见本任务开头'])
+    assert(review.includes(rule));
+  assert(!review.includes(fixtureBrief));
+});
+
+test('an accepted unfinished turn gets a review and the next completed turn returns to a note', async () => {
+  const s = await setup();
+  try {
+    const first = s.step();
+    s.store.put('runs', { ...first.run, nativeTurnId: 'accepted', status: 'failed' });
+    const reminder = s.step();
+    assert(reminder.text.includes('章程回顾'));
+    assert(!reminder.text.includes(fixtureBrief));
+    assert(!s.step().text.includes('章程回顾'));
   } finally {
     await s.cleanup();
   }

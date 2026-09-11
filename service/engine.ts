@@ -1,5 +1,6 @@
 import {
   autonomousCharter,
+  autonomousCharterReview,
   autonomousTurnNote,
   charterHash,
   charterResendReason,
@@ -661,15 +662,19 @@ export class Engine {
       };
       const charter = autonomousCharter(context);
       const hash = charterHash(charter);
-      const resent = !!charterResendReason({
+      const resendReason = charterResendReason({
         record: stored.promptCharter,
         threadId: binding.threadId,
         hash,
         previousRun,
         work: stored.work,
       });
+      const resent = !!resendReason;
+      const reviewOnly = ['charter-stale', 'previous-turn-unfinished', 'no-work-decision'].includes(resendReason);
       if (run) this.recordCharter(channel, stored, { threadId: binding.threadId, hash, resent });
-      return (resent ? charter : '') + autonomousTurnNote(context) + tools;
+      return (
+        (reviewOnly ? autonomousCharterReview(context) : resent ? charter : '') + autonomousTurnNote(context) + tools
+      );
     }
     const notes = this.store.messages(channel.id);
     const knowledge = this.store.contextKnowledge(project.id, channel.id);

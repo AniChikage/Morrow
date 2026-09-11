@@ -22,7 +22,14 @@ const filler = (label: string, length: number) => (label + '：' + body.repeat(6
 /** A brief the size of a real one: goals, users, stage, priorities, constraints and open decisions. */
 export const fixtureBrief = filler('项目说明', 4400);
 
-export type Measurement = { first: number; second: number; charter: number; items: number; boardJson: number };
+export type Measurement = {
+  first: number;
+  second: number;
+  review: number;
+  charter: number;
+  items: number;
+  boardJson: number;
+};
 
 export async function measurePrompts(): Promise<Measurement> {
   const s = await startIsolated({
@@ -62,7 +69,18 @@ export async function measurePrompts(): Promise<Measurement> {
     });
     const second = grantFor(s, { projectId: s.project.id, channelId: s.channel.id, overrides });
     const secondPrompt = s.engine.prompt(project(s), channel(s), second.run);
+    s.store.put('runs', { ...second.run, status: 'completed', nativeTurnId: 'prompt-size-turn-2', finishedAt: now() });
+    s.store.put('channels', {
+      ...channel(s),
+      work: { ...channel(s).work!, runId: second.run.id },
+      promptCharter: { ...channel(s).promptCharter!, turnsSince: 9 },
+    });
+    const reminder = grantFor(s, { projectId: s.project.id, channelId: s.channel.id, overrides });
+    const reviewPrompt = s.engine.prompt(project(s), channel(s), reminder.run);
+    if (!reviewPrompt.includes('章程回顾') || reviewPrompt.includes('项目说明结束'))
+      throw new Error('measurement must exercise an expired, delivered charter review');
     return {
+      review: reviewPrompt.length,
       first: firstPrompt.length,
       second: secondPrompt.length,
       charter: firstPrompt.length - secondPrompt.length,
@@ -119,6 +137,7 @@ if (import.meta.filename === process.argv[1]) {
       `first turn (charter)   ${result.first} chars`,
       `second turn (note)     ${result.second} chars`,
       `charter share          ${result.charter} chars`,
+      `review turn            ${result.review} chars`,
       '',
     ].join('\n')
   );
