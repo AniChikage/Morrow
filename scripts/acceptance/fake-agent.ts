@@ -1,5 +1,5 @@
-import { writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { mkdirSync, writeFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
 import { valueAt } from '../../service/measurement.ts';
 import { nextBlock } from '../../tests/harness/scripted-native.ts';
 import type {
@@ -25,8 +25,12 @@ const understandingMs = 7 * 24 * 3600_000;
 const maxRuns = 8;
 /** How many decisions the policy opens before it settles into observation. */
 const maxDecisions = 2;
-/** The full check both policies run on the release candidate before asking for a release-level review. */
-const checkCommand = 'node --test';
+/**
+ * Marker every sealed change carries in its evidence summary, so a turn can read out of `context`
+ * how far the project has come without remembering anything itself.
+ */
+const patchMark = '补丁';
+const patchSummary = (n: number) => `${patchMark} ${n}：待发布产物的实际内容`;
 
 const iso = (offsetMs: number) => new Date(Date.now() + offsetMs).toISOString();
 
@@ -100,6 +104,89 @@ const featureTitle = (scenario: PolicyScenario) => scenario.goal;
 const learningTitle = (scenario: PolicyScenario) => `${scenario.goal}：实际反馈`;
 const understandingTitle = (scenario: PolicyScenario) => `${scenario.goal}：当前判断`;
 
+/** How many of the scenario's changes the project already carries: one sealed capture per patch. */
+const patchesApplied = (context: any) =>
+  (context.evidence || []).filter((row: any) => row.origin === 'file' && String(row.summary).startsWith(patchMark))
+    .length;
+
+/** The newest review the project recorded, whichever channel made it. */
+const lastReview = (context: any) =>
+  (context.strategy?.decisions || [])
+    .filter((row: any) => row.review?.createdAt)
+    .sort((a: any, b: any) => String(a.review.createdAt).localeCompare(String(b.review.createdAt)))
+    .at(-1);
+
+/**
+ * Writes the scenario's nth change into the project and seals the artifact as file evidence. With
+ * `patches` the files come from `patches/<id>/<n>/` verbatim — whole files, so the project on disk is
+ * exactly what that patch says; without them the policy writes `artifactBody`, which is what a
+ * scenario carrying no seed source does. The captured summary carries the patch number, so a later
+ * turn reads its own progress out of `context` instead of remembering it.
+ */
+async function applyChange(turn: TurnContext, itemId: string, n: number): Promise<string> {
+  const scenario = turn.scenario;
+  const patch = scenario.patches?.[n - 1];
+  if (scenario.patches && !patch) throw new Error(`fixture: 场景 ${scenario.id} 没有第 ${n} 个补丁`);
+  const files = patch ? patch.files : { [scenario.artifactPath]: scenario.artifactBody };
+  for (const [name, content] of Object.entries(files)) {
+    const path = join(turn.project.path, name);
+    mkdirSync(dirname(path), { recursive: true });
+    writeFileSync(path, content);
+  }
+  const artifact = await turn.grant.call('evidence.capture', {
+    itemId,
+    summary: patchSummary(n),
+    path: scenario.artifactPath,
+  });
+  return artifact.id as string;
+}
+
+/**
+ * What this run does with the experience the project already carries. It reads both recalls — the
+ * automatic one `context` carries and a targeted one for the question this scenario is about to
+ * answer — and then reads every match in full before saying anything about it.
+ *
+ * This policy never `apply`s an old record: a fixture state machine cannot judge whether the old
+ * conditions still hold, so it records why it is not reusing it instead. A record the targeted
+ * recall did not return is `not_applicable` (the automatic recall surfaced it, but it is about
+ * something else); a record whose conclusion was never supported is `avoid`; a supported one is
+ * `adapt`, which still leaves this choice to verify it again. Scenarios that predate the recall
+ * mechanism set no question and get no references at all.
+ */
+async function memoryRefs(turn: TurnContext, state: Snapshot) {
+  const question = turn.scenario.recall;
+  if (!question) return [];
+  const targeted = await turn.grant.call('memory.recall', { query: question, limit: 12 });
+  const automatic = state.context.strategy?.relatedMemory?.matches || [];
+  const own = [learningTitle(turn.scenario), understandingTitle(turn.scenario)];
+  const answered = new Set<string>(targeted.matches.map((row: any) => `${row.kind}:${row.id}`));
+  const refs: Array<Record<string, unknown>> = [];
+  const seen = new Set<string>();
+  const candidates = [...targeted.matches, ...automatic]
+    .filter((row: any) => row.kind === 'learning' && !own.includes(row.title))
+    .sort((a: any, b: any) => (a.title < b.title ? -1 : a.title > b.title ? 1 : 0));
+  for (const match of candidates) {
+    const key = `${match.kind}:${match.id}`;
+    if (seen.has(key) || refs.length >= 4) continue;
+    seen.add(key);
+    const { record } = await turn.grant.call('memory.read', { kind: match.kind, id: match.id });
+    const use = !answered.has(key) ? 'not_applicable' : record.status === 'supported' ? 'adapt' : 'avoid';
+    refs.push({
+      kind: match.kind,
+      id: record.id,
+      revision: record.revision,
+      use,
+      reason:
+        use === 'not_applicable'
+          ? `自动召回带出来的旧记录，但它讲的不是「${question}」这个问题，本次不作为依据。`
+          : use === 'avoid'
+            ? `这条经验的结论从未被证实（status=${record.status}）：${record.conclusion}。避免据此直接改动；要沿用就先重新验证它的适用条件。`
+            : '结论有证据支持，但只限当时条件；本次按新条件调整后重新验证，不直接沿用原结论。',
+    });
+  }
+  return refs;
+}
+
 /**
  * First turn: make the change, seal the evidence for it and ask for the independent review the
  * release gate requires. The observation and the frozen contract wait for the next turn: a verdict
@@ -108,7 +195,6 @@ const understandingTitle = (scenario: PolicyScenario) => `${scenario.goal}：当
 async function plan(turn: TurnContext, state: Snapshot): Promise<string> {
   const call = turn.grant.call;
   const scenario = turn.scenario;
-  writeFileSync(join(turn.project.path, scenario.artifactPath), scenario.artifactBody);
   await call('understanding.upsert', {
     kind: 'assumption',
     title: understandingTitle(scenario),
@@ -127,12 +213,8 @@ async function plan(turn: TurnContext, state: Snapshot): Promise<string> {
     evidenceIds: [],
     nextStep: '封存产物、建立观测并等待真实反馈。',
   });
-  const artifact = await call('evidence.capture', {
-    itemId: feature.id,
-    summary: '待发布产物的实际内容',
-    path: scenario.artifactPath,
-  });
-  await call('verification.request', { itemId: feature.id, evidenceIds: [artifact.id] });
+  const artifactId = await applyChange(turn, feature.id, 1);
+  await call('verification.request', { itemId: feature.id, evidenceIds: [artifactId] });
   await call('wait', { watchIds: [], releaseIds: [], deadline: iso(windowMs), reason: '等待独立复核结论。' });
   return finish('wait', scenario.goal, '改动已封存并送独立复核。', '复核通过后建立观测、冻结预期并提交发布。');
 }
@@ -143,8 +225,9 @@ async function plan(turn: TurnContext, state: Snapshot): Promise<string> {
  * the native record; the policy never writes its own claim about a run.
  */
 async function fullCheck(turn: TurnContext): Promise<string> {
-  const prepared = await turn.grant.call('execution.prepare', { command: checkCommand });
-  turn.runCommand(checkCommand, { output: '隔离夹具的检查输出，不代表真实模型或真实测试结果' });
+  const command = turn.scenario.checkCommand;
+  const prepared = await turn.grant.call('execution.prepare', { command });
+  turn.runCommand(command, { output: '隔离夹具的检查输出，不代表真实模型或真实测试结果' });
   const { evidence } = await turn.grant.call('execution.read', { id: prepared.id });
   if (!evidence?.id) throw new Error('fixture: the prepared full check produced no execution evidence');
   return evidence.id as string;
@@ -177,12 +260,18 @@ async function candidate(turn: TurnContext, state: Snapshot): Promise<string> {
   );
 }
 
-function expectation(spec: PolicyExpectation, kind: 'outcome' | 'guardrail', watchId: string) {
+/**
+ * One frozen expectation. When the scenario names a comparability field, the value it had when the
+ * work was decided goes into the immutable scope, so a later window that measures a different
+ * population can be told apart from one that is comparable.
+ */
+function expectation(turn: TurnContext, spec: PolicyExpectation, kind: 'outcome' | 'guardrail', watchId: string) {
+  const same = turn.scenario.feedback.comparability;
   return {
     id: spec.id,
     kind,
     claim: spec.claim,
-    scope: spec.scope,
+    scope: same ? `${spec.scope}；可比口径 ${same.pointer}=${JSON.stringify(same.expected)}` : spec.scope,
     source: { kind: 'watch', watchId },
     verification: spec.verification,
     disconfirm: spec.disconfirm,
@@ -214,6 +303,7 @@ async function ship(turn: TurnContext, state: Snapshot): Promise<string> {
     deadline: iso(windowMs),
     continuous: true,
   });
+  const refs = await memoryRefs(turn, state);
   await call('decision.choose', {
     objectiveVersion: state.objectiveVersion,
     options: [
@@ -239,10 +329,11 @@ async function ship(turn: TurnContext, state: Snapshot): Promise<string> {
     evaluation: '用约定字段的实际取值核对，不用自述结论。',
     stopWhen: '护栏被突破，或观察期结束仍无窗口内数据。',
     expectations: [
-      expectation(scenario.feedback.outcome, 'outcome', watch.id),
-      expectation(scenario.feedback.guardrail, 'guardrail', watch.id),
+      expectation(turn, scenario.feedback.outcome, 'outcome', watch.id),
+      expectation(turn, scenario.feedback.guardrail, 'guardrail', watch.id),
     ],
     understandingRefs: understanding ? [{ id: understanding.id, revision: understanding.revision }] : [],
+    ...(refs.length ? { memoryRefs: refs } : {}),
     evidenceIds: [state.artifactEvidenceId],
     watchIds: [watch.id],
     reviewAt: iso(windowMs),
@@ -275,8 +366,10 @@ async function review(turn: TurnContext, state: Snapshot): Promise<string> {
   const call = turn.grant.call;
   const decision = state.decision;
   const results = [];
+  const samples = [];
   for (const expected of decision.expectations || []) {
     const record = await latestFor(turn, state, decision, expected);
+    if (record) samples.push(record);
     results.push({
       expectationId: expected.id,
       verdict: record ? ruleVerdict(expected.rule, record.value) : 'unknown',
@@ -287,11 +380,22 @@ async function review(turn: TurnContext, state: Snapshot): Promise<string> {
     });
   }
   const verdicts = results.map((row) => row.verdict);
-  const outcome = verdicts.every((v) => v === 'met')
-    ? 'improved'
-    : verdicts.includes('not_met')
-      ? 'not_improved'
-      : 'inconclusive';
+  // The frozen comparability field decides whether the window may be compared at all. A sample from
+  // a different population cannot support a conclusion either way, however the rules came out.
+  const same = turn.scenario.feedback.comparability;
+  const drift = same
+    ? samples
+        .map((row) => pointerValue(row.data, same.pointer))
+        .find((value) => value !== undefined && value !== same.expected)
+    : undefined;
+  const outcome =
+    drift !== undefined
+      ? 'inconclusive'
+      : verdicts.every((v) => v === 'met')
+        ? 'improved'
+        : verdicts.includes('not_met')
+          ? 'not_improved'
+          : 'inconclusive';
   const conclusive = outcome === 'improved' || outcome === 'not_improved';
   const response = await call('decision.review', {
     id: decision.id,
@@ -302,23 +406,37 @@ async function review(turn: TurnContext, state: Snapshot): Promise<string> {
         ? '约定字段在窗口内达到事前门槛，护栏未被突破。'
         : outcome === 'not_improved'
           ? '窗口内的实际取值低于事前门槛，本次安排没有达到预期。'
-          : '窗口内没有足以判断的采集数据，保留未知。',
+          : drift !== undefined
+            ? `窗口内的样本来自 ${same!.pointer}=${JSON.stringify(drift)}，与事前冻结的口径不同，取值变化不能归因于本次改动。`
+            : '窗口内没有足以判断的采集数据，保留未知。',
     evidenceIds: [...new Set(results.flatMap((row) => row.evidenceIds))],
     nextDirection: outcome === 'improved' ? '继续观察效果是否稳定。' : '先查清取值变化的原因，再决定是否调整方法。',
     assessment: {
       results,
-      conditions: conclusive ? 'matched' : 'unknown',
-      conditionReason: conclusive
-        ? '同一反馈来源、同一字段口径，观察窗口未变。'
-        : '窗口内缺少可比数据，无法判断条件是否一致。',
-      diagnosis: outcome === 'improved' ? 'expected' : outcome === 'not_improved' ? 'uncertain' : 'pending',
+      conditions: drift !== undefined ? 'changed' : conclusive ? 'matched' : 'unknown',
+      conditionReason:
+        drift !== undefined
+          ? `事前冻结的可比口径是 ${same!.pointer}=${JSON.stringify(same!.expected)}，这批样本是 ${JSON.stringify(drift)}。`
+          : conclusive
+            ? '同一反馈来源、同一字段口径，观察窗口未变。'
+            : '窗口内缺少可比数据，无法判断条件是否一致。',
+      diagnosis:
+        drift !== undefined
+          ? 'environment'
+          : outcome === 'improved'
+            ? 'expected'
+            : outcome === 'not_improved'
+              ? 'uncertain'
+              : 'pending',
       explanation:
-        outcome === 'improved'
-          ? '结果与事前预期一致；这只是观测到的变化，不等于已证明因果。'
-          : outcome === 'not_improved'
-            ? '取值回落的原因尚未查清，可能是外部变化，也可能是本次方法无效。'
-            : '采集尚未产生窗口内数据。',
-      adjustment: 'observe',
+        drift !== undefined
+          ? '外部条件本身变了；先把口径对齐，再判断方法是否有效，不把不同人群的数据算成本次效果。'
+          : outcome === 'improved'
+            ? '结果与事前预期一致；这只是观测到的变化，不等于已证明因果。'
+            : outcome === 'not_improved'
+              ? '取值回落的原因尚未查清，可能是外部变化，也可能是本次方法无效。'
+              : '采集尚未产生窗口内数据。',
+      adjustment: drift !== undefined ? 'measurement' : 'observe',
       understandingRefs: [],
     },
   });
@@ -346,7 +464,7 @@ async function latestFor(turn: TurnContext, state: Snapshot, decision: any, expe
   if (!record) return undefined;
   // `context` lists provenance and size only; the number has to come from the stored evidence.
   const { data } = await turn.grant.call('evidence.read', { id: record.id });
-  return { id: record.id, value: pointerValue(data, expected.rule.pointer) };
+  return { id: record.id as string, value: pointerValue(data, expected.rule.pointer), data };
 }
 
 function pointerValue(data: unknown, pointer: string): unknown {
@@ -361,8 +479,14 @@ function ruleVerdict(rule: { operator: string; expected: unknown }, value: unkno
 }
 
 /**
- * Nothing is waiting on a decision: record what the published change actually produced, and either
- * open the next bounded observation or wait for more feedback.
+ * Nothing is waiting on a decision: record what the published change actually produced, adjust the
+ * work if the last review did not reach its expectation, and either open the next bounded
+ * observation or wait for more feedback.
+ *
+ * The adjustment is the scenario's next patch. It is only applied when no frozen contract is open —
+ * changing the source inside an observation window would measure something else than what was
+ * decided — and only after a review that came out other than `improved`: a result that met its
+ * expectation is a reason to keep watching, not to change more.
  */
 async function observe(turn: TurnContext, state: Snapshot): Promise<string> {
   const call = turn.grant.call;
@@ -380,31 +504,59 @@ async function observe(turn: TurnContext, state: Snapshot): Promise<string> {
       status: 'supported',
       evidenceIds: [sample.id],
     });
+  const applied = patchesApplied(state.context);
+  const previous = lastReview(state.context);
+  const adjusting =
+    !state.decision &&
+    !!previous &&
+    previous.review.outcome !== 'improved' &&
+    applied < (scenario.patches?.length || 0);
+  let adjustment: string | undefined;
+  if (adjusting) {
+    adjustment = await applyChange(turn, state.feature.id, applied + 1);
+    // Linking the sealed evidence to the item advances the item's own revision, so the merge has to
+    // be made against the version that write left behind, not the one this turn started from.
+    const current = (((await call('context')).features || []) as any[]).find((row) => row.id === state.feature.id);
+    await call('feature.upsert', {
+      id: state.feature.id,
+      revision: current.revision,
+      title: featureTitle(scenario),
+      summary: `围绕目标「${scenario.goal}」的一次改动及其观测。上一个窗口没有达到预期，已按诊断调整实现。`,
+      kind: 'feature',
+      status: 'investigating',
+      evidenceIds: [adjustment],
+      nextStep: '第二次改动已封存为证据，等待下一个观察窗口的真实反馈再判断。',
+    });
+  }
   const canOpenNext = !state.decision && state.publishedRelease && state.reviewedDecisions < maxDecisions;
   if (canOpenNext && state.watch) {
+    const refs = await memoryRefs(turn, state);
     await call('decision.choose', {
       objectiveVersion: state.objectiveVersion,
       options: [
         {
-          title: `继续观察效果是否稳定：${scenario.goal}`,
-          kind: 'observe',
-          benefit: '能分辨一次性波动和稳定改善。',
-          cost: '只消耗观测，不改动产品。',
-          uncertainty: '窗口内的样本可能仍然太少。',
+          title: adjusting ? `按诊断调整实现再观测：${scenario.goal}` : `继续观察效果是否稳定：${scenario.goal}`,
+          kind: adjusting ? 'act' : 'observe',
+          benefit: adjusting ? '上一个窗口的反证已经指向具体缺口。' : '能分辨一次性波动和稳定改善。',
+          cost: adjusting ? '一次改动，仍要等一个观察窗口。' : '只消耗观测，不改动产品。',
+          uncertainty: adjusting ? '调整是否覆盖了真正的原因仍未知。' : '窗口内的样本可能仍然太少。',
         },
       ],
       selected: 0,
-      rationale: '改动已上线且首次取值达到门槛，先确认它是否稳定，再决定下一步。',
+      rationale: adjusting
+        ? '上一次复盘没有达到预期，按其诊断调整实现，并在同一口径下重新观察。'
+        : '改动已上线且首次取值达到门槛，先确认它是否稳定，再决定下一步。',
       nextStep: '在同一观察窗口内继续核对约定字段。',
       expectedOutcome: `${scenario.feedback.outcome.claim}（在新的观察窗口内保持）`,
       evaluation: '用同一字段和同一门槛核对。',
       stopWhen: '取值回落或护栏被突破。',
       expectations: [
-        expectation(scenario.feedback.outcome, 'outcome', state.watch.id),
-        expectation(scenario.feedback.guardrail, 'guardrail', state.watch.id),
+        expectation(turn, scenario.feedback.outcome, 'outcome', state.watch.id),
+        expectation(turn, scenario.feedback.guardrail, 'guardrail', state.watch.id),
       ],
       understandingRefs: [],
-      evidenceIds: [],
+      ...(refs.length ? { memoryRefs: refs } : {}),
+      evidenceIds: adjustment ? [adjustment] : [],
       watchIds: [state.watch.id],
       reviewAt: iso(windowMs),
       maxRuns,
@@ -416,7 +568,12 @@ async function observe(turn: TurnContext, state: Snapshot): Promise<string> {
     deadline: iso(windowMs),
     reason: '等待下一个观察窗口的真实反馈。',
   });
-  return finish('wait', scenario.goal, '已记录实际结果，继续观察。', '等待下一批反馈样本。');
+  return finish(
+    'wait',
+    scenario.goal,
+    adjusting ? '已按上一次复盘的诊断调整实现并封存。' : '已记录实际结果，继续观察。',
+    '等待下一批反馈样本。'
+  );
 }
 
 /** Every turn ends with a short report plus the continuity block the service parses. */
@@ -472,7 +629,6 @@ async function attempt(call: TurnContext['grant']['call'], operation: string, in
 async function naivePlan(turn: TurnContext): Promise<string> {
   const call = turn.grant.call;
   const scenario = turn.scenario;
-  writeFileSync(join(turn.project.path, scenario.artifactPath), scenario.artifactBody);
   const feature = await call('feature.upsert', {
     title: featureTitle(scenario),
     summary: `按旧经验的做法推进目标「${scenario.goal}」。`,
@@ -481,15 +637,13 @@ async function naivePlan(turn: TurnContext): Promise<string> {
     evidenceIds: [],
     nextStep: '直接提交发布。',
   });
-  const artifact = await call('evidence.capture', {
-    itemId: feature.id,
-    summary: '待发布产物的实际内容',
-    path: scenario.artifactPath,
-  });
-  const proposal = naiveRelease(scenario, feature.id, artifact.id);
+  // The same first change as `careful`; what it does with it afterwards is the difference. It never
+  // applies a later patch: it waits for the metric to come good on its own instead of adjusting.
+  const artifactId = await applyChange(turn, feature.id, 1);
+  const proposal = naiveRelease(scenario, feature.id, artifactId);
   await attempt(call, 'release.propose', proposal);
   await attempt(call, 'release.propose', proposal);
-  await call('verification.request', { itemId: feature.id, evidenceIds: [artifact.id] });
+  await call('verification.request', { itemId: feature.id, evidenceIds: [artifactId] });
   await call('wait', { watchIds: [], releaseIds: [], deadline: iso(windowMs), reason: '等待复核后再次提交发布。' });
   return finish('wait', scenario.goal, '改动已提交，发布也已经提交过。', '等复核通过后重发同一份发布提议。');
 }
@@ -554,7 +708,7 @@ async function naiveShip(turn: TurnContext, state: Snapshot): Promise<string> {
     evaluation: '上线后按改动内容判断是否达成。',
     stopWhen: '暂无。',
     // (b) Only the outcome is frozen; the condition the work may not sacrifice is left out.
-    expectations: [expectation(scenario.feedback.outcome, 'outcome', watch.id)],
+    expectations: [expectation(turn, scenario.feedback.outcome, 'outcome', watch.id)],
     understandingRefs: [],
     // (a) Whatever experience `context` already carried is adopted as still applicable.
     memoryRefs: adopted.map((row) => ({

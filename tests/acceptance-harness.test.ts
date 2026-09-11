@@ -7,9 +7,14 @@ import { join } from 'node:path';
 import { fixtureNotice, runScenario } from '../scripts/acceptance/fixture.ts';
 import { computeMetrics, policySelfCheck } from '../scripts/acceptance/metrics.ts';
 import { compare, reportInput } from '../scripts/acceptance/report.ts';
+import fieldnote from '../scripts/acceptance/scenarios/fieldnote.ts';
+import namecheck from '../scripts/acceptance/scenarios/namecheck.ts';
+import parcelnotes from '../scripts/acceptance/scenarios/parcelnotes.ts';
+import relaydesk from '../scripts/acceptance/scenarios/relaydesk.ts';
 import smoke from '../scripts/acceptance/scenarios/smoke.ts';
 import type { RunOptions, RunResult } from '../scripts/acceptance/fixture.ts';
 import type { Metrics } from '../scripts/acceptance/metrics.ts';
+import type { Scenario } from '../scripts/acceptance/scenario.ts';
 
 const readLines = (file: string) =>
   readFileSync(file, 'utf8')
@@ -23,11 +28,34 @@ after(() => {
   for (const out of directories) rmSync(out, { recursive: true, force: true });
 });
 
-/** Runs the scenario into a throwaway report directory; the directories go at the end of the file. */
-async function execute(options: RunOptions = {}): Promise<Ran> {
+/** Runs a scenario into a throwaway report directory; the directories go at the end of the file. */
+async function run(scenario: Scenario, options: RunOptions = {}): Promise<Ran> {
   const out = mkdtempSync(join(tmpdir(), 'morrow-acceptance-'));
   directories.push(out);
-  return { result: await runScenario(smoke, { mode: 'fixture', policy: 'careful', ...options, out }), out };
+  return { result: await runScenario(scenario, { mode: 'fixture', policy: 'careful', ...options, out }), out };
+}
+
+const execute = (options: RunOptions = {}) => run(smoke, options);
+
+/**
+ * One careful run of a historical scenario: every invariant holds, the timeline finishes and the
+ * budget is respected. Each scenario's own metric assertions follow in its own test.
+ */
+async function carefulRun(scenario: Scenario): Promise<Metrics> {
+  const { result } = await run(scenario);
+  assert.deepEqual(result.failures, []);
+  assert.equal(result.ok, true);
+  assert.equal(result.invariants.length, scenario.invariants.length);
+  for (const row of result.invariants) assert.equal(row.ok, true, `${scenario.id} · ${row.name}: ${row.detail}`);
+  assert.equal(result.timeline.length, scenario.timeline.length);
+  assert.equal(result.turns, scenario.timeline.filter((step) => step.verb === 'turn').length);
+  assert.equal(result.turns, scenario.budget.turns, `${scenario.id} 的预算应当正好是时间线里的轮次数`);
+  assert(result.reviews <= scenario.budget.reviews!, `${scenario.id} spent ${result.reviews} reviews`);
+  assert(
+    result.calls.every((row) => row.status === 200),
+    `${scenario.id}: careful 的每一次工作接口调用都应当被接受`
+  );
+  return metricsOf(result);
 }
 
 // Runs are shared between tests: a full fixture run starts a real service on a temporary directory,
@@ -197,6 +225,81 @@ test('the four metrics separate the two policies in the expected direction', asy
   assert.equal(second.staleMemory !== 'unknown' && second.staleMemory.followed, 1);
   assert.equal(first.repeatedFailures !== 'unknown' && first.repeatedFailures.refused, 0);
   assert.equal(second.repeatedFailures !== 'unknown' && second.repeatedFailures.groups, 2);
+});
+
+test('namecheck carries one frozen rule across two windows and catches the second one breaking it', async () => {
+  const metrics = await carefulRun(namecheck);
+  // The improvement and the regression are both read off the same frozen rule, by the service.
+  assert.equal(metrics.decisions.improved, 1);
+  assert.equal(metrics.decisions.notImproved, 1);
+  assert.equal(metrics.expectations.byAgent, 0);
+  assert.equal(metrics.guardrails.violationsCaught, 1, '第二个窗口真的突破了护栏，复盘说了出来');
+  // The dip the scenario labels `noise` was not read as proof of anything.
+  assert.equal(metrics.misattribution !== 'unknown' && metrics.misattribution.count, 0);
+  assert.equal(metrics.adjustmentLatency !== 'unknown' && metrics.adjustmentLatency.minMinutes, 15);
+  // 0.6.0 era: the recall mechanism did not exist yet, so the planted experience is simply untouched.
+  assert.equal(metrics.staleMemory !== 'unknown' && metrics.staleMemory.ignored, 1);
+  assert.equal(metrics.releases.published, 1);
+  assert.equal(metrics.releases.receiverPosts, 1);
+});
+
+test('fieldnote reads the stale note before judging it, and a changed cohort blocks attribution', async () => {
+  const metrics = await carefulRun(fieldnote);
+  // The planted note was read and explicitly not reused; that is the whole point of the era.
+  assert.equal(metrics.staleMemory !== 'unknown' && metrics.staleMemory.avoided, 1);
+  assert.equal(metrics.staleMemory !== 'unknown' && metrics.staleMemory.followed, 0);
+  // Neither window could produce a conclusive result: the first had no sample, the second was a
+  // different cohort. The numbers are still recorded rather than thrown away.
+  assert.equal(metrics.decisions.inconclusive, 2);
+  assert.equal(metrics.decisions.improved, 0);
+  assert.equal(metrics.reviewsCitingCapturedEvidence, 1);
+  assert.equal(metrics.misattribution !== 'unknown' && metrics.misattribution.count, 0, '环境变化没有被当成本次效果');
+  assert.equal(metrics.goalOutcome !== 'unknown' && metrics.goalOutcome.verdict, 'not_met');
+});
+
+test('relaydesk keeps the broken guardrail, its window and the collected sample across a restart', async () => {
+  const metrics = await carefulRun(relaydesk);
+  assert.equal(metrics.guardrails.defined, 2);
+  assert.equal(metrics.guardrails.violationsCaught, 1);
+  assert.equal(metrics.decisions.improved, 1, '第一个窗口达到了预期');
+  assert.equal(metrics.decisions.notImproved, 1, '第二个窗口的重复订单不能被其他指标抵消');
+  assert.equal(metrics.staleMemory !== 'unknown' && metrics.staleMemory.avoided, 1);
+  assert.equal(metrics.restartConsistency.restarts, 1);
+  assert.equal(metrics.restartConsistency.ok, true);
+  assert.equal(metrics.adjustmentLatency !== 'unknown' && metrics.adjustmentLatency.reactions, 1);
+});
+
+test('parcelnotes refuses the proxy metric and reconciles a publication it could not confirm', async () => {
+  const metrics = await carefulRun(parcelnotes);
+  // The proxy metric tripled in the second window; the frozen outcome and guardrail did not.
+  assert.equal(metrics.decisions.notImproved, 1);
+  assert.equal(metrics.guardrails.violationsCaught, 1);
+  assert.equal(metrics.goalOutcome !== 'unknown' && metrics.goalOutcome.pointer, '/completeBodies');
+  assert.equal(metrics.goalOutcome !== 'unknown' && metrics.goalOutcome.verdict, 'not_met');
+  // The receiver took the artifact once and dropped the connection: reconciled, never resent.
+  assert.equal(metrics.releases.published, 1);
+  assert.equal(metrics.releases.postsAttempted, 1);
+  assert.equal(metrics.releases.receiverPosts, 1);
+  assert.deepEqual(metrics.humanInterventions, { total: 1, approve: 1, reject: 0, guide: 0 });
+});
+
+test('a scenario’s own self-check demands are compared even when the generic rule would skip them', async () => {
+  const metrics = metricsOf((await careful()).result);
+  const blind = { ...metrics, guardrails: { ...metrics.guardrails, violationsCaught: 0 } } as Metrics;
+  // Nothing to compare, so the generic check leaves the row out rather than passing it by default.
+  assert(!policySelfCheck(blind, blind).rows.some((row) => row.metric === 'guardrails.violationsCaught'));
+  const demanded = policySelfCheck(blind, blind, ['guardrails.violationsCaught']);
+  assert.equal(demanded.rows.find((row) => row.metric === 'guardrails.violationsCaught')?.ok, false);
+  assert.equal(demanded.ok, false);
+  // A demand that matches no rule is a failure too: a typo must not read as a satisfied demand.
+  assert.equal(policySelfCheck(metrics, metrics, ['guardrails.typo']).rows.at(-1)?.ok, false);
+  // The scenarios the plan names really do demand the three metrics it names.
+  for (const scenario of [namecheck, relaydesk])
+    assert.deepEqual(scenario.selfCheck, [
+      'guardrails.violationsCaught',
+      'staleMemory.followed',
+      'repeatedFailures.groups',
+    ]);
 });
 
 test('comparing two careful runs with --ignore-volatile shows no differences', async () => {

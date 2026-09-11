@@ -1,6 +1,6 @@
 import { mock } from 'node:test';
 import { randomUUID } from 'node:crypto';
-import { cpSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { cpSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { join, resolve } from 'node:path';
 import '../../tests/harness/env.ts';
@@ -9,7 +9,7 @@ import { startReceiver } from '../../tests/harness/receiver.ts';
 import { grantFor } from '../../tests/harness/grant.ts';
 import { ScriptedNativeTransport } from '../../tests/harness/scripted-native.ts';
 import { policies } from './fake-agent.ts';
-import { policyScenario } from './scenario.ts';
+import { policyScenario, readTree } from './scenario.ts';
 import { computeMetrics } from './metrics.ts';
 import { metricsSection, writeMetrics } from './report.ts';
 import { drain, runStep, stopScheduler } from './timeline.ts';
@@ -245,24 +245,10 @@ function facts(scenario: Scenario, runId: string, policy: string, options: RunOp
   };
 }
 
+/** The seed the project directory starts from: a directory read verbatim, or the inline file map. */
 function seedFiles(scenario: Scenario): Record<string, string> {
-  if (scenario.project.seedDir) return readSeedDir(scenario.project.seedDir);
+  if (scenario.project.seedDir) return readTree(scenario.project.seedDir);
   return scenario.project.files || {};
-}
-
-/** Reads a seed directory verbatim into the file map `startIsolated` writes into the project. */
-function readSeedDir(dir: string): Record<string, string> {
-  const files: Record<string, string> = {};
-  const walk = (current: string, prefix: string) => {
-    for (const entry of readdirSync(current, { withFileTypes: true })) {
-      const name = prefix ? `${prefix}/${entry.name}` : entry.name;
-      const next = join(current, entry.name);
-      if (entry.isDirectory()) walk(next, name);
-      else files[name] = readFileSync(next, 'utf8');
-    }
-  };
-  walk(resolve(dir), '');
-  return files;
 }
 
 /**

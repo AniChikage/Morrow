@@ -10,14 +10,23 @@ export type AgentCall = (operation: string, input?: unknown, requestId?: string)
 /** Scratch a policy keeps across the turns of one scenario run; the harness never reads it. */
 export type PolicyMemory = Record<string, unknown>;
 
+/** One patch: the full text of every project file it replaces, keyed by project-relative path. */
+export type PatchFiles = { n: number; files: Record<string, string> };
+
 /** The scenario fields a turn policy reads. `scripts/acceptance/scenario.ts` builds one per run. */
 export type PolicyScenario = {
   id: string;
   goal: string;
   /** Project-relative path of the file a release seals, e.g. `release.txt`. */
   artifactPath: string;
-  /** Text the policy writes into that file on the turn it makes the change. */
+  /** Text the policy writes into that file on the turn it makes the change, if there are no patches. */
   artifactBody: string;
+  /** The full check the policy runs on the release candidate through `execution.prepare`. */
+  checkCommand: string;
+  /** Numbered patches the policy applies instead of writing `artifactBody`; each includes the artifact. */
+  patches?: PatchFiles[];
+  /** The question the policy re-checks the project's memory against; absent means it makes no reference. */
+  recall?: string;
   feedback: PolicyFeedback;
 };
 export type PolicyRule = { pointer: string; operator: 'gte' | 'lte' | 'equals'; expected: string | number | boolean };
@@ -40,6 +49,8 @@ export type PolicyFeedback = {
   condition: { operator: 'changed' | 'gte' | 'lte' | 'equals'; expected?: string | number | boolean };
   outcome: PolicyExpectation;
   guardrail: PolicyExpectation;
+  /** The field and value that make two windows comparable; a later difference blocks attribution. */
+  comparability?: { pointer: string; expected: string | number | boolean };
   /** How long after a change the metric is expected to move; the policy uses it for observation windows. */
   latencySeconds: number;
 };
