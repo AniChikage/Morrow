@@ -221,8 +221,10 @@ export async function startServer(
     try {
       const url = new URL(req.url || '/', `http://127.0.0.1:${port}`);
       const path = url.pathname;
+      // Unchanged and unauthenticated: it still says only that a Morrow service is listening here.
+      // A switch in progress is visible through the authenticated lifecycle state instead.
       if (req.method === 'GET' && path === '/health') {
-        respond(res, 200, { ok: true, service: 'morrow', ...(stopping ? { upgrade: 'exiting' } : {}) });
+        respond(res, 200, { ok: true, service: 'morrow' });
         return;
       }
       if (!path.startsWith('/api/')) throw new APIError(404, '接口不存在');
