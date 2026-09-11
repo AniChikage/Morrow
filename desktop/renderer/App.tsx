@@ -312,15 +312,6 @@ export default function App() {
               <kbd>⌘ K</kbd>
             </button>
             <div className="sidebar-scroll">
-              <div className="nav-heading">工作区</div>
-              <button
-                className={`nav-item ${route?.kind === 'runs' ? 'selected' : ''}`}
-                onClick={() => navigate({ kind: 'runs' }, true)}
-              >
-                <Clock3 />
-                <span>运行记录</span>
-                {running > 0 && <span className="count-badge">{running}</span>}
-              </button>
               <div className="nav-heading with-action">
                 <button
                   onClick={() => setSidebarSection((v) => ({ ...v, projects: !v.projects }))}
@@ -348,10 +339,18 @@ export default function App() {
               {!snapshot.projects.length && !loading && (
                 <button className="nav-item muted" onClick={() => setModal({ kind: 'project' })}>
                   <Plus />
-                  <span>添加项目</span>
+                  <span>接入项目</span>
                 </button>
               )}
-              <div className="nav-heading">配置</div>
+              <div className="nav-heading">记录与设置</div>
+              <button
+                className={`nav-item ${route?.kind === 'runs' ? 'selected' : ''}`}
+                onClick={() => navigate({ kind: 'runs' }, true)}
+              >
+                <Clock3 />
+                <span>运行记录</span>
+                {running > 0 && <span className="count-badge">{running}</span>}
+              </button>
               <button
                 className={`nav-item ${route?.kind === 'runtimes' ? 'selected' : ''}`}
                 onClick={() => navigate({ kind: 'runtimes' }, true)}
