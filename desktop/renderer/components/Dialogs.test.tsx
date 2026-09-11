@@ -116,6 +116,10 @@ it('sends a project brief only when one was written and fills the suggested outl
     wrapper: TestProviders,
   });
   await user.click(screen.getByRole('button', { name: '选择文件夹' }));
+  const options = screen.getByText('项目说明（可选）').closest('details')!;
+  expect(options.open).toBe(false);
+  await user.click(screen.getByText('项目说明（可选）'));
+  expect(options.open).toBe(true);
   const brief = screen.getByRole('textbox', { name: /^项目说明/ }) as HTMLTextAreaElement;
   expect(brief.placeholder).toContain('目标与成功标准');
   expect(brief.placeholder).toContain('需要我决定的事');
@@ -125,6 +129,9 @@ it('sends a project brief only when one was written and fills the suggested outl
   expect((screen.getByRole('button', { name: '插入模板' }) as HTMLButtonElement).disabled).toBe(true);
   await user.clear(brief);
   await user.type(brief, '  不得改动计费。  ');
+  await user.click(screen.getByText('项目说明（可选） · 已填写'));
+  expect(options.open).toBe(false);
+  expect(brief.value).toBe('  不得改动计费。  ');
   await user.click(screen.getByRole('button', { name: '打开项目' }));
   await waitFor(() =>
     expect(context.current.api.createProject).toHaveBeenCalledWith({

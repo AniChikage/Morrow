@@ -162,68 +162,72 @@ function ProjectDialog({
     }
   }
   return (
-    <Modal title="打开项目文件夹" description="把已有项目接入 Morrow，统一跟踪功能与持续改进。" onClose={onClose}>
+    <Modal
+      title="打开项目文件夹"
+      description="接入已有目录，再关联 Codex App 任务开始工作。"
+      onClose={onClose}
+      className="project-dialog"
+    >
       <form onSubmit={submit}>
-        <Field title={remote ? '远程项目目录' : '项目文件夹'}>
-          <span className="input-action">
+        <div className="project-dialog-fields">
+          <Field title={remote ? '远程项目目录' : '项目文件夹'}>
+            <span className="input-action">
+              <input
+                data-autofocus
+                value={path}
+                onChange={(e) => setPath(e.target.value)}
+                placeholder={remote ? '/home/user/projects/atlas' : '选择本机项目文件夹'}
+                required
+              />
+              {!remote && (
+                <Button onClick={() => void choose()}>
+                  <FolderOpen />
+                  选择文件夹
+                </Button>
+              )}
+            </span>
+          </Field>
+          <Field title="项目名称">
             <input
-              data-autofocus
-              value={path}
-              onChange={(e) => setPath(e.target.value)}
-              placeholder={remote ? '/home/user/projects/atlas' : '选择本机项目文件夹'}
-              required
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              placeholder="默认使用文件夹名称"
+              maxLength={100}
             />
-            {!remote && (
-              <Button onClick={() => void choose()}>
-                <FolderOpen />
-                选择文件夹
+          </Field>
+          <Field title="持续目标" hint="可以留空，稍后在频道中细化长期职责。">
+            <textarea
+              value={goal}
+              onChange={(e) => setGoal(e.target.value)}
+              placeholder="例如：持续检查关键流程，发现问题、修复并验证。"
+              maxLength={10000}
+            />
+          </Field>
+          <details className="project-brief-options">
+            <summary>项目说明（可选）{brief.trim() ? ' · 已填写' : ''}</summary>
+            <Field title="项目说明" hint="Codex 按这些要求工作，不修改说明；接入后仍可在项目页编辑。">
+              <textarea
+                className="brief-input"
+                value={brief}
+                onChange={(e) => setBrief(e.target.value)}
+                placeholder={briefPlaceholder}
+                maxLength={65536}
+              />
+            </Field>
+            <div className="brief-template-row">
+              <Button variant="ghost" disabled={!!brief.trim()} onClick={() => setBrief(briefTemplate)}>
+                插入模板
               </Button>
-            )}
-          </span>
-        </Field>
-        <Field title="项目名称">
-          <input
-            value={name}
-            onChange={(e) => setName(e.target.value)}
-            placeholder="默认使用文件夹名称"
-            maxLength={100}
-          />
-        </Field>
-        <Field title="持续目标" hint="可以留空，稍后在频道中细化长期职责。">
-          <textarea
-            value={goal}
-            onChange={(e) => setGoal(e.target.value)}
-            placeholder="例如：持续检查关键流程，发现问题、修复并验证。"
-            maxLength={10000}
-          />
-        </Field>
-        <Field
-          title="项目说明"
-          hint="可选。Codex 每轮都会读取，把它当作优先于自己推断的要求，但不会修改；之后可在项目页的「项目说明」中修改。"
-        >
-          <textarea
-            className="brief-input"
-            value={brief}
-            onChange={(e) => setBrief(e.target.value)}
-            placeholder={briefPlaceholder}
-            maxLength={65536}
-          />
-        </Field>
-        <div className="brief-template-row">
-          <Button variant="ghost" disabled={!!brief.trim()} onClick={() => setBrief(briefTemplate)}>
-            插入模板
-          </Button>
+            </div>
+          </details>
+          <p className="form-note">频道初始保持暂停；关联 App 任务后再开启，沿用 App 的权限与审批设置。</p>
+          {existing && <p className="form-note">这个文件夹已接入，将打开已有项目。</p>}
+          {(error || localError) && (
+            <p role="alert" className="form-error">
+              {localError || error}
+            </p>
+          )}
         </div>
-        <p className="form-note">
-          所有频道共用这个项目的功能看板。Codex 沿用 Codex App 的登录与模型设置；自动轮次默认沿用 App
-          中此任务的权限与审批设置。接入后可开启持续跟踪，频道初始保持暂停。
-        </p>
-        {existing && <p className="form-note">这个文件夹已接入，将打开已有项目。</p>}
-        {(error || localError) && (
-          <p role="alert" className="form-error">
-            {localError || error}
-          </p>
-        )}
         <div className="form-actions">
           <Button onClick={onClose}>取消</Button>
           <Button variant="primary" type="submit" disabled={busy || !path.trim()}>

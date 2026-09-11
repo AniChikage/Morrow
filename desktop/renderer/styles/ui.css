@@ -645,3 +645,37 @@
   margin-left: 8px;
   text-decoration: underline;
 }
+
+/* Keep the project confirmation visible while optional requirements scroll independently. */
+.project-dialog {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.project-dialog .dialog-heading {
+  flex-shrink: 0;
+}
+.project-dialog > form {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+}
+.project-dialog-fields {
+  min-height: 0;
+  overflow-y: auto;
+}
+.project-dialog .form-actions {
+  flex-shrink: 0;
+  border-top: 1px solid var(--line-soft);
+  padding-top: 12px;
+}
+.project-brief-options > summary {
+  cursor: pointer;
+  padding: 4px 0 12px;
+  font-size: 13px;
+  color: var(--muted);
+}
+.project-brief-options[open] > summary {
+  color: var(--text);
+}
