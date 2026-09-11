@@ -673,11 +673,72 @@ describe('AI work and release review', () => {
     expect(await screen.findByRole('heading', { name: '先定位用户放弃的步骤' })).not.toBeNull();
     expect(screen.getByRole('status').textContent).toContain('新反馈与原判断不一致');
     expect(screen.getByText('区分技术故障与需求不足', { exact: false })).not.toBeNull();
+    const next = screen.getByText('读取路径数据', { exact: false });
+    expect(next.closest('details')).toBeNull();
+    expect(screen.getByRole('status').closest('details')).toBeNull();
+    const rationale = screen.getByText('先减少关键未知').closest('details')!;
+    expect(rationale.open).toBe(false);
+    expect(rationale.contains(screen.getByText('区分技术故障与需求不足', { exact: false }))).toBe(true);
     await user.click(screen.getByText('选择依据与投入边界'));
+    expect(rationale.open).toBe(true);
     expect(screen.getByText('直接简化注册')).not.toBeNull();
-    await user.click(screen.getByRole('button', { name: '进入对话' }));
+    await user.click(screen.getByRole('button', { name: '查看最新工作日志' }));
     expect(f.props.onNavigate).toHaveBeenCalledWith({ kind: 'channel', id: 'channel-system' });
     expect(f.reviewRelease).not.toHaveBeenCalled();
+  });
+  it('prioritizes the newest active log without losing other channels or project understanding', async () => {
+    const f = fixture();
+    const old = {
+      ...evaluatedDecision(),
+      status: 'active' as const,
+      review: undefined,
+      createdAt: '2026-09-01T00:00:00Z',
+    };
+    const recent = { ...old, id: 'new', channelId: 'other-channel', createdAt: '2026-09-02T00:00:00Z' };
+    f.data.strategy = {
+      understanding: [
+        {
+          id: 'known',
+          projectId: 'project-atlas',
+          channelId: 'channel-system',
+          runId: 'run-one',
+          kind: 'fact',
+          title: '已有观测',
+          statement: '保留完整认识',
+          relevance: '解释当前选择',
+          verification: '再次采样',
+          status: 'invalidated',
+          evidenceIds: ['evidence-one'],
+          reviewAt: timestamp,
+          revision: 2,
+          createdAt: timestamp,
+          updatedAt: timestamp,
+        },
+      ],
+      decisions: [old, recent],
+      counts: { understanding: 1, decisions: 2 },
+    };
+    const original = structuredClone(f.data.strategy);
+    const view = render(<ProjectThinking api={f.api} projectId="project-atlas" onNavigate={f.props.onNavigate} />, {
+      wrapper: TestProviders,
+    });
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole('button', { name: '查看最新工作日志' }));
+    expect(f.props.onNavigate).toHaveBeenLastCalledWith({ kind: 'channel', id: 'other-channel' });
+    await user.click(screen.getByRole('button', { name: /^查看工作日志$/ }));
+    expect(f.props.onNavigate).toHaveBeenLastCalledWith({ kind: 'channel', id: 'channel-system' });
+    const toggle = screen.getByText('对项目的认识', { selector: 'summary' });
+    expect(toggle.closest('details')?.open).toBe(false);
+    await user.click(toggle);
+    await user.click(screen.getByText('已有观测'));
+    expect(screen.getByText('保留完整认识').closest('details')?.open).toBe(true);
+    expect(screen.getByText('已推翻')).toBeTruthy();
+    await user.click(screen.getByText('测试日志'));
+    expect(screen.getByText('2 tests passed')).toBeTruthy();
+    expect(f.data.strategy).toEqual(original);
+    view.rerender(<ProjectThinking api={f.api} projectId="other-project" onNavigate={f.props.onNavigate} />);
+    await screen.findByRole('button', { name: '查看最新工作日志' });
+    expect(screen.getByText('对项目的认识', { selector: 'summary' }).closest('details')?.open).toBe(false);
   });
   it('shows an accurate empty state through the actual preview adapter and project tab', async () => {
     const api = previewAPI();

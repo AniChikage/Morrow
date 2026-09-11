@@ -180,6 +180,16 @@
   font-size: 24px;
   letter-spacing: -0.5px;
 }
+.strategy-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+.strategy-heading > h1 {
+  margin: 0;
+}
 .strategy-decision {
   font-size: 13px;
   line-height: 1.7;

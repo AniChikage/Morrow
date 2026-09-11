@@ -664,18 +664,29 @@ function ExpectationReview({ row, data }: { row: DecisionView; data: ProjectLoop
     </details>
   );
 }
-function DecisionRecord({ row, data, onChannel }: { row: DecisionView; data: ProjectLoop; onChannel: () => void }) {
+function DecisionRecord({
+  row,
+  data,
+  onChannel,
+  showChannel = true,
+}: {
+  row: DecisionView;
+  data: ProjectLoop;
+  onChannel: () => void;
+  showChannel?: boolean;
+}) {
   const selected = row.options[row.selected];
   return (
     <section className="finding-section strategy-decision">
       <div className="strategy-meta">
         <span>{optionLabels[selected.kind]}</span>
-        <button onClick={onChannel}>
-          进入对话 <ArrowUpRight size={12} />
-        </button>
+        {showChannel && (
+          <button onClick={onChannel}>
+            查看工作日志 <ArrowUpRight size={12} />
+          </button>
+        )}
       </div>
       <h2>{selected.title}</h2>
-      <Markdown>{row.rationale}</Markdown>
       {row.status === 'active' && row.reviewReasons.length > 0 && (
         <div className="strategy-review" role="status">
           <strong>需要重新判断</strong>
@@ -688,18 +699,19 @@ function DecisionRecord({ row, data, onChannel }: { row: DecisionView; data: Pro
         <b>下一步：</b>
         {row.nextStep}
       </p>
-      <p>
-        <b>预期结果：</b>
-        {row.expectedOutcome}
-      </p>
-      <p>
-        <b>如何判断：</b>
-        {row.evaluation}
-      </p>
       <ExpectationReview row={row} data={data} />
       <details className="work-record">
         <summary>选择依据与投入边界</summary>
         <div className="work-record-body">
+          <Markdown>{row.rationale}</Markdown>
+          <p>
+            <b>预期结果：</b>
+            {row.expectedOutcome}
+          </p>
+          <p>
+            <b>如何判断：</b>
+            {row.evaluation}
+          </p>
           {row.options.map((option, index) => (
             <div className="strategy-option" key={index}>
               <strong>
@@ -807,13 +819,24 @@ export function ProjectThinking({
       />
     );
   const strategy = data.strategy,
-    active = strategy?.decisions.filter((r) => r.status === 'active') || [],
+    active = strategy.decisions
+      .filter((r) => r.status === 'active')
+      .sort((a, b) => b.createdAt.localeCompare(a.createdAt)),
     history = strategy?.decisions.filter((r) => r.status === 'reviewed') || [];
   return (
     <div className="feature-scroll">
       <article className="finding-document strategy-document">
-        <h1>当前判断</h1>
-        <p className="subtle">Codex 对项目的认识、为什么选择下一步，以及反馈如何改变判断。</p>
+        <div className="strategy-heading">
+          <h1>当前判断</h1>
+          {active[0] && (
+            <Button variant="primary" onClick={() => onNavigate({ kind: 'channel', id: active[0].channelId })}>
+              查看最新工作日志 <ArrowUpRight size={12} />
+            </Button>
+          )}
+        </div>
+        <p className="subtle">
+          {active.length ? '先看当前下一步，在工作日志中跟进进展。' : '查看已保存的判断与反馈。'}
+        </p>
         {!active.length && (
           <section className="finding-section">
             <h2>
@@ -827,11 +850,12 @@ export function ProjectThinking({
             </p>
           </section>
         )}
-        {active.map((row) => (
+        {active.map((row, index) => (
           <DecisionRecord
             key={row.id}
             row={row}
             data={data}
+            showChannel={index > 0}
             onChannel={() => onNavigate({ kind: 'channel', id: row.channelId })}
           />
         ))}
@@ -841,8 +865,10 @@ export function ProjectThinking({
           history={{ more: moreHistory, loading: loadingHistory, error: historyError, load: () => void loadHistory() }}
         />
         {!!strategy?.understanding.length && (
-          <section className="finding-section">
-            <h2>对项目的认识</h2>
+          <details className="work-record" key={`understanding:${projectId}`}>
+            <summary>
+              对项目的认识 <span className="subtle">{strategy.understanding.length}</span>
+            </summary>
             {strategy.understanding.map((row) => (
               <details className="work-record" key={row.id}>
                 <summary>
@@ -875,7 +901,7 @@ export function ProjectThinking({
                 </div>
               </details>
             ))}
-          </section>
+          </details>
         )}
         {!!history.length && (
           <details className="work-record strategy-history">
