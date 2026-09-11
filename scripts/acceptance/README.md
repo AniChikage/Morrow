@@ -26,10 +26,13 @@ npm run acceptance -- metrics <运行目录|数据目录> [--out metrics.json]
 # 步骤 0（人）：暂停你自己安装版 Morrow 里的自主频道。两条命令都会把这句提醒打出来。
 
 npm run acceptance -- prepare usagegap --mode live [--run-id <id>] [--budget 3]
-#   建 artifacts/acceptance/<run-id>/，把场景种子写进 project/，留下 prepared.json，
-#   打印要在 Codex App 里做的四步（含绝对项目路径），退出 0。不起服务，不建数据目录。
+#   建 artifacts/acceptance/<run-id>/，把场景种子写进 project/ 并把它做成一个独立 git 仓库
+#   （git init + 提交 "seed"，身份固定成 morrow-live；git 不可用就记 prepared.json 的 git: false，
+#   不中止），留下 prepared.json，打印要在 Codex App 里做的四步（含绝对项目路径），退出 0。
+#   不起服务，不建数据目录。
 
-# 人在 Codex App 里新建任务（目录选打印出来的 project/），发一条首条消息，等它回完，任务保持打开。
+# 人在 Codex App 里新建任务（目录选打印出来的 project/），发一条首条消息，等它回完，
+# 然后把 App 切到别的任务或关闭这个任务的窗口视图（不要删除任务），别在里面继续手动提问。
 
 npm run acceptance -- run usagegap --mode live --run-id <id> --budget 3
 ```
@@ -53,7 +56,7 @@ live 下 `--policy`、`--repeat` 与 `run all` 一律以退出码 2 被拒绝：
 
 **退出码只说明运行本身有没有出错**：时间线走完、预算用完、额度门禁阻断、某一轮 `needs_input`、停在人工确认都是 0；没等到任务、一轮超时、任务不再就绪、检测到旧转接、墙钟超时、服务抛错或清理失败才是 1。模型的表现全部作为指标报告，`invariants` 逐条评估并写进 `summary.md`，但不决定退出码。
 
-真实调度器在 live 下不停，所以它自己也会发起轮次（一轮以 `continue` 结束 30 秒后就有下一轮）。时间线的 `turn` 因此**先接管**这样的轮次：有一轮在 `running` 就等它结束，有一轮已经跑完而 runner 从未等过就直接记下，两者都没有才把频道置为到期开新的一轮。`--budget` 只挡「开新轮」，被接管的轮次照样进「每一轮」表（`live.json` 的 `turns[].adopted`），表的行数与 `spentTurns` 对得上。`advance` 的真实等待切成不超过 5 秒的片，每片之间过一遍停止条件，所以额度门禁、任务掉线、旧转接和墙钟不会被一次长 `sleep` 掩盖到等待结束。
+真实调度器在 live 下不停，所以它自己也会发起轮次（一轮以 `continue` 结束 30 秒后就有下一轮）。时间线的 `turn` 因此**先接管**这样的轮次：有一轮在 `running` 就等它结束，有一轮已经跑完而 runner 从未等过就直接记下，两者都没有才把频道置为到期开新的一轮。`--budget` 只挡「开新轮」，被接管的轮次照样进「每一轮」表（`live.json` 的 `turns[].adopted`），表的行数与 `spentTurns` 对得上。置为到期之前 runner 先重新打开频道开关（引擎对 `interrupted` 的运行会把它关掉，`live.json` 与超时说明里的 `enabled=` 就是这个开关）。**任务窗口在 App 前台时 App 可能自己中断 Morrow 跟随的那一轮又自己 resume**：这种情况下 `turn` 在 15 秒内找同一线程上 `trigger=resume_interrupted_task` 的 `native-app` 运行，等它结束，把这一对记成同一轮（`interruptedByApp`/`resumedRunId`/`resumedStatus`/`resumedWallMs`，工具类型取并集，`morrow-next` 仍取 Morrow 那一轮的），找不到就照旧记 `interrupted`——两种都不是失败条件。所以第 3 步要让任务保持已加载但不在前台，详见 [`LIVE-MODE-PROPOSAL.md`](../../docs/acceptance/LIVE-MODE-PROPOSAL.md) 第 10.1 节的首跑记录。`advance` 的真实等待切成不超过 5 秒的片，每片之间过一遍停止条件，所以额度门禁、任务掉线、旧转接和墙钟不会被一次长 `sleep` 掩盖到等待结束。
 
 live 运行额外写 `live.json`（绑定的任务、App 与运行时版本、三道闸、缩放比例、运行前后的账户读数与差值、每一轮的真实起止/耗时/`morrow-next` 结论/`native_items` 里出现过的工具类型/是不是接管来的、停止原因），`cleanup.json` 多出 `app`/`threadId`/`unbound: false`/`usageAfter`，并且**不写 `calls.jsonl`**（见指标一节的 `repeatedFailures`）。`home/` 与 `project/` 原样保留，绑定也不解除：事后要能在 App 里打开那条任务逐条核对。
 
@@ -199,7 +202,8 @@ invariant 是命名过的谓词，输入 `{ store, service, transport, receiver,
 - `calls.jsonl`：策略发起的每一次 `/api/agent` 调用，含操作名、输入摘要（`sha256(input)` 前 12 位）、状态码和 requestId。**live 模式不写这个文件**：真实模型走 `agent-cli.ts`，runner 看不到状态码。
 - `labels.json`：`{ staleMemoryIds, truth: [{ stepIndex, truth, virtualTime }], planted }`——指标唯一的非 SQLite 输入。
 - `run.json`：这次运行的身份（runId、`mode`、场景与版本、策略、seed、预算、墙钟毫秒）。没有任何表记录它，`metrics <运行目录>` 靠它复现同一份 `config`。live 运行的 `mode` 是 `live`、`policy` 是 `live`。
-- `live.json`（只有 live 模式）：绑定的任务与 App/运行时版本、三道闸、`advanceScale`、运行前后的账户读数与差值、每一轮与每一步的真实起止与耗时、每一轮 `native_items` 出现过的工具类型清单、停止原因与退出码。
+- `live.json`（只有 live 模式）：绑定的任务与 App/运行时版本、三道闸、`advanceScale`、运行前后的账户读数与差值、每一轮与每一步的真实起止与耗时、每一轮 `native_items` 出现过的工具类型清单、被 App 自己中断又续跑的那几轮（`interruptedByApp`/`resumedRunId`/`resumedStatus`/`resumedWallMs`）、停止原因与退出码。
+- `prepared.json`（只有 live 模式，由 `prepare` 写）：场景与版本、run-id、创建时间、绝对项目路径、种子文件数，以及 `git`——项目目录是不是一个独立 git 仓库、种子是不是已经提交。
 - `metrics.json`：下一节的全部指标。
 - `cleanup.json`：暂停的频道数、服务是否关闭、临时目录是否删除，以及场景起过种子应用时它的地址、PID、是否已退出、是否用到了 SIGKILL。
 - `summary.md`：固定标注、预算使用、invariant 结果、指标表；探索型场景另有一节「探索指标」，把发现率、附证据率、归因正确率、误修率连同"这些取值不说明模型自主性"的标注一起给出。live 模式的固定标注换成「live 结果是隔离环境下的模型验证，不是真实业务效果；一次运行是一次抽样」，另外加上观察窗口的压缩倍数说明，以及一节「每条发现的原文」——发现率是文本匹配得出的**下限判据**，不是人工评分，所以原文要留给人抽查。

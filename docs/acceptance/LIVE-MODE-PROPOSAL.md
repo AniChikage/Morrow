@@ -32,7 +32,7 @@ fixture 模式验证的是框架机制：调度、预算、观察窗口、事前
 artifacts/acceptance/<run-id>/
   home/          MORROW_HOME：workspace.sqlite、runs/、releases/、native-images/、daemon.lock
   project/       隔离项目目录：场景种子（usagegap 的 11 个文件）按原样写进来
-  prepared.json  prepare 留给 run 的交接：场景、场景版本、run-id、创建时间、绝对项目路径
+  prepared.json  prepare 留给 run 的交接：场景、场景版本、run-id、创建时间、绝对项目路径、种子是否已提交成 git 仓库
   timeline.jsonl labels.json run.json metrics.json summary.md cleanup.json
   live.json      live 专属：绑定的任务 ID、三道闸、真实起止时间、额度前后读数、每一轮的真实耗时与工具清单、停止原因
 ```
@@ -62,7 +62,7 @@ artifacts/acceptance/<run-id>/
 1. 打开 Codex App，新建一个任务，目录选：
      /Users/…/Morrow-harness/artifacts/acceptance/usagegap-live-<stamp>/project
 2. 在这个任务里发一条首条消息（例如「准备好了」），等它回完。
-3. 保持这个任务打开，不要关闭窗口，也不要在它里面继续手动提问。
+3. 发完首条消息后，把 App 切到别的任务或关闭这个任务的窗口视图（不要删除任务）；不要在里面继续手动提问。
 4. 回到终端执行 run（同一个 --run-id，带 --budget）；runner 会自己发现并关联它。
 
 等待中：每 3 秒检查一次，最多等 <--wait-bind> 分钟。
@@ -86,7 +86,7 @@ npm run acceptance -- prepare usagegap --mode live [--run-id <id>]
 npm run acceptance -- run usagegap --mode live --run-id <id> --budget 3
 ```
 
-`prepare` 建 `artifacts/acceptance/<run-id>/`，把场景种子写进 `project/`，留下 `prepared.json`（场景、场景版本、run-id、创建时间、绝对项目路径、种子文件数），把人要做的四步用绝对路径打出来，然后退出 0。它不起服务，也不建数据目录。`run` 拒绝四种情况：目录里没有 `prepared.json`、目录已经有 `home/`（跑过了，现场不覆盖）、缺 `--run-id`、`prepared.json` 里的场景或 run-id 与命令行不符。`run` 里仍然保留 `--wait-bind` 的等待窗口，所以人先 `run` 再去建任务也行。
+`prepare` 建 `artifacts/acceptance/<run-id>/`，把场景种子写进 `project/`，把 `project/` 做成一个**独立 git 仓库**并把种子提交成 `seed`（身份固定成 `morrow-live` / `morrow-live@localhost`，不签名；git 不可用时记 `git: false` 并打印说明，不中止），留下 `prepared.json`（场景、场景版本、run-id、创建时间、绝对项目路径、种子文件数、`git`），把人要做的四步用绝对路径打出来，然后退出 0。它不起服务，也不建数据目录。不做那个 `git init` 的话，`runs[].treeState` 记的是 **harness 工作树**的 `git status`（首跑 usagegap-live-01 记成 `?? node_modules`），模型在项目里跑 `git status` 看到的也是外层仓库。`run` 拒绝四种情况：目录里没有 `prepared.json`、目录已经有 `home/`（跑过了，现场不覆盖）、缺 `--run-id`、`prepared.json` 里的场景或 run-id 与命令行不符。`run` 里仍然保留 `--wait-bind` 的等待窗口，所以人先 `run` 再去建任务也行。
 
 ## 3. 真实调度器 + 脚本化时间线
 
@@ -96,13 +96,13 @@ fixture runner 为了可重复做了三件真实 daemon 不会做的事：停掉
 | --- | --- |
 | `stopScheduler()` 停掉 daemon 的 1 秒定时器 | **不停**。真实调度器自己跑，日预算、复核等待、项目串行、额度门禁都在它的路径上。 |
 | `parkWatches()` 把观察推远 | **不推**。观察按自己的 `intervalSeconds` 真实轮询。 |
-| `setControl(enabled: true)` 直接打开开关 | **保留**。`action(id,'resume')` 会立刻开一轮不在时间线里的轮次；直接置开关能让第一轮仍由时间线发起。 |
+| `setControl(enabled: true)` 直接打开开关 | **保留**。`action(id,'resume')` 会立刻开一轮不在时间线里的轮次；直接置开关能让第一轮仍由时间线发起。每个 `turn` 步骤置到期之前也**重新**打开一次：引擎对 `interrupted` 的运行会把开关关掉（第 10.1 节）。 |
 
 时间线动词在 live 模式下的含义：
 
 | 动词 | live 行为 |
 | --- | --- |
-| `turn` | **先接管真实调度器自己发起的轮次，没有可接管的才把频道置为到期**（`nextRunAt` 设到过去）。步骤开始时先找本次运行新出现（不在基线）且还没记进 `live.json` 的 `turns` 的 `morrow-schedule` 行：有 `running` 的就等它真实结束并记为本步骤的轮次；有已完成但还没记录的就直接记下，不再开新轮；两者都没有才置为到期并等新行出现。等待上限 `--turn-timeout`（缺省 10 分钟，与 App 一轮的常见耗时和复核 5 分钟上限匹配），接管进行中的那一轮从接管那一刻起算。**只认本次运行新出现的 `morrow-schedule` 行**——0.9.5 验收踩过的坑：同步进来的历史 `native-app` 轮次会被错认成本轮结果。不接管有三个后果，所以不能无条件置为到期：有轮次在跑时置为到期会把频道状态覆写成 `waiting`；调度器自己开的那轮计进 `spentTurns` 却不进「每一轮」表；一个时间线 `turn` 会实际消耗两轮。`--budget` 因此只挡「开新轮」这件事——接管已经发生的轮次不多花额度，被接管的轮次同样记下 `decision`、工具清单与真实起止（起止取 `runs` 行上的 `startedAt`/`finishedAt`，行上没有就用接管时刻，并在记录的 `timesFrom` 里标明）。 |
+| `turn` | **先接管真实调度器自己发起的轮次，没有可接管的才把频道置为到期**（`nextRunAt` 设到过去）。步骤开始时先找本次运行新出现（不在基线）且还没记进 `live.json` 的 `turns` 的 `morrow-schedule` 行：有 `running` 的就等它真实结束并记为本步骤的轮次；有已完成但还没记录的就直接记下，不再开新轮；两者都没有才置为到期并等新行出现。等待上限 `--turn-timeout`（缺省 10 分钟，与 App 一轮的常见耗时和复核 5 分钟上限匹配），接管进行中的那一轮从接管那一刻起算。**只认本次运行新出现的 `morrow-schedule` 行**——0.9.5 验收踩过的坑：同步进来的历史 `native-app` 轮次会被错认成本轮结果。不接管有三个后果，所以不能无条件置为到期：有轮次在跑时置为到期会把频道状态覆写成 `waiting`；调度器自己开的那轮计进 `spentTurns` 却不进「每一轮」表；一个时间线 `turn` 会实际消耗两轮。`--budget` 因此只挡「开新轮」这件事——接管已经发生的轮次不多花额度，被接管的轮次同样记下 `decision`、工具清单与真实起止（起止取 `runs` 行上的 `startedAt`/`finishedAt`，行上没有就用接管时刻，并在记录的 `timesFrom` 里标明）。 置为到期之前先 `setControl(enabled: true)`：引擎对 `interrupted` 的运行会把开关关掉，不重开的话真实调度器再也不看这个频道。本步骤的 Morrow 轮次以 `interrupted` 结束、而 runner 自己没发过中断时，再在最多 15 秒内找同一线程上随后出现的 `native-app` 运行且 `trigger === 'resume_interrupted_task'`——那是 **App 自己**中断并续跑的情形（第 10.1 节）；找到就等它结束（仍受 `--turn-timeout`），把这一对记成同一轮（`interruptedByApp`、`resumedRunId`、`resumedStatus`、`resumedWallMs`，`tools` 取并集，`decision` 仍取引擎对 Morrow 那一轮解析出的值）。找不到就照旧记 `interrupted`；两种情况都不是失败条件，时间线继续。 |
 | `poll` | 仍然调 `loop.poll(watchId)` 采一次。多采一次无害，而且让时间线里的「此刻应当有样本」是明确的；调度器自己的轮询照常进行。 |
 | `set` / `mode` | **不变**。接收端仍是本机的 `startReceiver()`，使用数据和发布回执都由它给，所以扰动完全可控。这是 live 模式仍然可读的关键：变量只有模型一个。 |
 | `advance` | **虚拟时钟不能用**。见下。改成真实等待：`advance N` 等 `min(N × --advance-scale 分钟, --max-wait)`，并把缩放比例、计划等待和真实耗时都记进 `timeline.jsonl` 与 `live.json`。等待**切成不超过 5 秒的片，每片之间过一遍第 6 节的停止条件**：`--max-wait` 最长 10 分钟，一次睡到底会让这期间调度器自己发起的轮次不被计数，预算、额度门禁（频道的 `usageWait`）、`readyThreadCount` 掉 0、`restartRequired` 与墙钟也都要等到睡醒才被发现。真实耗时仍按时钟差值记录，`waitedMs` 与 `cappedByMaxWait` 的含义不变。 |
@@ -222,6 +222,7 @@ runner 另外自己数**本次运行新出现**的 `morrow-schedule` 行（关�
 | **复核 5 分钟硬上限** | 官方 `codex exec` 复核有 5 分钟上限，超时保持未知。真实项目的完整检查可能跑不完。 | `--review-timeout` 略大于 5 分钟；未知结局按既有策略处理，不重跑。 |
 | **人守在终端边上** | 建任务、发首条消息、可能还要按上线确认，都要人。 | 一次调用阻塞等待 + 把要做的四步原样打出来；`--budget 3` 让第一次运行走不到 `approve`。 |
 | **任务被并发占用** | 自动轮次发现任务已忙时返回等待，不会转成 steering 干扰手动轮次；但人如果在同一任务里手动提问，这一轮就会一直等。 | 打印的步骤里明确「不要在这个任务里继续手动提问」；`--turn-timeout` 兜底。 |
+| **App 自己中断 follower 轮次** | 任务窗口在 App 前台时，App 可能对这个任务重放 thread settings、把 Morrow 跟随的这一轮标成 `interrupted`（"interrupted on purpose"），然后自己以 `turnTrigger: 'resume_interrupted_task'` 开一轮把活干完。引擎随后按 `finishFailure` 把频道置 `paused` 并关掉开关，于是后续轮次再也起不来。首跑 usagegap-live-01 就是这样（见第 10.1 节）。 | runner 的 `makeDue` 重新打开开关（`liveGateDetail` 打印 `enabled=`），`turn` 步骤把「被 App 中断 + App 自己 resume」的那一对记成同一轮而不是一次失败；`prepare` 打印的第 3 步要求**发完首条消息后把 App 切到别的任务或关闭这个任务的窗口视图（不要删除任务）**，让任务保持已加载但不在前台。 |
 | **端口** | 种子应用的端口由 runner 先绑定再释放，spawn 之前有极短窗口可能被抢；隔离服务用随机端口。 | 抢到的运行在就绪探测上明确失败，不会去量错误的应用。 |
 | **`daemon.lock`** | 同一数据目录只允许一个 daemon。`<run-id>/home` 是新目录，不会与安装版冲突。 | 重跑同一个 `run-id` 会被锁拒绝；`run-id` 带时间戳与随机后缀。 |
 
@@ -258,6 +259,43 @@ npm run acceptance -- run usagegap --mode live --run-id <prepare 打印的 run-i
 11. `live.json` 里有每一轮的真实起止与耗时，以及每一轮 `native_items` 出现过的工具类型清单——据此看模型这一轮到底用了什么（浏览器、Computer Use 在 follower 轮次上已实测可用，但可用不等于它用了）。
 
 做完这一次，再决定要不要跑完整条时间线（11 轮 + 3 次复核 + 一次人工确认，`--budget` 要相应提高），以及要不要按决定 7 加一轮人工评分作为文本匹配的对照。
+
+## 10.1 首跑记录（usagegap-live-01，2026-09-11）
+
+第一次 live 运行真的跑了：`npm run acceptance -- run usagegap --mode live --run-id usagegap-live-01 --budget 3`，现场在 `artifacts/acceptance/usagegap-live-01/`。**退出码 1，停止原因 `turn-timeout`**：时间线走了 3/23 步（`turn`、`poll`、`turn`），第 2 轮干等满 `--turn-timeout` 10 分钟。账户额度差值 `{"weekly": 1}`（运行前 weekly 50% → 运行后 51%）。
+
+第 10 节那十条验收标准逐条：
+
+| # | 结论 | 依据 |
+| --- | --- | --- |
+| 1 | **通过** | 四步打印了，人建好任务，runner 自己发现并关联了它；`connected=true`、`connectionMode='app-follower'`、`boundThreadCount=1`、`readyThreadCount=1`、`capabilities.create=false`，未关联时 `run` 返回过 409（`live.json` 的 `guards`）。App 26.903.71938；`runtimeVersion` 是空串（状态里没报，如实记成「未知」）。 |
+| 2 | **未通过** | 唯一的 `morrow-schedule` 轮次 `263590d5` 以 `interrupted` 结束，不是 `completed`。它确实由真实调度器发起，`sessionId`/`nativeTurnId` 都是真实的，`permission='native'`，`model='gpt-6-astra'`（不是 `scripted-native-model`）——但中断本身让这一条不成立。原因见下面的「实际发生了什么」。 |
+| 3 | **部分通过** | 那一轮里模型真的调过工作接口：`events` 里有一条 `decision.chosen`（还有 `evidence.recorded`、`learning.updated`）。但只有一轮，也没走到发布。 |
+| 4 | **通过** | 种子应用 `http://127.0.0.1:58079` 整个运行期间真实在跑，结束时 SIGTERM 正常退出（`cleanup.json` 的 `app.stopped=true`、`killed=false`）。`app.probe` 与第一份样本的逐字段比较这次**无法评估**：模型没有建观察，`loop_evidence` 里没有 `origin='http'` 的样本，所以那条 invariant 报 FAIL 的是「缺失」而不是「形状不一致」。 |
+| 5 | **通过** | `spentTurns` 1/3；项目额度上限（5%/weekly）与保留线（20%/weekly）都没被触发，频道的 `usageWait` 一直是 `none`。 |
+| 6 | **通过** | `metrics.cost` 不是 `unknown`：`cost.readings` 5、`cost.byWindow.weekly` 1，和 `live.json` 的 `usageDelta` 对得上。 |
+| 7 | **通过** | 五项探索指标全部算出来了（发现率 0/5、附证据 0/0 unknown、归因 0/2、改进 0/0、误修 0/1），`summary.md` 有 live 固定标注、压缩倍数说明和「每条发现的原文」一节（本次没有任何事项提到埋入功能 ID，如实写明）。 |
+| 8 | **通过** | `cleanup.json`：`app.stopped=true`、`channelsPaused=1`、`serviceClosed=true`、`directoriesRemoved=false`、`unbound=false`。 |
+| 9 | **通过** | 无残留进程与监听端口；作者的正式数据目录没被碰过。`git status` 唯一的条目是 `?? node_modules`（那个符号链接本来就在），工作树源码未被改动。 |
+| 10 | **通过** | 没有调 `/api/native/background/setup`，没有设 `CODEX_CLI_PATH`，没有 `npm run build:app`。 |
+| 11 | **通过** | `live.json` 的 `turns[0]` 有真实起止（82.2 秒）与工具类型清单：`agentMessage`、`commandExecution`、`mcpToolCall`、`mcpToolCall:js`、`mcpToolCall:node_repl`、`reasoning`、`userMessage`——模型这一轮真的用了浏览器侧的 `node_repl`。 |
+
+**实际发生了什么。** 关联、两条关联前断言、三道闸、种子应用、运行前后的额度读数全部正常。17:10:02 第 1 轮由真实调度器发起并跑起来；17:11:22 **App 对这个任务重放了一次 thread settings**（rollout 里的 `thread_settings_applied`），17:11:23 App 把这一轮标成 `turn_aborted reason=interrupted`（理由写的是 "interrupted on purpose"），17:11:24 App 自己以 `turnTrigger: 'resume_interrupted_task'` 开了新一轮并跑完（Morrow 侧记成一行 `native-app` 运行 `ca83b3e0`，`completed`）。**不是 runner 也不是引擎发的中断**：`events` 里没有任何 `native.interrupt`。任务窗口当时一直在 App 前台。
+
+这暴露了 runner 的两个真问题和一个记录问题：
+
+1. **`makeDue` 没有重新打开频道开关。** 引擎对 `interrupted` 的运行走 `finishFailure`（`service/engine.ts`），会把频道置 `paused` 并 `setControl(enabled: false)`。runner 的 `makeDue` 只改 `status`/`nextRunAt`，于是第 2 轮真实调度器根本不看这个频道，干等满 `--turn-timeout` 后以退出码 1 结束。更糟的是 `liveGateDetail` 当时不打印开关状态（只有 `status=waiting nextRunAt=… runsToday=1/6 reviewsPending=0 usageWait=none`），从报告里看不出真实原因。
+2. **App 自己中断又自己续跑的那一对，被记成一次失败的轮次。** 那一轮的活其实干完了，只是干完它的是 App 自己开的 `native-app` 轮次。
+3. **`runs[].treeState` 记的不是被测项目的树。** 它是 `{"dirty":true,"files":["node_modules"]}`——**harness 工作树**的 `git status`：`project/` 在 `Morrow-harness` 的 git 工作树里（`artifacts/` 被忽略），自己却不是一个仓库。`treeConflict` 门禁不是这次的原因（单频道不会和自己冲突），但模型在项目里跑 `git status` 看到的也是外层仓库。
+
+**这次做的修改**（都在 harness 侧，`service/**` 一行没动——引擎行为是被测对象）：
+
+- `makeDue` 先 `setControl(enabled: true)` 再置到期，和 `resume` 一致；`ChannelView` 多了 `enabled`（生产从 `store.get('controls', channelId)?.enabled` 读），`liveGateDetail` 把 `enabled=` 放在说明的第一项。
+- `turn` 步骤接住 App 自己中断并 resume 的情况：本步骤的 Morrow 轮次以 `interrupted` 结束、而 runner 自己没发过中断时，在最多 15 秒内找同一线程上随后出现的 `native-app` 运行且 `trigger === 'resume_interrupted_task'`（`RunView.trigger` 从 `native_turns` 里该 run 的 `raw.params.turnTrigger` 读，按 `native_turns.runId` 对上，所以 `native-app` 运行也映射得到它的 native turn）；找到就等它结束（仍受 `--turn-timeout`），把这一对记成同一轮：`interruptedByApp: true`、`resumedRunId`、`resumedStatus`、`resumedWallMs`，`tools` 取两轮的并集，`decision` 仍取引擎对 Morrow 那一轮解析出的值（App 自己 resume 的轮次引擎不解析 `morrow-next`，所以通常是 `none`，如实记）。打印一行说明，`summary.md` 的「每一轮」表在状态里标出「App 中断后自行续跑 → <结局>」。找不到续跑轮次就照旧记 `interrupted`。**这一切都不是失败条件**：无论哪种，时间线都继续往下走。
+- `prepare` 把项目目录做成独立 git 仓库：`git init -q`、`git add -A`、`git commit -q -m "seed"`，身份走 env 固定成 `morrow-live` / `morrow-live@localhost` 并带 `-c commit.gpgsign=false`（另加 `-c init.defaultBranch=main`，纯粹为了不打印默认分支名的提示），`prepared.json` 记 `git: true`。git 不可用时记 `git: false`、打印说明、**不中止**。这样 `runs[].treeState` 和模型看到的 `git status` 都是种子应用自己的。
+- `prepare` 打印的第 3 步改成「发完首条消息后，把 App 切到别的任务或关闭这个任务的窗口视图（不要删除任务）；不要在里面继续手动提问」——保持任务已加载但不在前台。`run` 等待关联时打印的同一份文本也跟着改（两处共用一份）。
+
+下一次 live 运行仍然用 `--budget 3` 重跑同一个场景（新的 `--run-id`），先看第 2 轮能不能真的起来。
 
 ## 11. 决定记录：八条原来要拍板的问题，现在的答案
 
