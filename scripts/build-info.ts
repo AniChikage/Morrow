@@ -14,7 +14,7 @@
  */
 import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
-import { chmodSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { dirname, join, relative, resolve } from 'node:path';
 
 const scheme = 'morrow-bundle-v1';
@@ -80,7 +80,11 @@ for (const path of ordered) {
 }
 const git = (parameters: string[]) => {
   try {
-    return execFileSync('git', ['-C', root, ...parameters], { encoding: 'utf8', timeout: 5000 }).trim();
+    return execFileSync('git', ['-C', root, ...parameters], {
+      encoding: 'utf8',
+      timeout: 5000,
+      stdio: ['ignore', 'pipe', 'ignore'],
+    }).trim();
   } catch {
     return '';
   }
@@ -96,7 +100,9 @@ const info = {
   builtAt: new Date().toISOString(),
 };
 mkdirSync(dirname(out), { recursive: true });
-writeFileSync(out, `${JSON.stringify(info, null, 2)}\n`);
+// The written file is read-only, so a rerun replaces it instead of failing to open it.
+rmSync(out, { force: true });
+writeFileSync(out, `${JSON.stringify(info, null, 2)}\n`, { mode: 0o444 });
 chmodSync(out, 0o444);
 console.log(
   `build-info ${info.fingerprint.slice(0, 12)} · ${info.files} files · ${info.commit.slice(0, 12) || 'no git'}`

@@ -39,6 +39,8 @@ import { FindingView } from './features/FindingView';
 import { ChannelView } from './features/ChannelView';
 import { RunsView } from './features/RunsView';
 import { RuntimesView } from './features/RuntimesView';
+import { UpgradeBanner } from './features/UpgradeBanner';
+import { upgradeSwitching } from './features/upgradeState';
 import morrowMark from '../../assets/brand/morrow-mark.png';
 import type { Route } from '../shared/types';
 import type { FeatureProps } from './features/types';
@@ -283,6 +285,7 @@ export default function App() {
         </Dropdown>
         <div className="titlebar-space" />
       </div>
+      <UpgradeBanner snapshot={snapshot} api={api} busy={busy} onMutate={mutate} onRefresh={() => void refresh()} />
       <div className="workspace-body">
         {sidebar && (
           <aside className="sidebar" aria-label="工作区导航">
@@ -466,7 +469,8 @@ export default function App() {
           </div>
         </main>
       </div>
-      {error && !modal && (
+      {/* During the handover the old service is stepping aside on purpose; the banner explains it. */}
+      {error && !modal && !upgradeSwitching(snapshot) && (
         <div role="alert" className="error-toast">
           <AlertCircle size={16} />
           <p>{error}</p>

@@ -3,6 +3,7 @@ import { ArrowLeft, ArrowUpRight, CheckCircle2, Clock3 } from 'lucide-react';
 import type { ProjectLoop, Release, ReleaseScript, DesktopAPI, DecisionView } from '../../shared/types';
 import type { FeatureProps } from './types';
 import { questionExcerpt } from './ChannelQuestion';
+import { upgradeSwitching } from './upgradeState';
 import { Button, EmptyState, Markdown } from '../components/ui';
 import { formatDate } from '../components/format';
 import './project-work.css';
@@ -990,6 +991,8 @@ export function ProjectReleases(props: FeatureProps & { projectId: string }) {
   const [pending, setPending] = useState(false);
   const [localError, setLocalError] = useState('');
   const { data, error } = useProjectWork(api, projectId);
+  // A publication started during the handover would be interrupted by it; declining still works.
+  const switching = upgradeSwitching(snapshot);
   const row = releases.find((r) => r.id === selected);
   const missingEvidence =
     !!row &&
@@ -1207,7 +1210,7 @@ export function ProjectReleases(props: FeatureProps & { projectId: string }) {
         {row.status === 'unknown' && (
           <Button
             variant="primary"
-            disabled={busy || pending || !api.reconcileRelease}
+            disabled={busy || pending || switching || !api.reconcileRelease}
             onClick={() => void onMutate(() => api.reconcileRelease!(row.id))}
           >
             核对发布结果
@@ -1230,7 +1233,7 @@ export function ProjectReleases(props: FeatureProps & { projectId: string }) {
               </Button>
               <Button
                 variant="primary"
-                disabled={busy || pending || !api.reviewRelease || !!error || !data || missingEvidence}
+                disabled={busy || pending || switching || !api.reviewRelease || !!error || !data || missingEvidence}
                 onClick={() => void review('approve')}
               >
                 {pending ? '正在提交…' : '确认这个版本上线'}

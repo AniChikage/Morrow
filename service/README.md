@@ -59,12 +59,13 @@ MORROW_HOME="$HOME/.local/share/morrow" npm start
 | `native_*` | 原生任务绑定、快照、消息、轮次、增量日志、请求、发送回执和附件记录。 |
 | `loop_*` | 认识、行动选择、预期、证据、测量、复盘、观测、等待、验证与发布。 |
 | `settings`、`usage_samples` | 全局设置（保留给自己的额度、额度未知时是否停止）与账户用量读数；运行记录里的 `usage` 保存本轮前后读数之差。 |
+| `upgrades` | 安装后的版本切换请求：目标 commit/整包指纹、回执给出的安装包路径、发起时的 `bootId`、阶段、阻塞工作与失败原因。每个目标指纹一条。 |
 
 所有表位于 `workspace.sqlite`。`runs/`、`native-images/` 和 `releases/` 保存相关私有文件。原生任务的权威历史由 Codex 管理，Morrow 的 SQLite 保存已同步的镜像和编排记录，不把自己的记录当成另一套原生会话。
 
 迁移保持已有 ID 和历史，支持旧运行来源、协议标记与任务创建记录。历史证据摘要不因品牌改名重新计算。当前没有自动裁剪历史的策略；备份应使用 SQLite 在线备份，或停止服务后复制完整数据目录及相关文件。
 
-同一目录只允许一个 daemon，通过 `daemon.lock` 防止重复实例。SIGTERM/SIGINT 会停止服务调度并清理其拥有的 CLI 进程；不会杀死共享 Codex App。崩溃后，未结束的自有 CLI 轮次标记中断并暂停频道；共享任务则按原生状态恢复。发送回执不明确时先核对结果，不盲目重发。
+同一目录只允许一个 daemon，通过 `daemon.lock` 防止重复实例。SIGTERM/SIGINT 会停止服务调度并清理其拥有的 CLI 进程；不会杀死共享 Codex App。崩溃后，未结束的自有 CLI 轮次标记中断并暂停频道；共享任务则按原生状态恢复。发送回执不明确时先核对结果，不盲目重发。为新安装的版本主动让位时使用专用退出码 75（见下文），与崩溃和人工停止区分开。
 
 ## 原生运行时
 
@@ -143,6 +144,18 @@ MORROW_HOME="$HOME/.local/share/morrow" npm start
 
 发布门禁约束 Morrow 的发布接口。`local-script` 是服务唯一会执行「工作接口记录所指向的命令」的地方：脚本由人编写并提交，提议时封存，只在人确认该确切版本后执行一次；这是有人把关的安装步骤，不是通用命令通道，也不声称脚本自身的行为被沙箱隔离。原生工具、网络和外部凭据受各原生运行时权限约束；提示中的行为要求不能等同于独立的系统权限隔离。
 
+## 安装后的自动版本切换
+
+`local-script` 发布安装的往往就是 Morrow 自己。构建阶段由 `scripts/build-info.ts` 在包内写入只读的 `Contents/Resources/build-info.json`，含 commit 与**整包运行指纹**（服务 TS、编译后的 main/preload/renderer、package 元信息；不含该文件自身与任何签名，因此重复签名不会变成新版本，纯界面改动也算新版本）。daemon 与 Electron 主进程在启动时各读一次并记在内存：这是"正在运行的版本"，之后磁盘上的包被替换也不会改变它。开发检出没有 `.app` 祖先，指纹为 `unknown`，因此永不参与切换。
+
+`scripts/release-local.sh` 在安装成功后补两个回执字段：`installedBundle`（安装到的 `.app` 绝对路径）与 `buildFingerprint`（读取刚安装那个包的 build-info）。读不到只写日志并保留人工切换，不把已完成的安装判为失败；脚本本身不重启、不发信号、不改 `install-app.sh` 的替换/回退逻辑。
+
+`receipt()` 在与 `published` 同一事务内判断是否要切换：只有 `local-script` 目标、回执包路径与本服务自身包的真实路径一致、指纹与运行中的不同，才写入一条 `pending` 记录（同指纹记为 `applied`，不重启；同一目标指纹只记一次）。HTTP 目标、别的项目里同名的脚本装到别处、缺字段或字段非法，都不会产生请求——识别依据是包路径与指纹，不是脚本文件名。
+
+待切换期间（`pending`/`draining`/`exiting`）拒绝一切**会开新工作**的入口，409 都点明切换：手动 `run`/`resume`、会启动原生轮次的聊天发送、新的独立复核与重试、上线确认、发布结果核对；自动调度不报错而是等待并每频道写一条系统事件。暂停、中断、回答原生提问、读取与否决发布照常可用；已排队的复核会跑完（否则永远等不到空闲），已批准但尚未开始的发布留到切换后再执行。空闲判定读真实状态而非 `channels.status`：无 CLI 轮次、无原生轮次（含 starting/scheduled 与活跃 turn）、无未被任务接收的发送、无排队或进行中的复核、无进行中的发布。10 分钟只是提示期限，到点把阻塞项写进记录供界面显示，继续等待，不中断任何工作。
+
+确认空闲且本机 Electron 已接手后，daemon 先置内部退出标记再写 `exiting`（两者之间没有 await，因此发布或轮次无法在检查后插队），随后停止接收请求（其余请求 503 带 `code:upgrade_exiting`）、有界排空在途请求、走原有关闭路径释放 HTTP/锁/数据库，最后以退出码 75 退出。主进程确认旧 daemon 真的退出（自有子进程等退出事件；被接管的 daemon 等锁释放且健康检查离线）后才 `app.relaunch()`，新实例启动新 daemon。新 daemon 启动时先对账：目标指纹已在运行记 `applied`，仍是旧指纹记 `blocked` 并保留原因（不无限重开），之后才走原有的发布 reconcile 与原生恢复。首个带该能力的安装版仍需一次人工切换来启用它。
+
 ### 桌面 API 导航
 
 | 路由 | 用途 |
@@ -161,6 +174,8 @@ MORROW_HOME="$HOME/.local/share/morrow" npm start
 | `POST /api/agent` | 运行范围内的 AI 工作操作。 |
 | `POST /api/releases/:id/review` | 桌面人工发布决定，工作凭据不能调用。 |
 | `GET /api/releases/:id/script` | `local-script` 发布的封存脚本原文与摘要（≤256 KiB），供人确认前逐字阅读；工作凭据不能调用，`http` 目标返回 409。 |
+| `GET /api/upgrade` | 运行中的构建身份（`bootId`、commit、整包指纹、自身包路径、数据目录）、专用退出码、当前是否空闲与阻塞工作，以及待切换记录；同样的内容也放入 `/api/state` 的 `upgrade` 字段供界面轮询。 |
+| `POST /api/upgrade/acknowledge`、`restart`、`blocked` | 切换握手，仅桌面凭据：都必须带 `{fromBootId, targetFingerprint}` 且与当前启动、当前目标一致，幂等。`acknowledge` 表示本机 Electron 已核对身份与目标并接手；`restart` 是界面「立即重启」提前发起同一握手，仍有工作在进行时 409 并列出阻塞项；`blocked` 记录接手失败原因（`reason` ≤500 字）。工作凭据调用这三个路由与 `GET /api/upgrade` 一律 401。 |
 
 请求方法、参数校验和其余路由以 [server.ts](server.ts) 为准；领域字段与操作规则见 [项目工作协议](../docs/PROJECT-WORK-CONTRACT.md)。
 

@@ -435,6 +435,40 @@
   height: calc(100% + 46px);
   z-index: 2;
 }
+/* One compact line above the workspace: a new version is installed, and what is happening about it. */
+.upgrade-banner {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 20px;
+  background: var(--hover);
+  border-top: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+  color: var(--muted);
+  font-size: 11px;
+  flex-shrink: 0;
+}
+.upgrade-banner-text {
+  color: var(--text);
+}
+.upgrade-banner.upgrade-blocked .upgrade-banner-text {
+  color: var(--warning);
+}
+.upgrade-banner .button {
+  font-size: 11px;
+  min-height: 24px;
+  padding: 3px 7px;
+  white-space: nowrap;
+}
+.upgrade-blockers {
+  flex-basis: 100%;
+  margin: 0;
+  padding: 0 0 2px 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
 .error-toast {
   position: fixed;
   bottom: 22px;

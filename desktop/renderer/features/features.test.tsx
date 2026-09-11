@@ -151,6 +151,54 @@ describe('channel control and history', () => {
     expect(api.openNativeSession).not.toHaveBeenCalled();
   });
 
+  it('during a version handover a paused channel cannot be resumed, while pausing a running one still works', async () => {
+    const user = userEvent.setup();
+    const state = snapshot();
+    state.projects[0].isDemo = false;
+    state.channels[0].status = 'paused';
+    state.upgrade = {
+      identity: {
+        bootId: 'boot-1',
+        commit: 'd'.repeat(40),
+        version: '0.9.7',
+        fingerprint: 'a'.repeat(64),
+        bundlePath: '/Users/someone/Applications/Morrow.app',
+        dataDirectory: '/Users/someone/Library/Application Support/Morrow',
+      },
+      exitCode: 75,
+      reminderMs: 600000,
+      idle: true,
+      blockers: [],
+      upgrade: {
+        id: 'b'.repeat(64),
+        releaseId: 'release-1',
+        targetCommit: 'c'.repeat(40),
+        targetFingerprint: 'b'.repeat(64),
+        installedBundle: '/Users/someone/Applications/Morrow.app',
+        fromBootId: 'boot-1',
+        phase: 'exiting',
+        requestedAt: '2026-09-11T00:00:00.000Z',
+        updatedAt: '2026-09-11T00:00:00.000Z',
+      },
+    };
+    const { props, api } = featureProps({ snapshot: state });
+    const view = render(<ChannelView {...props} id="channel-system" />, { wrapper: TestProviders });
+    await user.click(screen.getByRole('button', { name: '频道选项' }));
+    expect(screen.getByRole('menuitem', { name: '继续工作' }).getAttribute('aria-disabled')).toBe('true');
+    await user.keyboard('{Escape}');
+    // A running channel can still be paused during the handover; only starting work is blocked.
+    const runningState = {
+      ...state,
+      channels: state.channels.map((channel) =>
+        channel.id === 'channel-system' ? { ...channel, status: 'running' } : channel
+      ),
+    };
+    view.rerender(<ChannelView {...props} snapshot={runningState} id="channel-system" />);
+    await user.click(screen.getByRole('button', { name: '频道选项' }));
+    await user.click(screen.getByRole('menuitem', { name: '暂停' }));
+    expect(api.channelAction).toHaveBeenLastCalledWith('channel-system', 'pause');
+  });
+
   it('uses an event ID cursor, merges older pages without duplicates, and orders equal timestamps by sequence', async () => {
     const state = snapshot();
     state.events = [event('event-four', '第四条记录', 4), event('event-three', '第三条记录', 3)];

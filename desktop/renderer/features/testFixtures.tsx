@@ -137,6 +137,7 @@ export function featureProps(patch: Partial<FeatureProps> = {}) {
       return structuredClone(project);
     }),
     getProjectUsage: vi.fn(async (): Promise<ProjectUsage> => ({ stale: true, gate: { blocked: false } })),
+    requestUpgradeRestart: vi.fn(async () => {}),
     createChannel: vi.fn(),
     updateChannel: vi.fn(),
     channelAction: vi.fn(async () => ({ ok: true })),

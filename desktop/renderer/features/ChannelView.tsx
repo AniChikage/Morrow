@@ -8,6 +8,7 @@ import { channelStatusLabel, formatDate, runtimeLabel, usageWindowLabel } from '
 import { ChannelQuestion, questionExcerpt } from './ChannelQuestion';
 import { ChannelAudit } from './ChannelAudit';
 import { ProjectReleases } from './ProjectWork';
+import { upgradeSwitching } from './upgradeState';
 import './content.css';
 import './channel-log.css';
 
@@ -182,6 +183,8 @@ export function ChannelView(props: FeatureProps & { id: string }) {
   const project = snapshot.projects.find((value) => value.id === channel?.projectId);
   const demo = !!project?.isDemo,
     legacy = !!channel && isLegacyRuntime(channel.runtime);
+  // While the service steps aside for a new version, nothing may start work; pausing still can.
+  const switching = upgradeSwitching(snapshot);
   const native = !!channel && !demo && !legacy;
   const [conversation, setConversation] = useState<NativeConversation | null>(null);
   const [usage, setUsage] = useState<ProjectUsage>();
@@ -401,7 +404,7 @@ export function ChannelView(props: FeatureProps & { id: string }) {
             {primary === 'resume' && (
               <Button
                 variant="primary"
-                disabled={busy || demo || (paused && (legacy || !ready(conversation) || nativeBusy))}
+                disabled={busy || demo || (paused && (switching || legacy || !ready(conversation) || nativeBusy))}
                 onClick={() => void onMutate(() => api.channelAction(id, paused ? 'resume' : 'pause'))}
               >
                 <Play size={13} /> 继续工作
@@ -424,7 +427,7 @@ export function ChannelView(props: FeatureProps & { id: string }) {
               <DropdownItem onSelect={() => onNavigate({ kind: 'project', id: project.id })}>项目功能看板</DropdownItem>
               {primary !== 'resume' && (
                 <DropdownItem
-                  disabled={busy || demo || (paused && (legacy || !ready(conversation) || nativeBusy))}
+                  disabled={busy || demo || (paused && (switching || legacy || !ready(conversation) || nativeBusy))}
                   onSelect={() => void onMutate(() => api.channelAction(id, paused ? 'resume' : 'pause'))}
                 >
                   {paused ? '继续工作' : '暂停'}
