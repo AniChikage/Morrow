@@ -1,7 +1,12 @@
 #!/usr/bin/env node
-import { readFileSync, writeFileSync } from 'node:fs';
+import { readFileSync, writeFileSync, renameSync } from 'node:fs';
 import { createInterface } from 'node:readline';
 import assert from 'node:assert/strict';
+function publishPid(path) {
+  // A deadline may interrupt any instruction: an existing marker must contain the complete PID.
+  writeFileSync(path + '.tmp', String(process.pid));
+  renameSync(path + '.tmp', path);
+}
 const args = process.argv.slice(2);
 if (args[0] === 'app-server') {
   const seen = [];
@@ -36,11 +41,17 @@ if (args[0] === 'app-server') {
     spec = { mode: process.env.REVIEW_FIXTURE_MODE || 'success' };
   }
   const mode = spec.mode || 'success';
+  if (spec.spawnedPidFile) publishPid(spec.spawnedPidFile);
+  if (mode === 'initializing') {
+    // Hold initialization indefinitely: only the supervisor deadline or explicit cleanup can end it.
+    setInterval(() => {}, 1000);
+    await new Promise(() => {});
+  }
   const emit = (value) => console.log(JSON.stringify(value));
   emit({ type: 'thread.started', thread_id: 'fixture-cli-session' });
   emit({ type: 'turn.started' });
   if (mode === 'hang') {
-    if (spec.pidFile) writeFileSync(spec.pidFile, String(process.pid));
+    if (spec.pidFile) publishPid(spec.pidFile);
     setInterval(() => {}, 1000);
   } else if (mode === 'malformed') console.log('not a JSON event');
   else if (mode === 'oversized') process.stdout.write('x'.repeat(10000));
