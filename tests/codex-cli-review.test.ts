@@ -29,10 +29,27 @@ const gone = (pid: number) => {
   try {
     process.kill(pid, 0);
     return false;
-  } catch {
-    return true;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException)?.code === 'ESRCH';
   }
 };
+test('only ESRCH proves that the owned process disappeared', (t) => {
+  for (const [code, expected] of [
+    ['ESRCH', true],
+    ['EPERM', false],
+    ['EINVAL', false],
+    [undefined, false],
+  ] as const) {
+    t.mock.method(process, 'kill', () => {
+      throw Object.assign(new Error('probe failed'), { code });
+    });
+    assert.equal(gone(123), expected, String(code));
+    t.mock.restoreAll();
+  }
+  t.mock.method(process, 'kill', () => true);
+  assert.equal(gone(123), false);
+});
+
 async function run(mode: string, maxBytes?: number) {
   const observations: ReviewObservation[] = [];
   const r = runner(maxBytes).start({
