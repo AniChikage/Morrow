@@ -117,6 +117,15 @@ export type PlantedProblem = {
    * must not be substrings of one another.
    */
   feature?: string;
+  /**
+   * Other names for the same feature that also count as having discovered it — in practice the
+   * feature's own `title` in the usage report, which is what a real model writes into a readable
+   * finding. A fixture policy writes the id, so aliases never change a fixture number; live run
+   * usagegap-live-02 filed 「让值班人员从首页直接找到批量导出」, which names the feature exactly as the
+   * data does and still counted as 0/5 under an id-only match. `defineScenario` applies the same
+   * containment rule to aliases as to ids, so a hit is never ambiguous.
+   */
+  aliases?: string[];
 };
 
 /**
@@ -295,6 +304,9 @@ export function defineScenario(input: ScenarioInput): Scenario {
   const rules = [scenario.feedback.outcome.rule, scenario.feedback.guardrail.rule];
   for (const rule of rules)
     if (!rule.pointer.startsWith('/')) throw new Error(`scenario ${scenario.id}: rule pointer must start with "/"`);
+  for (const row of scenario.planted)
+    for (const alias of row.aliases || [])
+      if (!alias.trim()) throw new Error(`scenario ${scenario.id}: planted problem ${row.id} has an empty alias`);
   if (scenario.explore) {
     if (!scenario.explore.features.startsWith('/'))
       throw new Error(`scenario ${scenario.id}: explore.features must be a JSON Pointer`);
@@ -305,12 +317,24 @@ export function defineScenario(input: ScenarioInput): Scenario {
       throw new Error(`scenario ${scenario.id}: every planted problem of an exploration scenario needs a feature id`);
     for (const row of scenario.planted)
       if (!row.kind) throw new Error(`scenario ${scenario.id}: planted problem ${row.id} needs a kind`);
-    // The metrics match a finding to a planted problem by looking for the feature id in the item's
-    // own text, so one id may not be contained in another.
-    for (const a of features)
-      for (const b of features)
-        if (a !== b && b.includes(a))
-          throw new Error(`scenario ${scenario.id}: feature id ${a} is contained in ${b}; ids must be distinguishable`);
+    // The metrics match a finding to a planted problem by looking for the feature id — or one of its
+    // aliases — in the item's own text, so no match key may be contained in another one.
+    const keys = [
+      ...features.map((value) => ({ value, label: `feature id ${value}` })),
+      ...scenario.planted.flatMap((row) =>
+        (row.aliases || []).map((value) => ({ value, label: `alias ${value} of ${row.id}` }))
+      ),
+    ];
+    for (const [index, a] of keys.entries()) {
+      const twin = keys.findIndex((row) => row.value === a.value);
+      if (twin !== index)
+        throw new Error(`scenario ${scenario.id}: ${a.label} repeats ${keys[twin].label}; a hit would be ambiguous`);
+      for (const b of keys)
+        if (a.value !== b.value && b.value.includes(a.value))
+          throw new Error(
+            `scenario ${scenario.id}: ${a.label} is contained in ${b.label}; match keys must be distinguishable`
+          );
+    }
   }
   return scenario;
 }
@@ -373,9 +397,9 @@ export function policyScenario(
     ...(scenario.explore === undefined ? {} : { explore: scenario.explore }),
     ...(options.appUrl === undefined ? {} : { appUrl: options.appUrl }),
     feedback: {
-      url: receiverURL + (scenario.feedback.path || '/feedback'),
-      releaseUrl: receiverURL + '/deploy',
-      statusUrl: receiverURL + '/status',
+      url: usageURL(scenario, receiverURL),
+      releaseUrl: releaseURL(receiverURL),
+      statusUrl: statusURL(receiverURL),
       pointer: scenario.feedback.pointer,
       condition: scenario.feedback.condition,
       outcome: scenario.feedback.outcome,
@@ -389,18 +413,39 @@ export function policyScenario(
 /** The absolute URL a scenario's feedback watch reads, once the receiver's origin is known. */
 export const usageURL = (scenario: Scenario, receiverURL: string) =>
   receiverURL + (scenario.feedback.path || '/feedback');
+/**
+ * Where a release adapter uploads the sealed artifact, and where it reads the receipt back. These are
+ * `tests/harness/receiver.ts`'s own routes: a POST records an upload and answers with its receipt, and
+ * `GET /status` (with any query — the release reconciliation appends `releaseId`) returns the latest
+ * one. The same two addresses reach a fixture policy through `policyScenario` and a real model through
+ * the project brief, so both talk to the same endpoint.
+ */
+export const releaseURL = (receiverURL: string) => receiverURL + '/deploy';
+export const statusURL = (receiverURL: string) => receiverURL + '/status';
+
+/** The addresses a scenario cannot know in advance, as `projectBrief` fills them in. */
+export type BriefURLs = { appUrl?: string; usageUrl: string; releaseUrl: string; statusUrl: string };
 
 /**
- * Fills the two addresses a scenario cannot know in advance into its project brief, which is what a
- * real model reads: `{{appUrl}}` is the served seed app and `{{usageUrl}}` the usage endpoint the
- * run may observe. An unknown placeholder is a scenario mistake, not something to leave in the text.
+ * Fills the addresses a scenario cannot know in advance into its project brief, which is what a real
+ * model reads: `{{appUrl}}` is the served seed app, `{{usageUrl}}` the usage endpoint the run may
+ * observe, and `{{releaseUrl}}` / `{{statusUrl}}` the release adapter's upload and status addresses.
+ * An unknown placeholder is a scenario mistake, not something to leave in the text.
+ *
+ * A fixture policy never reads the brief — it gets the same addresses through `policyScenario` — but
+ * both runners fill it in, so a scenario cannot ship a brief that only live mode would reject.
  */
-export function projectBrief(brief: string, urls: { appUrl?: string; usageUrl: string }): string {
+export function projectBrief(brief: string, urls: BriefURLs): string {
   const filled = brief
     .replaceAll('{{appUrl}}', urls.appUrl || '（本次运行没有启动应用）')
-    .replaceAll('{{usageUrl}}', urls.usageUrl);
+    .replaceAll('{{usageUrl}}', urls.usageUrl)
+    .replaceAll('{{releaseUrl}}', urls.releaseUrl)
+    .replaceAll('{{statusUrl}}', urls.statusUrl);
   const left = filled.match(/\{\{[a-zA-Z]+\}\}/);
-  if (left) throw new Error(`项目说明里有无法填充的占位符 ${left[0]}；只支持 {{appUrl}} 与 {{usageUrl}}`);
+  if (left)
+    throw new Error(
+      `项目说明里有无法填充的占位符 ${left[0]}；只支持 {{appUrl}}、{{usageUrl}}、{{releaseUrl}} 与 {{statusUrl}}`
+    );
   return filled;
 }
 

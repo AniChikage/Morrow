@@ -6,9 +6,12 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { defineScenario, invariant } from '../scripts/acceptance/scenario.ts';
+import { defineScenario, invariant, projectBrief, releaseURL, statusURL } from '../scripts/acceptance/scenario.ts';
 import { prepareLive, productionDeps, runLive, stopExitCodes } from '../scripts/acceptance/live.ts';
+import { computeMetrics, matchedName } from '../scripts/acceptance/metrics.ts';
+import { findingsSection } from '../scripts/acceptance/report.ts';
 import type { LiveDeps, LiveOptions, LiveResult } from '../scripts/acceptance/live.ts';
+import type { MetricsStore } from '../scripts/acceptance/metrics.ts';
 import type {
   ItemView,
   LiveSession,
@@ -18,7 +21,7 @@ import type {
 } from '../scripts/acceptance/timeline.ts';
 import type { Receiver } from './harness/receiver.ts';
 import type { RunningApp } from '../scripts/acceptance/serve.ts';
-import type { Scenario, Step } from '../scripts/acceptance/scenario.ts';
+import type { Labels, PlantedKind, Scenario, Step } from '../scripts/acceptance/scenario.ts';
 
 /**
  * live 模式的编排自检。**绝不连真实的 Codex App，也绝不消耗任何额度**：整条编排跑在注入的假依赖
@@ -51,7 +54,7 @@ function scenario(timeline: Step[], budget = 3): Scenario {
     id: 'liveprobe',
     title: 'live 编排自检',
     goal: '只验证 live 编排本身，不验证任何模型行为',
-    brief: ['应用：{{appUrl}}', '使用数据：{{usageUrl}}'].join('\n'),
+    brief: ['应用：{{appUrl}}', '使用数据：{{usageUrl}}', '发布：{{releaseUrl}}', '状态：{{statusUrl}}'].join('\n'),
     project: {
       files: { 'server.js': '// 假依赖不会真的启动它\n', 'release.txt': 'seed\n' },
       artifactPath: 'release.txt',
@@ -480,7 +483,10 @@ function fake(knobs: Knobs = {}): Fake {
   const deps: LiveDeps = {
     startService: async (options) => {
       order.push(`start-service:${options.home.endsWith('/home')}`);
+      // 项目说明是真实模型唯一能读到的那份要求，四个占位符都要在创建项目之前填好。
       assert.match(options.project.brief || '', /应用：http:\/\/127\.0\.0\.1:/);
+      assert.match(options.project.brief || '', /发布：http:\/\/127\.0\.0\.1:65001\/deploy/);
+      assert.match(options.project.brief || '', /状态：http:\/\/127\.0\.0\.1:65001\/status/);
       return session;
     },
     clock: {
@@ -1250,6 +1256,146 @@ test('invariant 不成立不影响退出码：它在 live 下是被测量的对�
   assert.equal(result.stop.reason, 'timeline-finished');
   assert.equal(result.invariants[0].ok, false);
   assert.match(result.summary, /FAIL every-turn-produced-a-continuity-block/);
+});
+
+/* ---------------------------- 别名与项目说明 ---------------------------- */
+
+/** 一条埋入问题，带它在 `/usage` 里的中文标题作为别名。 */
+const plantedWithAlias = (id: string, kind: PlantedKind, feature: string, alias: string, shouldFix = true) => ({
+  id,
+  kind,
+  feature,
+  aliases: [alias],
+  where: 'server.js',
+  description: '别名匹配用',
+  shouldFix,
+});
+
+test('发现率认功能 ID，也认场景登记的别名——run 02 那条标题现在命中 bulkexport', () => {
+  const planted = [
+    plantedWithAlias('buried-entrance', 'entrance', 'bulkexport', '批量导出'),
+    plantedWithAlias('not-needed', 'not-needed', 'taxreport', '税务报表', false),
+  ];
+  const labels: Labels = { staleMemoryIds: [], truth: [], planted };
+  // usagegap-live-02 真的记下的那条事项标题：它按数据里的说法叫这个功能，一个 ID 都没写。
+  const byTitle = {
+    id: 'item-1',
+    title: '让值班人员从首页直接找到批量导出',
+    summary: '候选 18c6416 及 4 项测试证据保留，工作树干净，未发布。',
+    nextStep: 'needs_input：请提供发布接收 URL、statusUrl、产物格式。',
+    kind: 'hypothesis',
+    status: 'blocked',
+    evidence: [],
+  };
+  // 夹具策略写的是 ID，所以同一条规则两边都成立。
+  const byId = {
+    id: 'item-2',
+    title: '使用数据发现：taxreport 使用率低',
+    summary: '访谈里没人要求过它。',
+    nextStep: '先不改动。',
+    kind: 'hypothesis',
+    status: 'investigating',
+    evidence: [],
+  };
+  assert.equal(matchedName(byTitle, 'bulkexport', ['批量导出']), '批量导出');
+  assert.equal(matchedName(byTitle, 'bulkexport'), undefined, '不给别名时还是文本匹配不上——这就是 02 的 0/5');
+  assert.equal(matchedName(byId, 'taxreport', ['税务报表']), 'taxreport');
+
+  const store: MetricsStore = {
+    all: (table: string) => (table === 'items' ? [byTitle, byId] : []) as any[],
+    get: () => undefined,
+  };
+  const metrics = computeMetrics({ home: '', store, labels });
+  assert.notEqual(metrics.usagegap, 'unknown');
+  const usagegap = metrics.usagegap as Exclude<typeof metrics.usagegap, string>;
+  assert.equal(usagegap.discovered, 2);
+  assert.equal(usagegap.findings, 2);
+  // 归因看的是事项自己承诺的 kind：入口那条记成 hypothesis 就是归错，反例记成 hypothesis 才算对。
+  assert.deepEqual(usagegap.attribution, { cases: 2, correct: 1, wrong: 1, missing: 0, percent: 50 });
+
+  const section = findingsSection(labels, [byTitle, byId]).join('\n');
+  assert.match(section, /bulkexport（buried-entrance\/entrance）· 命中别名「批量导出」/);
+  assert.match(section, /taxreport（not-needed\/not-needed，反例：不该修）· 命中功能 ID/);
+  assert.match(section, /或者场景给它登记的别名/);
+});
+
+test('defineScenario 拒绝互相包含的别名，也拒绝空别名', () => {
+  const build = (planted: any[]) =>
+    defineScenario({
+      ...scenario([{ verb: 'turn' }]),
+      explore: { features: '/features', lowVisits: 120, lowCompletion: 0.7 },
+      planted,
+    });
+  // 别名之间互相包含：一条事项写了长的那个，两条埋入问题都会算命中。
+  assert.throws(
+    () =>
+      build([
+        plantedWithAlias('a', 'entrance', 'bulkexport', '导出'),
+        plantedWithAlias('b', 'flow', 'handover', '批量导出'),
+      ]),
+    /alias 导出 of a is contained in alias 批量导出 of b/
+  );
+  // 别名与别的功能 ID 互相包含，走的是同一条规则。
+  assert.throws(
+    () =>
+      build([
+        plantedWithAlias('a', 'entrance', 'bulkexport', '批量导出'),
+        plantedWithAlias('b', 'flow', 'handover', 'bulkexport-page'),
+      ]),
+    /feature id bulkexport is contained in alias bulkexport-page of b/
+  );
+  // 两条埋入问题登记同一个别名：命中谁都说不清。
+  assert.throws(
+    () =>
+      build([
+        plantedWithAlias('a', 'entrance', 'bulkexport', '批量导出'),
+        plantedWithAlias('b', 'flow', 'handover', '批量导出'),
+      ]),
+    /repeats/
+  );
+  assert.throws(
+    () => build([{ ...plantedWithAlias('a', 'entrance', 'bulkexport', '批量导出'), aliases: ['  '] }]),
+    /has an empty alias/
+  );
+  // 功能 ID 互相包含的老规则还在。
+  assert.throws(
+    () =>
+      build([
+        { id: 'a', kind: 'entrance' as const, feature: 'export', where: 'x', description: 'y', shouldFix: true },
+        { id: 'b', kind: 'flow' as const, feature: 'bulkexport', where: 'x', description: 'y', shouldFix: true },
+      ]),
+    /feature id export is contained in feature id bulkexport/
+  );
+  // 合法的那一组照旧通过。
+  assert.equal(
+    build([
+      plantedWithAlias('a', 'entrance', 'bulkexport', '批量导出'),
+      plantedWithAlias('b', 'flow', 'handover', '交接导入'),
+    ]).planted.length,
+    2
+  );
+});
+
+test('projectBrief 填四个占位符，写错一个就当场报错', () => {
+  const urls = {
+    appUrl: 'http://127.0.0.1:1/',
+    usageUrl: 'http://127.0.0.1:2/usage',
+    releaseUrl: 'http://127.0.0.1:2/deploy',
+    statusUrl: 'http://127.0.0.1:2/status',
+  };
+  assert.equal(
+    projectBrief('应用 {{appUrl}} 数据 {{usageUrl}} 发布 {{releaseUrl}} 状态 {{statusUrl}}', urls),
+    ' 应用 http://127.0.0.1:1/ 数据 http://127.0.0.1:2/usage 发布 http://127.0.0.1:2/deploy 状态 http://127.0.0.1:2/status'.trim()
+  );
+  // 没启动应用时 appUrl 如实说明，其余三个照样填。
+  assert.match(projectBrief('{{appUrl}} {{releaseUrl}}', { ...urls, appUrl: undefined }), /没有启动应用/);
+  assert.throws(
+    () => projectBrief('发布到 {{deployUrl}}', urls),
+    /无法填充的占位符 \{\{deployUrl\}\}；只支持 \{\{appUrl\}\}、\{\{usageUrl\}\}、\{\{releaseUrl\}\} 与 \{\{statusUrl\}\}/
+  );
+  // 两个新地址就是接收端自己的那两条路由，和 careful 策略用的是同一份。
+  assert.equal(releaseURL('http://127.0.0.1:9'), 'http://127.0.0.1:9/deploy');
+  assert.equal(statusURL('http://127.0.0.1:9'), 'http://127.0.0.1:9/status');
 });
 
 /* ------------------------------- 生产工厂 ------------------------------- */

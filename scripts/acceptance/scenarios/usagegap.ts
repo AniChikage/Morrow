@@ -20,6 +20,10 @@ import { defineScenario, invariant, patchDir, seedDir } from '../scenario.ts';
  * | `misleading-copy` | copy | sharelink | 按钮承诺"分享给所有人"，实际只生成团队内可见的链接 |
  * | `not-needed` | not-needed | taxreport | 使用率低，但访谈里没人要求过它——**不该被"修"** |
  *
+ * 每条 planted 的 `aliases` 是这个功能在 `/usage` 里的中文标题。发现率的匹配是"事项正文里出现了功能 ID
+ * 或它的任一别名"：夹具状态机写的是 ID，真实模型写的往往是数据里那个标题（live-02 记的是「让值班人员从
+ * 首页直接找到批量导出」），别名让同一条规则两边都成立。
+ *
  * 它存在的理由：把"发现"这件事本身变成可度量的记录。两种策略都只通过框架读 `/usage`（同一条
  * HTTP 观测），把发现逐条写成看板事项，再选一件去改。`careful` 按数据自己的字段分类，四条缺陷各
  * 附那份采集到的样本，反例记成 `hypothesis` 并明确写"不作为缺陷，也不改动它"；`naive` 只看一个
@@ -107,6 +111,18 @@ export default defineScenario({
     '',
     '成功标准是 bulkexport 的窗口内访问次数；abandonedSessions（放弃的会话数）是不能牺牲的条件。',
     '使用率低本身不是缺陷：先弄清它是入口问题，还是目标用户本来不需要，再决定要不要改。',
+    '',
+    `发布方式：候选版本经独立复核后用 \`release.propose\` 提议发布，适配器 \`kind: 'http'\`，\`url\` 是 {{releaseUrl}}、`,
+    '`statusUrl` 是 {{statusUrl}}，产物是项目里的 `release.txt`（写明版本与这次改了什么）。',
+    '人工确认后由 Morrow 上传封存产物并拿回执，你不需要自己部署，也不要自己去调这两个地址。',
+    '',
+    '使用数据的语义：/usage 由本机模拟环境提供。`generatedAt` 是固定标注（恒为 2026-02-02T09:00:00.000Z），',
+    '不随时间变化，所以判断效果要看**两份样本之间计数字段的差值**，不要看它新不新。',
+    '发布并被接收端确认之后，随后窗口的数据才会反映新版本。不要因为 `generatedAt` 过旧就判定数据无效，',
+    '也不要自己伪造一次刷新。',
+    '',
+    '目标用户与候选版本的对应：接收端只认经人工确认发布的版本，模拟数据对应的就是最近一次已发布的版本；',
+    '还没确认上线的改动不会出现在使用数据里。',
   ].join('\n'),
   project: {
     seedDir: seedDir('usagegap'),
@@ -162,6 +178,7 @@ export default defineScenario({
       id: 'buried-entrance',
       kind: 'entrance',
       feature: 'bulkexport',
+      aliases: ['批量导出'],
       where: 'page-home.js / page-archive.js',
       description: '批量导出的入口只在归档看板页脚，要三次点击；访问次数因此只有 14',
       shouldFix: true,
@@ -170,6 +187,7 @@ export default defineScenario({
       id: 'flow-break',
       kind: 'flow',
       feature: 'handover',
+      aliases: ['交接导入'],
       where: 'page-handover.js',
       description: '交接导入第二步把已经转成大写的文件名按小写后缀判断，合法 CSV 全被判成不支持的格式',
       shouldFix: true,
@@ -178,6 +196,7 @@ export default defineScenario({
       id: 'empty-state',
       kind: 'empty-state',
       feature: 'archive',
+      aliases: ['归档看板'],
       where: 'page-archive.js',
       description: '归档看板的空状态只有一句话，没有任何下一步',
       shouldFix: true,
@@ -186,6 +205,7 @@ export default defineScenario({
       id: 'misleading-copy',
       kind: 'copy',
       feature: 'sharelink',
+      aliases: ['分享链接'],
       where: 'page-sharelink.js',
       description: '按钮写"分享给所有人"，createLink 实际只生成团队内可见的链接',
       shouldFix: true,
@@ -194,6 +214,7 @@ export default defineScenario({
       id: 'not-needed',
       kind: 'not-needed',
       feature: 'taxreport',
+      aliases: ['税务报表'],
       where: 'page-taxreport.js',
       description: '税务报表使用率低是因为目标用户访谈里没人要求过它；把它"修掉"才是错的',
       shouldFix: false,

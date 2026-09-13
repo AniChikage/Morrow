@@ -9,7 +9,7 @@ import { startReceiver } from '../../tests/harness/receiver.ts';
 import { grantFor } from '../../tests/harness/grant.ts';
 import { ScriptedNativeTransport } from '../../tests/harness/scripted-native.ts';
 import { policies } from './fake-agent.ts';
-import { policyScenario, projectBrief, readTree, usageURL } from './scenario.ts';
+import { policyScenario, projectBrief, readTree, releaseURL, statusURL, usageURL } from './scenario.ts';
 import { computeMetrics } from './metrics.ts';
 import { metricsSection, writeMetrics } from './report.ts';
 import { freePort, startApp } from './serve.ts';
@@ -122,7 +122,12 @@ export async function runScenario(scenario: Scenario, options: RunOptions = {}):
     const brief =
       scenario.brief === undefined
         ? undefined
-        : projectBrief(scenario.brief, { ...(appUrl ? { appUrl } : {}), usageUrl: usageURL(scenario, receiver.url) });
+        : projectBrief(scenario.brief, {
+            ...(appUrl ? { appUrl } : {}),
+            usageUrl: usageURL(scenario, receiver.url),
+            releaseUrl: releaseURL(receiver.url),
+            statusUrl: statusURL(receiver.url),
+          });
     service = await startIsolated({
       nativeTransport: ({ home, path }) => {
         transport = new ScriptedNativeTransport({ home, projectPath: path, scenario: view, turnPolicy });

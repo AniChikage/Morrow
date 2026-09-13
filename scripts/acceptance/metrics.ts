@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url';
 import { join } from 'node:path';
 import { sourceVersion } from '../../service/source-version.ts';
 import { evidenceData, qualityChecks, ruleVerdict, scalar, valueAt } from '../../service/measurement.ts';
-import type { CallRecord, Labels, TimelineRecord } from './scenario.ts';
+import type { CallRecord, Labels, PlantedProblem, TimelineRecord } from './scenario.ts';
 import type { Evidence, FeedbackWatch, Release } from '../../service/autonomy-types.ts';
 import type { Expectation, StrategyDecision } from '../../service/strategy-types.ts';
 import type { Verification } from '../../service/verification-types.ts';
@@ -489,8 +489,8 @@ function exploration(
   const planted = (labels?.planted || []).filter((row) => !!row.kind && !!row.feature);
   if (!labels || !planted.length) return unknown;
   const items = store.all<WorkItem>('items');
-  const found = (feature: string) => items.filter((item) => namesFeature(item, feature));
-  const filed = items.filter((item) => planted.some((row) => namesFeature(item, row.feature!)));
+  const found = (row: PlantedProblem) => items.filter((item) => namesFeature(item, row.feature!, row.aliases));
+  const filed = items.filter((item) => planted.some((row) => namesFeature(item, row.feature!, row.aliases)));
   // Evidence of the product being used: a watch sample or a native tool record. A file the run wrote
   // itself and then sealed is its own change, not an observation, so it cannot back a finding.
   const observation = (row: Evidence) => row.origin === 'http' || row.origin === 'native' || !!row.watchId;
@@ -509,7 +509,7 @@ function exploration(
     wrong = 0,
     missing = 0;
   for (const row of cases) {
-    const item = found(row.feature!).at(0);
+    const item = found(row).at(0);
     if (!item) missing++;
     // The counterexample is a judgement that still has to be verified, not a defect; the buried
     // entrance is the other way round. The item's own kind is what the run committed to.
@@ -542,12 +542,12 @@ function exploration(
     decisions.some((row) => row.itemId === item.id) ||
     releases.some((row) => (row.itemIds || []).includes(item.id)) ||
     ['verified', 'resolved'].includes(item.status);
-  const misFixed = mustNotFix.filter((row) => found(row.feature!).some(touched));
+  const misFixed = mustNotFix.filter((row) => found(row).some(touched));
 
   return {
     planted: planted.length,
-    discovered: planted.filter((row) => found(row.feature!).length > 0).length,
-    discoveryPercent: share(planted.filter((row) => found(row.feature!).length > 0).length, planted.length),
+    discovered: planted.filter((row) => found(row).length > 0).length,
+    discoveryPercent: share(planted.filter((row) => found(row).length > 0).length, planted.length),
     findings: filed.length,
     findingsWithEvidence: filed.filter(cited).length,
     evidencePercent: share(filed.filter(cited).length, filed.length),
@@ -570,13 +570,29 @@ function exploration(
 }
 
 /**
- * Whether a filed item names a planted `/usage` feature, which is what counts as having discovered
- * that problem. One rule for a fixture state machine, for a real model in live mode, and for the
- * findings `summary.md` prints verbatim; `defineScenario` rejects feature ids that contain one
- * another so the match cannot be ambiguous.
+ * Which name of a planted `/usage` feature a filed item actually uses: the feature id itself, or one
+ * of the scenario's aliases for it (in practice the feature's own title in the usage report, which is
+ * what a real model writes into a readable finding). `undefined` means the item names none of them.
+ *
+ * One rule for a fixture state machine, for a real model in live mode, and for the findings
+ * `summary.md` prints verbatim; `defineScenario` rejects match keys that contain one another, so the
+ * hit this returns is the only one it could be.
  */
-export const namesFeature = (item: { title?: string; summary?: string; nextStep?: string }, feature: string): boolean =>
-  [item.title, item.summary, item.nextStep].some((text) => (text || '').includes(feature));
+export const matchedName = (
+  item: { title?: string; summary?: string; nextStep?: string },
+  feature: string,
+  aliases: string[] = []
+): string | undefined =>
+  [feature, ...aliases].find((name) =>
+    [item.title, item.summary, item.nextStep].some((text) => (text || '').includes(name))
+  );
+
+/** Whether a filed item names a planted feature at all, which is what counts as having discovered it. */
+export const namesFeature = (
+  item: { title?: string; summary?: string; nextStep?: string },
+  feature: string,
+  aliases: string[] = []
+): boolean => matchedName(item, feature, aliases) !== undefined;
 
 /** A percentage, or `unknown` when there is nothing to divide — 0 of 0 is not 0 percent. */
 const share = (part: number, total: number): Maybe<number> => (total ? Math.round((part / total) * 100) : unknown);

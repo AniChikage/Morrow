@@ -1,6 +1,6 @@
 import { existsSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
-import { namesFeature, unknown } from './metrics.ts';
+import { matchedName, namesFeature, unknown } from './metrics.ts';
 import type { Metrics, MetricsInput } from './metrics.ts';
 import type { CallRecord, Labels, TimelineRecord } from './scenario.ts';
 
@@ -162,8 +162,10 @@ export function scaleNote(advanceScale: number): string[] {
 
 /**
  * Every finding this run filed, verbatim, so a person can spot-check it. The discovery rate is a
- * text match on the `/usage` feature id — a lower bound, not a human score: a run may name the id
- * without having understood the problem, and a run may have understood it without naming the id.
+ * text match on the `/usage` feature id or one of the scenario's aliases for it — a lower bound, not
+ * a human score: a run may name the feature without having understood the problem, and a run may
+ * have understood it without naming it at all. Each hit says which name it was, so a reader can tell
+ * an id match from a title match without re-deriving it.
  */
 export function findingsSection(
   labels: Labels | undefined,
@@ -179,21 +181,24 @@ export function findingsSection(
 ): string[] {
   const planted = (labels?.planted || []).filter((row) => !!row.feature);
   if (!planted.length) return [];
-  const matched = items.filter((item) => planted.some((row) => namesFeature(item, row.feature!)));
+  const matched = items.filter((item) => planted.some((row) => namesFeature(item, row.feature!, row.aliases)));
   return [
     '## 每条发现的原文',
     '',
-    '发现率是**文本匹配**得出的下限判据，不是人工评分：匹配规则是「事项正文里出现了那个 `/usage` 功能 ID」，' +
-      '对夹具状态机和真实模型是同一条规则。模型可能提到功能 ID 却没真的理解那个问题，也可能理解了却没写那个 ID——' +
-      '所以下面给出原文，请人抽查。',
+    '发现率是**文本匹配**得出的下限判据，不是人工评分：匹配规则是「事项正文里出现了那个 `/usage` 功能 ID，' +
+      '或者场景给它登记的别名（数据里的中文标题）」，对夹具状态机和真实模型是同一条规则。' +
+      '模型可能提到功能却没真的理解那个问题，也可能理解了却一个名字都没写——所以下面给出原文，请人抽查。',
     '',
     ...(matched.length
       ? matched.flatMap((item) => [
           `### ${item.title}`,
           '',
           `- 种类：${item.kind} · 状态：${item.status} · 命中的埋入功能：${planted
-            .filter((row) => namesFeature(item, row.feature!))
-            .map((row) => `${row.feature}（${row.id}/${row.kind}${row.shouldFix ? '' : '，反例：不该修'}）`)
+            .filter((row) => namesFeature(item, row.feature!, row.aliases))
+            .map(
+              (row) =>
+                `${row.feature}（${row.id}/${row.kind}${row.shouldFix ? '' : '，反例：不该修'}）${hitBy(item, row)}`
+            )
             .join('、')}`,
           `- 正文：${item.summary || '（空）'}`,
           `- 下一步：${item.nextStep || '（空）'}`,
@@ -207,6 +212,19 @@ export function findingsSection(
       ? [`此外还有 ${items.length - matched.length} 条事项没有提到任何埋入的功能 ID，未列出。`, '']
       : []),
   ];
+}
+
+/**
+ * Whether this item hit the planted problem by its `/usage` feature id or by one of the aliases. A
+ * fixture policy writes the id; a real model usually writes the feature's own title, and the two
+ * should not read the same in the report.
+ */
+function hitBy(
+  item: { title: string; summary: string; nextStep: string },
+  row: { feature?: string; aliases?: string[] }
+): string {
+  const hit = matchedName(item, row.feature!, row.aliases);
+  return hit === undefined || hit === row.feature ? '· 命中功能 ID' : `· 命中别名「${hit}」`;
 }
 
 const oneLine = (text: string) => text.replaceAll('\n', ' ').replaceAll('|', '\\|').slice(0, 300);
@@ -253,7 +271,8 @@ export function explorationSection(metrics: Metrics | undefined, mode: ReportMod
     '',
     mode === 'live'
       ? 'live 下这些取值来自真实模型的一次运行：一次抽样，不可重复，也不能与另一次运行比"零差异"。' +
-        '判定规则是事项正文里出现了埋入的 `/usage` 功能 ID，是**下限判据**，不是人工评分——每条发现的原文见下一节。'
+        '判定规则是事项正文里出现了埋入的 `/usage` 功能 ID 或它的别名（数据里的中文标题），是**下限判据**，' +
+        '不是人工评分——每条发现的原文见下一节，上面写明了命中的是 ID 还是哪个别名。'
       : 'fixture 结果验证框架机制，不验证模型自主性：这些取值只说明「发现、附证据、归因、误修」这类判断' +
         '能被真实记录下来并算出来。两种策略都是写死的状态机，探索本身只能在 live 模式下衡量。',
     '',

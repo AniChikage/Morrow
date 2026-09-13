@@ -7,7 +7,7 @@ import { startReceiver } from '../../tests/harness/receiver.ts';
 import { grantFor } from '../../tests/harness/grant.ts';
 import { computeMetrics } from './metrics.ts';
 import { findingsSection, liveNotice, metricsSection, scaleNote, writeMetrics } from './report.ts';
-import { projectBrief, readTree, usageURL } from './scenario.ts';
+import { projectBrief, readTree, releaseURL, statusURL, usageURL } from './scenario.ts';
 import { freePort, startApp } from './serve.ts';
 import { LiveStop, bindPollMs, runLiveStep } from './timeline.ts';
 import type {
@@ -481,6 +481,8 @@ export async function runLive(
         : projectBrief(scenario.brief, {
             ...(appUrl ? { appUrl } : {}),
             usageUrl: usageURL(scenario, receiver.url),
+            releaseUrl: releaseURL(receiver.url),
+            statusUrl: statusURL(receiver.url),
           });
     session = await deps.startService({
       home: join(out, 'home'),
