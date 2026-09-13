@@ -49,16 +49,19 @@ npm run acceptance -- run usagegap --mode live --run-id <id> --budget 3
 | `--max-wait` | `10` | 单个 `advance` 真实等待的硬上限。 |
 | `--wait-bind` | `10` | 等那个 App 任务出现并就绪的上限（每 3 秒查一次）。 |
 | `--turn-timeout` | `10` | 一轮真实运行的等待上限；超时先精确中断本轮 turn 再以退出码 1 结束。 |
+| `--approval-wait` | `30` | 走到 `approve`/`reject` 时在终端上等人给决定的上限；也用来等一个待确认的发布出现。 |
 | `--review-timeout` | `6` | 等独立复核落到终态的上限（官方 `codex exec` 有 5 分钟硬上限）。 |
 | `--wall-clock` | `60` | 墙钟兜底。 |
 
-live 下 `--policy`、`--repeat` 与 `run all` 一律以退出码 2 被拒绝：干策略这件事的是真实模型，`config.policy` 记作 `live`，一次 live 运行只跑一个场景。`approve` 不会自动批准，也没有开关让它自动批准——它打印发布信息、暂停频道、以「停在人工确认」退出 0。
+live 下 `--policy`、`--repeat` 与 `run all` 一律以退出码 2 被拒绝：干策略这件事的是真实模型，`config.policy` 记作 `live`，一次 live 运行只跑一个场景。
+
+**`approve`/`reject` 是人在终端上做的，runner 没有自批准的路径**（`--allow-approve` 这个开关不存在）。stdin 是 TTY 时它打印发布信息（标题、`reviewHash`、事项、产物摘要、改动摘要），在终端上问一次并等 `--approval-wait`（缺省 30 分钟，等待期间频道先暂停，人想多久都不会多花额度）；人输入 `approve`/`reject` 就以 **human** 身份走服务正式的审阅路径 `POST /api/releases/:id/review`——桌面端按下"确认上线"的同一条路由，用隔离数据目录自己那份 token，所以审计是服务写下的 `actor:'human'` 的 `release.approved`/`release.rejected`，批准后由服务自己上传封存产物。之后 runner 等发布落到终态（上限 `--review-timeout`，没落到就如实记 `pending`），把结果写进 `live.json` 的 `approvals`，**时间线继续往下走**——完整时间线因此走得过去。直接回车、超时、答了别的东西，或者 stdin 不是 TTY（管道、CI、后台），都照旧暂停频道、以「停在人工确认」退出 0。提示与读入通过 `LiveDeps.prompt` 注入，生产实现用 `node:readline` 且**只在 `process.stdin.isTTY` 时提供**，测试注入假实现。
 
 **退出码只说明运行本身有没有出错**：时间线走完、预算用完、额度门禁阻断、某一轮 `needs_input`、停在人工确认都是 0；没等到任务、一轮超时、任务不再就绪、检测到旧转接、墙钟超时、服务抛错或清理失败才是 1。模型的表现全部作为指标报告，`invariants` 逐条评估并写进 `summary.md`，但不决定退出码。
 
 真实调度器在 live 下不停，所以它自己也会发起轮次（一轮以 `continue` 结束 30 秒后就有下一轮）。时间线的 `turn` 因此**先接管**这样的轮次：有一轮在 `running` 就等它结束，有一轮已经跑完而 runner 从未等过就直接记下，两者都没有才把频道置为到期开新的一轮。`--budget` 只挡「开新轮」，被接管的轮次照样进「每一轮」表（`live.json` 的 `turns[].adopted`），表的行数与 `spentTurns` 对得上。置为到期之前 runner 先重新打开频道开关（引擎对 `interrupted` 的运行会把它关掉，`live.json` 与超时说明里的 `enabled=` 就是这个开关）。**任务窗口在 App 前台时 App 可能自己中断 Morrow 跟随的那一轮又自己 resume**：这种情况下 `turn` 在 15 秒内找同一线程上 `trigger=resume_interrupted_task` 的 `native-app` 运行，等它结束，把这一对记成同一轮（`interruptedByApp`/`resumedRunId`/`resumedStatus`/`resumedWallMs`，工具类型取并集，`morrow-next` 仍取 Morrow 那一轮的），找不到就照旧记 `interrupted`——两种都不是失败条件。所以第 3 步要让任务保持已加载但不在前台，详见 [`LIVE-MODE-PROPOSAL.md`](../../docs/acceptance/LIVE-MODE-PROPOSAL.md) 第 10.1 节的首跑记录。`advance` 的真实等待切成不超过 5 秒的片，每片之间过一遍停止条件，所以额度门禁、任务掉线、旧转接和墙钟不会被一次长 `sleep` 掩盖到等待结束。
 
-live 运行额外写 `live.json`（绑定的任务、App 与运行时版本、三道闸、缩放比例、运行前后的账户读数与差值、每一轮的真实起止/耗时/`morrow-next` 结论/`native_items` 里出现过的工具类型/是不是接管来的、停止原因），`cleanup.json` 多出 `app`/`threadId`/`unbound: false`/`usageAfter`，并且**不写 `calls.jsonl`**（见指标一节的 `repeatedFailures`）。`home/` 与 `project/` 原样保留，绑定也不解除：事后要能在 App 里打开那条任务逐条核对。
+live 运行额外写 `live.json`（绑定的任务、App 与运行时版本、三道闸、缩放比例、运行前后的账户读数与差值、每一轮的真实起止/耗时/`morrow-next` 结论/`native_items` 里出现过的工具类型/是不是接管来的、终端上做过的人工上线确认、停止原因），`cleanup.json` 多出 `app`/`threadId`/`unbound: false`/`usageAfter`，并且**不写 `calls.jsonl`**（见指标一节的 `repeatedFailures`）。`home/` 与 `project/` 原样保留，绑定也不解除：事后要能在 App 里打开那条任务逐条核对。
 
 ## 组成
 
@@ -107,6 +110,8 @@ live 运行额外写 `live.json`（绑定的任务、App 与运行时版本、�
 | `misleading-copy` | `copy` | `sharelink` | 按钮写"分享给所有人"，实际只生成团队内可见的链接 | 是（补丁 4） |
 | `not-needed` | `not-needed` | `taxreport` | 使用率低，但访谈里没人要求过它（`askedFor: false`） | **不是** |
 
+每条 planted 另外登记一个别名——这个功能在 `/usage` 里的中文标题（批量导出、交接导入、归档看板、分享链接、税务报表）。发现率认 ID 也认别名：两种夹具策略写的都是 ID，真实模型写的往往是标题。
+
 补丁的序号对应策略记录发现的顺序：`careful` 按"使用率缺口"排序（目标用户要求过、但用得最少的排最前），于是补丁 n 就是第 n 条发现的修复。
 
 两种策略的差别只在读不读 `askedFor`：`careful` 按 `classify()` 用样本自己的字段分类，反例记成 `hypothesis` 并写明"不作为缺陷，也不改动它"；`naive` 只看一个数字——使用率最低的那个功能——不附证据、不问原因，于是把反例当成缺陷，把改动、选择和发布全挂在它上面。
@@ -137,7 +142,7 @@ export default defineScenario({
   budget: { turns, reviews? },
   timeline: [...],
   invariants: [...],
-  planted?: [{ id, where, description, shouldFix, kind?, feature? }],
+  planted?: [{ id, where, description, shouldFix, kind?, feature?, aliases? }],
   selfCheck?: ['guardrails.violationsCaught', ...],
 });
 ```
@@ -155,9 +160,9 @@ export default defineScenario({
 | `recall` | 本次要回答的问题。给了它，策略才会走"自动召回 + 针对问题的 `memory.recall` + `memory.read` 读全文 + 逐条 `memoryRefs`"这条路；不给它，策略完全不引用经验——`namecheck` 重建的 0.6.0 就还没有这套机制。 |
 | `selfCheck` | 这个场景**必须**真的比出差别的指标名。默认自检会跳过"careful 也没产生可比取值"的规则；写进 `selfCheck` 的规则不跳过，于是场景一旦不再产生它本来要产生的证据就会失败，而不是默默通过。写错名字同样算失败。 |
 | `project.serve` | `{ args, ready?, probe? }`：runner 在隔离项目目录里用当前 Node 起 `node <args…>`，`PORT` 是它自己挑的空闲端口，不经过 shell，环境只有 `PATH`/`HOME`/`NO_COLOR`/`TMPDIR`/`PORT`。轮询 `ready`（缺省 `/`）直到应答，再把 `probe` 读成 JSON 放进 `app.probe` 供 invariant 使用；地址通过 `{{appUrl}}` 进入项目说明，`finally` 里先 SIGTERM 再等退出，必要时才 SIGKILL，结果写进 `cleanup.json` 的 `app`。计划里写的是 `{command, port}`——固定端口没法同时跑两次运行（进程内测试和 `run all` 都会起多个服务），所以端口由 runner 挑，场景只说跑什么。 |
-| `brief` 里的占位符 | `{{appUrl}}` 是 runner 起的种子应用地址，`{{usageUrl}}` 是这次运行的使用数据地址（接收端 + `feedback.path`）。它们在创建项目前填进项目说明，也就是真实模型唯一能读到的那份要求。写了别的占位符直接报错，不会留在正文里。 |
+| `brief` 里的占位符 | 四个：`{{appUrl}}` 是 runner 起的种子应用地址，`{{usageUrl}}` 是这次运行的使用数据地址（接收端 + `feedback.path`），`{{releaseUrl}}` 与 `{{statusUrl}}` 是发布适配器的上传与状态查询地址（接收端的 `/deploy` 与 `/status`，和 careful 策略经 `policyScenario` 拿到的是同一份）。它们在创建项目前填进项目说明，也就是真实模型唯一能读到的那份要求。两种 runner 都填，所以夹具策略虽然不读项目说明，占位符校验一样会过；写了别的占位符直接报错，不会留在正文里。 |
 | `explore` | 让这成为一个探索型场景：两种策略都先建观测、读一份真实样本、把发现逐条写成看板事项，再选一件去改；不给它就像四个历史场景那样第一轮直接改动。样本约定是"一个按功能 ID 索引的对象"，每行带 `title`、`visits`、`completionRate`、`abandonStep`、`askedFor`、`emptyStateNextAction`、`copyMatchesBehaviour`。`askedFor` 是"使用率低是缺陷"和"使用率低是因为目标用户不需要"之间唯一的区别，忽略它的策略必然分不出反例。 |
-| `planted[].kind` / `planted[].feature` | 只有探索型场景填。`kind` 是场景自己知道的问题类别（`entrance`/`flow`/`empty-state`/`copy`/`not-needed`），`feature` 是它属于哪个 `/usage` 功能。指标靠"事项正文里出现了这个功能 ID"把一条发现对上一个埋入的问题——夹具状态机和真实模型走的是同一套匹配，所以 `defineScenario` 会拒绝互相包含的功能 ID。 |
+| `planted[].kind` / `planted[].feature` / `planted[].aliases` | 只有探索型场景填。`kind` 是场景自己知道的问题类别（`entrance`/`flow`/`empty-state`/`copy`/`not-needed`），`feature` 是它属于哪个 `/usage` 功能，`aliases` 是这个功能的其他叫法——实践中就是它在使用数据里的标题。指标靠"事项正文里出现了这个功能 ID **或它的任一别名**"把一条发现对上一个埋入的问题：夹具状态机写的是 ID，真实模型写的往往是数据里那个标题（`usagegap-live-02` 记的是「让值班人员从首页直接找到批量导出」，纯 ID 匹配判它 0/5）。别名不改变 fixture 的数字。`defineScenario` 对功能 ID 和别名沿用同一条校验：不能互相包含、不能重复，否则一次命中对应不上唯一的埋入问题。 |
 
 timeline 动词：
 
@@ -167,7 +172,7 @@ timeline 动词：
 | `poll` | 调用 loop 自己的观察入口 `loop.poll(watchId)` 采集一次样本。 |
 | `set` | 换掉接收端的反馈样本，可带 `truth: 'noise' \| 'goodhart' \| 'environment'` 标签。 |
 | `mode` | 把接收端切到 `normal \| disconnect \| wrong \| unavailable`。 |
-| `approve` / `reject` | 用桌面凭证和当前 `reviewHash` 调 `POST /api/releases/:id/review`。 |
+| `approve` / `reject` | 用桌面凭证和当前 `reviewHash` 调 `POST /api/releases/:id/review`。fixture 下 runner 直接调它（时间线就是"人"）；live 下决定必须来自终端上的人，见上面的 live 小节。 |
 | `guide` | 以 `source: 'chat'` 向同一条原生任务发一条用户指导。 |
 | `verify` | 仅 fixture：把排队中的独立复核推进到结论并落库。 |
 | `restart` | 关掉服务再在同一数据目录上打开。 |
@@ -202,11 +207,11 @@ invariant 是命名过的谓词，输入 `{ store, service, transport, receiver,
 - `calls.jsonl`：策略发起的每一次 `/api/agent` 调用，含操作名、输入摘要（`sha256(input)` 前 12 位）、状态码和 requestId。**live 模式不写这个文件**：真实模型走 `agent-cli.ts`，runner 看不到状态码。
 - `labels.json`：`{ staleMemoryIds, truth: [{ stepIndex, truth, virtualTime }], planted }`——指标唯一的非 SQLite 输入。
 - `run.json`：这次运行的身份（runId、`mode`、场景与版本、策略、seed、预算、墙钟毫秒）。没有任何表记录它，`metrics <运行目录>` 靠它复现同一份 `config`。live 运行的 `mode` 是 `live`、`policy` 是 `live`。
-- `live.json`（只有 live 模式）：绑定的任务与 App/运行时版本、三道闸、`advanceScale`、运行前后的账户读数与差值、每一轮与每一步的真实起止与耗时、每一轮 `native_items` 出现过的工具类型清单、被 App 自己中断又续跑的那几轮（`interruptedByApp`/`resumedRunId`/`resumedStatus`/`resumedWallMs`）、停止原因与退出码。
+- `live.json`（只有 live 模式）：绑定的任务与 App/运行时版本、三道闸、`advanceScale`、运行前后的账户读数与差值、每一轮与每一步的真实起止与耗时、每一轮 `native_items` 出现过的工具类型清单、被 App 自己中断又续跑的那几轮（`interruptedByApp`/`resumedRunId`/`resumedStatus`/`resumedWallMs`）、终端上做过的人工上线确认（`approvals`：`releaseId`、决定、时刻、`byHumanAtTerminal: true`、发布的最终结局、服务记下的那条 human 审计）、停止原因与退出码。
 - `prepared.json`（只有 live 模式，由 `prepare` 写）：场景与版本、run-id、创建时间、绝对项目路径、种子文件数，以及 `git`——项目目录是不是一个独立 git 仓库、种子是不是已经提交。
 - `metrics.json`：下一节的全部指标。
 - `cleanup.json`：暂停的频道数、服务是否关闭、临时目录是否删除，以及场景起过种子应用时它的地址、PID、是否已退出、是否用到了 SIGKILL。
-- `summary.md`：固定标注、预算使用、invariant 结果、指标表；探索型场景另有一节「探索指标」，把发现率、附证据率、归因正确率、误修率连同"这些取值不说明模型自主性"的标注一起给出。live 模式的固定标注换成「live 结果是隔离环境下的模型验证，不是真实业务效果；一次运行是一次抽样」，另外加上观察窗口的压缩倍数说明，以及一节「每条发现的原文」——发现率是文本匹配得出的**下限判据**，不是人工评分，所以原文要留给人抽查。
+- `summary.md`：固定标注、预算使用、invariant 结果、指标表；live 运行在终端上做过人工确认时另有一节「人工上线确认」（发布、决定、时刻、结局、服务记下的 human 审计）；探索型场景另有一节「探索指标」，把发现率、附证据率、归因正确率、误修率连同"这些取值不说明模型自主性"的标注一起给出。live 模式的固定标注换成「live 结果是隔离环境下的模型验证，不是真实业务效果；一次运行是一次抽样」，另外加上观察窗口的压缩倍数说明，以及一节「每条发现的原文」——发现率是文本匹配得出的**下限判据**，不是人工评分，所以原文要留给人抽查，每条还写明命中的是功能 ID 还是哪个别名。
 
 `--keep` 会把 `home/` 和 `project/` 一起复制到产物目录，并保留临时目录。`--repeat N` 把 N 次运行写成 `run-1/`…`run-N/`，再在上一层写一份含均值/最小/最大的 `summary.md` 与 `metrics.json`。
 
@@ -234,7 +239,7 @@ invariant 是命名过的谓词，输入 `{ store, service, transport, receiver,
 | `staleMemory` | 用 `labels.staleMemoryIds` 去比对全部选择的 `memoryRefs`（带 `use`）与 `understandingRefs` / 复盘的 `assessment.understandingRefs`（没有 `use`，视为沿用）：`followed`=被 `apply`；`adapted`=只被 `adapt`；`avoided`=只被 `avoid`/`not_applicable`；`ignored`=从未被引用。 | **缺 `labels.json` 时整项为 `unknown`**。 |
 | `restartConsistency` | 还停在 `running` 的运行 / 频道、停在 `publishing` 的发布、还在 queued/running 的复核；四项都是 0 才 `ok`。 | 不会；没有 timeline 时只有 `restarts` 为 `unknown`。 |
 | `goalOutcome` | 最近一个带 `rule` 的 outcome 预期，使用选择后、原观察窗口内最新的同来源证据；measurement 核对原基线及采集时点质量，`delta` 的 value 为相对原基线的绝对差值。 | 没有合格来源/窗口的记录时为 `unknown`；记录存在但基线或质量无效时保留 `verdict: unknown`。 |
-| `usagegap` | 探索型场景专属，从 `items`、`loop_evidence`、`strategy_decisions`、`loop_releases` 加 `labels.planted` 算出：`discovered` 是有事项正文提到它的埋入问题数；`findings` 是提到任一埋入功能的事项数，`findingsWithEvidence` 是其中引用了**观测类**证据（`origin` 为 `http`/`native`，或带 `watchId`）的那些——策略自己刚写完再封存的文件不算观测；`attribution` 只看两条低使用率的埋入问题，`not-needed` 记成 `hypothesis` 才算对、`entrance` 记成非 `hypothesis` 才算对；`improvements` 统计选中 `act` 的选择里冻结了带规则的结果预期（`withExpectation`）、预期来源是真实注册的观测（`withObservation`）、两者都有（`withBoth`），以及复盘真的用那个观测在窗口内采集到的样本核对过（`observed`）；`misFix` 是 `shouldFix: false` 的问题里被封存过文件改动、被选为行动、进入过发布，或事项状态已是 `verified`/`resolved` 的那些。 | **缺 `labels.json` 时为 `unknown`**；场景的 `planted` 一条 `kind` 都没有（不是探索型场景）时也是 `unknown`，不是 0。比例分母为 0 时该比例为 `unknown`。 |
+| `usagegap` | 探索型场景专属，从 `items`、`loop_evidence`、`strategy_decisions`、`loop_releases` 加 `labels.planted` 算出（匹配一律是"事项的标题/正文/下一步里出现了功能 ID 或它的别名"）：`discovered` 是有事项正文提到它的埋入问题数；`findings` 是提到任一埋入功能的事项数，`findingsWithEvidence` 是其中引用了**观测类**证据（`origin` 为 `http`/`native`，或带 `watchId`）的那些——策略自己刚写完再封存的文件不算观测；`attribution` 只看两条低使用率的埋入问题，`not-needed` 记成 `hypothesis` 才算对、`entrance` 记成非 `hypothesis` 才算对；`improvements` 统计选中 `act` 的选择里冻结了带规则的结果预期（`withExpectation`）、预期来源是真实注册的观测（`withObservation`）、两者都有（`withBoth`），以及复盘真的用那个观测在窗口内采集到的样本核对过（`observed`）；`misFix` 是 `shouldFix: false` 的问题里被封存过文件改动、被选为行动、进入过发布，或事项状态已是 `verified`/`resolved` 的那些。 | **缺 `labels.json` 时为 `unknown`**；场景的 `planted` 一条 `kind` 都没有（不是探索型场景）时也是 `unknown`，不是 0。比例分母为 0 时该比例为 `unknown`。 |
 | `cost` | `usage_samples` 每个窗口首尾读数的差值，加上 `runs[].usage.delta`。 | **两者都没有时为 `unknown`**——fixture 运行永远如此：脚本化后台不报额度。live 运行在开始和结束各取一次真实读数，所以它不是 `unknown`。 |
 | `config` | `source` 用 `service/source-version.ts` 对**仓库根目录**取指纹（即算出这些数字的 harness 版本，不是被测项目）；`model` 取最近一次调度运行的 `model`（回退到脚本化任务快照的 `state.model`）；`permission`、`budget.maxRunsPerDay` 来自频道行；`mode`/`policy`/`seed`/`scenario`/`scenarioVersion`/`budget.turns`/`budget.reviews` 来自 `run.json`。 | 缺 `run.json` 时那几项为 `unknown`；取指纹失败时 `source` 为 `unknown`。 |
 

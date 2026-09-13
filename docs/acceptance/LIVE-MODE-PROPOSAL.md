@@ -2,6 +2,8 @@
 
 **负责人已经拍板，live 模式已实现。** 下面第 1–10 节是设计正文（原提案），每一节末尾原来的「待确认」已经换成对应的决定；第 11 节是决定记录本身。实现在 `scripts/acceptance/live.ts`（编排与生产 deps 工厂）、`scripts/acceptance/timeline.ts`（动词的 live 分支）、`scripts/acceptance/run.ts`（`prepare` 与 `--mode live`）、`scripts/acceptance/metrics.ts` 与 `report.ts`（模式分支），测试在 `tests/acceptance-live.test.ts`（全部用注入的假依赖，不连真实 App、不消耗额度）。
 
+已经真的跑过两次：**10.1 是首跑**（`usagegap-live-01`，退出码 1，`turn-timeout`），**10.2 是第二次**（`usagegap-live-02`，退出码 0，`needs-input`，两轮真实轮次都正常结束）。第二次证明通道通了，也提出了三个要补的地方——那三件事已经做完，决定 5 因此有一处修正（人在终端上输入 `approve` 就是人工确认）。完整时间线的建议参数在 10.2 末尾。
+
 ## 2026-09-11 的决定与实现状态
 
 | # | 决定 | 实现 |
@@ -10,7 +12,7 @@
 | 2 | **两步调用。** `prepare` 建目录、写种子与 `prepared.json`、打印人要做的四步后退出 0；`run` 再起服务、关联、跑时间线。`run` 拒绝：没有 `prepared.json` 的目录、已有 `home/` 的目录、缺 `--run-id`、场景与 `prepared.json` 不符。 | `prepareLive()` / `readPrepared()`。 |
 | 3 | **`--advance-scale` 缺省 0.1**（20 分钟压成 2 分钟），可显式设 `1`；比例写进 `run.json`/`live.json`，`summary.md` 明写压缩倍数与「`adjustmentLatency` 的绝对分钟数不可与 fixture 直接比较」。 | `liveDefaults.advanceScale`、`scaleNote()`。 |
 | 4 | **只有运行本身出错才非零退出**（第 6 节的表逐条照做）。模型的表现全部进指标；`invariants` 逐条评估并写进报告，但不决定退出码。 | `stopExitCodes`，`summary.md` 的 Invariants 小节明写这一点。 |
-| 5 | **三道闸都显式设好：**`--budget N` 必填（缺了退出 2）；`--project-limit` 缺省 5、`--project-window` 缺省 `5h`；`--reserve` 缺省 20、`--reserve-window` 缺省 `weekly`，并置 `stopWhenUsageUnknown: true`。频道 `maxRunsPerDay = budget × 2`；runner 自己另外数**本次运行新出现**的 `morrow-schedule` 行，超过 `--budget` 立即暂停频道并停止（退出 0，报告写明剩余步数）。三项参数在开头原样打印并写进 `live.json`。**不实现 `--allow-approve`**：`approve` 一律打印发布信息、暂停频道、以「停在人工确认」退出 0。 | `liveSettings()`、`live.gates`、`guard()`、`liveDecide()`。 |
+| 5 | **三道闸都显式设好：**`--budget N` 必填（缺了退出 2）；`--project-limit` 缺省 5、`--project-window` 缺省 `5h`；`--reserve` 缺省 20、`--reserve-window` 缺省 `weekly`，并置 `stopWhenUsageUnknown: true`。频道 `maxRunsPerDay = budget × 2`；runner 自己另外数**本次运行新出现**的 `morrow-schedule` 行，超过 `--budget` 立即暂停频道并停止（退出 0，报告写明剩余步数）。三项参数在开头原样打印并写进 `live.json`。**不实现 runner 自批准**：`approve` 要么由**人在终端上输入 `approve`**（2026-09-12 修正，见第 5 节），要么停在人工确认。 | `liveSettings()`、`live.gates`、`guard()`、`liveDecide()`。 |
 | 6 | **`repeatedFailures` 在 live 下保持 `unknown`**，`metrics.json` 的 `repeatedFailuresSource` 写明原因。不从 `events` 重建 `calls.jsonl`——live 运行的产物目录里根本没有这个文件。 | `metrics.ts` 的 `liveRepeatedNote`。 |
 | 7 | **人工评分留到第一次运行之后**，本次不实现；但 `summary.md` 必须列出每条发现的原文，并写明「发现率是文本匹配得出的下限判据，不是人工评分」。 | `findingsSection()`。 |
 | 8 | **浏览器/Computer Use 在 follower 轮次已实测可用**（见 [`../CODEX-CONNECTION-VALIDATION-2026-09-09.md`](../CODEX-CONNECTION-VALIDATION-2026-09-09.md)）。每一轮 `native_items` 里出现过的工具类型清单记进 `live.json`。 | `LiveSession.turnTools()`、`live.turns[].tools`。 |
@@ -107,7 +109,7 @@ fixture runner 为了可重复做了三件真实 daemon 不会做的事：停掉
 | `set` / `mode` | **不变**。接收端仍是本机的 `startReceiver()`，使用数据和发布回执都由它给，所以扰动完全可控。这是 live 模式仍然可读的关键：变量只有模型一个。 |
 | `advance` | **虚拟时钟不能用**。见下。改成真实等待：`advance N` 等 `min(N × --advance-scale 分钟, --max-wait)`，并把缩放比例、计划等待和真实耗时都记进 `timeline.jsonl` 与 `live.json`。等待**切成不超过 5 秒的片，每片之间过一遍第 6 节的停止条件**：`--max-wait` 最长 10 分钟，一次睡到底会让这期间调度器自己发起的轮次不被计数，预算、额度门禁（频道的 `usageWait`）、`readyThreadCount` 掉 0、`restartRequired` 与墙钟也都要等到睡醒才被发现。真实耗时仍按时钟差值记录，`waitedMs` 与 `cappedByMaxWait` 的含义不变。 |
 | `verify` | **fixture 专用，live 下是 no-op**。独立复核走真实 `codex exec`（只读、临时会话、5 分钟硬上限）。runner 只在需要时等 `loop_verifications` 从 `queued`/`running` 落到终态，上限 `--review-timeout`（缺省 6 分钟）。 |
-| `approve` / `reject` | 见第 5 节：**不自动批准**，也没有开关可以让它自动批准。打印发布信息、暂停频道、以「停在人工确认」退出 0。 |
+| `approve` / `reject` | 见第 5 节：**runner 不自批准，人在终端上输入 `approve` 就是人工确认**。stdin 是 TTY 时打印发布信息（标题、`reviewHash`、事项、产物摘要、改动摘要），在终端上问一次并等 `--approval-wait`（缺省 30 分钟）；人输入 `approve`/`reject` 就以 **human** 身份走服务正式的审阅路径，等发布落到终态（上限 `--review-timeout`），把结果记进 `live.json` 的 `approvals` 并**继续时间线**。直接回车、超时、答了别的东西，或者 stdin 不是 TTY，都照旧暂停频道、以「停在人工确认」退出 0。没有待确认的发布时先等最多 `--approval-wait` 看它会不会出现。 |
 | `guide` | 保留：以 `source:'chat'` 向同一条原生任务发一条指导。它会真的消耗一轮 App 对话（不计编排预算）。 |
 | `restart` | 保留：关服务再在同一 `home` 上打开。绑定、历史与待核对回执都应当还在。 |
 | `pause` / `resume` | 不变。 |
@@ -149,11 +151,18 @@ fixture 的 `careful`/`naive` 是写死的状态机，它们直接调 `/api/agen
 
 运行开始前 `await engine.usage.refresh()` 取一次读数，结束时再取一次，两者与差值一起写进 `live.json`；`metrics.cost` 因此**不再是 `unknown`**：它来自 `usage_samples` 的窗口差值加 `runs[].usage.delta`。这是 live 模式相对 fixture 的一个真实增量。
 
-**发布确认不自动做，而且没有开关能让它自动做。** `approve`（以及 `reject`）在 live 模式下的行为是：把发布的标题、改动、`reviewHash` 和产物摘要打到 stdout，暂停频道，写报告，以「停在人工确认」退出 0。**`--allow-approve` 不实现**——让 runner 自己批准会把「人工上线确认」这道门禁测空，而它正是 Morrow 要证明的东西之一。`--budget 3` 的第一次运行本来也走不到 `approve`（`usagegap` 的 `approve` 在第 6 轮之后）。
+**发布确认永远是人做的，runner 没有自批准的路径。** 决定 5 原来的说法是"`approve` 一律停止"，2026-09-12 修正为：**不实现 runner 自批准；人在终端上输入 `approve` 就是人工确认。** 差别不在门禁上，而在完整时间线走不走得过去——`usagegap` 的 `approve` 之后还有 6 个步骤，一律停止的话它们永远跑不到。
+
+`approve`（以及 `reject`）的行为按 stdin 分两种：
+
+- **stdin 是 TTY**（有人守在终端边上）：把发布的标题、`reviewHash`、事项、封存产物摘要与改动摘要打到 stdout，然后在终端上问一次「输入 approve 批准、reject 拒绝，直接回车或超时则停在人工确认」，等 `--approval-wait`（缺省 30 分钟）。人输入 `approve`/`reject` 时，runner 以 **human** 身份走服务正式的审阅路径——`POST /api/releases/:id/review`，桌面端按下"确认上线"的同一条路由，用隔离数据目录自己那份 token，所以审计是服务写下的 `actor:'human'` 的 `release.approved`/`release.rejected`，批准后也由服务自己去上传封存产物。之后 runner 等发布落到终态（`published`/`failed`/`unknown`，上限 `--review-timeout`；没落到就如实记 `pending`），把结果记进步骤结果与 `live.json` 的 `approvals`（`{releaseId, decision, at, byHumanAtTerminal: true, outcome, audit}`），并**继续时间线**。直接回车、超时、或者答了别的东西都不算决定：照旧停在人工确认。没有待确认的发布时先等最多 `--approval-wait` 看它会不会出现，仍然没有就照旧停止。提问期间频道先暂停——人可能想很久，而真实调度器不停，30 分钟的 30 秒间隔足够把 `--budget` 烧光；有了决定再把频道放回自动工作。
+- **stdin 不是 TTY**（管道、CI、后台）：没有人能回答，所以行为和原来完全一样——打印发布信息、暂停频道、以「停在人工确认」退出 0。
+
+提示与读入通过 `LiveDeps.prompt(question, timeoutMs)` 注入，**生产工厂只在 `process.stdin.isTTY` 时提供它**（"没有人守在终端边上"因此就是"没有 `prompt`"），实现用 `node:readline`；测试注入假实现，所以整条路径能在不连真实 App、不消耗额度的情况下被测。runner 自己不写库、不伪造审计，也没有别的路可以走到"已发布"。
 
 **已决定（5）**：三道闸的缺省值是 `--budget`（**必填，无缺省，缺了退出 2**）、`--project-limit 5` / `--project-window 5h`、`--reserve 20` / `--reserve-window weekly` 并置 `stopWhenUsageUnknown: true`。频道 `maxRunsPerDay` 设为 `budget × 2`（复核与轮次共用日预算）。三项参数在运行开头原样打印，并写进 `live.json` 的 `gates`。
 
-**`--allow-approve` 不实现。** `approve`（以及 `reject`）一律打印发布的标题、`reviewHash`、事项、封存产物与改动摘要，暂停频道，以「停在人工确认」退出 0。理由是让 runner 自己批准会把「人工上线确认」这道门禁测空，而它正是 Morrow 要证明的东西之一。
+**runner 自批准不实现，`--allow-approve` 这个开关也不存在。** 让 runner 自己批准会把「人工上线确认」这道门禁测空，而它正是 Morrow 要证明的东西之一；人在终端上输入 `approve` 不是自批准——决定是人给的，路径是服务正式的那一条，审计是 `actor:'human'`。
 
 runner 另外自己数**本次运行新出现**的 `morrow-schedule` 行（关联时同步进来的历史轮次不算，它们在编排开始前就被记进基线）。超过 `--budget` 就立刻暂停频道并停止，退出 0，报告写明剩余步数。注意真实调度器不停：一轮以 `continue` 结束时 `nextRunAt` 是 30 秒之后，它会自己再发起一轮，这些轮次一样计入 `--budget`；下一个时间线 `turn` 会接管它们而不是另开一轮，所以 `--budget` 只挡「开新轮」，「每一轮」表不会比 `spentTurns` 少行。
 
@@ -167,7 +176,7 @@ runner 另外自己数**本次运行新出现**的 `morrow-schedule` 行（关�
 | `--budget` 用完 | 0 | 预期结果；报告写明剩余步数。 |
 | 项目额度上限或保留线阻断 | 0 | 预期结果；`live.json` 记下阻断时的读数与窗口重置时间。 |
 | 某一轮以 `needs_input` 结束 | 0 | 真实模型提了问题。**runner 不代替人回答**：打印问题、暂停频道、结束。 |
-| 遇到 `approve` 且没有 `--allow-approve` | 0 | 停在人工确认。 |
+| 走到 `approve`，而人没有给出决定 | 0 | 停在人工确认：stdin 不是 TTY，或者人直接回车、超时、答了别的东西，或者没有等到待确认的发布。人输入 `approve`/`reject` 时不停，时间线继续。 |
 | 没等到可用的 App 任务 | 1 | `readyThreadCount` 在 `--wait-bind` 内没到 1。 |
 | 一轮超过 `--turn-timeout` | 1 | 先 `POST /api/channels/:id/native/interrupt` 精确停掉本轮的 turn，再中止。 |
 | `readyThreadCount` 中途掉到 0 | 1 | 人关了 App 任务窗口，或 App 重启了。不新建替代任务来掩盖。 |
@@ -205,7 +214,9 @@ runner 另外自己数**本次运行新出现**的 `morrow-schedule` 行（关�
 | `policySelfCheck` | careful 必须在约定指标上胜过 naive | **不适用**，只有一个"策略" |
 | `compare --ignore-volatile` 零差异 | 必须成立 | **不成立**。真实模型不可重复；两次 live 运行的差异本身是要看的东西，不是要消灭的东西。 |
 
-`planted`（五条，各带 `kind` 与 `/usage` 功能 ID）是 live 模式下唯一的标准答案，和 fixture 用的是同一份标签；匹配规则也是同一条：**事项正文里出现了那个功能 ID**。这条规则是有意为之——它对夹具状态机和真实模型一样，不需要为 live 模式另写一套判定，也不需要人去逐条对答案。代价是模型可能提到功能 ID 却没真的理解那个问题；所以 `summary.md` 必须同时给出每条发现的原文，让人能抽查，并且写明「发现率是文本匹配得出的下限判据，不是人工评分」。
+`planted`（五条，各带 `kind`、`/usage` 功能 ID 和它在数据里的中文标题别名）是 live 模式下唯一的标准答案，和 fixture 用的是同一份标签；匹配规则也是同一条：**事项正文里出现了那个功能 ID，或者场景给它登记的任一别名**。这条规则是有意为之——它对夹具状态机和真实模型一样，不需要为 live 模式另写一套判定，也不需要人去逐条对答案。
+
+别名是第二次运行（10.2）之后加的：模型真的发现并修掉了 `buried-entrance`，但它**按数据里的中文标题**称呼那个功能（事项标题「让值班人员从首页直接找到批量导出」），正文里一个 `bulkexport` 都没有，于是纯 ID 匹配判它 0/5。`defineScenario` 对别名沿用和功能 ID 同一条「不能互相包含」的校验，所以一次命中只可能对应一个埋入问题；`summary.md` 写明命中的是 ID 还是哪个别名。代价仍然在：模型可能提到那个功能却没真的理解问题；所以 `summary.md` 必须同时给出每条发现的原文，让人能抽查，并且写明「发现率是文本匹配得出的下限判据，不是人工评分」。
 
 `summary.md` 的固定标注在 live 模式下换成：**live 结果是隔离环境下的模型验证，不是真实业务效果。** 一次运行是一次抽样；反馈样本、接收端和使用数据都是本机构造的。
 
@@ -220,7 +231,7 @@ runner 另外自己数**本次运行新出现**的 `morrow-schedule` 行（关�
 | **应用内浏览器 / Computer Use** | **已验证可用**：2026-09-09 的连接实测在 Morrow 跟随的真实轮次上打开了本机合成页面、读取随机 marker、真实点击按钮并读回对应结果，`get_usage_limits` 与 Computer Use 的 `sky.list_apps()` 也实际调用成功——见 [`../CODEX-CONNECTION-VALIDATION-2026-09-09.md`](../CODEX-CONNECTION-VALIDATION-2026-09-09.md)。0.4 那次「浏览器插件不可用」只适用于 Morrow 自己创建的任务。 | 仍然把每一轮 `native_items` 里出现过的工具类型清单记进 `live.json`：可用不等于模型这一轮真的用了，走查路线有没有被走过要看这份清单。Computer Use 只验证过列举接口，不代表所有桌面交互已经验收。 |
 | **非确定性** | 同一场景两次 live 运行结果不同，`compare` 零差异不成立。 | 明确不比较；报告写明「一次运行是一次抽样」。多次运行用 `--repeat` 给均值极值，但每次都要单独付额度。 |
 | **复核 5 分钟硬上限** | 官方 `codex exec` 复核有 5 分钟上限，超时保持未知。真实项目的完整检查可能跑不完。 | `--review-timeout` 略大于 5 分钟；未知结局按既有策略处理，不重跑。 |
-| **人守在终端边上** | 建任务、发首条消息、可能还要按上线确认，都要人。 | 一次调用阻塞等待 + 把要做的四步原样打出来；`--budget 3` 让第一次运行走不到 `approve`。 |
+| **人守在终端边上** | 建任务、发首条消息、上线确认，都要人。走到 `approve` 时 runner 在终端上等最多 `--approval-wait`（缺省 30 分钟），这段时间人必须在。 | 一次调用阻塞等待 + 把要做的四步原样打出来；等待期间频道先暂停，所以人想多久都不会多花额度；stdin 不是 TTY 时不问，直接停在人工确认。 |
 | **任务被并发占用** | 自动轮次发现任务已忙时返回等待，不会转成 steering 干扰手动轮次；但人如果在同一任务里手动提问，这一轮就会一直等。 | 打印的步骤里明确「不要在这个任务里继续手动提问」；`--turn-timeout` 兜底。 |
 | **App 自己中断 follower 轮次** | 任务窗口在 App 前台时，App 可能对这个任务重放 thread settings、把 Morrow 跟随的这一轮标成 `interrupted`（"interrupted on purpose"），然后自己以 `turnTrigger: 'resume_interrupted_task'` 开一轮把活干完。引擎随后按 `finishFailure` 把频道置 `paused` 并关掉开关，于是后续轮次再也起不来。首跑 usagegap-live-01 就是这样（见第 10.1 节）。 | runner 的 `makeDue` 重新打开开关（`liveGateDetail` 打印 `enabled=`），`turn` 步骤把「被 App 中断 + App 自己 resume」的那一对记成同一轮而不是一次失败；`prepare` 打印的第 3 步要求**发完首条消息后把 App 切到别的任务或关闭这个任务的窗口视图（不要删除任务）**，让任务保持已加载但不在前台。 |
 | **端口** | 种子应用的端口由 runner 先绑定再释放，spawn 之前有极短窗口可能被抢；隔离服务用随机端口。 | 抢到的运行在就绪探测上明确失败，不会去量错误的应用。 |
@@ -258,7 +269,7 @@ npm run acceptance -- run usagegap --mode live --run-id <prepare 打印的 run-i
 
 11. `live.json` 里有每一轮的真实起止与耗时，以及每一轮 `native_items` 出现过的工具类型清单——据此看模型这一轮到底用了什么（浏览器、Computer Use 在 follower 轮次上已实测可用，但可用不等于它用了）。
 
-做完这一次，再决定要不要跑完整条时间线（11 轮 + 3 次复核 + 一次人工确认，`--budget` 要相应提高），以及要不要按决定 7 加一轮人工评分作为文本匹配的对照。
+做完这一次，再决定要不要跑完整条时间线（11 轮 + 3 次复核 + 一次人工确认，`--budget` 要相应提高），以及要不要按决定 7 加一轮人工评分作为文本匹配的对照。完整时间线的建议参数在第 10.2 节末尾。
 
 ## 10.1 首跑记录（usagegap-live-01，2026-09-11）
 
@@ -297,6 +308,59 @@ npm run acceptance -- run usagegap --mode live --run-id <prepare 打印的 run-i
 
 下一次 live 运行仍然用 `--budget 3` 重跑同一个场景（新的 `--run-id`），先看第 2 轮能不能真的起来。
 
+## 10.2 第二次运行记录（usagegap-live-02，2026-09-12）
+
+`npm run acceptance -- run usagegap --mode live --run-id usagegap-live-02 --budget 3`，现场在 `artifacts/acceptance/usagegap-live-02/`。**退出码 0，停止原因 `needs-input`**：时间线走了 3/23 步（`turn`、`poll`、`turn`），两轮真实轮次都以 `completed` 结束（313 秒、138 秒），第 2 轮以 `needs_input` 收尾，runner 照约定不代替人回答。账户周额度差值 1%（运行前 weekly 0% → 运行后 1%）；`metrics.cost.byWindow.weekly` 是 2，因为 `cost` 把 `usage_samples` 的窗口差值（1）再加上 `runs[].usage.delta`（第 1 轮 1、第 2 轮 0）。
+
+**第 10.1 节暴露的三个问题都不再出现。** `makeDue` 重新打开开关之后第 2 轮真的起来了；两轮都没有被 App 中断（`live.json` 的 `turns` 里没有 `interruptedByApp`），也没有一轮是接管来的（没有 `adopted`）——这次任务窗口按 `prepare` 打印的第 3 步切到了别的任务，印证了 10.1 的判断：那次中断来自**前台的任务窗口**，不是 follower 本身的问题。`prepared.json` 的 `git: true`，`runs[].treeState` 看的是种子应用自己那棵树。
+
+**模型这两轮做了什么**（全部来自 `events` 的审计记录）：
+
+| 轮次 | 做的事 |
+| --- | --- |
+| 1（313 秒） | 建 `/usage` 观测（`watch.created`）并采到第一份样本；用浏览器侧的 `node_repl` 走了一遍真实页面，记下「首页无批量导出，点归档看板再点页脚共**两次**到达，与源码注释写的三次不一致，以真实操作为准」（`evidence.recorded`）；写下两条认识；建事项 #1「让值班人员从首页直接找到批量导出」；`decision.chosen` 选择"先准备并验证批量导出的首页直接入口"，冻结了结果预期与护栏；跑种子自己的测试（`execution.captured`，退出码 0，`node --test server.test.js`）；把改动提交成 `18c6416`；另起一个独立预览（`http://127.0.0.1:56307`）真实点击验证首页入口已经出现，并明确记下"用户提供的 56104 仍是原首页，未上线"；请求独立复核；以 `morrow-next: wait` 结束。 |
+| 2（138 秒） | 读独立复核的原文，发现它已经被作废——`loop_verifications` 的那条结局是 `unknown`，说明是"复核期间源版本或目标变化，旧结论不能用于当前版本"；自己纠正了上一轮引用的证据快照（那份快照里混着无关的记忆搜索，不能当复核结论的证据）；`decision.chosen` 选"暂停推进，等待发布与数据接入说明"；以 `morrow-next: needs_input` 结束并提问。 |
+
+**模型最后的原话**（事项 #1 的 `nextStep`）：「请提供本场景发布接收 URL、statusUrl、产物格式，以及模拟数据由谁/何时刷新、窗口和候选版本/目标人群如何对应。」它没有编一个部署地址，也没有伪造一次数据刷新——这正是要的行为，缺的是项目说明本来就没写这三件事。
+
+第 10 节那十条验收标准逐条：
+
+| # | 结论 | 依据 |
+| --- | --- | --- |
+| 1 | **通过** | runner 自己发现并关联了人建好的任务；`connectionMode='app-follower'`、`capabilities.create=false`、未关联时 `run` 返回 409（`live.json` 的 `guards`）。App 26.908.40834；`runtimeVersion` 仍是空串（状态里没报，如实记成「未知」）。 |
+| 2 | **通过** | 两轮 `morrow-schedule` 都由真实调度器发起、都以 `completed` 结束，`sessionId`/`nativeTurnId` 真实，`permission='native'`，`model='gpt-6-astra'`。两轮都是时间线自己开的：`--budget 3` 只用掉 2，第 2 轮在第 1 轮结束后立刻由 `turn` 步骤发起，调度器没来得及自己插一轮。 |
+| 3 | **通过** | `events` 里有 `watch.created`、`feedback.observed`、`evidence.recorded`×4、`understanding.updated`×3、`feature.created`、`decision.chosen`×2、`execution.captured`×2、`verification.queued`、`decision.reviewed`、`learning.updated`。没走到发布（`releases` 全 0），这一条本来也不要求。 |
+| 4 | **通过** | 种子应用 `http://127.0.0.1:56104` 整个运行期间在跑，结束时 SIGTERM 正常退出；invariant `the-served-seed-app-reported-the-same-usage-as-the-first-sample` 这次 **PASS**（模型真的建了观测，第一份样本与应用自己的 `/usage` 逐字段一致）。 |
+| 5 | **通过** | `spentTurns` 2/3；项目额度上限（5%/weekly）与保留线（20%/weekly）都没被触发，`usageWait` 一直是 `none`。 |
+| 6 | **通过** | `cost.readings` 6、`cost.byWindow.weekly` 2；`live.json` 的 `usageDelta` 是 `{"weekly": 1}`，两者的关系见本节开头。 |
+| 7 | **通过** | 五项探索指标全部算出来：文本匹配发现率 0/5、附证据 0/0（`unknown`）、归因 0/2、改进 1/1（且真的用观测核对过）、误修 0/1。`summary.md` 有 live 固定标注、压缩倍数说明和「每条发现的原文」一节。 |
+| 8 | **通过** | `cleanup.json`：`app.stopped=true`、`killed=false`、`channelsPaused=1`、`serviceClosed=true`、`directoriesRemoved=false`、`unbound=false`。 |
+| 9 | **通过** | 无残留进程与监听端口；工作树源码与作者的正式数据目录都没被碰过。 |
+| 10 | **通过** | 没有调 `/api/native/background/setup`，没有设 `CODEX_CLI_PATH`，没有 `npm run build:app`。 |
+| 11 | **通过** | `live.json` 的 `turns` 有两轮的真实起止与工具类型清单：第 1 轮 `agentMessage`、`commandExecution`、`fileChange`、`mcpToolCall`、`mcpToolCall:js`、`mcpToolCall:node_repl`、`reasoning`、`userMessage`（浏览器侧的 `node_repl` 真的被用了，而且是拿它走真实页面）；第 2 轮只有 `agentMessage`、`commandExecution`、`reasoning`、`userMessage`。 |
+
+**文本匹配的发现率是 0/5，而人工评分是「发现并修掉 1/5」。** 模型真的找到了 `buried-entrance`：它走了真实页面、量出到达步数、把入口改到首页、跑了测试、提交了 `18c6416`、还另起一个预览点击验证过。它只是**按数据里的中文标题**称呼这个功能——事项标题是「让值班人员从首页直接找到批量导出」，正文里一个 `bulkexport` 都没有，所以 ID 文本匹配判它 0。这正是决定 7 说的那种情形（「也可能理解了却没写那个 ID」），也是本次为此改掉判定规则的原因（见下面第 2 件事）。另外它顺手纠正了一处**种子源码的注释错误**：注释写"要三次点击"，真实操作只要两次，它以真实操作为准并写进了证据。
+
+税务报表（反例 `not-needed`）**正确地没被碰**：`misFix.count` 0，`page-taxreport.js` 未被改动，模型全程没提它。误修 0。归因 0/2 的原因只是那两条低使用率的埋入问题里，`taxreport` 根本没被记成事项（`missing` 2），不是归错。
+
+**模型提的问题，和本次为此做的三件改动**：
+
+1. **项目说明补齐发布接入与数据语义。** `projectBrief()` 多了 `{{releaseUrl}}` 与 `{{statusUrl}}` 两个占位符（接收端自己的 `/deploy` 与 `/status`，和 careful 策略经 `policyScenario` 拿到的是同一份地址），fixture 与 live 两个 runner 都填。`usagegap` 的 `brief` 补了三段：发布方式（经独立复核后用 `release.propose`，适配器 `kind: 'http'`，产物是项目里的 `release.txt`，人工确认后由 Morrow 上传并拿回执，模型不需要自己部署）、使用数据的语义（`generatedAt` 是固定标注、恒为 `2026-02-02T09:00:00.000Z`，判断效果要看**样本之间计数字段的差值**，不要因为它旧就判定数据无效，也不要自己伪造刷新）、目标用户与候选版本的对应（接收端只认经人工确认发布的版本，模拟数据对应最近一次已发布的版本）。
+2. **发现率判定加功能标题别名。** `planted[]` 多了可选的 `aliases`，`usagegap` 五条各登记它在 `/usage` 里的中文标题（批量导出、交接导入、归档看板、分享链接、税务报表）。匹配规则变成「事项正文里出现了功能 ID **或它的任一别名**」，`defineScenario` 对别名沿用和功能 ID 同一条「不能互相包含」的校验，`summary.md` 的「命中的埋入功能」写明命中的是 ID 还是哪个别名。两种夹具策略写的都是 ID，所以 fixture 的数字一个都没变（careful 仍然 5/5、naive 仍然 1/5）；run 02 那条标题现在命中 `bulkexport`（`tests/acceptance-live.test.ts` 用同一个标题字符串把这件事钉住）。
+3. **`approve`/`reject` 改成终端上的人工确认。** 见第 5 节里对决定 5 的修正：stdin 是 TTY 时 runner 在终端上问一次，人输入 `approve` 就以**人**的身份走服务正式的审阅路径（`POST /api/releases/:id/review`），然后时间线继续——完整时间线因此走得过去。
+
+**跑完整条时间线的建议参数**：
+
+```bash
+npm run acceptance -- run usagegap --mode live --run-id <id> \
+  --budget 16 --wall-clock 180 --project-window weekly --project-limit 12
+```
+
+- `--budget 16`：时间线有 11 个 `turn`，再留 5 轮给真实调度器自己发起的轮次（一轮以 `continue` 结束 30 秒后就有下一轮，它们会被下一个 `turn` 步骤接管，但仍然计预算）。频道 `maxRunsPerDay` 随之是 32，盖住 3 次独立复核。
+- `--wall-clock 180`：11 轮 × 前两轮实测的 2–5 分钟，加 3 次独立复核（每次上限 5 分钟）、压缩后的四次 `advance`（20+20+15 分钟 × 0.1 ≈ 5.5 分钟）和一次人工确认的等待。180 分钟是兜底，不是预期耗时。
+- `--project-window weekly --project-limit 12`：02 两轮就吃掉周额度 1%，11 轮加复核按同一速率是 5–8%，5% 的缺省会在中途把运行挡下来。保留线仍用缺省 20%/weekly。
+- 人要守在终端边上：走到 `approve` 时 runner 会在终端上问一次（`--approval-wait` 缺省 30 分钟）。
+
 ## 11. 决定记录：八条原来要拍板的问题，现在的答案
 
 原来这一节是「需要负责人拍板的清单」。2026-09-11 全部拍板，逐条如下（顶部那张表是同一份决定的摘要与实现位置）：
@@ -307,7 +371,7 @@ npm run acceptance -- run usagegap --mode live --run-id <prepare 打印的 run-i
 | 2 | 一次调用阻塞等待，还是两次调用 | **两次调用**：`prepare` 然后 `run --run-id` | 第 2 节 |
 | 3 | `--advance-scale` 的缺省值 | 缺省 **0.1**，可显式设 1；比例写进报告并说明不可与 fixture 比较 | 第 3 节 |
 | 4 | live 运行的成败判据 | **只有运行本身出错才算失败**；invariants 逐条评估但不决定退出码 | 第 4、6 节 |
-| 5 | 三道闸的数值；`--allow-approve` 要不要存在 | `--budget` 必填；项目上限 5%/5h；保留线 20%/weekly + `stopWhenUsageUnknown`；**`--allow-approve` 不实现** | 第 5 节 |
+| 5 | 三道闸的数值；`--allow-approve` 要不要存在 | `--budget` 必填；项目上限 5%/5h；保留线 20%/weekly + `stopWhenUsageUnknown`；**runner 自批准不实现**，`--allow-approve` 这个开关不存在；2026-09-12 修正：人在终端上输入 `approve` 就是人工确认（`--approval-wait` 缺省 30 分钟），时间线继续 | 第 5 节 |
 | 6 | `repeatedFailures` 换来源还是保持 unknown | **保持 `unknown`**，不重建 `calls.jsonl`，在 `repeatedFailuresSource` 写明原因 | 第 4、8 节 |
 | 7 | 第一次运行后是否加人工评分 | 要加，但在第一次运行之后；现在先在 `summary.md` 给出每条发现的原文与「文本匹配是下限判据」的说明 | 第 8 节 |
 | 8 | 浏览器/Computer Use 在 follower 轮次是否可用 | **已实测可用**（2026-09-09）；每轮的工具类型清单仍然记进 `live.json` | 第 9 节 |
