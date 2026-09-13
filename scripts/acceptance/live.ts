@@ -2,6 +2,7 @@ import { spawnSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
+import { createInterface } from 'node:readline';
 import { fileURLToPath } from 'node:url';
 import { startReceiver } from '../../tests/harness/receiver.ts';
 import { grantFor } from '../../tests/harness/grant.ts';
@@ -12,6 +13,7 @@ import { freePort, startApp } from './serve.ts';
 import { LiveStop, bindPollMs, runLiveStep } from './timeline.ts';
 import type {
   ItemView,
+  LiveApproval,
   LiveClock,
   LiveRunner,
   LiveSession,
@@ -98,6 +100,8 @@ export type LiveOptions = {
   maxWaitMinutes?: number;
   waitBindMinutes?: number;
   turnTimeoutMinutes?: number;
+  /** 等人在终端上给出上线决定的上限；也用来等一个待确认的发布出现。 */
+  approvalWaitMinutes?: number;
   reviewTimeoutMinutes?: number;
   wallClockMinutes?: number;
   /** 产物目录；缺省 `artifacts/acceptance/<run-id>`，必须是 `prepare` 建好的那一个。 */
@@ -114,6 +118,8 @@ export const liveDefaults = {
   maxWaitMinutes: 10,
   waitBindMinutes: 10,
   turnTimeoutMinutes: 10,
+  /** 人在终端上做上线确认要的时间；半小时，因为人要真的去读那份发布。 */
+  approvalWaitMinutes: 30,
   reviewTimeoutMinutes: 6,
   wallClockMinutes: 60,
 };
@@ -138,6 +144,7 @@ export function liveSettings(options: LiveOptions): LiveSettings {
     maxWaitMinutes: options.maxWaitMinutes ?? liveDefaults.maxWaitMinutes,
     waitBindMinutes: options.waitBindMinutes ?? liveDefaults.waitBindMinutes,
     turnTimeoutMinutes: options.turnTimeoutMinutes ?? liveDefaults.turnTimeoutMinutes,
+    approvalWaitMinutes: options.approvalWaitMinutes ?? liveDefaults.approvalWaitMinutes,
     reviewTimeoutMinutes: options.reviewTimeoutMinutes ?? liveDefaults.reviewTimeoutMinutes,
     wallClockMinutes: options.wallClockMinutes ?? liveDefaults.wallClockMinutes,
     out: resolve(options.out || join(repoRoot, 'artifacts', 'acceptance', options.runId)),
@@ -168,6 +175,12 @@ export type LiveDeps = {
   clock: LiveClock;
   /** 打给人看的输出。 */
   log(text: string): void;
+  /**
+   * 在终端上问一句并读一行，最多等 `timeoutMs`；超时（或输入流关了）返回 `undefined`。
+   * **生产工厂只在 `process.stdin.isTTY` 时提供它**，所以"没有人守在终端边上"就是"没有 `prompt`"，
+   * `approve`/`reject` 于是回到"打印、暂停、停在人工确认"那条老路。测试注入假实现。
+   */
+  prompt?(question: string, timeoutMs: number): Promise<string | undefined>;
   freePort(): Promise<number>;
   startApp(
     spec: { args: string[]; ready?: string; probe?: string },
@@ -210,6 +223,7 @@ export type LiveFacts = {
     maxWaitMinutes: number;
     waitBindMinutes: number;
     turnTimeoutMinutes: number;
+    approvalWaitMinutes: number;
     reviewTimeoutMinutes: number;
     wallClockMinutes: number;
   };
@@ -218,6 +232,8 @@ export type LiveFacts = {
   usageDelta: Record<string, number> | 'unknown';
   /** 每一轮的真实起止与耗时，加上这一轮 `native_items` 里出现过的工具类型清单。 */
   turns: LiveRunner['turns'];
+  /** 每一次终端上的人工上线确认：决定、时刻、发布的最终结局，以及服务记下的那条 human 审计。 */
+  approvals: LiveApproval[];
   /** 每个时间线步骤的真实起止与耗时。 */
   steps: Array<{ index: number; verb: string; startedAt: string; finishedAt: string; wallMs: number }>;
   spentTurns: number;
@@ -429,6 +445,7 @@ export async function runLive(
       maxWaitMinutes: settings.maxWaitMinutes,
       waitBindMinutes: settings.waitBindMinutes,
       turnTimeoutMinutes: settings.turnTimeoutMinutes,
+      approvalWaitMinutes: settings.approvalWaitMinutes,
       reviewTimeoutMinutes: settings.reviewTimeoutMinutes,
       wallClockMinutes: settings.wallClockMinutes,
     },
@@ -436,6 +453,7 @@ export async function runLive(
     usageAfter: 'unknown',
     usageDelta: 'unknown',
     turns: [],
+    approvals: [],
     steps,
     spentTurns: 0,
     remainingSteps: scenario.timeline.length,
@@ -466,8 +484,11 @@ export async function runLive(
       `- 项目额度上限 --project-limit ${settings.projectLimit}% / --project-window ${settings.projectWindow}`,
       `- 保留线 --reserve ${settings.reserve}% / --reserve-window ${settings.reserveWindow}，并置 stopWhenUsageUnknown: true`,
       `- 观察窗口缩放 --advance-scale ${settings.advanceScale}；单个 advance 最多真实等待 ${settings.maxWaitMinutes} 分钟`,
-      `- 上限：--wait-bind ${settings.waitBindMinutes} · --turn-timeout ${settings.turnTimeoutMinutes} · --review-timeout ${settings.reviewTimeoutMinutes} · --wall-clock ${settings.wallClockMinutes}（分钟）`,
-      `- 不实现 --allow-approve：时间线走到 approve 就打印发布信息、暂停频道、以「停在人工确认」结束。`,
+      `- 上限：--wait-bind ${settings.waitBindMinutes} · --turn-timeout ${settings.turnTimeoutMinutes} · --approval-wait ${settings.approvalWaitMinutes} · --review-timeout ${settings.reviewTimeoutMinutes} · --wall-clock ${settings.wallClockMinutes}（分钟）`,
+      deps.prompt
+        ? `- 人工上线确认：stdin 是 TTY，时间线走到 approve 会在这个终端上问你（最多 ${settings.approvalWaitMinutes} 分钟）。` +
+          '输入 approve/reject 就以人的身份走服务的审阅路径并继续时间线；直接回车或超时则停在人工确认。runner 没有自批准的路径。'
+        : '- 人工上线确认：stdin 不是 TTY，没有人能回答，所以时间线走到 approve 就打印发布信息、暂停频道、以「停在人工确认」结束。',
       '',
     ].join('\n')
   );
@@ -533,17 +554,20 @@ export async function runLive(
       log: deps.log,
       limits: {
         turnTimeoutMs: settings.turnTimeoutMinutes * 60_000,
+        approvalWaitMs: settings.approvalWaitMinutes * 60_000,
         reviewTimeoutMs: settings.reviewTimeoutMinutes * 60_000,
         maxWaitMs: settings.maxWaitMinutes * 60_000,
         advanceScale: settings.advanceScale,
         wallClockEnd: startedAt + settings.wallClockMinutes * 60_000,
       },
+      ...(deps.prompt ? { prompt: deps.prompt } : {}),
       budget: settings.budget,
       // 关联 App 任务会把它的历史同步进来；那些轮次不属于本次运行，不计预算也不当结果。
       baseline: new Set(session.runs().flatMap((row) => (row.source === 'morrow-schedule' ? [row.id] : []))),
       seen: new Set<string>(),
       interrupts: new Set<string>(),
       turns: live.turns,
+      approvals: live.approvals,
     };
 
     stop = { reason: 'timeline-finished', detail: '时间线全部走完' };
@@ -856,6 +880,7 @@ function liveSummary(scenario: Scenario, result: LiveResult, settings: LiveSetti
             : []),
         ]
       : ['- 没有轮次真实跑起来。', '']),
+    ...approvalsSection(live.approvals, settings),
     '## Invariants（逐条评估，但不决定退出码）',
     '',
     'live 模式下这些条目从「应当为真的断言」变成「被测量的对象」：某一条不成立正是我们想知道的结果。',
@@ -868,6 +893,25 @@ function liveSummary(scenario: Scenario, result: LiveResult, settings: LiveSetti
     ...findingsSection(result.labels, items),
     ...(result.failures.length ? ['## 失败原因', '', ...result.failures.map((row) => `- ${row}`), ''] : []),
   ].join('\n');
+}
+
+/**
+ * 终端上做过的人工上线确认。没有确认过时也说一句：读报告的人要能分清"这一步没走到"和"走到了但停下了"。
+ */
+function approvalsSection(approvals: LiveApproval[], settings: LiveSettings): string[] {
+  if (!approvals.length) return [];
+  return [
+    '## 人工上线确认',
+    '',
+    `这些决定是**人**在终端上输入的（最多等 \`--approval-wait ${settings.approvalWaitMinutes}\` 分钟），` +
+      'runner 没有自批准的路径。每一条都走服务正式的审阅路径 `POST /api/releases/:id/review`——' +
+      '桌面端按下"确认上线"的同一条路由——所以审计那一列是服务自己写下的 `actor:\'human\'` 事件，不是 runner 记的。',
+    '',
+    '| 发布 | 决定 | 时刻 | 发布结局 | 审计 |',
+    '| --- | --- | --- | --- | --- |',
+    ...approvals.map((row) => `| ${row.releaseId} | ${row.decision} | ${row.at} | ${row.outcome} | ${row.audit} |`),
+    '',
+  ];
 }
 
 /** Morrow 那一轮的结局，加上 App 自己续跑那一轮的结局（如果有）。 */
@@ -893,6 +937,9 @@ const reading = (value: UsageReading | 'unknown') =>
 
 /**
  * 生产 deps：真实时钟、真实等待、真实服务。断言放在这里，不放在编排核心里，测试才能用假依赖跑编排。
+ *
+ * `prompt` 只在 stdin 是 TTY 时给出：人工上线确认要有人真的能在终端上回答。管道里跑（CI、`| tee`、
+ * 后台）时它是 `undefined`，`approve` 于是照旧停在人工确认，而不是在一个没人看的地方问一句再超时。
  */
 export function productionDeps(): LiveDeps {
   return {
@@ -902,10 +949,32 @@ export function productionDeps(): LiveDeps {
       sleep: (ms) => new Promise((resolve) => setTimeout(resolve, Math.max(0, ms))),
     },
     log: (text) => console.log(text),
+    ...(process.stdin.isTTY ? { prompt: terminalPrompt } : {}),
     freePort,
     startApp,
     startReceiver,
   };
+}
+
+/**
+ * 一行终端输入，最多等 `timeoutMs`。超时、输入流被关（Ctrl-D）都返回 `undefined`；两种都不是决定，
+ * 调用方一律当成"停在人工确认"。`readline` 在拿到答案或超时之后立刻关掉，不把 stdin 占着。
+ */
+function terminalPrompt(question: string, timeoutMs: number): Promise<string | undefined> {
+  return new Promise<string | undefined>((resolve) => {
+    const rl = createInterface({ input: process.stdin, output: process.stdout });
+    let settled = false;
+    const done = (value?: string) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      rl.close();
+      resolve(value);
+    };
+    const timer = setTimeout(() => done(undefined), Math.max(0, timeoutMs));
+    rl.on('close', () => done(undefined));
+    rl.question(question, (answer) => done(answer));
+  });
 }
 
 /**
@@ -1152,6 +1221,17 @@ async function startLiveService(options: {
           }
         : undefined;
     },
+    // 桌面端按下"确认上线"调的就是这条路由，用的就是隔离数据目录里这份 token。审计由服务自己写成
+    // `actor:'human'` 的 release.approved/release.rejected，批准之后也由服务去上传封存产物——runner
+    // 不写库、不伪造审计，也没有别的路可以走到"已发布"。
+    reviewRelease: async (releaseId, reviewHash, decision, feedback) => {
+      await api('POST', `/api/releases/${releaseId}/review`, {
+        reviewHash,
+        decision,
+        ...(feedback === undefined ? {} : { feedback }),
+      });
+    },
+    releaseState: (releaseId) => current.store.get<Release>('loop_releases', releaseId)?.status,
     guide: async (text) => {
       const receipt = await api('POST', `/api/channels/${channelId}/native/messages`, {
         text,

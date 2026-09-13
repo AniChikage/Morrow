@@ -149,8 +149,19 @@ type Knobs = {
   existingRuns?: RunView[];
   items?: ItemView[];
   tables?: Record<string, any[]>;
-  /** `pendingRelease()` 的返回值。 */
+  /** `pendingRelease()` 的返回值。`reviewRelease` 之后它的状态由假服务自己推进。 */
   release?: { id: string; title: string; status: string; reviewHash: string; itemIds: string[] };
+  /** 第 N 次假时钟 `sleep` 之后才出现一个待确认的发布；用来验证 `approve` 会先等它。 */
+  releaseAfterSleeps?: number;
+  /** 批准之后再过几次 `sleep` 落到 `published`（缺省 1）。 */
+  publishAfterSleeps?: number;
+  /** 批准之后一直停在 `publishing`：用来验证 `--review-timeout` 内没落终态就如实记 `pending`。 */
+  neverPublishes?: boolean;
+  /**
+   * 终端上的人：给了它就表示 stdin 是 TTY（生产工厂正是这样决定的），`prompt` 依次返回这些答案，
+   * 最后一项重复；`undefined` 表示超时。不给就表示没有人守在终端边上。
+   */
+  terminal?: Array<string | undefined>;
   /** `pendingReviews()` 依次返回的数；最后一项重复。 */
   reviews?: number[];
   usageWaitAfterTurns?: number;
@@ -181,6 +192,8 @@ type Fake = {
   /** 按发生顺序记下每一次副作用，用来检查清理顺序。 */
   order: string[];
   logs: string[];
+  /** `prompt` 被问过的问题原文。 */
+  questions: string[];
   session: LiveSession;
   runs: RunView[];
   /** 假时钟当前时刻。 */
@@ -204,6 +217,8 @@ const status = (over: Partial<NativeStatusView> = {}): NativeStatusView => ({
 function fake(knobs: Knobs = {}): Fake {
   const order: string[] = [];
   const logs: string[] = [];
+  const questions: string[] = [];
+  let promptCall = 0;
   let now = Date.parse('2026-09-11T09:00:00.000Z');
   const runs: RunView[] = [...(knobs.existingRuns || [])];
   const decisions = new Map<string, string>();
@@ -296,6 +311,30 @@ function fake(knobs: Knobs = {}): Fake {
       resumeRow.finishedAt = new Date(now).toISOString();
       tables.runs = runs.slice();
     }
+  };
+
+  /**
+   * 待确认的发布。`reviewRelease` 之后状态由这里推进：批准先到 `publishing`，再过几次 `sleep` 到
+   * `published`；拒绝直接到终态 `rejected`。审计事件写进 `tables.events`，和服务一样是 `actor:'human'`。
+   */
+  let release = knobs.release ? { ...knobs.release } : undefined;
+  let reviewedAtSleep: number | undefined;
+  const releaseTick = () => {
+    if (!release && knobs.releaseAfterSleeps !== undefined && sleeps >= knobs.releaseAfterSleeps)
+      release = {
+        id: 'release-late',
+        title: '迟到的发布提议',
+        status: 'awaiting_approval',
+        reviewHash: 'hash-late',
+        itemIds: ['item-1'],
+      };
+    if (
+      release?.status === 'publishing' &&
+      !knobs.neverPublishes &&
+      reviewedAtSleep !== undefined &&
+      sleeps >= reviewedAtSleep + (knobs.publishAfterSleeps ?? 1)
+    )
+      release.status = 'published';
   };
 
   const session: LiveSession = {
@@ -426,7 +465,24 @@ function fake(knobs: Knobs = {}): Fake {
     },
     pendingReviews: () => next(knobs.reviews, reviewCall++, 0),
     reviewStatuses: () => ['passed'],
-    pendingRelease: () => knobs.release,
+    pendingRelease: () => (release?.status === 'awaiting_approval' ? release : undefined),
+    reviewRelease: async (releaseId, reviewHash, decision, feedback) => {
+      order.push(`review:${releaseId}:${decision}:${reviewHash}${feedback === undefined ? '' : `:${feedback}`}`);
+      assert.ok(release && release.id === releaseId, 'runner 只会对它读到的那个待确认发布提交决定');
+      release!.status = decision === 'approve' ? 'publishing' : 'rejected';
+      reviewedAtSleep = sleeps;
+      // 服务把这次确认记成 actor:'human' 的审计；runner 只读回来，不写它。
+      tables.events = [
+        ...(tables.events || []),
+        {
+          id: `event-${(tables.events || []).length + 1}`,
+          action: decision === 'approve' ? 'release.approved' : 'release.rejected',
+          actor: 'human',
+          changes: { after: { releaseId, reviewHash } },
+        },
+      ];
+    },
+    releaseState: (releaseId) => (release?.id === releaseId ? release.status : undefined),
     guide: async (text) => {
       order.push(`guide:${text}`);
       return { state: 'queued' };
@@ -435,6 +491,15 @@ function fake(knobs: Knobs = {}): Fake {
       order.push('pause');
       paused = true;
       enabled = false;
+      // `engine.action(id,'pause')` 会中断频道当前那一轮，所以假服务也这么做：不这样的话"暂停期间
+      // 正在跑的那一轮变成 interrupted"这件事在测试里根本看不见。
+      for (const row of runs)
+        if (row.status === 'running' && row.source === 'morrow-schedule') {
+          row.status = 'interrupted';
+          row.finishedAt = new Date(now).toISOString();
+          interruptedAtSleep = sleeps;
+        }
+      tables.runs = runs.slice();
     },
     resume: () => {
       order.push('resume');
@@ -496,9 +561,20 @@ function fake(knobs: Knobs = {}): Fake {
         sleeps++;
         schedulerTick();
         resumeTick();
+        releaseTick();
       },
     },
     log: (text) => logs.push(text),
+    // 给了 `terminal` 就表示 stdin 是 TTY：生产工厂也正是按 `process.stdin.isTTY` 决定给不给 prompt。
+    ...(knobs.terminal
+      ? {
+          prompt: async (question: string, timeoutMs: number) => {
+            order.push(`prompt:${Math.round(timeoutMs / 60_000)}m`);
+            questions.push(question);
+            return next<string | undefined>(knobs.terminal, promptCall++, undefined);
+          },
+        }
+      : {}),
     freePort: async () => 65000,
     startApp: async () => {
       order.push('app-start');
@@ -506,7 +582,7 @@ function fake(knobs: Knobs = {}): Fake {
     },
     startReceiver: async () => receiver,
   };
-  return { deps, order, logs, session, runs, at: () => now };
+  return { deps, order, logs, questions, session, runs, at: () => now };
 }
 
 /** prepare 一次，再用同一个 run-id 跑一次；返回结果和产物目录。 */
@@ -745,7 +821,8 @@ test('三道闸在关联之前就设好，并原样写进 live.json 与打印出
   assert.match(printed, /--budget 4/);
   assert.match(printed, /--project-limit 7% \/ --project-window weekly/);
   assert.match(printed, /--reserve 30% \/ --reserve-window 5h/);
-  assert.match(printed, /不实现 --allow-approve/);
+  assert.match(printed, /--approval-wait 30/);
+  assert.match(printed, /stdin 不是 TTY/, '没有注入 prompt 就等于没有人守在终端边上');
 });
 
 /* --------------------------------- 轮次 --------------------------------- */
@@ -1024,22 +1101,164 @@ test('墙钟超过 --wall-clock 时以退出码 1 结束', async () => {
   assert.equal(result.exitCode, 1);
 });
 
-test('时间线走到 approve 就打印发布信息、暂停频道、以退出码 0 停在人工确认', async () => {
-  const release = {
-    id: 'release-1',
-    title: '把批量导出的入口提到首页',
-    status: 'awaiting_approval',
-    reviewHash: 'abc123',
-    itemIds: ['item-1'],
-  };
-  const { result, fake: instance } = await live([{ verb: 'turn' }, { verb: 'approve' }, { verb: 'turn' }], { release });
+/* ---------------------------- 终端上的人工确认 ---------------------------- */
+
+const pending = {
+  id: 'release-1',
+  title: '把批量导出的入口提到首页',
+  status: 'awaiting_approval',
+  reviewHash: 'abc123',
+  itemIds: ['item-1'],
+};
+
+test('stdin 不是 TTY 时 approve 照旧打印发布信息、暂停频道、以退出码 0 停在人工确认', async () => {
+  const { result, fake: instance } = await live([{ verb: 'turn' }, { verb: 'approve' }, { verb: 'turn' }], {
+    release: pending,
+  });
   assert.equal(result.stop.reason, 'awaiting-approval');
   assert.equal(result.exitCode, 0);
   assert.equal(result.timeline.length, 2);
   const printed = instance.logs.join('\n');
-  assert.match(printed, /live 模式不代替人做上线确认/);
+  assert.match(printed, /这一步由\*\*人\*\*在终端上做/);
   assert.match(printed, /reviewHash：abc123/);
+  assert.match(printed, /stdin 不是 TTY：没有人能在这里回答/);
   assert.ok(instance.order.includes('pause'));
+  assert.equal(instance.order.filter((row) => row.startsWith('review:')).length, 0, '没有人回答就绝不调服务的审阅路径');
+  assert.deepEqual(result.live.approvals, []);
+  assert.equal(result.timeline[1].result.interactive, false);
+});
+
+test('终端上输入 approve 就以人的身份走服务的审阅路径，然后时间线继续', async () => {
+  const { result, fake: instance } = await live(
+    [{ verb: 'turn' }, { verb: 'approve' }, { verb: 'turn' }],
+    { release: pending, terminal: ['approve'] },
+    { budget: 3, approvalWaitMinutes: 30, reviewTimeoutMinutes: 2 }
+  );
+  assert.equal(result.exitCode, 0);
+  assert.equal(result.stop.reason, 'timeline-finished', '人确认了，完整时间线走得下去');
+  assert.equal(result.timeline.length, 3);
+  assert.equal(result.live.turns.length, 2, 'approve 之后的那一轮真的跑起来了');
+  // 走的是服务正式的审阅路径，带当前的 reviewHash；runner 不写库、不伪造审计。
+  assert.ok(instance.order.includes('review:release-1:approve:abc123'));
+  assert.deepEqual(result.live.approvals, [
+    {
+      releaseId: 'release-1',
+      decision: 'approve',
+      at: result.live.approvals[0].at,
+      byHumanAtTerminal: true,
+      outcome: 'published',
+      audit: 'release.approved',
+    },
+  ]);
+  assert.equal(result.timeline[1].result.decision, 'approve');
+  assert.equal(result.timeline[1].result.outcome, 'published');
+  assert.equal(result.timeline[1].result.audit, 'release.approved');
+  // 人可能想很久，所以提问期间频道先暂停，有了决定再放回去。
+  const at = instance.order.indexOf('prompt:30m');
+  assert.ok(at > 0 && instance.order[at - 1] === 'pause', '提问之前先暂停频道，别让调度器在这段时间烧预算');
+  assert.ok(instance.order.slice(at).includes('resume'), '有了决定就把频道恢复自动工作');
+  assert.match(instance.questions.join('\n'), /输入 approve 批准、reject 拒绝/);
+  assert.match(instance.questions.join('\n'), /最多 30 分钟/);
+  assert.match(result.summary, /## 人工上线确认/);
+  assert.match(result.summary, /release-1 \| approve \| .* \| published \| release\.approved \|/);
+  assert.match(result.summary, /runner 没有自批准的路径/);
+});
+
+test('终端上输入 reject 同样走审阅路径，意见一起带上，时间线继续', async () => {
+  const { result, fake: instance } = await live(
+    [{ verb: 'reject', feedback: '先把护栏字段说清楚' }, { verb: 'turn' }],
+    { release: pending, terminal: ['reject'] },
+    { budget: 2 }
+  );
+  assert.equal(result.exitCode, 0);
+  assert.equal(result.stop.reason, 'timeline-finished');
+  assert.ok(instance.order.includes('review:release-1:reject:abc123:先把护栏字段说清楚'));
+  assert.equal(result.live.approvals[0].decision, 'reject');
+  assert.equal(result.live.approvals[0].outcome, 'rejected');
+  assert.equal(result.live.approvals[0].audit, 'release.rejected');
+  assert.equal(result.live.approvals[0].feedback, '先把护栏字段说清楚');
+  assert.equal(result.live.turns.length, 1, '拒绝之后的那一轮照样跑起来');
+});
+
+test('直接回车、超时或答别的东西都不是决定：停在人工确认，不调审阅路径', async () => {
+  for (const [answers, expected] of [
+    [[''], /读到的是直接回车/],
+    [[undefined], /也没有读到输入/],
+    [['maybe'], /读到的不是 approve 也不是 reject/],
+  ] as Array<[Array<string | undefined>, RegExp]>) {
+    const { result, fake: instance } = await live([{ verb: 'approve' }, { verb: 'turn' }], {
+      release: pending,
+      terminal: answers,
+    });
+    assert.equal(result.stop.reason, 'awaiting-approval');
+    assert.equal(result.exitCode, 0);
+    assert.equal(result.timeline.length, 1, '后面的步骤不再执行');
+    assert.deepEqual(result.live.approvals, []);
+    assert.equal(instance.order.filter((row) => row.startsWith('review:')).length, 0);
+    assert.ok(instance.order.includes('pause'), '停在人工确认时频道保持暂停');
+    assert.match(instance.logs.join('\n'), expected);
+    assert.equal(result.timeline[0].result.answered, answers[0] ?? 'timeout');
+  }
+});
+
+test('没有待确认的发布时先等 --approval-wait 看它出不出现', async () => {
+  const appeared = await live(
+    [{ verb: 'approve' }, { verb: 'turn' }],
+    { releaseAfterSleeps: 2, terminal: ['approve'] },
+    { budget: 2, approvalWaitMinutes: 5, reviewTimeoutMinutes: 2 }
+  );
+  assert.equal(appeared.result.exitCode, 0);
+  assert.equal(appeared.result.stop.reason, 'timeline-finished');
+  assert.equal(appeared.result.live.approvals[0].releaseId, 'release-late');
+  assert.match(appeared.fake.logs.join('\n'), /先等最多 5 分钟看它会不会出现/);
+  assert.ok(appeared.fake.order.indexOf('prompt:5m') > appeared.fake.order.indexOf('start-service:true'), '等到了才问');
+
+  const never = await live(
+    [{ verb: 'approve' }, { verb: 'turn' }],
+    { terminal: ['approve'] },
+    { approvalWaitMinutes: 1 }
+  );
+  assert.equal(never.result.stop.reason, 'awaiting-approval');
+  assert.equal(never.result.exitCode, 0);
+  assert.match(never.result.stop.detail, /停在人工确认：时间线的 approve 步骤/);
+  assert.equal(never.fake.order.filter((row) => row.startsWith('prompt:')).length, 0, '没有发布就没什么可问的');
+  assert.ok(never.fake.order.includes('pause'));
+});
+
+test('提问前的暂停中断了调度器那一轮时，记的是 runner 自己停的，不是 App 中断', async () => {
+  // 走到 approve 时真实调度器可能正在跑一轮（上一轮以 continue 结束 30 秒后就有下一轮），暂停会把它
+  // 中断掉。那是 runner 自己停的，所以下一个 turn 接管到它时不该去找"App 自己的续跑轮次"。
+  const { result } = await live(
+    [{ verb: 'poll' }, { verb: 'approve' }, { verb: 'turn' }],
+    {
+      release: pending,
+      terminal: ['approve'],
+      schedulerRun: { afterPolls: 1, status: 'running' },
+      appResume: { status: 'completed' },
+    },
+    { budget: 3, reviewTimeoutMinutes: 2 }
+  );
+  assert.equal(result.exitCode, 0);
+  assert.equal(result.stop.reason, 'timeline-finished');
+  assert.equal(result.live.approvals[0].outcome, 'published');
+  const adopted = result.live.turns[0];
+  assert.equal(adopted.runId, 'run-scheduler');
+  assert.equal(adopted.status, 'interrupted');
+  assert.equal(adopted.interruptedByApp, undefined, 'runner 自己停的那一轮不该被记成 App 中断');
+  assert.equal(adopted.resumedRunId, undefined);
+});
+
+test('批准后发布没在 --review-timeout 内落终态就如实记 pending，时间线仍然继续', async () => {
+  const { result } = await live(
+    [{ verb: 'approve' }, { verb: 'turn' }],
+    { release: pending, terminal: ['approve'], neverPublishes: true },
+    { budget: 2, reviewTimeoutMinutes: 1 }
+  );
+  assert.equal(result.exitCode, 0);
+  assert.equal(result.stop.reason, 'timeline-finished');
+  assert.equal(result.live.approvals[0].outcome, 'pending');
+  assert.equal(result.live.approvals[0].audit, 'release.approved');
+  assert.match(result.summary, /release-1 \| approve \| .* \| pending \| release\.approved \|/);
 });
 
 /* ------------------------------ advance 缩放 ------------------------------ */
@@ -1411,6 +1630,12 @@ test('生产工厂在 MORROW_TEST_MODE=1 下拒绝启动', async () => {
       }),
     /MORROW_TEST_MODE=1/
   );
+});
+
+test('生产工厂只在 stdin 是 TTY 时给出 prompt：没人守在终端边上就不该问', () => {
+  // 人工上线确认要有人真的能回答。管道里跑（CI、`| tee`、后台）时 prompt 是 undefined，approve 于是
+  // 照旧停在人工确认，而不是在一个没人看的地方问一句再干等 --approval-wait。
+  assert.equal(typeof productionDeps().prompt === 'function', !!process.stdin.isTTY);
 });
 
 test('停止原因到退出码的映射就是提案第 6 节的那张表', () => {

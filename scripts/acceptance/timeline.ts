@@ -392,6 +392,20 @@ export type LiveSession = {
   pendingReviews(): number;
   reviewStatuses(): string[];
   pendingRelease(): ReleaseView | undefined;
+  /**
+   * 人在终端上给出的上线决定，走服务正式的审阅路径：`POST /api/releases/:id/review`（桌面凭证，
+   * 隔离数据目录自己的那份 token），和桌面端按下"确认上线"调的是同一条路由，所以审计记成
+   * `actor:'human'` 的 `release.approved`/`release.rejected`，批准后由服务自己去上传封存产物。
+   * runner 不写库、不伪造审计，也没有任何自批准的路径。
+   */
+  reviewRelease(
+    releaseId: string,
+    reviewHash: string,
+    decision: 'approve' | 'reject',
+    feedback?: string
+  ): Promise<void>;
+  /** 某个发布当前的状态，用来等它落到终态。 */
+  releaseState(releaseId: string): string | undefined;
   guide(text: string): Promise<{ state?: string }>;
   pause(): Promise<void>;
   resume(): void;
@@ -430,7 +444,9 @@ export class LiveStop extends Error {
 export type LiveLimits = {
   /** 一轮真实运行的等待上限。 */
   turnTimeoutMs: number;
-  /** 等独立复核落到终态的上限，略大于 `codex exec` 的 5 分钟硬上限。 */
+  /** 等人在终端上给出上线决定的上限；也用来等一个待确认的发布出现。 */
+  approvalWaitMs: number;
+  /** 等独立复核落到终态的上限，略大于 `codex exec` 的 5 分钟硬上限。也用来等发布落到终态。 */
   reviewTimeoutMs: number;
   /** 单个 `advance` 真实等待的上限。 */
   maxWaitMs: number;
@@ -440,12 +456,33 @@ export type LiveLimits = {
   wallClockEnd: number;
 };
 
+/** 一次终端上的人工上线确认，写进 `live.json` 的 `approvals`。 */
+export type LiveApproval = {
+  releaseId: string;
+  decision: 'approve' | 'reject';
+  /** 人按下回车的真实时刻。 */
+  at: string;
+  /** 这个决定是人在终端上输入的。runner 没有自批准的路径，所以这一项恒为 true。 */
+  byHumanAtTerminal: true;
+  /** 发布最后落到的状态；`pending` 表示 `--review-timeout` 内还没落到终态。 */
+  outcome: string;
+  /** 服务把这次确认记成了哪条 `actor:'human'` 的审计；`missing` 表示没找到，那是要看的结果。 */
+  audit: 'release.approved' | 'release.rejected' | 'missing';
+  /** `reject` 时人给出的意见（如果时间线的步骤带了）。 */
+  feedback?: string;
+};
+
 export type LiveRunner = {
   scenario: Scenario;
   session: LiveSession;
   receiver: Receiver;
   clock: LiveClock;
   log(text: string): void;
+  /**
+   * 终端上的提问与读入。**只有 stdin 是 TTY 时生产工厂才提供它**——缺了就表示没有人守在终端边上，
+   * `approve`/`reject` 于是照旧停在人工确认。返回 `undefined` 表示超时（或输入流关了）。
+   */
+  prompt?(question: string, timeoutMs: number): Promise<string | undefined>;
   limits: LiveLimits;
   /** `--budget`：本次运行允许出现的 `morrow-schedule` 轮次总数。 */
   budget: number;
@@ -493,6 +530,8 @@ export type LiveRunner = {
     resumedStatus?: string;
     resumedWallMs?: number;
   }>;
+  /** 每一次终端上的人工上线确认，写进 `live.json`。 */
+  approvals: LiveApproval[];
   stop?: { reason: LiveStopReason; detail: string };
   /** 原生状态的节流缓存：每次等待都查一遍会变成一串真实 IPC 往返。 */
   statusAt?: number;
@@ -608,7 +647,7 @@ async function executeLive(runner: LiveRunner, step: Step, index: number): Promi
       return { mode: step.mode };
     case 'approve':
     case 'reject':
-      return liveDecide(runner, step.verb);
+      return liveDecide(runner, step);
     case 'guide':
       return liveGuide(runner, step.text);
     case 'verify':
@@ -871,16 +910,57 @@ const msAt = (text?: string) => {
   return Number.isFinite(at) ? at : undefined;
 };
 
+/** 一个发布已经落到终态：不会再自己变了。`approved`/`publishing` 还在路上。 */
+const settledRelease = ['published', 'failed', 'unknown', 'rejected'];
+
 /**
- * 发布确认不自动做，也没有 `--allow-approve`：把发布信息打出来、暂停频道、以"停在人工确认"结束。
- * 否则「人工上线确认」这道门禁就被测空了。
+ * 暂停会中断频道当前那一轮（`engine.action(id,'pause')` 的语义），所以先把正在跑的轮次记进
+ * `interrupts`：那是 **runner 自己**停的，不是 App 停的。不记的话下一个 `turn` 步骤接管到这一行
+ * `interrupted` 时会去找"App 自己的续跑轮次"，白等 15 秒，还可能把结论写反。
  */
-async function liveDecide(runner: LiveRunner, verb: 'approve' | 'reject'): Promise<Record<string, unknown>> {
-  const release = runner.session.pendingRelease();
+function noteOwnInterrupts(runner: LiveRunner) {
+  for (const row of runner.session.runs())
+    if (row.status === 'running' && row.source === 'morrow-schedule') runner.interrupts.add(row.id);
+}
+
+/**
+ * 发布确认永远是人做的：runner 没有自批准的路径，也没有 `--allow-approve`。它只做两件事之一。
+ *
+ * **stdin 是 TTY**（有人守在终端边上）：把发布信息打出来，在终端上问一次，最多等 `--approval-wait`。
+ * 人输入 `approve`/`reject` 就以**人**的身份走服务正式的审阅路径（`POST /api/releases/:id/review`，
+ * 和桌面端按下"确认上线"同一条路由，审计是 `actor:'human'` 的 `release.approved`/`release.rejected`），
+ * 然后等发布落到终态并**继续时间线**——完整时间线因此走得过去。直接回车、超时或输入别的东西都不算决定：
+ * 照旧停在人工确认。没有待确认的发布时先等最多 `--approval-wait` 看它会不会出现，仍然没有才停。
+ *
+ * **stdin 不是 TTY**：没有人能回答，所以行为和以前一样——打印发布信息、暂停频道、以"停在人工确认"结束。
+ *
+ * 提问期间频道先暂停：人可能想很久，而真实调度器不停，30 分钟的 30 秒间隔足够把 `--budget` 烧光。
+ * 有了决定就把频道恢复回去，下一个 `turn` 的 `makeDue` 照常接着走。等"发布出现"的那一段**不**暂停——
+ * 发布是模型在某一轮里提的，暂停了它就永远不会出现。
+ */
+async function liveDecide(runner: LiveRunner, step: Step & { verb: 'approve' | 'reject' }) {
+  const verb = step.verb;
+  const feedback = step.verb === 'reject' ? step.feedback : undefined;
+  const interactive = !!runner.prompt;
+  let release = runner.session.pendingRelease();
+  if (!release && interactive) {
+    runner.log(
+      `时间线走到 ${verb}，但现在没有待确认的发布。先等最多 ${Math.round(runner.limits.approvalWaitMs / 60_000)} 分钟看它会不会出现。`
+    );
+    release = await waitLive(
+      runner,
+      () => runner.session.pendingRelease(),
+      () => '出现一个待人工确认的发布',
+      runner.limits.approvalWaitMs
+    ).catch((error) => {
+      if (error instanceof LiveStop) throw error;
+      return undefined;
+    });
+  }
   runner.log(
     [
       '',
-      `时间线走到 ${verb}：live 模式不代替人做上线确认。`,
+      `时间线走到 ${verb}：live 模式下这一步由**人**在终端上做，runner 没有自批准的路径。`,
       release
         ? [
             `- 发布：${release.title || '（无标题）'}（${release.id}）`,
@@ -893,16 +973,110 @@ async function liveDecide(runner: LiveRunner, verb: 'approve' | 'reject'): Promi
       '',
     ].join('\n')
   );
+  if (!interactive || !release) {
+    if (!interactive)
+      runner.log('stdin 不是 TTY：没有人能在这里回答，所以暂停频道并停在人工确认（这不是失败，退出码 0）。');
+    noteOwnInterrupts(runner);
+    await runner.session.pause();
+    runner.stop = {
+      reason: 'awaiting-approval',
+      detail: release ? `停在人工确认：发布 ${release.id}` : `停在人工确认：时间线的 ${verb} 步骤`,
+    };
+    return {
+      verb,
+      interactive,
+      ...(release ? { releaseId: release.id, releaseStatus: release.status, reviewHash: release.reviewHash } : {}),
+      channelStatus: runner.session.channel().status,
+    };
+  }
+
+  // 人可能想很久：先暂停，真实调度器就不会在这段时间里自己发起轮次把 --budget 烧掉。
+  noteOwnInterrupts(runner);
   await runner.session.pause();
-  runner.stop = {
-    reason: 'awaiting-approval',
-    detail: release ? `停在人工确认：发布 ${release.id}` : `停在人工确认：时间线的 ${verb} 步骤`,
+  const minutes = Math.round(runner.limits.approvalWaitMs / 60_000);
+  const answer = await runner.prompt!(
+    `输入 approve 批准、reject 拒绝，直接回车或超时（最多 ${minutes} 分钟）则停在人工确认：`,
+    runner.limits.approvalWaitMs
+  );
+  const decision = answer?.trim().toLowerCase();
+  if (decision !== 'approve' && decision !== 'reject') {
+    runner.log(
+      decision === undefined
+        ? `等了 ${minutes} 分钟也没有读到输入：停在人工确认（退出码 0），现场留在产物目录里。`
+        : decision === ''
+          ? '读到的是直接回车：停在人工确认（退出码 0），现场留在产物目录里。'
+          : `读到的不是 approve 也不是 reject（"${decision.slice(0, 40)}"）：停在人工确认（退出码 0）。`
+    );
+    runner.stop = { reason: 'awaiting-approval', detail: `停在人工确认：发布 ${release.id}` };
+    return {
+      verb,
+      interactive,
+      releaseId: release.id,
+      releaseStatus: release.status,
+      reviewHash: release.reviewHash,
+      answered: decision ?? 'timeout',
+      channelStatus: runner.session.channel().status,
+    };
+  }
+
+  const at = new Date(runner.clock.now()).toISOString();
+  await runner.session.reviewRelease(release.id, release.reviewHash || '', decision, feedback);
+  await runner.session.drain();
+  runner.log(`已以人的身份提交 ${decision}（服务的 /api/releases/${release.id}/review），等它落到终态。`);
+  const outcome =
+    (await waitLive(
+      runner,
+      () => {
+        const status = runner.session.releaseState(release!.id);
+        return status && settledRelease.includes(status) ? status : undefined;
+      },
+      () => `发布 ${release!.id} 落到终态（当前 ${runner.session.releaseState(release!.id) || '未知'}）`,
+      runner.limits.reviewTimeoutMs
+    ).catch((error) => {
+      if (error instanceof LiveStop) throw error;
+      runner.log(`发布 ${release!.id} 在 --review-timeout 内还没落到终态：如实记成 pending，时间线继续。`);
+      return undefined;
+    })) ?? 'pending';
+  const approval: LiveApproval = {
+    releaseId: release.id,
+    decision,
+    at,
+    byHumanAtTerminal: true,
+    outcome,
+    audit: humanAudit(runner, release.id, decision),
+    ...(feedback === undefined ? {} : { feedback }),
   };
+  runner.approvals.push(approval);
+  runner.log(`发布 ${release.id}：${decision} → ${outcome}（审计 ${approval.audit}）。时间线继续，频道恢复自动工作。`);
+  // 决定已经落库，把频道放回自动工作；下一个 turn 的 makeDue 照常接着走。
+  runner.session.resume();
   return {
     verb,
-    ...(release ? { releaseId: release.id, releaseStatus: release.status, reviewHash: release.reviewHash } : {}),
+    interactive,
+    releaseId: release.id,
+    decision,
+    outcome,
+    audit: approval.audit,
+    answered: decision,
     channelStatus: runner.session.channel().status,
   };
+}
+
+/**
+ * 服务有没有把这次确认记成 `actor:'human'` 的审计。runner 不写这条事件，只读回来——「人工上线确认」这道
+ * 门禁要证明的正是它，所以记录的是查到的结果，查不到就如实记 `missing`。
+ */
+function humanAudit(runner: LiveRunner, releaseId: string, decision: 'approve' | 'reject'): LiveApproval['audit'] {
+  const action = decision === 'approve' ? 'release.approved' : 'release.rejected';
+  const rows = runner.session.store.all<{
+    action?: string;
+    actor?: string;
+    changes?: { after?: { releaseId?: string } };
+  }>('events');
+  const found = rows.some(
+    (row) => row.action === action && row.actor === 'human' && row.changes?.after?.releaseId === releaseId
+  );
+  return found ? action : 'missing';
 }
 
 /** 以 `source:'chat'` 向同一条原生任务发一条指导；它真的消耗一轮 App 对话，不计编排预算。 */

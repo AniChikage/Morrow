@@ -17,6 +17,7 @@ const usage = `用法：
                                      [--reserve ${liveDefaults.reserve}] [--reserve-window ${liveDefaults.reserveWindow}]
                                      [--advance-scale ${liveDefaults.advanceScale}] [--max-wait ${liveDefaults.maxWaitMinutes}]
                                      [--wait-bind ${liveDefaults.waitBindMinutes}] [--turn-timeout ${liveDefaults.turnTimeoutMinutes}]
+                                     [--approval-wait ${liveDefaults.approvalWaitMinutes}]
                                      [--review-timeout ${liveDefaults.reviewTimeoutMinutes}] [--wall-clock ${liveDefaults.wallClockMinutes}]
   node scripts/acceptance/run.ts compare <运行目录A> <运行目录B> [--ignore-volatile]
   node scripts/acceptance/run.ts metrics <运行目录|数据目录> [--out <文件>]
@@ -24,7 +25,9 @@ const usage = `用法：
 
 live 模式分两步：prepare 建目录、写种子、打印人要在 Codex App 里做的四步；人做完之后再 run 同一个 --run-id。
 一次 live 运行真的驱动 Codex App 并消耗账户额度：--budget 必填，没有缺省；--policy 和 run all 在 live 下被拒绝。
-时间单位都是分钟；--project-limit / --reserve 是百分比。`;
+时间单位都是分钟；--project-limit / --reserve 是百分比。
+发布确认永远是人做的：stdin 是 TTY 时 run 会在终端上问一次（--approval-wait），输入 approve/reject 就以人的身份
+走服务的审阅路径并继续时间线；不是 TTY、直接回车或超时都停在人工确认。runner 没有自批准的路径。`;
 
 const scenarioDir = new URL('./scenarios/', import.meta.url);
 /** Loaded on demand: `fixture.ts` imports `tests/harness/env.ts`, which sets `MORROW_TEST_MODE=1` at
@@ -131,6 +134,7 @@ async function runLiveScenario(id: string, rest: string[]) {
       ...pick(rest, 'max-wait', 'maxWaitMinutes'),
       ...pick(rest, 'wait-bind', 'waitBindMinutes'),
       ...pick(rest, 'turn-timeout', 'turnTimeoutMinutes'),
+      ...pick(rest, 'approval-wait', 'approvalWaitMinutes'),
       ...pick(rest, 'review-timeout', 'reviewTimeoutMinutes'),
       ...pick(rest, 'wall-clock', 'wallClockMinutes'),
       ...window(rest, 'project-window', 'projectWindow'),
