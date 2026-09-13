@@ -29,10 +29,27 @@ const gone = (pid: number) => {
   try {
     process.kill(pid, 0);
     return false;
-  } catch {
-    return true;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException)?.code === 'ESRCH';
   }
 };
+test('only ESRCH proves that the owned process disappeared', (t) => {
+  for (const [code, expected] of [
+    ['ESRCH', true],
+    ['EPERM', false],
+    ['EINVAL', false],
+    [undefined, false],
+  ] as const) {
+    t.mock.method(process, 'kill', () => {
+      throw Object.assign(new Error('probe failed'), { code });
+    });
+    assert.equal(gone(123), expected, String(code));
+    t.mock.restoreAll();
+  }
+  t.mock.method(process, 'kill', () => true);
+  assert.equal(gone(123), false);
+});
+
 async function run(mode: string, maxBytes?: number) {
   const observations: ReviewObservation[] = [];
   const r = runner(maxBytes).start({
@@ -59,29 +76,64 @@ test('read-only CLI review requires native completion and successful exit; sessi
     assert(last.error);
   }
 });
-test('review cancellation stops only the owned CLI and the worker deadline independently bounds it', async () => {
+test('review cancellation stops the initialized owned CLI', async () => {
   const root = mkdtempSync(join(tmpdir(), 'morrow-review-cancel-'));
+  const pidFile = join(root, 'cancel.pid');
+  const observations: ReviewObservation[] = [];
+  const execution = runner().start({
+    cwd: root,
+    prompt: JSON.stringify({ mode: 'hang', pidFile }),
+    timeoutMs: 5000,
+    observe: (o) => observations.push(o),
+  });
   try {
-    for (const deadline of [false, true]) {
-      const pidFile = join(root, deadline ? 'deadline.pid' : 'cancel.pid');
-      const observations: ReviewObservation[] = [];
-      const execution = runner().start({
-        cwd: root,
-        prompt: JSON.stringify({ mode: 'hang', pidFile }),
-        timeoutMs: deadline ? 600 : 5000,
-        observe: (o) => observations.push(o),
-      });
-      const pid = await ownedPid(pidFile, 4000);
-      if (!deadline) execution.cancel();
-      await execution.done;
-      assert.equal(observations.at(-1)!.status, 'failed');
-      // The kill is bounded, not instant: the CLI may still be on its way out when `done` resolves.
-      await until(() => gone(pid), 5000);
-    }
+    const pid = await ownedPid(pidFile, 4000);
+    execution.cancel();
+    await execution.done;
+    assert.equal(observations.at(-1)!.status, 'failed');
+    await until(() => gone(pid) && gone(-pid), 5000);
   } finally {
+    execution.cancel();
+    await execution.done;
     rmSync(root, { recursive: true, force: true });
   }
 });
+for (const mode of ['hang', 'initializing']) {
+  test(`worker deadline ends the CLI without requiring initialization (${mode})`, async () => {
+    const root = mkdtempSync(join(tmpdir(), 'morrow-review-deadline-'));
+    const pidFile = join(root, 'initialized.pid');
+    const spawnedPidFile = join(root, 'spawned.pid');
+    const observations: ReviewObservation[] = [];
+    const execution = runner().start({
+      cwd: root,
+      prompt: JSON.stringify({ mode, pidFile, spawnedPidFile }),
+      timeoutMs: 600,
+      observe: (o) => observations.push(o),
+    });
+    let finished = false;
+    void execution.done.then(() => (finished = true));
+    try {
+      // The deadline starts before CLI initialization. A missing PID is valid if it expired first.
+      // This watchdog fails if the worker never finishes; cancellation happens only in cleanup.
+      await until(() => finished, 5000);
+      assert.equal(observations.at(-1)!.status, 'failed');
+      if (mode === 'initializing') {
+        assert.equal(observations.at(-1)!.threadId, undefined);
+        assert.equal(existsSync(pidFile), false);
+      }
+      for (const path of [spawnedPidFile, pidFile]) {
+        if (!existsSync(path)) continue;
+        const pid = Number(readFileSync(path, 'utf8').trim());
+        assert(Number.isSafeInteger(pid) && pid > 0, 'published PID must identify an owned process');
+        await until(() => gone(pid) && gone(-pid), 5000);
+      }
+    } finally {
+      execution.cancel();
+      await execution.done;
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+}
 test('a killed service cannot leave its review CLI running', async () => {
   const root = mkdtempSync(join(tmpdir(), 'morrow-review-parent-')),
     pidFile = join(root, 'child.pid');
