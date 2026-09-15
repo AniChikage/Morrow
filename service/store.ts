@@ -171,6 +171,12 @@ export class Store {
       this.db.exec(
         `CREATE INDEX IF NOT EXISTS ${table}_${column.toLowerCase()} ON ${table}(json_extract(data,'$.${column}'))`
       );
+    // A feedback watch is the one row of that tick whose due condition mixes two ranges, so a
+    // single-column index cannot answer it; the state comes first because `ProjectLoop.tick` asks
+    // each state for its own range (see the query there).
+    this.db.exec(
+      "CREATE INDEX IF NOT EXISTS loop_watches_status_next ON loop_watches(json_extract(data,'$.status'), json_extract(data,'$.nextPollAt'))"
+    );
     this.pruneNativeRequests();
   }
   /**

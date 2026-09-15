@@ -944,6 +944,41 @@ test('a scheduler tick selects only the rows that need work, through indexes rat
       ),
       /INDEX controls_enabled/
     );
+    // A watch's due condition mixes two ranges. Each state asks the composite index for its own,
+    // so the tick reads neither the cancelled rows nor the terminal ones whose poll time has not
+    // come — and never the whole table, which is what the single condition it replaces did.
+    const past = new Date(0).toISOString();
+    const future = new Date(Date.now() + 3600_000).toISOString();
+    for (const [id, status, nextPollAt, deadline] of [
+      ['due-watching', 'watching', past, future],
+      ['deadline-watching', 'watching', future, past],
+      ['idle-watching', 'watching', future, future],
+      ['due-triggered', 'triggered', past, past],
+      ['idle-triggered', 'triggered', future, future],
+      ['due-expired', 'expired', past, past],
+      ['due-cancelled', 'cancelled', past, past],
+    ] as const)
+      store.put('loop_watches', { id, projectId: 'p', status, nextPollAt, deadline });
+    // A row written before `status` existed stays pollable, exactly as the scan treated it.
+    store.put('loop_watches', { id: 'no-status', projectId: 'p', nextPollAt: past, deadline: past });
+    const dueWatches = `SELECT data FROM (
+         SELECT rowid AS rid, data FROM loop_watches
+           WHERE json_extract(data,'$.status')='watching'
+             AND (json_extract(data,'$.nextPollAt')<=? OR json_extract(data,'$.deadline')<=?)
+         UNION ALL
+         SELECT rowid AS rid, data FROM loop_watches
+           WHERE (json_extract(data,'$.status') IN ('triggered','expired')
+               OR json_extract(data,'$.status') IS NULL)
+             AND json_extract(data,'$.nextPollAt')<=?
+       ) ORDER BY rid`;
+    const now = new Date().toISOString();
+    assert.deepEqual(
+      (store.db.prepare(dueWatches).all(now, now, now) as any[]).map((row) => JSON.parse(row.data).id),
+      ['due-watching', 'deadline-watching', 'due-triggered', 'due-expired', 'no-status']
+    );
+    const watches = plan(dueWatches, now, now, now);
+    assert.match(watches, /INDEX loop_watches_status_next/);
+    assert.doesNotMatch(watches, /SCAN loop_watches/);
     // Checkpoint recovery's own read of the native journal, the reason for its index.
     assert.match(
       plan(

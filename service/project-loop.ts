@@ -1648,17 +1648,27 @@ export class ProjectWorkLoop {
       else if (row.status === 'unknown' && Date.parse(row.updatedAt) < Date.now() - 60000)
         this.track(this.reconcile(row.id));
     }
-    // A watch's due condition mixes two ranges, which no single index answers; this stays a scan of
-    // a small table, but only the rows that are actually due are parsed and turned into objects.
+    // A watch's due condition mixes two ranges, which no single index answers, so each state asks
+    // `loop_watches_status_next` for its own range: a watch still being watched is due by its poll
+    // time or by its deadline, and there are at most 50 of those per project; one already triggered
+    // or expired is due only by its poll time, so the terminal rows a long-lived project piles up
+    // are bounded by that range rather than read whole. `cancelled` is never read at all, and a row
+    // written before `status` existed stays pollable as it was. Same rows, same order as the scan
+    // this replaces; only the rows actually due are parsed and turned into objects.
     const rows = this.store.db
       .prepare(
-        `SELECT data FROM loop_watches
-         WHERE (json_extract(data,'$.nextPollAt')<=?
-             OR (json_extract(data,'$.status')='watching' AND json_extract(data,'$.deadline')<=?))
-           AND (json_extract(data,'$.status') IS NULL OR json_extract(data,'$.status')<>'cancelled')
-         ORDER BY rowid`
+        `SELECT data FROM (
+           SELECT rowid AS rid, data FROM loop_watches
+             WHERE json_extract(data,'$.status')='watching'
+               AND (json_extract(data,'$.nextPollAt')<=? OR json_extract(data,'$.deadline')<=?)
+           UNION ALL
+           SELECT rowid AS rid, data FROM loop_watches
+             WHERE (json_extract(data,'$.status') IN ('triggered','expired')
+                 OR json_extract(data,'$.status') IS NULL)
+               AND json_extract(data,'$.nextPollAt')<=?
+         ) ORDER BY rid`
       )
-      .all(time, time);
+      .all(time, time, time);
     const due = parseRows<FeedbackWatch>(rows);
     for (const watch of due)
       if (
