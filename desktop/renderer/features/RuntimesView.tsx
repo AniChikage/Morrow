@@ -5,6 +5,7 @@ import type { Channel, ConnectionInfo, DesktopAPI, NativeConnectionStatus, Proje
 import type { FeatureProps } from './types';
 import { Button, EmptyState } from '../components/ui';
 import { replaceIfChanged } from '../components/collections';
+import { connectionDetail } from '../components/connection-detail';
 import { formatResetTime, usageWindowLabel } from '../components/format';
 import './content.css';
 import './runtimes.css';
@@ -104,6 +105,8 @@ function AppChecklist({
   onOpen: (channelId: string) => void;
 }) {
   const [receipt, setReceipt] = useState('');
+  const detail = connectionDetail(native.detail);
+  const rawDetail = native.rawDetail || (native.detail !== detail ? native.detail : '');
   const steps = connectionSteps(native);
   const pending = steps.findIndex((step) => !step.done);
   // Every step that waits on something happening outside Morrow says that coming back is enough.
@@ -117,7 +120,9 @@ function AppChecklist({
         <span>
           {native.appInstalled === false
             ? '安装并登录 Codex App。'
-            : native.detail || '无法确认安装状态，请在 Morrow 桌面应用中重新检测。'}
+            : native.detail
+              ? detail
+              : '无法确认安装状态，请在 Morrow 桌面应用中重新检测。'}
         </span>
         <span>装好后回到这里，会自动重新检测。</span>
       </>
@@ -168,6 +173,12 @@ function AppChecklist({
             </li>
           ))}
         </ol>
+        {rawDetail && (
+          <div className="runtime-settings-receipt">
+            <b>原始连接诊断</b>
+            <pre className="runtime-settings-raw-detail">{rawDetail}</pre>
+          </div>
+        )}
         {native.backgroundConfigured && !remote && api.restoreNativeBackground && (
           <Button
             variant="ghost"
@@ -441,7 +452,7 @@ export function RuntimesView({
                           {appRuntime && (
                             <>
                               <dt>App 连接</dt>
-                              <dd>{native.detail}</dd>
+                              <dd>{connectionDetail(native.detail)}</dd>
                               {native.runtimeVersion && (
                                 <>
                                   <dt>后台版本</dt>

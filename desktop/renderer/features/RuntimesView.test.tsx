@@ -52,6 +52,35 @@ function step(label: string) {
 }
 const nextStep = () => screen.getByText('下一步').parentElement!;
 
+test('keeps raw connection detail inside the collapsed diagnostic checklist', async () => {
+  const { props, api } = runtimeProps();
+  const rawDetail = 'connect ECONNREFUSED /Users/test/.codex/ipc/ipc.sock';
+  api.getNativeStatus.mockResolvedValue(
+    status({ appInstalled: true, detail: 'Codex App 未运行，打开后会自动重连', rawDetail })
+  );
+  render(<RuntimesView {...props} />);
+  const raw = await screen.findByText(rawDetail);
+  const disclosure = raw.closest('details')!;
+  expect(disclosure.className).toContain('runtime-settings-diagnostics');
+  expect(disclosure.open).toBe(false);
+  expect(nextStep().textContent).not.toContain('ECONNREFUSED');
+  await userEvent.setup().click(within(disclosure).getByText('连接清单与账户用量', { selector: 'summary' }));
+  expect(disclosure.open).toBe(true);
+  expect(raw.textContent).toBe(rawDetail);
+  await userEvent.setup().click(screen.getByRole('button', { name: 'Codex，App 未连接，查看详情' }));
+  expect(within(screen.getByRole('region', { name: 'Codex 详情' })).queryByText(rawDetail)).toBeNull();
+});
+
+test('an unmapped legacy detail uses a plain hint while retaining the original in diagnostics', async () => {
+  const { props, api } = runtimeProps();
+  const detail = 'connect ECONNREFUSED /tmp/codex.sock';
+  api.getNativeStatus.mockResolvedValue(status({ appInstalled: undefined, detail }));
+  render(<RuntimesView {...props} />);
+  await screen.findByText('连接清单与账户用量', { selector: 'summary' });
+  expect(nextStep().textContent).toContain('App 连接暂时不可用，请在运行时页重新检测。');
+  expect(screen.getByText(detail).closest('details')!.open).toBe(false);
+});
+
 test('CLI detection stays separate from authentication and details are progressively disclosed while App status is unknown', async () => {
   const { props, api } = runtimeProps();
   // Until the App status answers, the Codex row can only report what the CLI probe found.

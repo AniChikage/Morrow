@@ -12,6 +12,7 @@ import type {
 import type { FeatureProps } from './types';
 import { Button, Dropdown, DropdownItem, EmptyState, Markdown } from '../components/ui';
 import { mergeById, replaceIfChanged } from '../components/collections';
+import { connectionDetail, connectionFallback } from '../components/connection-detail';
 import {
   channelStatusLabel,
   durationSeconds,
@@ -368,13 +369,13 @@ export function ChannelView(props: FeatureProps & { id: string }) {
   // The API keeps App availability even when a task sync error marks this conversation disconnected.
   const unloaded =
     native && !!conversation?.threadId && conversation.status.available && conversation.status.readyThreadCount === 0;
-  const nativeProblem =
-    nativeError ||
-    (native && conversation
-      ? !conversation.status.available
-        ? conversation.status.detail
-        : conversation.syncError || (!conversation.status.connected ? conversation.status.detail : '')
-      : '');
+  const nativeProblem = nativeError
+    ? connectionFallback
+    : native &&
+        conversation &&
+        (!conversation.status.available || conversation.syncError || !conversation.status.connected)
+      ? connectionDetail(conversation.status.detail)
+      : '';
   const unavailable = demo
     ? '示例频道不能回答'
     : unloaded

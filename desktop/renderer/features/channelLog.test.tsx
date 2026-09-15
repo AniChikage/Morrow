@@ -371,6 +371,46 @@ const connectedConversation = (patch: Partial<NativeConversation> = {}): NativeC
   ...patch,
 });
 
+it('uses the human status detail instead of raw or historical task sync errors', async () => {
+  const { props, api } = featureProps();
+  props.snapshot.projects[0].isDemo = false;
+  const raw = 'connect ECONNREFUSED /Users/test/.codex/ipc/ipc.sock';
+  const detail = 'Codex App 未运行，打开后会自动重连';
+  vi.mocked(props.api.getNativeConversation).mockResolvedValue(
+    connectedConversation({
+      status: { ...nativeStatus, available: true, connected: false, detail, rawDetail: raw },
+      syncError: raw,
+      rawSyncError: raw,
+    })
+  );
+  render(<ChannelView {...props} id="channel-system" />, { wrapper: TestProviders });
+  expect((await screen.findByRole('alert')).textContent).toContain(detail);
+  expect(screen.queryByText(/ECONNREFUSED|ipc\.sock/)).toBeNull();
+});
+
+it.each(['connect ECONNREFUSED /Users/test/.codex/ipc/ipc.sock', 'EAI_AGAIN', '读取 /tmp/task 失败'])(
+  'keeps an unmapped detail out of the channel hint: %s',
+  async (detail) => {
+    const { props, api } = featureProps();
+    props.snapshot.projects[0].isDemo = false;
+    vi.mocked(props.api.getNativeConversation).mockResolvedValue(
+      connectedConversation({ status: { ...nativeStatus, detail } })
+    );
+    render(<ChannelView {...props} id="channel-system" />, { wrapper: TestProviders });
+    expect((await screen.findByRole('alert')).textContent).toContain('App 连接暂时不可用，请在运行时页重新检测。');
+    expect(screen.queryByText(detail)).toBeNull();
+  }
+);
+
+it('keeps a failed conversation request out of the channel hint', async () => {
+  const { props, api } = featureProps();
+  props.snapshot.projects[0].isDemo = false;
+  api.getNativeConversation.mockRejectedValue(new Error('connect ECONNREFUSED /tmp/service.sock'));
+  render(<ChannelView {...props} id="channel-system" />, { wrapper: TestProviders });
+  expect((await screen.findByRole('alert')).textContent).toContain('App 连接暂时不可用，请在运行时页重新检测。');
+  expect(screen.queryByText(/ECONNREFUSED|service\.sock/)).toBeNull();
+});
+
 it('surfaces an App approval waiting on the user instead of claiming Codex is still answering', async () => {
   const state = snapshot();
   state.projects[0].isDemo = false;

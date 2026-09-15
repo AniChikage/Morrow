@@ -281,6 +281,12 @@
   margin: var(--space-1) 0 0;
   color: var(--muted);
 }
+.runtime-settings-raw-detail {
+  margin-top: var(--space-1);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font: var(--text-xs) / var(--text-sm-lh) var(--font-mono);
+}
 /* The account's rate-limit windows under the checklist; `.runtime-settings-usage` is the table's channel column. */
 .runtime-settings-account-usage {
   display: flex;
