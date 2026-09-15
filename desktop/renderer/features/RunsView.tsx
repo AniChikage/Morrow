@@ -316,7 +316,11 @@ function RunInspector({ run, ...props }: FeatureProps & { run: Run }) {
           <Markdown>{value.summary}</Markdown>
         </div>
       )}
-      {value.reportError && <p className="run-report-warning">{value.reportError}</p>}
+      {value.reportError && (
+        <p className={['invalid', 'conflict'].includes(value.reportStatus || '') ? 'run-report-warning' : 'subtle'}>
+          {value.reportError}
+        </p>
+      )}
       <div className="run-duration">
         <span>开始 {runTime(run, run.startedAt)}</span>
         <span>

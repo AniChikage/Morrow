@@ -228,6 +228,30 @@ it('keeps CLI completion separate from report validation and displays exact inpu
   expect(props.onNavigate).toHaveBeenCalledWith({ kind: 'channel', id: current.channelId });
 });
 
+it.each([
+  ['missing', '本轮结束，未附看板报告，看板未改动。', 'subtle'],
+  ['invalid', '看板报告未通过验证：格式错误。看板未改动。', 'run-report-warning'],
+  ['conflict', '报告中的事项已被更新，看板未改动。', 'run-report-warning'],
+] as const)('styles the report note by its validation status (%s)', async (reportStatus, reportError, className) => {
+  const { props } = featureProps();
+  const current = run('report-note', {
+    executionOwner: 'codex-app',
+    source: 'morrow-schedule',
+    permission: 'native',
+    reportStatus,
+    reportError,
+  });
+  props.snapshot.runs = [current];
+  vi.mocked(props.api.getRuns).mockResolvedValue({ runs: [current], hasMore: false });
+  vi.mocked(props.api.getRun).mockResolvedValue({ run: current, prompt: '', finalOutput: '' });
+  render(<RunsView {...props} />, { wrapper: TestProviders });
+  await userEvent.setup().click(headings()[0]);
+  const note = await screen.findByText(reportError);
+  expect(note.className).toBe(className);
+  expect(note.textContent).toBe(reportError);
+  expect(headings()[0].textContent).toContain('已完成');
+});
+
 it('ignores a delayed previous project page and keeps the new scope cursor when loading more history', async () => {
   const { props } = featureProps(),
     user = userEvent.setup(),
