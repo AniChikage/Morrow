@@ -149,13 +149,13 @@
   height: 6px;
   flex-shrink: 0;
   border-radius: 50%;
-  background: #b7b7bf;
+  background: var(--faint);
 }
 .runtime-settings-detection.detected .runtime-settings-dot {
-  background: #6b9477;
+  background: var(--success);
 }
 .runtime-settings-detection.attention .runtime-settings-dot {
-  background: #b79250;
+  background: var(--warning);
 }
 .runtime-settings-auth {
   font-size: 12px;
@@ -171,7 +171,7 @@
   white-space: nowrap;
 }
 .runtime-settings-usage .runtime-settings-dot {
-  background: #6b9477;
+  background: var(--success);
 }
 .runtime-settings-version {
   overflow: hidden;

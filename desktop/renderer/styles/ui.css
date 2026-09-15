@@ -134,6 +134,9 @@
   color: var(--muted);
   padding: var(--space-2) var(--space-2) var(--space-1);
 }
+/* Status colour is the console's only semantic signal: accent while a round moves, success
+   when it lands, warning while it waits on someone, danger when it broke. 失败 and 中断 are
+   not the same thing as 被阻塞, so they no longer share one colour. */
 .status-icon {
   color: var(--faint);
 }
@@ -147,9 +150,14 @@
   color: var(--success);
 }
 .status-blocked,
-.status-failed,
-.status-interrupted {
+.status-waiting,
+.status-paused {
   color: var(--warning);
+}
+.status-failed,
+.status-interrupted,
+.status-error {
+  color: var(--danger);
 }
 .status-label {
   display: inline-flex;

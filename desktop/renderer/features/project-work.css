@@ -27,14 +27,14 @@
   white-space: nowrap;
 }
 .release-awaiting_approval {
-  color: #9a6721;
+  color: var(--warning);
 }
 .release-published {
-  color: #347255;
+  color: var(--success);
 }
 .release-unknown,
 .release-failed {
-  color: #a4493e;
+  color: var(--danger);
 }
 .release-heading {
   display: flex;
@@ -215,11 +215,12 @@
   color: var(--text);
 }
 .strategy-review {
-  border-left: 2px solid #ae8249;
-  padding: 8px 14px;
-  margin: 18px 0;
-  color: #8e682f;
-  background: var(--bg-subtle, #f8f8f8);
+  border-left: 3px solid var(--warning);
+  border-radius: var(--radius-lg);
+  padding: var(--space-3) var(--space-4);
+  margin: var(--space-4) 0;
+  color: var(--warning);
+  background: var(--warning-soft);
 }
 .strategy-review p {
   margin: 4px 0;

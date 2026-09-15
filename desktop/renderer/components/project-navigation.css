@@ -43,15 +43,17 @@
   color: var(--nav-muted);
   font-size: 11px;
 }
-/* Pending Codex questions: the channel row's warning icon plus a count, shown whether the project is expanded or collapsed. */
+/* Pending Codex questions: the one thing in the sidebar that is 现在需要你, so it gets the accent. */
 .project-pending-count {
   display: inline-flex;
   align-items: center;
   gap: 3px;
   flex-shrink: 0;
-  margin-left: 4px;
-  font-size: 11px;
-  line-height: 14px;
+  margin-left: var(--space-1);
+  color: var(--accent);
+  font-size: var(--text-xs);
+  font-weight: 500;
+  line-height: var(--text-xs-lh);
 }
 .project-pending-count > svg {
   width: 12px;
