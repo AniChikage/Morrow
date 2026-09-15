@@ -255,7 +255,10 @@ it('does not call a completed snapshot missing while its structured log is still
       })
   );
   render(<ChannelView {...props} id="channel-system" />, { wrapper: TestProviders });
-  expect(screen.getByText('本轮摘要尚未载入')).toBeTruthy();
+  const placeholder = screen.getByRole('status', { name: '本轮摘要尚未载入' });
+  expect(placeholder.querySelectorAll('.skeleton-line')).toHaveLength(2);
+  expect(screen.queryByRole('heading', { name: '本轮摘要尚未载入' })).toBeNull();
+  expect(screen.queryByText('摘要尚未载入，可展开查看原话。')).toBeNull();
   expect(screen.queryByText('未记录本轮关注点')).toBeNull();
   expect(screen.queryByText('结论未记录')).toBeNull();
   await userEvent.setup().click(screen.getByText('查看最新轮次'));
@@ -263,7 +266,7 @@ it('does not call a completed snapshot missing while its structured log is still
   expect(screen.queryByText('未记录结构化产出')).toBeNull();
   await act(async () => resolve({ runs: [round('delayed')], hasMore: false }));
   expect(screen.getByText('关注 delayed')).toBeTruthy();
-  expect(screen.queryByText('本轮摘要尚未载入')).toBeNull();
+  expect(screen.queryByRole('status', { name: '本轮摘要尚未载入' })).toBeNull();
   expect(state.runs[0].log).toBeUndefined();
 });
 
@@ -274,7 +277,7 @@ it('shows retrieval failure without claiming that the unavailable summary is abs
   vi.mocked(api.getRuns).mockRejectedValue(new Error('轮次接口暂不可用'));
   render(<ChannelView {...props} id="channel-system" />, { wrapper: TestProviders });
   await screen.findByText('轮次接口暂不可用');
-  expect(screen.getByText('本轮摘要尚未载入')).toBeTruthy();
+  expect(screen.getByRole('status', { name: '本轮摘要尚未载入' }).querySelectorAll('.skeleton-line')).toHaveLength(2);
   expect(screen.queryByText('未记录本轮关注点')).toBeNull();
   expect(screen.queryByText('结论未记录')).toBeNull();
   expect(screen.getByRole('button', { name: '重试轮次' })).toBeTruthy();
@@ -371,6 +374,40 @@ const connectedConversation = (patch: Partial<NativeConversation> = {}): NativeC
   ...patch,
 });
 
+it.each([false, true])(
+  'keeps the main action neutral until App connection is known (connected=%s)',
+  async (connected) => {
+    const state = snapshot();
+    state.projects[0].isDemo = false;
+    state.channels[0].autonomyEnabled = false;
+    state.channels[0].status = 'paused';
+    const { props, api } = featureProps({ snapshot: state });
+    let resolve!: (value: NativeConversation) => void;
+    vi.mocked(props.api.getNativeConversation).mockImplementationOnce(
+      () =>
+        new Promise<NativeConversation>((done) => {
+          resolve = done;
+        })
+    );
+    render(<ChannelView {...props} id="channel-system" />, { wrapper: TestProviders });
+    const pending = screen.getByRole('button', { name: '正在检测 App 连接…' }) as HTMLButtonElement;
+    expect(pending.disabled).toBe(true);
+    expect(pending.classList.contains('button-primary')).toBe(false);
+    expect(screen.queryByRole('button', { name: '继续工作' })).toBeNull();
+    expect(screen.queryByRole('button', { name: '在 Codex App 中打开对话' })).toBeNull();
+    const value = connectedConversation();
+    value.status.connected = connected;
+    value.thread = { ...value.thread!, activeTurnId: undefined, status: 'idle' };
+    await act(async () => resolve(value));
+    expect(screen.queryByRole('button', { name: '正在检测 App 连接…' })).toBeNull();
+    await userEvent
+      .setup()
+      .click(screen.getByRole('button', { name: connected ? '继续工作' : '在 Codex App 中打开对话' }));
+    if (connected) expect(api.channelAction).toHaveBeenCalledWith('channel-system', 'resume');
+    else expect(api.openNativeApp).toHaveBeenCalledWith('channel-system');
+  }
+);
+
 it.each([
   ['Codex App 没有响应，稍后会重试', 'Codex App 没有响应，稍后会重试'],
   ['connect ECONNREFUSED /Users/test/.codex/ipc/ipc.sock', 'App 连接暂时不可用，请在运行时页重新检测。'],
@@ -414,6 +451,8 @@ it.each([
   render(<ChannelView {...props} id="channel-system" />, { wrapper: TestProviders });
   expect((await screen.findByRole('alert')).textContent).toContain(expected);
   expect(screen.queryByText(/ECONNREFUSED|service\.sock/)).toBeNull();
+  expect(screen.queryByRole('button', { name: '正在检测 App 连接…' })).toBeNull();
+  expect(screen.getByRole('button', { name: '在 Codex App 中打开对话' })).toBeTruthy();
 });
 
 it('surfaces an App approval waiting on the user instead of claiming Codex is still answering', async () => {
