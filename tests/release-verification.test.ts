@@ -458,6 +458,49 @@ test('only the latest unknown may use the next day retry budget', async () => {
   }
 });
 
+/**
+ * The clock is the real one; only `setTimeout` is mocked, so the review's own cap timer fires on
+ * demand instead of after minutes of waiting. Nothing else in this fixture schedules a timeout: the
+ * scheduler is off and the protocol double answers from memory.
+ */
+test('each review kind carries its own time cap and a stopped review names the cap that applied', async (t) => {
+  const f = await fixture();
+  try {
+    const first = await f.feature('发布级时限');
+    const passed = await f.reviewItem(first.item.id, first.evidence.id);
+    assert.equal(passed.timeoutSeconds, 300);
+    const execution = await f.grant.execute('node --test');
+    // A reviewer that never reports leaves the turn running, which is what the cap is for.
+    f.reviewer.autoComplete = false;
+    const release = await f.call('verification.request', {
+      kind: 'release',
+      itemIds: [first.item.id],
+      evidenceIds: [execution.id],
+    });
+    assert.equal(release.timeoutSeconds, 480);
+    t.mock.timers.enable({ apis: ['setTimeout'] });
+    const releaseRun = f.engine.loop.verification.start(release.id);
+    t.mock.timers.tick(480_000);
+    await releaseRun;
+    assert.equal(f.stored(release.id).status, 'unknown');
+    assert.equal(f.stored(release.id).summary, '独立复核达到 8 分钟上限，结果保留未知');
+    const second = await f.feature('事项级时限');
+    const item = await f.call('verification.request', {
+      itemId: second.item.id,
+      evidenceIds: [second.evidence.id],
+    });
+    assert.equal(item.timeoutSeconds, 300);
+    const itemRun = f.engine.loop.verification.start(item.id);
+    t.mock.timers.tick(300_000);
+    await itemRun;
+    assert.equal(f.stored(item.id).status, 'unknown');
+    assert.equal(f.stored(item.id).summary, '独立复核达到 5 分钟上限，结果保留未知');
+  } finally {
+    t.mock.timers.reset();
+    await f.cleanup();
+  }
+});
+
 test('changing release scope cannot hide a current failure; a source fix permits a new candidate', async () => {
   const f = await fixture();
   try {

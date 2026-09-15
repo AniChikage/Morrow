@@ -59,6 +59,14 @@ const outputLimit = 4 * 1024 * 1024;
 /** How many items one release-level review may cover, and how much of a command's output it is shown. */
 const releaseItemLimit = 30;
 const outputTail = 4000;
+/**
+ * How long one review may run, by kind. A release candidate covers up to 30 items and has to read
+ * the changes made since each one's own review, which the item cap cut short on the author's own
+ * project. The value is copied onto the row at creation and the row stays the timer's only source.
+ */
+const reviewTimeoutSeconds: Record<NonNullable<Verification['kind']>, number> = { item: 300, release: 480 };
+/** Reported with the cap that actually applied, so a stopped review says which limit it reached. */
+const capReached = (seconds: number) => `独立复核达到 ${Math.round(seconds / 60)} 分钟上限，结果保留未知`;
 const itemList = (value: unknown): string[] => {
   if (!Array.isArray(value) || !value.length || value.length > releaseItemLimit)
     throw new APIError(400, `itemIds 必须是 1..${releaseItemLimit} 个 feature ID 的数组`);
@@ -402,7 +410,7 @@ export class WorkVerification {
       prompt,
       bytes: 0,
       commandCount: 0,
-      timeoutSeconds: 300,
+      timeoutSeconds: reviewTimeoutSeconds.item,
     };
     this.loop.store.put('loop_verifications', row);
     this.loop.audit(
@@ -509,7 +517,7 @@ export class WorkVerification {
       prompt,
       bytes: 0,
       commandCount: 0,
-      timeoutSeconds: 300,
+      timeoutSeconds: reviewTimeoutSeconds.release,
     };
     this.loop.store.put('loop_verifications', row);
     for (const itemId of itemIds)
@@ -912,7 +920,7 @@ export class WorkVerification {
       usageWait: undefined,
     });
     const active = {
-      timer: setTimeout(() => this.stop(id, '独立复核达到 5 分钟上限，结果保留未知'), row.timeoutSeconds * 1000),
+      timer: setTimeout(() => this.stop(id, capReached(row.timeoutSeconds)), row.timeoutSeconds * 1000),
       seen: new Map<string, Record<string, any>>(),
       stop: undefined as (() => void) | undefined,
       cancel: undefined as (() => void) | undefined,
