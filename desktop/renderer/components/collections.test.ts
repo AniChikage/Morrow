@@ -1,5 +1,29 @@
 import { expect, it } from 'vitest';
-import { replaceIfChanged } from './collections';
+import { mergeById, replaceIfChanged } from './collections';
+
+it('merges rows by id, letting the incoming list win, and keeps first appearance without a sort', () => {
+  const loaded = [
+    { id: 'a', text: 'loaded a' },
+    { id: 'b', text: 'loaded b' },
+  ];
+  const live = [
+    { id: 'b', text: 'live b' },
+    { id: 'c', text: 'live c' },
+  ];
+  // The live snapshot refreshes a loaded row and adds its own, each staying where it first appeared.
+  expect(mergeById(loaded, live)).toEqual([
+    { id: 'a', text: 'loaded a' },
+    { id: 'b', text: 'live b' },
+    { id: 'c', text: 'live c' },
+  ]);
+  expect(mergeById(live, loaded)).toEqual([
+    { id: 'b', text: 'loaded b' },
+    { id: 'c', text: 'live c' },
+    { id: 'a', text: 'loaded a' },
+  ]);
+  expect(mergeById(loaded, live, (a, b) => b.id.localeCompare(a.id)).map((row) => row.id)).toEqual(['c', 'b', 'a']);
+  expect(mergeById([], [])).toEqual([]);
+});
 
 it('keeps the previous value for an unchanged payload and takes every real change', () => {
   const previous = { runs: [{ id: 'run-1', status: 'running' }] };

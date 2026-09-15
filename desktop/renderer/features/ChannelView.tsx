@@ -11,7 +11,7 @@ import type {
 } from '../../shared/types';
 import type { FeatureProps } from './types';
 import { Button, Dropdown, DropdownItem, EmptyState, Markdown } from '../components/ui';
-import { replaceIfChanged } from '../components/collections';
+import { mergeById, replaceIfChanged } from '../components/collections';
 import {
   channelStatusLabel,
   durationSeconds,
@@ -37,10 +37,7 @@ const ready = (value: NativeConversation | null) =>
   );
 const active = (value: NativeConversation | null) =>
   !!value?.thread?.activeTurnId || ['active', 'running', 'inProgress'].includes(value?.thread?.status || '');
-const mergeRuns = (old: Run[], next: Run[]) =>
-  [...new Map([...old, ...next].map((run) => [run.id, run])).values()].sort((a, b) =>
-    b.startedAt.localeCompare(a.startedAt)
-  );
+const mergeRuns = (old: Run[], next: Run[]) => mergeById(old, next, (a, b) => b.startedAt.localeCompare(a.startedAt));
 /** One short line per App-resume state; the reason itself is the expanded body. */
 const appResumeLabel: Record<NonNullable<Channel['appResume']>['state'], string> = {
   observing: 'App 续跑：观察中',

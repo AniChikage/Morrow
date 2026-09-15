@@ -1,10 +1,11 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useMemo, useState } from 'react';
 import { ArrowUpRight, ChevronDown, History, LoaderCircle } from 'lucide-react';
 import type { WorkspaceEvent } from '../../shared/types';
 import type { FeatureProps } from './types';
 import { Button, EmptyState, Markdown } from '../components/ui';
 import { formatDate, kindLabel, runtimeLabel, statusLabel } from '../components/format';
-import { EventLog } from './EventLog';
+import { usePagedHistory } from '../components/history';
+import { byRecordOrder, EventLog } from './EventLog';
 import { featureNumber } from './featureOwnership';
 
 const actions: Record<string, string> = {
@@ -70,17 +71,23 @@ function fieldValue(field: string, value: unknown): string {
 }
 export function ProjectRecords({ projectId, itemId, ...props }: FeatureProps & { projectId: string; itemId?: string }) {
   const { snapshot, api, onNavigate } = props;
-  const scope = `${projectId}:${itemId || ''}`;
-  const activeScope = useRef(scope);
-  activeScope.current = scope;
-  const [pages, setPages] = useState<WorkspaceEvent[]>([]);
-  const [loading, setLoading] = useState(false);
-  const [hasMore, setHasMore] = useState(false);
-  const [cursor, setCursor] = useState<string>();
-  const [error, setError] = useState('');
-  const [historyLoaded, setHistoryLoaded] = useState(false);
   const [source, setSource] = useState('all');
-  const snapshotBaseline = useRef(new Set<string>());
+  const { rows, loading, error, hasMore, cursor, load } = usePagedHistory({
+    scope: `${projectId}:${itemId || ''}`,
+    live: snapshot.events,
+    sort: byRecordOrder,
+    failure: '暂时无法读取记录。',
+    onReset: () => setSource('all'),
+    page: async (before) => {
+      const page = await api.getEvents({
+        projectId,
+        ...(itemId ? { itemId } : {}),
+        ...(before ? { before } : {}),
+        limit: 50,
+      });
+      return { rows: page.events, hasMore: page.hasMore, cursor: page.cursor || page.events[0]?.id };
+    },
+  });
   const belongs = useCallback(
     (event: WorkspaceEvent) =>
       (event.projectId
@@ -89,49 +96,7 @@ export function ProjectRecords({ projectId, itemId, ...props }: FeatureProps & {
       (!itemId || event.itemId === itemId),
     [projectId, itemId, snapshot.channels]
   );
-  const events = useMemo(() => {
-    const loadedIds = new Set(pages.map((event) => event.id));
-    const live = snapshot.events.filter(
-      (event) =>
-        belongs(event) && (!historyLoaded || loadedIds.has(event.id) || !snapshotBaseline.current.has(event.id))
-    );
-    return [...new Map([...pages.filter(belongs), ...live].map((event) => [event.id, event])).values()].sort(
-      (a, b) => a.createdAt.localeCompare(b.createdAt) || (a.detail?.sequence ?? 0) - (b.detail?.sequence ?? 0)
-    );
-  }, [pages, snapshot.events, belongs, historyLoaded]);
-  const load = useCallback(
-    async (before?: string) => {
-      setLoading(true);
-      setError('');
-      try {
-        const page = await api.getEvents({
-          projectId,
-          ...(itemId ? { itemId } : {}),
-          ...(before ? { before } : {}),
-          limit: 50,
-        });
-        if (activeScope.current !== scope) return;
-        setPages((previous) => (before ? [...page.events, ...previous] : page.events));
-        setHistoryLoaded(true);
-        setHasMore(page.hasMore);
-        setCursor(page.cursor || page.events[0]?.id);
-      } catch (reason) {
-        if (activeScope.current === scope) setError(reason instanceof Error ? reason.message : '暂时无法读取记录。');
-      } finally {
-        if (activeScope.current === scope) setLoading(false);
-      }
-    },
-    [api, projectId, itemId, scope]
-  );
-  useEffect(() => {
-    snapshotBaseline.current = new Set(snapshot.events.map((event) => event.id));
-    setSource('all');
-    setPages([]);
-    setHistoryLoaded(false);
-    setHasMore(false);
-    setCursor(undefined);
-    void load();
-  }, [load]);
+  const events = useMemo(() => rows.filter(belongs), [rows, belongs]);
   const displayed = itemId
     ? events
     : events
@@ -140,7 +105,7 @@ export function ProjectRecords({ projectId, itemId, ...props }: FeatureProps & {
         .filter((event) => source === 'all' || (source === 'operations' ? !!event.action : !event.action));
   const more = hasMore && (
     <div className="load-history">
-      <Button variant="ghost" disabled={loading} onClick={() => void load(cursor)}>
+      <Button variant="ghost" disabled={loading} onClick={() => load(cursor)}>
         <History size={14} />
         加载更早记录
       </Button>
@@ -166,7 +131,7 @@ export function ProjectRecords({ projectId, itemId, ...props }: FeatureProps & {
       {error && (
         <div className="feature-inline-error" role="alert">
           {error}
-          <button onClick={() => void load(cursor)}>重试</button>
+          <button onClick={() => load(cursor)}>重试</button>
         </div>
       )}
       {loading && (

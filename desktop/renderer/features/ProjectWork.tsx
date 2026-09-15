@@ -5,7 +5,7 @@ import type { FeatureProps } from './types';
 import { questionExcerpt } from './ChannelQuestion';
 import { upgradeSwitching } from './upgradeState';
 import { Button, EmptyState, Markdown } from '../components/ui';
-import { replaceIfChanged } from '../components/collections';
+import { mergeById, replaceIfChanged } from '../components/collections';
 import { formatDate } from '../components/format';
 import './project-work.css';
 
@@ -60,9 +60,6 @@ type WorkPage = {
 };
 /** Keyed by the desktop API first: another connection is another service, not the same page. */
 const workPages = new WeakMap<DesktopAPI, Map<string, WorkPage>>();
-const merge = <T extends { id: string }>(a: T[], b: T[]) => [
-  ...new Map([...a, ...b].map((row) => [row.id, row])).values(),
-];
 function createWorkPage(api: DesktopAPI, key: string, projectId: string, itemId?: string): WorkPage {
   const page: WorkPage = {
     api,
@@ -90,8 +87,8 @@ function createWorkPage(api: DesktopAPI, key: string, projectId: string, itemId?
   };
   const combined = (value: ProjectLoop): ProjectLoop => ({
     ...value,
-    verifications: merge(page.older.verifications || [], value.verifications || []),
-    evidence: merge(page.older.evidence, value.evidence),
+    verifications: mergeById(page.older.verifications || [], value.verifications || []),
+    evidence: mergeById(page.older.evidence, value.evidence),
   });
   page.load = async () => {
     if (page.pending || !api.getProjectWork) return;
@@ -135,8 +132,8 @@ function createWorkPage(api: DesktopAPI, key: string, projectId: string, itemId?
       if (!older.verificationHistory || older.verificationHistory.cursor === before)
         throw new Error('服务未提供更早复核，请更新服务后重试。');
       page.older = {
-        verifications: merge(page.older.verifications || [], older.verifications || []),
-        evidence: merge(page.older.evidence, older.evidence),
+        verifications: mergeById(page.older.verifications || [], older.verifications || []),
+        evidence: mergeById(page.older.evidence, older.evidence),
       };
       page.cursor = older.verificationHistory.cursor;
       const patch: Partial<WorkPageState> = { moreHistory: older.verificationHistory.hasMore };
