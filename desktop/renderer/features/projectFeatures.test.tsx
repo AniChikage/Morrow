@@ -62,7 +62,6 @@ describe('project next step and secondary properties', () => {
     props.snapshot.channels[0].sessionId = 'bound-app-task';
     view.rerender(<ProjectView {...props} id="project-atlas" />);
     await userEvent.setup().click(screen.getByRole('button', { name: '打开工作日志' }));
-    expect(api.openNativeSession).not.toHaveBeenCalled();
     expect(api.channelAction).not.toHaveBeenCalled();
   });
 
@@ -383,7 +382,6 @@ describe('manual feature details and audit', () => {
     await user.click(properties.getByRole('button', { name: '待处理' }));
     await user.click(screen.getByRole('menuitem', { name: '已验证' }));
     await waitFor(() => expect(api.patchItem).toHaveBeenCalledWith('manual', { status: 'verified', revision: 3 }));
-    expect(api.updateItem).not.toHaveBeenCalled();
     expect(api.getEvents).toHaveBeenCalledWith({ projectId: 'project-atlas', itemId: 'manual', limit: 50 });
     await user.click(screen.getByText('变更记录'));
     await screen.findByText('修改了功能标题。');
@@ -483,7 +481,6 @@ describe('channels are execution sources, not separate boards', () => {
     expect((button as HTMLButtonElement).disabled).toBe(false);
     await userEvent.setup().click(button);
     expect(api.openNativeApp).toHaveBeenCalledWith('channel-system');
-    expect(api.openNativeSession).not.toHaveBeenCalled();
     expect(api.channelAction).not.toHaveBeenCalled();
   });
 
@@ -508,7 +505,6 @@ describe('channels are execution sources, not separate boards', () => {
     expect(entry.disabled).toBe(true);
     expect(entry.title).toContain('已停止支持');
     expect(screen.queryByRole('button', { name: '在原生 CLI 中继续' })).toBeNull();
-    expect(api.openNativeSession).not.toHaveBeenCalled();
   });
 
   it('keeps channel activity and run history and navigates to the single project board', async () => {
@@ -533,7 +529,6 @@ describe('channels are execution sources, not separate boards', () => {
     await userEvent.setup().click(screen.getByRole('button', { name: '项目属性' }));
     await userEvent.setup().click(screen.getByRole('button', { name: '在 Codex App 中继续此项目' }));
     expect(api.openNativeApp).toHaveBeenCalledWith('channel-system');
-    expect(api.openNativeSession).not.toHaveBeenCalled();
     expect(within(screen.getByRole('complementary')).getByText('1 个旧频道，历史可读')).toBeTruthy();
   });
 
@@ -561,7 +556,6 @@ describe('channels are execution sources, not separate boards', () => {
     await userEvent.setup().keyboard('{Escape}');
     expect(screen.getByRole('note').textContent).toContain('已停止支持');
     expect(screen.getByRole('article', { name: /轮次/ })).toBeTruthy();
-    expect(api.openNativeSession).not.toHaveBeenCalled();
   });
 });
 

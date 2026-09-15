@@ -111,7 +111,6 @@ describe('channel control and history', () => {
     expect(screen.getByRole('menuitem', { name: '在 Codex App 中打开对话' }).getAttribute('aria-disabled')).toBe(
       'true'
     );
-    expect(api.sendMessage).not.toHaveBeenCalled();
     expect(api.channelAction).not.toHaveBeenCalled();
   });
 
@@ -148,7 +147,6 @@ describe('channel control and history', () => {
     await user.keyboard('{Escape}');
     expect(screen.getByText('旧运行时留下的记录')).toBeTruthy();
     expect(api.channelAction).toHaveBeenCalledTimes(1);
-    expect(api.openNativeSession).not.toHaveBeenCalled();
   });
 
   it('during a version handover a paused channel cannot be resumed, while pausing a running one still works', async () => {

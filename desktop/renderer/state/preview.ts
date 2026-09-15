@@ -351,30 +351,9 @@ export function previewAPI(): DesktopAPI {
       hasMore: false,
     }),
     bindNativeThread: unavailable,
-    createNativeThread: unavailable,
     sendNativeMessage: unavailable,
     interruptNativeTurn: unavailable,
-    respondNativeRequest: unavailable,
     openNativeApp: unavailable,
-    chooseNativeImages: unavailable,
-    getNativeImage: unavailable,
-    sendMessage: async (id, text) => {
-      const channel = snapshot.channels.find((value) => value.id === id);
-      if (!channel) throw new Error('频道不存在');
-      const event: WorkspaceEvent = {
-        id: crypto.randomUUID(),
-        projectId: channel.projectId,
-        channelId: id,
-        runId: '',
-        kind: 'message',
-        actor: 'human',
-        text,
-        createdAt: new Date().toISOString(),
-      };
-      snapshot.events.push(event);
-      return structuredClone(event);
-    },
-    updateItem: async (id, status) => api.patchItem(id, { status }),
     createItem: async ({ projectId, ...data }) => {
       const now = new Date().toISOString();
       const item = {
@@ -439,7 +418,6 @@ export function previewAPI(): DesktopAPI {
         cursor: chunks.at(-1)?.id,
       };
     },
-    openNativeSession: unavailable,
     loadDemo: async () => ({ ok: true }),
     refreshRuntimes: async () => structuredClone(snapshot.runtimes),
     getEvents: async (query) => {

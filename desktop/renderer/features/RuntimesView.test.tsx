@@ -328,7 +328,6 @@ test('entering the page and manual detection request fresh usage and display lat
   await userEvent.setup().click(screen.getByRole('button', { name: '重新检测' }));
   await screen.findByText('刷新失败，显示最近读数');
   expect(screen.getByLabelText('账户用量').textContent).toContain('41%');
-  expect(api.createNativeThread).not.toHaveBeenCalled();
   expect(api.channelAction).not.toHaveBeenCalled();
 });
 

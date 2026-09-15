@@ -141,9 +141,6 @@ export function featureProps(patch: Partial<FeatureProps> = {}) {
     createChannel: vi.fn(),
     updateChannel: vi.fn(),
     channelAction: vi.fn(async () => ({ ok: true })),
-    sendMessage: vi.fn(async (id: string, text: string) =>
-      event('human-note', text, 9, { channelId: id, kind: 'message' })
-    ),
     getNativeStatus: vi.fn(async () => nativeStatus),
     listNativeThreads: vi.fn(async () => ({ status: nativeStatus, threads: [] })),
     getNativeConversation: vi.fn(async (channelId: string) => ({
@@ -154,17 +151,12 @@ export function featureProps(patch: Partial<FeatureProps> = {}) {
       hasMore: false,
     })),
     bindNativeThread: vi.fn(),
-    createNativeThread: vi.fn(),
     sendNativeMessage: vi.fn(async (_channelId: string, input: NativeMessageInput): Promise<NativeMessageReceipt> => ({
       requestId: input.requestId,
       state: 'accepted',
     })),
     interruptNativeTurn: vi.fn(),
-    respondNativeRequest: vi.fn(),
     openNativeApp: vi.fn(async () => {}),
-    chooseNativeImages: vi.fn(async () => []),
-    getNativeImage: vi.fn(),
-    updateItem: vi.fn(async (id: string, status: string) => item({ id, status })),
     createItem: vi.fn(async (data: CreateItem) => item({ ...data, channelId: data.channelId || '' })),
     patchItem: vi.fn(async (id: string, patch: ItemPatch) => {
       const { ownerChannelId, ...fields } = patch;
@@ -173,7 +165,6 @@ export function featureProps(patch: Partial<FeatureProps> = {}) {
     getRuns: vi.fn(async () => ({ runs: [], hasMore: false })),
     getRun: vi.fn(),
     getRunOutput: vi.fn(async () => ({ chunks: [], hasMore: false })),
-    openNativeSession: vi.fn(async () => {}),
     loadDemo: vi.fn(),
     refreshRuntimes: vi.fn(),
     getEvents: vi.fn(async () => ({ events: [] as WorkspaceEvent[], hasMore: false })),
