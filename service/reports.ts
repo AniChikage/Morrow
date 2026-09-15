@@ -25,14 +25,13 @@ export function extractReport(
     if (/```(?:morrow|nohuman)-report/i.test(text)) return { status: 'invalid', error: '看板报告代码块未完整结束。' };
     return {
       status: 'missing',
-      error: native ? '本轮结束，未附看板报告，看板未改动。' : 'CLI 已结束，未提供看板报告；未自动修改功能事项。',
+      error: native ? '本轮结束，未附看板报告，看板未改动。' : 'CLI 已结束，未提供看板报告；看板未改动。',
     };
   } catch (error) {
+    // What did not happen is the same for both run kinds: no item, note or decision was written.
     return {
       status: 'invalid',
-      error: `看板报告未通过验证：${error instanceof Error ? error.message : '格式错误'}。${
-        native ? '看板未改动。' : '未自动修改功能事项。'
-      }`,
+      error: `看板报告未通过验证：${error instanceof Error ? error.message : '格式错误'}。看板未改动。`,
     };
   }
 }
