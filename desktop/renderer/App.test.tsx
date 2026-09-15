@@ -198,6 +198,23 @@ it('runs every window shortcut: search, new project, settings, the sidebar, tab 
   expect(selectedTab()).toBe('系统完善');
 });
 
+it('does not pop the tooltip of the button a dialog moves focus to, but still shows it on Tab', async () => {
+  const user = userEvent.setup();
+  await loaded();
+  await started('Atlas');
+  press(',');
+  const dialog = await screen.findByRole('dialog', { name: '设置' });
+  const close = within(dialog).getByRole('button', { name: '关闭' });
+  // The dialog focuses its close button on open; nobody asked to read its label.
+  await waitFor(() => expect(document.activeElement).toBe(close));
+  expect(screen.queryByRole('tooltip')).toBeNull();
+  // Reaching the same button from the keyboard is a different matter.
+  close.blur();
+  await user.keyboard('{Tab}');
+  close.focus();
+  expect(await screen.findByRole('tooltip')).toBeTruthy();
+});
+
 it('keeps the tab strip a list of tabs, with each close button beside its tab rather than inside it', async () => {
   const user = userEvent.setup();
   getState.mockResolvedValue({ ...state(), channels: [channel('channel-system', '系统完善')] });

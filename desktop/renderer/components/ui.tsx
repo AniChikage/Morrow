@@ -32,6 +32,24 @@ export function Button({
 }: ButtonHTMLAttributes<HTMLButtonElement> & { variant?: 'primary' | 'secondary' | 'ghost' | 'danger' }) {
   return <button type={type} className={`button button-${variant} ${className}`} {...props} />;
 }
+/**
+ * Whether the interface is being driven from the keyboard right now, the same question
+ * `:focus-visible` answers and jsdom cannot. A tooltip opening on focus is right for a Tab press
+ * and wrong for the focus a dialog moves by itself: opening 设置 used to put the 「关闭」 tooltip on
+ * screen before anyone had pointed at anything. A shortcut is not navigation, so a keystroke with
+ * a modifier leaves this alone.
+ */
+let keyboardFocus = false;
+if (typeof window !== 'undefined') {
+  window.addEventListener(
+    'keydown',
+    (event) => {
+      if (!event.metaKey && !event.ctrlKey && !event.altKey) keyboardFocus = true;
+    },
+    true
+  );
+  window.addEventListener('pointerdown', () => (keyboardFocus = false), true);
+}
 export function IconButton({
   label,
   children,
@@ -41,7 +59,17 @@ export function IconButton({
   return (
     <Tooltip.Root>
       <Tooltip.Trigger asChild>
-        <button type="button" aria-label={label} className={`icon-button ${className}`} {...props}>
+        <button
+          type="button"
+          aria-label={label}
+          className={`icon-button ${className}`}
+          {...props}
+          onFocus={(event) => {
+            props.onFocus?.(event);
+            // Radix opens the tooltip on focus unless the event is already prevented.
+            if (!keyboardFocus) event.preventDefault();
+          }}
+        >
           {children}
         </button>
       </Tooltip.Trigger>
