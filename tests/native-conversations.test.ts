@@ -527,7 +527,9 @@ test('native binding uses the same project task, persists full original messages
     await s.api('POST', `/api/channels/${s.channel.id}/messages`, { text: 'old-note' }, 409);
     assert.equal(s.store.all<any>('runs')[0].source, 'morrow-chat');
     assert.equal(s.engine.budgetCount(s.channel.id), 0);
-    assert(s.store.all('native_events').length > 0);
+    // Projecting a snapshot journals nothing: `native_events` holds original IPC deltas only, and
+    // this transport delivers whole snapshots.
+    assert.equal(s.store.all('native_events').length, 0);
     assert.equal(s.store.all<any>('native_outbox')[0].text, text);
   } finally {
     await s.cleanup();
@@ -645,7 +647,7 @@ test('per-thread disconnect disables sending, same-revision reconnect clears err
         { turnId: 'new', status: 'completed', items: [{ id: 'new-message', type: 'agentMessage', text: 'latest' }] },
       ],
     });
-    const before = s.store.all('native_events').length;
+    const before = { events: s.store.all('native_events').length, items: s.store.all('native_items').length };
     s.transport.readFailure = true;
     const disconnected = await s.api('GET', `/api/channels/${s.channel.id}/native/conversation`);
     assert.equal(disconnected.status.connected, false);
@@ -653,7 +655,10 @@ test('per-thread disconnect disables sending, same-revision reconnect clears err
     s.transport.readFailure = false;
     const reconnected = await s.api('GET', `/api/channels/${s.channel.id}/native/conversation`);
     assert.equal(reconnected.status.connected, true);
-    assert.equal(s.store.all('native_events').length, before);
+    assert.deepEqual(
+      { events: s.store.all('native_events').length, items: s.store.all('native_items').length },
+      before
+    );
     s.transport.emit({
       turnHistory: {
         history: {
@@ -881,6 +886,8 @@ test('streaming a long native history journals every delta while coalescing only
       state: applyDesktopPatches(snapshot.state, lastChange.patches) as typeof state,
     };
     s.native.queueSnapshot(snapshot, lastChange);
+    // Every delta of the streaming turn is durable before any of it is coalesced.
+    assert.equal(s.store.all<any>('native_events').filter((event) => event.kind === 'native.patch').length, 41);
     s.native.close();
     assert.equal(s.native.pendingSnapshots.size, 0);
     assert.equal(s.store.get<any>('native_threads', snapshot.threadId).revision, snapshot.revision);
@@ -888,7 +895,8 @@ test('streaming a long native history journals every delta while coalescing only
       s.store.nativeRows<any>('native_items', snapshot.threadId).find((item) => item.raw.id === 'item-1065').text,
       'final pending text'
     );
-    assert.equal(s.store.all<any>('native_events').filter((event) => event.kind === 'native.patch').length, 41);
+    // The checkpoint `close()` wrote covers all 41 revisions, so recovery can never read them again.
+    assert.equal(s.store.all('native_events').length, 0);
     assert.equal(s.transport.interruptions.length, 0);
   } finally {
     await s.cleanup();
@@ -932,6 +940,73 @@ test('unflushed native deltas recover from the durable journal before App reconn
     assert.equal(view.status.connected, false);
     assert.equal(view.items[0].text, 'durable after crash');
     assert.equal(s.store.get<any>('native_threads', initial.threadId).revision, latest.revision);
+    assert.equal(s.transport.interruptions.length, 0);
+  } finally {
+    recovered?.close();
+    await s.cleanup();
+  }
+});
+
+test('a streaming turn checkpoints at most every 30 s, bounds the journal by that checkpoint and still recovers a mid-turn death', async () => {
+  const s = await setup();
+  let recovered: NativeConversations | undefined;
+  try {
+    await s.api('POST', `/api/channels/${s.channel.id}/native/bind`, { threadId: s.transport.threadId });
+    const state = {
+      turns: [
+        {
+          turnId: 'long-turn',
+          status: 'inProgress',
+          items: [{ id: 'streamed', type: 'agentMessage', phase: 'commentary', text: 'start' }],
+        },
+      ],
+      requests: [],
+    };
+    let snapshot = { ...s.transport.snapshot, revision: s.transport.snapshot.revision + 1, state };
+    s.native.ingest(snapshot, true);
+    const stored = () => s.store.get<any>('native_threads', snapshot.threadId).revision;
+    const journal = () => s.store.all<any>('native_events').map((row) => row.revision);
+    /** One IPC delta of the streaming turn, journaled and projected the way the subscription does. */
+    const stream = (text: string, sinceCheckpoint: number) => {
+      s.native.checkpointAt.set(snapshot.threadId, Date.now() - sinceCheckpoint);
+      const change = {
+        type: 'patches' as const,
+        baseRevision: snapshot.revision,
+        revision: snapshot.revision + 1,
+        patches: [{ op: 'replace' as const, path: ['turns', 0, 'items', 0, 'text'], value: text }],
+      };
+      snapshot = {
+        ...snapshot,
+        revision: change.revision,
+        syncedAt: new Date().toISOString(),
+        state: applyDesktopPatches(snapshot.state, change.patches) as typeof state,
+      };
+      s.native.queueSnapshot(snapshot, change);
+      s.native.flushPending(snapshot.threadId);
+    };
+    const first = stored();
+    assert.deepEqual(journal(), []);
+    // 25 s into the turn the whole thread state is not rewritten again; the delta is durable anyway.
+    stream('25 秒', 25000);
+    assert.equal(stored(), first);
+    assert.deepEqual(journal(), [snapshot.revision]);
+    // Past 30 s it is, and that checkpoint retires the journal rows it now covers.
+    stream('31 秒', 31000);
+    assert.equal(stored(), snapshot.revision);
+    assert.deepEqual(journal(), []);
+    stream('再 25 秒', 25000);
+    assert.equal(stored(), snapshot.revision - 1);
+    assert.deepEqual(journal(), [snapshot.revision]);
+    // The process dies mid-turn, before its next checkpoint; the journal is what recovery replays.
+    s.native.closed = true;
+    s.transport.connected = false;
+    recovered = new NativeConversations(s.store, s.engine, s.transport);
+    recovered.recoverCheckpoint(snapshot.threadId);
+    const view = await recovered.conversation(s.channel.id, {});
+    assert.equal(view.status.connected, false);
+    assert.equal(view.items.at(-1)?.text, '再 25 秒');
+    assert.equal(stored(), snapshot.revision);
+    assert.deepEqual(journal(), []);
     assert.equal(s.transport.interruptions.length, 0);
   } finally {
     recovered?.close();

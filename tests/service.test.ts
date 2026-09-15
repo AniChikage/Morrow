@@ -975,6 +975,13 @@ test('a scheduler tick selects only the rows that need work, through indexes rat
       ),
       /INDEX native_events_thread_revision/
     );
+    // Every checkpoint retires the journal rows it covers through the same index.
+    assert.match(
+      plan(
+        "DELETE FROM native_events WHERE json_extract(data,'$.threadId')='t' AND (json_extract(data,'$.ownerClientId')<>'o' OR CAST(json_extract(data,'$.revision') AS INTEGER)<=1)"
+      ),
+      /INDEX native_events_thread_revision/
+    );
   } finally {
     store.close();
     rmSync(home, { recursive: true, force: true });

@@ -182,6 +182,8 @@ function activeTurn(state: Record<string, any>): any | undefined {
   const turn = nativeTurns(state).at(-1);
   return turn && ['inProgress', 'running'].includes(turn.status) ? turn : undefined;
 }
+/** Whether the task is mid-turn, the same reading `summary` reports as `running`. */
+const streaming = (state: Record<string, any>) => !!activeTurn(state) || state.threadRuntimeStatus?.type === 'active';
 function summary(snapshot: NativeSnapshot): NativeThreadSummary {
   const state = snapshot.state;
   const active = activeTurn(state);
@@ -384,11 +386,26 @@ export class NativeConversations {
       if (snapshot) this.ingest(snapshot);
     }
   }
+  /**
+   * Everything checkpoint recovery can no longer read, dropped as soon as the checkpoint that
+   * supersedes it is durable: the revisions that checkpoint already covers, and rows an earlier
+   * owning client left behind. `recoverCheckpoint` only ever walks forward from the stored
+   * revision, so the journal is bounded by the checkpoint interval rather than by how long this
+   * process runs. The thread half is answered by `native_events_thread_revision`.
+   */
+  pruneJournal(threadId: string, ownerClientId: string, revision: number) {
+    this.store.db
+      .prepare(
+        "DELETE FROM native_events WHERE json_extract(data,'$.threadId')=? AND (json_extract(data,'$.ownerClientId')<>? OR CAST(json_extract(data,'$.revision') AS INTEGER)<=?)"
+      )
+      .run(threadId, ownerClientId, revision);
+  }
   checkpoint(threadId: string) {
     const thread = this.threadCache.get(threadId);
     if (thread && this.dirtyThreads.has(threadId)) {
       this.store.put('native_threads', thread);
       this.dirtyThreads.delete(threadId);
+      this.pruneJournal(threadId, thread.ownerClientId, thread.revision);
     }
     for (const key of this.dirtyTurns) {
       const cached = this.turnCache.get(key);
@@ -666,21 +683,17 @@ export class NativeConversations {
     const removedItemIds = [...previousItems.values()]
       .filter((item) => item.present && !itemIds.has(item.id))
       .map((item) => item.id);
-    const metadata: Record<string, unknown> = {};
-    for (const [key, value] of Object.entries(safe.state))
-      if (!['turns', 'turnHistory'].includes(key) && old?.state[key] !== value) metadata[key] = value;
-    const priorTurns = new Map(nativeTurns(old?.state || {}).map((turn) => [String(turn.turnId || turn.id), turn]));
-    const turns = nativeTurns(safe.state)
-      .filter((turn) => priorTurns.get(String(turn.turnId || turn.id)) !== turn)
-      .map(({ items, ...turn }: any) => turn);
-    const journaled = this.journaled.get(safe.threadId);
-    const hasRawJournal = journaled?.owner === safe.ownerClientId && journaled.revision >= safe.revision;
+    // A checkpoint rewrites the whole thread state — hundreds of KiB on a long task — so a turn that
+    // is still streaming gets one at most every 30 s and the IPC journal carries every revision in
+    // between for recovery. The moment the task stops being busy it becomes durable immediately, and
+    // `close()` always flushes whatever is still dirty.
+    const busy = streaming(safe.state);
     const checkpoint =
       forceCheckpoint ||
       !old ||
       old.ownerClientId !== safe.ownerClientId ||
-      Date.now() - (this.checkpointAt.get(safe.threadId) || 0) >= 5000 ||
-      (!activeTurn(safe.state) && !!activeTurn(old.state));
+      (!busy && streaming(old.state)) ||
+      Date.now() - (this.checkpointAt.get(safe.threadId) || 0) >= (busy ? 30000 : 5000);
     const nextThread = {
       ...safe,
       id: safe.threadId,
@@ -689,20 +702,11 @@ export class NativeConversations {
       projectionVersion: PROJECTION_VERSION,
     };
     this.store.transaction(() => {
-      if (checkpoint) this.store.put('native_threads', nextThread);
+      if (checkpoint) {
+        this.store.put('native_threads', nextThread);
+        this.pruneJournal(safe.threadId, safe.ownerClientId, safe.revision);
+      }
       if (old?.hash !== hash || old?.projectionVersion !== PROJECTION_VERSION) {
-        if (!hasRawJournal)
-          this.store.put('native_events', {
-            id: randomUUID(),
-            threadId: safe.threadId,
-            revision: safe.revision,
-            ownerClientId: safe.ownerClientId,
-            createdAt: now(),
-            changedItems,
-            removedItemIds,
-            turns,
-            metadata,
-          });
         for (const id of removedItemIds) this.store.put('native_items', { ...previousItems.get(id)!, present: false });
         for (const item of changedItems) this.store.put('native_items', item);
         this.store.db

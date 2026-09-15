@@ -65,7 +65,7 @@ MORROW_HOME="$HOME/.local/share/morrow" npm start
 
 迁移保持已有 ID 和历史，支持旧运行来源、协议标记与任务创建记录。历史证据摘要不因品牌改名重新计算。每个一次性回填带自己的 marker，跑过一次之后启动不再整表扫描；删掉某个 marker 会重放对应回填。备份应使用 SQLite 在线备份，或停止服务后复制完整数据目录及相关文件。
 
-看板、事件与运行历史目前没有自动裁剪策略。唯一会被清理的是原生任务的 IPC 增量日志 `native_events`：它只被 checkpoint 恢复读取（按线程从 `native_threads` 已覆盖的修订往后走），因此启动时的一次性迁移删掉再也读不到的行——已被 checkpoint 覆盖的修订、属于其他客户端的行、以及没有 `kind` 的投影行——并为剩下的行建 `(threadId, revision)` 索引。删行不缩小文件；停止服务后用 `bash scripts/compact-db.sh` 回收空间，步骤见[升级与数据迁移](../docs/UPGRADING.md)。
+看板、事件与运行历史目前没有自动裁剪策略。原生任务的 IPC 增量日志 `native_events` 会被持续清理：它只被 checkpoint 恢复读取（按线程从 `native_threads` 已覆盖的修订往后走），因此启动时的一次性迁移删掉再也读不到的行——已被 checkpoint 覆盖的修订、属于其他客户端的行、以及没有 `kind` 的投影行——并为剩下的行建 `(threadId, revision)` 索引。此后**每写出一次 checkpoint 就顺手删掉它已覆盖的日志行**（同一索引），所以这张表的上限是一次 checkpoint 间隔内的增量，而不是进程的运行时长：轮次流式进行时 checkpoint 最多每 30 秒一次，轮次结束或任务转为空闲时立刻写出，`close()` 一定写出。投影差异行已不再写入，恢复只依赖原始增量。`native_requests` 的已解决行在启动时按 `resolvedAt` 删掉超过 30 天的。删行不缩小文件；停止服务后用 `bash scripts/compact-db.sh` 回收空间，步骤见[升级与数据迁移](../docs/UPGRADING.md)。
 
 ## 运行日志
 
