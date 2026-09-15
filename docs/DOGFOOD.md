@@ -54,6 +54,12 @@
 - 人工兜底顺序仍然有效，且只在上述情况下使用：暂停频道 → 等当前轮次结束 → 退出界面 → 停止旧 daemon → 重新打开 `~/Applications/Morrow.app`。
 - UI 或工作树改动无需重启正在工作的安装版 daemon。不要为了测试重启或终止作者正在使用的服务，也不要在隔离测试里声称完成了真机切换。
 
+## 诊断一条不同步的原生任务
+
+- daemon 的运行日志就在数据目录里：跑安装版时是 `~/Library/Application Support/Morrow/service.log`，显式 `MORROW_HOME` 的隔离服务则是 `$MORROW_HOME/service.log`。它是每行一个 JSON 对象的追加文件（登录启动项与 Electron 主进程都指向它），同步失败会写 `native.sync.failed` 并带 `threadId`。界面没开也能看。
+- 频道页上的连接说明现在只写人话，不再出现 `connect ECONNREFUSED /Users/…/.codex/ipc/ipc.sock` 这类文本。要看 transport 原话时读同一响应里的 `rawDetail`（`GET /api/native/status`）和 `rawSyncError`（频道对话）——只在与人话不同时才有；两者都没有就说明那句话本来就是服务自己写的。
+- 先看这两个字段再动手：「Codex App 未运行，打开后会自动重连」只需要把 App 打开，不需要重绑定、重建任务或重启 daemon。
+
 ## 预览与进程清理
 
 - 如正式服务确需升级，先完成检查、封存版本并走人工上线确认；切换在原生任务安全结束后由上述流程自动完成。重连沿用原任务，不复制或新建替代任务来掩盖失败。

@@ -56,7 +56,7 @@ MORROW_HOME="$HOME/.local/share/morrow" npm start
 | --- | --- |
 | 项目、频道、事项与事件 | 目标、设置、稳定事项编号、来源频道、版本和变更审计。 |
 | `runs`、`run_io` 与报告 | 运行归属、输入、流式输出、最终回答和报告状态。 |
-| `native_*` | 原生任务绑定、快照、消息、轮次、增量日志、请求、发送回执和附件记录。 |
+| `native_*` | 原生任务绑定、快照头、会话状态、消息、轮次、增量日志、请求、发送回执和附件记录。 |
 | `loop_*` | 认识、行动选择、预期、证据、测量、复盘、观测、等待、验证与发布。 |
 | `settings`、`usage_samples` | 全局设置（保留给自己的额度、额度未知时是否停止）与账户用量读数；运行记录里的 `usage` 保存本轮前后读数之差。 |
 | `upgrades` | 安装后的版本切换请求：目标 commit/整包指纹、回执给出的安装包路径、发起时的 `bootId`、阶段、阻塞工作与失败原因。每个目标指纹一条。 |
@@ -67,11 +67,17 @@ MORROW_HOME="$HOME/.local/share/morrow" npm start
 
 看板、事件与运行历史目前没有自动裁剪策略。原生任务的 IPC 增量日志 `native_events` 会被持续清理：它只被 checkpoint 恢复读取（按线程从 `native_threads` 已覆盖的修订往后走），因此启动时的一次性迁移删掉再也读不到的行——已被 checkpoint 覆盖的修订、属于其他客户端的行、以及没有 `kind` 的投影行——并为剩下的行建 `(threadId, revision)` 索引。此后**每写出一次 checkpoint 就顺手删掉它已覆盖的日志行**（同一索引），所以这张表的上限是一次 checkpoint 间隔内的增量，而不是进程的运行时长：轮次流式进行时 checkpoint 最多每 30 秒一次，轮次结束或任务转为空闲时立刻写出，`close()` 一定写出。投影差异行已不再写入，恢复只依赖原始增量。`native_requests` 的已解决行在启动时按 `resolvedAt` 删掉超过 30 天的。删行不缩小文件；停止服务后用 `bash scripts/compact-db.sh` 回收空间，步骤见[升级与数据迁移](../docs/UPGRADING.md)。
 
+原生任务的会话状态不再随 checkpoint 整行重写。`native_threads` 只保留小小的头（ID、owner、修订、投影哈希、`stateHash`、界面要读的 summary，几百字节），完整状态放在按 threadId 键的 `native_thread_state`，且只在该行存的还不是当前状态时才写：修订未变的重读直接沿用，投影出同样字节的新修订按哈希认出来。两半在同一个事务里写，因此头不会指向不存在的状态；`store.get('native_threads', id)` 与 `all` 会把两半拼回一行，checkpoint 恢复照旧从整份快照开始。已有行在启动时按 marker `native-thread-state-v1` 拆分一次（逐行逐事务，已拆分的行跳过，所以删掉 marker 只重放还没拆的）。
+
 ## 运行日志
 
 服务把生命周期事实按**每行一个 JSON 对象**写到 stdout，也就是登录启动项和 Electron 主进程指向的 `service.log`：`boot`（版本、commit/指纹前缀、`bootId`、数据目录、端口、打开数据库耗时、恢复时判为中断的轮次数）、`shutdown`（信号）、`schedule.failed`（某频道自动调度失败并因此停用）、`upgrade.phase`（切换阶段变化，阻塞项刷新不记）、`usage.refresh.failed`、`native.start.failed`、`native.sync.failed`（某个原生任务同步失败，带 `threadId`；同时仍写入该频道的时间线）、`bridge.unsetenv.failed` 与 `bridge.unlink.failed`（撤销旧 `CODEX_CLI_PATH` 转接时 `launchctl` 或删除 plist 失败，其余步骤照旧完成）、`boot.failed` 与 `unhandled.rejection`。
 
 每行都经过本服务自己的脱敏，因此不会写出服务 token。**不记录请求体、查询串和请求头**，与请求错误路径同一条规矩。日志写入失败不影响它所描述的操作。transport 的连接/断开仍只进入频道时间线，尚未接入这里。
+
+日志文件就在数据目录里，与 `workspace.sqlite` 并列：默认安装是 `~/Library/Application Support/Morrow/service.log`，显式指定过 `MORROW_HOME` 时是 `$MORROW_HOME/service.log`（登录启动项的 stdout/stderr 与 Electron 主进程都指向这一个文件，追加写入，权限 `0600`）。界面启动慢时顶部提示的也是它。
+
+界面上的连接说明只写人话：`GET /api/native/status` 的 `detail` 与频道对话的 `syncError` 一定不含绝对路径和 errno——已知的本机连接失败各对应一句短话（App 未运行 / 没有响应 / 权限不足），其余文本只保留首行并去掉路径和 errno，本来就没有技术痕迹的文本原样保留。原始文本没有丢：分别放在同一响应的 **`rawDetail`** 和 **`rawSyncError`** 里（只在与人话不同时出现），排查连接问题看这两个字段或上面的 `native.sync.failed` 日志行。
 
 同一目录只允许一个 daemon，通过 `daemon.lock` 防止重复实例。SIGTERM/SIGINT 会停止服务调度并清理其拥有的 CLI 进程；不会杀死共享 Codex App。崩溃后，未结束的自有 CLI 轮次标记中断并暂停频道；共享任务则按原生状态恢复。发送回执不明确时先核对结果，不盲目重发。为新安装的版本主动让位时使用专用退出码 75（见下文），与崩溃和人工停止区分开。
 
