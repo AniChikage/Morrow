@@ -4,6 +4,7 @@ import { ArrowUpRight, ChevronRight, Hash, Info, Monitor, RefreshCw, Server, Ter
 import type { Channel, ConnectionInfo, DesktopAPI, NativeConnectionStatus, Project, Runtime } from '../../shared/types';
 import type { FeatureProps } from './types';
 import { Button, EmptyState } from '../components/ui';
+import { replaceIfChanged } from '../components/collections';
 import { formatResetTime, usageWindowLabel } from '../components/format';
 import './content.css';
 import './runtimes.css';
@@ -246,16 +247,19 @@ export function RuntimesView({
       try {
         const next = await api.getNativeStatus(refreshUsage);
         if (request !== nativeRequest.current) return;
-        setNative(next);
+        // The eight-second read repeats the same status most of the time; keep the page still.
+        setNative((previous) => replaceIfChanged(previous, next));
         setNativeUnreachable(false);
       } catch {
         if (request !== nativeRequest.current) return;
-        setNative({
-          available: false,
-          connected: false,
-          detail: '暂时无法连接 Codex App。',
-          capabilities: { list: false, read: false, send: false, create: false, interrupt: false, respond: false },
-        });
+        setNative((previous) =>
+          replaceIfChanged(previous, {
+            available: false,
+            connected: false,
+            detail: '暂时无法连接 Codex App。',
+            capabilities: { list: false, read: false, send: false, create: false, interrupt: false, respond: false },
+          })
+        );
         setNativeUnreachable(true);
       }
     },

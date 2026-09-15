@@ -11,6 +11,7 @@ import type {
 } from '../../shared/types';
 import type { FeatureProps } from './types';
 import { Button, Dropdown, DropdownItem, EmptyState, Markdown } from '../components/ui';
+import { replaceIfChanged } from '../components/collections';
 import {
   channelStatusLabel,
   durationSeconds,
@@ -244,9 +245,12 @@ export function ChannelView(props: FeatureProps & { id: string }) {
         const page = await api.getRuns({ channelId: id, limit: 20, ...(before ? { before } : {}) });
         if (gen !== generation.current) return;
         setRuns((previous) =>
-          mergeRuns(
+          replaceIfChanged(
             previous,
-            page.runs.filter((run) => run.channelId === id)
+            mergeRuns(
+              previous,
+              page.runs.filter((run) => run.channelId === id)
+            )
           )
         );
         if (before || !oldestCursor.current) {
@@ -316,7 +320,7 @@ export function ChannelView(props: FeatureProps & { id: string }) {
           ? api.getNativeConversation(id, { limit: 1 }).then(
               (value) => {
                 if (!cancelled) {
-                  setConversation(value);
+                  setConversation((previous) => replaceIfChanged(previous, value));
                   setNativeError('');
                 }
               },
@@ -331,7 +335,7 @@ export function ChannelView(props: FeatureProps & { id: string }) {
         project && api.getProjectUsage
           ? api.getProjectUsage(project.id).then(
               (value) => {
-                if (!cancelled) setUsage(value);
+                if (!cancelled) setUsage((previous) => replaceIfChanged(previous, value));
               },
               () => {
                 if (!cancelled) setUsage(undefined);

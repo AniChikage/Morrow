@@ -5,6 +5,7 @@ import type { FeatureProps } from './types';
 import { questionExcerpt } from './ChannelQuestion';
 import { upgradeSwitching } from './upgradeState';
 import { Button, EmptyState, Markdown } from '../components/ui';
+import { replaceIfChanged } from '../components/collections';
 import { formatDate } from '../components/format';
 import './project-work.css';
 
@@ -68,7 +69,10 @@ function useProjectWork(api: DesktopAPI, projectId: string, itemId?: string) {
       };
       cursor.current = page.verificationHistory.cursor;
       setMoreHistory(page.verificationHistory.hasMore);
-      if (base.current) setData(combined(base.current));
+      if (base.current) {
+        const merged = combined(base.current);
+        setData((previous) => replaceIfChanged(previous, merged));
+      }
     } catch (e) {
       if (gen === generation.current && request === historyRequest.current)
         setHistoryError(e instanceof Error ? e.message : '历史复核读取失败');
@@ -108,7 +112,9 @@ function useProjectWork(api: DesktopAPI, projectId: string, itemId?: string) {
             setHistoryError('');
           }
           base.current = result;
-          setData(combined(result));
+          const merged = combined(result);
+          // A five-second poll that read the same page must not re-render the whole document.
+          setData((previous) => replaceIfChanged(previous, merged));
           if (!historyStarted.current) {
             cursor.current = result.verificationHistory?.cursor;
             setMoreHistory(!!result.verificationHistory?.hasMore);
