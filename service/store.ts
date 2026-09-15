@@ -86,6 +86,11 @@ export class Store {
     this.db.exec(
       "CREATE INDEX IF NOT EXISTS native_items_thread ON native_items(json_extract(data,'$.threadId')); CREATE INDEX IF NOT EXISTS native_outbox_thread ON native_outbox(json_extract(data,'$.threadId')); CREATE INDEX IF NOT EXISTS native_turns_thread ON native_turns(json_extract(data,'$.threadId')); CREATE INDEX IF NOT EXISTS loop_executions_thread ON loop_executions(json_extract(data,'$.threadId'));"
     );
+    // Ingest reads one task's bindings and resolves its requests on every projection, and the
+    // resolved requests of every task are swept by age at start-up.
+    this.db.exec(
+      "CREATE INDEX IF NOT EXISTS native_bindings_thread ON native_bindings(json_extract(data,'$.threadId')); CREATE INDEX IF NOT EXISTS native_requests_thread ON native_requests(json_extract(data,'$.threadId')); CREATE INDEX IF NOT EXISTS native_requests_resolved ON native_requests(json_extract(data,'$.resolvedAt'));"
+    );
     this.db.exec(
       "CREATE INDEX IF NOT EXISTS app_resumes_channel ON app_resumes(json_extract(data,'$.channelId')); CREATE INDEX IF NOT EXISTS app_resumes_thread ON app_resumes(json_extract(data,'$.threadId')); CREATE INDEX IF NOT EXISTS runs_native_turn ON runs(json_extract(data,'$.nativeTurnId'));"
     );
@@ -123,11 +128,13 @@ export class Store {
       ['loop_verifications', 'interruptPending'],
       ['loop_finalizations', 'status'],
       ['loop_executions', 'status'],
+      ['native_outbox', 'state'],
       ['upgrades', 'phase'],
     ] as const)
       this.db.exec(
         `CREATE INDEX IF NOT EXISTS ${table}_${column.toLowerCase()} ON ${table}(json_extract(data,'$.${column}'))`
       );
+    this.pruneNativeRequests();
   }
   /**
    * One-time backfills of rows written before a field existed. Each records its own marker, so a
@@ -338,14 +345,51 @@ export class Store {
     });
     return removed;
   }
+  /**
+   * A native approval request is answered inside the turn that raised it; a resolved row is then
+   * kept only so the interface can explain what happened, which stops being worth anything long
+   * before the row stops costing anything. Rows resolved more than 30 days ago therefore go at
+   * every start-up, chosen through `native_requests_resolved` rather than by reading the table.
+   *
+   * `resolvedAt` exists only on rows that left `pending`, so a live request is never matched. The
+   * rows written before that field existed are stamped once, under their own marker, so they age
+   * from this upgrade instead of disappearing the moment it lands; deleting the marker replays it.
+   */
+  pruneNativeRequests(): number {
+    if (!this.get('migrations', 'native-requests-resolved-at-v1')) {
+      const at = now();
+      this.transaction(() => {
+        this.db
+          .prepare(
+            "UPDATE native_requests SET data=json_set(data,'$.resolvedAt',?) WHERE json_extract(data,'$.status')<>'pending' AND json_type(data,'$.resolvedAt') IS NULL"
+          )
+          .run(at);
+        this.put('migrations', { id: 'native-requests-resolved-at-v1', createdAt: at });
+      });
+    }
+    const cutoff = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
+    return Number(
+      this.db.prepare("DELETE FROM native_requests WHERE json_extract(data,'$.resolvedAt')<?").run(cutoff).changes
+    );
+  }
   projectItems(projectId: string): WorkItem[] {
     return this.all<WorkItem>('items').filter((item) => item.projectId === projectId);
   }
-  nativeRows<T = any>(table: 'native_items' | 'native_outbox' | 'native_turns', threadId: string): T[] {
+  nativeRows<T = any>(
+    table: 'native_items' | 'native_outbox' | 'native_turns' | 'native_bindings',
+    threadId: string
+  ): T[] {
     return this.db
       .prepare(`SELECT data FROM ${this.table(table)} WHERE json_extract(data,'$.threadId')=? ORDER BY rowid`)
       .all(threadId)
       .map((row: any) => JSON.parse(row.data));
+  }
+  /**
+   * The channel bindings of one native task. Ingest asked for these by reading and parsing every
+   * binding row, several times per projection, where a projection can arrive four times a second.
+   */
+  bindingsForThread<T = any>(threadId: string): T[] {
+    return this.nativeRows<T>('native_bindings', threadId);
   }
   nextItemNumber(projectId: string): number {
     return Math.max(0, ...this.projectItems(projectId).map((item) => item.number || 0)) + 1;
@@ -360,7 +404,7 @@ export class Store {
    * The rows of one table whose state needs attention, chosen by an index instead of by reading and
    * parsing the whole table. The scheduler asks once a second, so nothing here may be a full scan.
    */
-  byStatus<T = any>(table: string, states: string[], column: 'status' | 'phase' = 'status'): T[] {
+  byStatus<T = any>(table: string, states: string[], column: 'status' | 'phase' | 'state' = 'status'): T[] {
     return this.db
       .prepare(
         `SELECT data FROM ${this.table(table)} WHERE json_extract(data,'$.${column}') IN (${states.map(() => '?').join(',')}) ORDER BY rowid`

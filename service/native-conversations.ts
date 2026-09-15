@@ -547,7 +547,7 @@ export class NativeConversations {
   }
   async start() {
     if (process.env.MORROW_TEST_MODE !== '1') this.restoreBackground('system');
-    for (const entry of this.store.all<Outbox>('native_outbox').filter((entry) => entry.state === 'pending'))
+    for (const entry of this.store.byStatus<Outbox>('native_outbox', ['pending'], 'state'))
       this.store.put('native_outbox', {
         ...entry,
         state: 'unknown',
@@ -577,7 +577,7 @@ export class NativeConversations {
   }
   recordError(threadId: string, error: unknown) {
     if (this.closed) return;
-    for (const binding of this.store.all<Binding>('native_bindings').filter((row) => row.threadId === threadId))
+    for (const binding of this.store.bindingsForThread<Binding>(threadId))
       this.store.put('native_bindings', { ...binding, syncError: errorText(error) });
   }
   async attach(threadId: string) {
@@ -627,11 +627,7 @@ export class NativeConversations {
     return snapshot;
   }
   ingest(snapshot: NativeSnapshot, forceCheckpoint = false) {
-    if (
-      this.closed ||
-      !this.store.all<Binding>('native_bindings').some((binding) => binding.threadId === snapshot.threadId)
-    )
-      return;
+    if (this.closed || !this.store.bindingsForThread<Binding>(snapshot.threadId).length) return;
     const observed = this.observed.get(snapshot.threadId);
     if (
       observed?.owner === snapshot.ownerClientId &&
@@ -639,8 +635,8 @@ export class NativeConversations {
       observed.syncedAt === snapshot.syncedAt
     ) {
       for (const binding of this.store
-        .all<Binding>('native_bindings')
-        .filter((row) => row.threadId === snapshot.threadId && (row.syncError || !row.lastSyncedAt)))
+        .bindingsForThread<Binding>(snapshot.threadId)
+        .filter((row) => row.syncError || !row.lastSyncedAt))
         this.store.put('native_bindings', { ...binding, syncError: '', lastSyncedAt: snapshot.syncedAt });
       return;
     }
@@ -716,11 +712,14 @@ export class NativeConversations {
       if (old?.hash !== hash || old?.projectionVersion !== PROJECTION_VERSION) {
         for (const id of removedItemIds) this.store.put('native_items', { ...previousItems.get(id)!, present: false });
         for (const item of changedItems) this.store.put('native_items', item);
+        // Every request this task raised earlier is settled by the snapshot that no longer lists
+        // it. `resolvedAt` records when that first happened — never refreshed by a later
+        // projection — so a start-up can retire rows nobody can answer or read any more.
         this.store.db
           .prepare(
-            "UPDATE native_requests SET data=json_set(data,'$.status','resolved') WHERE json_extract(data,'$.threadId')=?"
+            "UPDATE native_requests SET data=json_set(data,'$.status','resolved','$.resolvedAt',COALESCE(json_extract(data,'$.resolvedAt'),?)) WHERE json_extract(data,'$.threadId')=? AND json_extract(data,'$.status')<>'resolved'"
           )
-          .run(safe.threadId);
+          .run(now(), safe.threadId);
         for (const raw of requests)
           if (raw?.id !== undefined && typeof raw.method === 'string')
             this.store.put('native_requests', {
@@ -734,7 +733,7 @@ export class NativeConversations {
               raw,
             });
       }
-      for (const binding of this.store.all<Binding>('native_bindings').filter((row) => row.threadId === safe.threadId))
+      for (const binding of this.store.bindingsForThread<Binding>(safe.threadId))
         this.store.put('native_bindings', { ...binding, lastSyncedAt: safe.syncedAt, syncError: '' });
       for (const entry of this.store
         .nativeRows<Outbox>('native_outbox', safe.threadId)
@@ -775,9 +774,7 @@ export class NativeConversations {
     this.engine.loop.executions.observe(safe.threadId, changedItems);
     for (const entry of this.store.nativeRows<Outbox>('native_outbox', safe.threadId))
       if (entry.state === 'accepted' && entry.source === 'chat' && !(entry as any).guidanceHandled) this.receipt(entry);
-    const channelBinding = this.store
-      .all<Binding>('native_bindings')
-      .find((binding) => binding.threadId === safe.threadId);
+    const channelBinding = this.store.bindingsForThread<Binding>(safe.threadId)[0];
     if (channelBinding) {
       const work = this.store.get<Channel>('channels', channelBinding.id)?.work;
       if (work?.awaitingReply) {
@@ -916,7 +913,7 @@ export class NativeConversations {
       this.engine.control(id).enabled
     )
       throw new APIError(409, '请先暂停频道并等待本轮完成，再绑定原生任务');
-    if (this.store.all<Binding>('native_bindings').some((row) => row.threadId === threadId && row.id !== id))
+    if (this.store.bindingsForThread<Binding>(threadId).some((row) => row.id !== id))
       throw new APIError(409, '该原生任务已经绑定到另一个频道');
     const listed = await this.transport.listThreads(project.path);
     const thread = listed.find((row) => row.id === threadId && sameFolder(row.cwd, project.path));
@@ -954,11 +951,7 @@ export class NativeConversations {
         after: binding,
       });
     });
-    if (
-      before &&
-      before.threadId !== threadId &&
-      !this.store.all<Binding>('native_bindings').some((row) => row.threadId === before.threadId)
-    ) {
+    if (before && before.threadId !== threadId && !this.store.bindingsForThread<Binding>(before.threadId).length) {
       this.subscriptions.get(before.threadId)?.();
       this.subscriptions.delete(before.threadId);
     }
@@ -1181,7 +1174,7 @@ export class NativeConversations {
     };
   }
   recordNativeRuns(snapshot: NativeSnapshot, checkpoint = false) {
-    const binding = this.store.all<Binding>('native_bindings').find((row) => row.threadId === snapshot.threadId);
+    const binding = this.store.bindingsForThread<Binding>(snapshot.threadId)[0];
     if (!binding) return;
     const outbox = this.store.nativeRows<Outbox>('native_outbox', snapshot.threadId);
     for (const turn of nativeTurns(snapshot.state)) {
@@ -1328,7 +1321,7 @@ export class NativeConversations {
     if (!request || request.status !== 'pending') throw new APIError(409, '原生请求已经处理或已失效');
     if (request.type === 'unsupported') throw new APIError(409, '请在 Codex App 中处理此类原生请求');
     const result = await this.transport.respond(binding.threadId, request.raw.id, request.type, response);
-    this.store.put('native_requests', { ...request, status: 'responded', response });
+    this.store.put('native_requests', { ...request, status: 'responded', resolvedAt: now(), response });
     this.engine.audit({
       projectId: binding.projectId,
       channelId: id,
@@ -1464,7 +1457,9 @@ export class NativeConversations {
   finishScheduled(snapshot: NativeSnapshot) {
     for (const [id, active] of this.scheduled) {
       if (active.run.sessionId !== snapshot.threadId) continue;
-      const receipt = this.store.all<Outbox>('native_outbox').find((row) => row.runId === active.run.id);
+      const receipt = this.store
+        .nativeRows<Outbox>('native_outbox', snapshot.threadId)
+        .find((row) => row.runId === active.run.id);
       const turn = nativeTurns(snapshot.state).find(
         (turn) =>
           (active.run.nativeTurnId && turn.turnId === active.run.nativeTurnId) ||

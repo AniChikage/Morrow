@@ -639,6 +639,14 @@ test('unknown sends are never retried and native approvals and interrupt are sco
     });
     assert.equal(s.transport.answers[0].requestId, 42);
     assert.equal(s.transport.answers[0].kind, 'command');
+    const answered = s.store.all<any>('native_requests')[0];
+    assert.equal(answered.status, 'responded');
+    assert(answered.resolvedAt);
+    // The projection that stops listing it settles it and keeps the moment it was actually answered.
+    s.transport.emit({ requests: [] });
+    const settled = s.store.all<any>('native_requests')[0];
+    assert.equal(settled.status, 'resolved');
+    assert.equal(settled.resolvedAt, answered.resolvedAt);
   } finally {
     await s.cleanup();
   }

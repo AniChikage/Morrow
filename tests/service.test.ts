@@ -1067,6 +1067,56 @@ test('start-up backfills run once and the native journal keeps only what checkpo
   }
 });
 
+test('resolved native requests age out after 30 days while pending ones and recent answers stay', () => {
+  const home = mkdtempSync(join(tmpdir(), 'morrow-requests-'));
+  const path = join(home, 'workspace.sqlite');
+  let store = new Store(path);
+  try {
+    const threadId = randomUUID();
+    const days = (count: number) => new Date(Date.now() - count * 24 * 60 * 60 * 1000).toISOString();
+    const row = (id: string, status: string, resolvedAt?: string) => ({
+      id,
+      threadId,
+      nativeId: id,
+      status,
+      ...(resolvedAt ? { resolvedAt } : {}),
+    });
+    store.put('native_requests', row('live', 'pending'));
+    store.put('native_requests', row('recent', 'resolved', days(29)));
+    store.put('native_requests', row('stale', 'resolved', days(31)));
+    store.put('native_requests', row('answered', 'responded', days(400)));
+    // Written before `resolvedAt` existed; replaying the stamp is what deleting its marker does.
+    store.put('native_requests', row('legacy', 'resolved'));
+    store.db.prepare('DELETE FROM migrations WHERE id=?').run('native-requests-resolved-at-v1');
+    store.close();
+    store = new Store(path);
+    assert.deepEqual(
+      store
+        .all<any>('native_requests')
+        .map((request) => request.id)
+        .sort(),
+      ['legacy', 'live', 'recent']
+    );
+    // The legacy row ages from this upgrade rather than disappearing the moment it lands.
+    assert(store.get<any>('native_requests', 'legacy').resolvedAt > days(1));
+    assert(store.get('migrations', 'native-requests-resolved-at-v1'));
+    const plan = store.db
+      .prepare("EXPLAIN QUERY PLAN DELETE FROM native_requests WHERE json_extract(data,'$.resolvedAt')<'2026-01-01'")
+      .all()
+      .map((step: any) => step.detail)
+      .join(' ');
+    assert.match(plan, /INDEX native_requests_resolved/);
+    // A live request is never stamped, so no later start-up can retire it.
+    store.close();
+    store = new Store(path);
+    assert.equal(store.get<any>('native_requests', 'live').resolvedAt, undefined);
+    assert.equal(store.all('native_requests').length, 3);
+  } finally {
+    store.close();
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
 test('run output and event ordinals are counted once per run, not once per append', () => {
   const home = mkdtempSync(join(tmpdir(), 'morrow-sequence-'));
   const path = join(home, 'workspace.sqlite');
