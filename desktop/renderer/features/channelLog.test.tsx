@@ -3,8 +3,8 @@ import { afterEach, expect, it, vi } from 'vitest';
 import { act, cleanup, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { ChannelView } from './ChannelView';
-import { featureProps, snapshot, TestProviders, timestamp } from './testFixtures';
-import type { Run, RunsPage } from '../../shared/types';
+import { featureProps, nativeStatus, snapshot, TestProviders, timestamp } from './testFixtures';
+import type { NativeConversation, ProjectUsage, Run, RunsPage } from '../../shared/types';
 
 afterEach(() => {
   cleanup();
@@ -102,8 +102,8 @@ it('prioritizes the current question and keeps direction and duplicate question 
   expect(screen.getByRole('button', { name: '回答' }).classList.contains('button-primary')).toBe(true);
   expect(screen.queryByRole('button', { name: '继续工作' })).toBeNull();
   await userEvent.setup().click(screen.getByRole('button', { name: '频道选项' }));
-  await userEvent.setup().click(screen.getByRole('menuitem', { name: '方向与额度' }));
-  const settings = within(screen.getByRole('region', { name: '方向与额度' }));
+  await userEvent.setup().click(screen.getByRole('menuitem', { name: '当前方向与额度' }));
+  const settings = within(screen.getByRole('region', { name: '当前方向与额度' }));
   expect(settings.getByText(state.channels[0].goal)).toBeTruthy();
   expect(settings.getByText(/每日上限/)).toBeTruthy();
   expect(api.channelAction).not.toHaveBeenCalled();
@@ -312,4 +312,92 @@ it('uses detailed log as a fallback when the list has no projection', async () =
   await user.click(entry.getByText('原生工具活动与 Codex 原话'));
   expect(await entry.findByText('关注 fallback')).toBeTruthy();
   expect(entry.getByText('详情原话')).toBeTruthy();
+});
+
+it('reports missing native timestamps honestly instead of 尚未运行 and NaN 秒', async () => {
+  const { props } = featureProps();
+  vi.mocked(props.api.getRuns).mockResolvedValue({
+    runs: [
+      round('native-clock', { startedAt: '', executionOwner: 'codex-app' }),
+      round('cli-clock', { startedAt: '' }),
+    ],
+    hasMore: false,
+  });
+  render(<ChannelView {...props} id="channel-system" />, { wrapper: TestProviders });
+  const entries = await screen.findAllByRole('article', { name: /轮次/ });
+  expect(entries.map((entry) => entry.textContent).join(' ')).not.toContain('NaN');
+  expect(screen.queryByText('尚未运行')).toBeNull();
+  // A round the App owns may carry no native timestamp; a CLI round simply has none recorded.
+  expect(within(entries[0]).getByText('原生时间未提供')).toBeTruthy();
+  expect(within(entries[0]).getByText('时长未记录')).toBeTruthy();
+  expect(within(entries[1]).getByText('时间未记录')).toBeTruthy();
+});
+
+const connectedConversation = (patch: Partial<NativeConversation> = {}): NativeConversation => ({
+  channelId: 'channel-system',
+  threadId: 'native-thread',
+  thread: { id: 'native-thread', title: '已关联任务', cwd: '/tmp/atlas', status: 'active', activeTurnId: 'turn-1' },
+  status: {
+    ...nativeStatus,
+    available: true,
+    connected: true,
+    detail: '已连接 Codex App',
+    boundThreadCount: 1,
+    readyThreadCount: 1,
+    capabilities: { list: true, read: true, send: true, create: false, interrupt: true, respond: true },
+  },
+  items: [],
+  requests: [],
+  hasMore: false,
+  lastSyncedAt: timestamp,
+  ...patch,
+});
+
+it('surfaces an App approval waiting on the user instead of claiming Codex is still answering', async () => {
+  const state = snapshot();
+  state.projects[0].isDemo = false;
+  const { props, api } = featureProps({ snapshot: state });
+  vi.mocked(props.api.getNativeConversation).mockResolvedValue(
+    connectedConversation({
+      requests: [{ id: 'approval', type: 'commandApproval', status: 'pending', title: '允许运行 npm test', raw: {} }],
+    })
+  );
+  render(<ChannelView {...props} id="channel-system" />, { wrapper: TestProviders });
+  const needs = within(await screen.findByRole('region', { name: '需要你' }));
+  expect(needs.getByText(/Codex 在 App 里等你处理（审批\/追问）/).textContent).toContain('允许运行 npm test');
+  expect(screen.queryByText('Codex 正在回应，请稍候')).toBeNull();
+  await userEvent.setup().click(needs.getByRole('button', { name: '在 Codex App 中打开' }));
+  expect(api.openNativeApp).toHaveBeenCalledWith('channel-system');
+  expect(api.channelAction).not.toHaveBeenCalled();
+});
+
+it('keeps a resolved App request out of 需要你', async () => {
+  const state = snapshot();
+  state.projects[0].isDemo = false;
+  const { props, api } = featureProps({ snapshot: state });
+  vi.mocked(props.api.getNativeConversation).mockResolvedValue(
+    connectedConversation({ requests: [{ id: 'done', type: 'commandApproval', status: 'resolved', raw: {} }] })
+  );
+  render(<ChannelView {...props} id="channel-system" />, { wrapper: TestProviders });
+  await screen.findByText('工作日志');
+  await waitFor(() => expect(api.getNativeConversation).toHaveBeenCalled());
+  expect(screen.queryByRole('region', { name: '需要你' })).toBeNull();
+});
+
+it('names the usage gate in 需要你, so a channel held by 额度 is not a silent wait', async () => {
+  const message = '账户5 小时额度已用 92%，达到保留线（保留 10%），等待 09-07 06:00 重置';
+  const gate: ProjectUsage = {
+    stale: false,
+    gate: { blocked: true, kind: 'reserve', window: '5h', until: '2026-09-07T06:00:00.000Z', message },
+  };
+  const { props, api } = featureProps();
+  api.getProjectUsage.mockResolvedValue(gate);
+  render(<ChannelView {...props} id="channel-system" />, { wrapper: TestProviders });
+  const needs = within(await screen.findByRole('region', { name: '需要你' }));
+  expect(needs.getByText(message)).toBeTruthy();
+  cleanup();
+  api.getProjectUsage.mockResolvedValue({ stale: true, gate: { blocked: false } });
+  render(<ChannelView {...props} id="channel-system" />, { wrapper: TestProviders });
+  await screen.findByText('工作日志');
+  expect(screen.queryByRole('region', { name: '需要你' })).toBeNull();
 });

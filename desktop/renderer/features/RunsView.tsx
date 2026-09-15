@@ -3,7 +3,7 @@ import { ArrowUpRight, ChevronDown, Clock3, Copy, History, LoaderCircle, Termina
 import type { Run, RunDetails, RunOutputChunk, RunsQuery, WorkspaceEvent } from '../../shared/types';
 import type { FeatureProps } from './types';
 import { Button, EmptyState, Markdown, StatusLabel } from '../components/ui';
-import { formatDate, runtimeLabel, shortId } from '../components/format';
+import { formatDate, nativeRun, runTime, runtimeLabel, shortId } from '../components/format';
 import { EventLog } from './EventLog';
 import './content.css';
 import './runs.css';
@@ -15,9 +15,6 @@ const reportLabels: Record<string, string> = {
   invalid: '报告未同步',
   conflict: '报告存在冲突',
 };
-const nativeRun = (run: Run) => run.executionOwner === 'codex-app' || run.permission === 'native';
-const runTime = (run: Run, value: string) =>
-  value ? formatDate(value) : nativeRun(run) ? '原生时间未提供' : '时间未记录';
 const runProject = (run: Run, props: FeatureProps) =>
   run.projectId || props.snapshot.channels.find((channel) => channel.id === run.channelId)?.projectId;
 export function RunsView(props: FeatureProps) {

@@ -32,6 +32,7 @@ import {
 } from './components/ui';
 import { Dialogs, type ModalState } from './components/Dialogs';
 import { ProjectNavigation } from './components/ProjectNavigation';
+import { formatClock } from './components/format';
 import { isDesktop, useWorkspace } from './state/workspace';
 import { useNavigation } from './state/navigation';
 import { ProjectView } from './features/ProjectView';
@@ -48,7 +49,21 @@ import type { FeatureProps } from './features/types';
 const savedPreference = (key: string) => localStorage.getItem(`morrow:${key}`) ?? localStorage.getItem(`nh:${key}`);
 
 export default function App() {
-  const { api, snapshot, loading, connection, busy, error, clearError, refresh, mutate } = useWorkspace();
+  const {
+    api,
+    snapshot,
+    loading,
+    connection,
+    busy,
+    error,
+    stale,
+    lastSyncedAt,
+    clearError,
+    dismissError,
+    refresh,
+    reconnect,
+    mutate,
+  } = useWorkspace();
   const scope = connection?.config.mode === 'ssh' ? `ssh:${connection.config.host}:${connection.config.port}` : 'local';
   const navigation = useNavigation(connection ? scope : null);
   const { route, navigate } = navigation;
@@ -86,6 +101,25 @@ export default function App() {
       ? snapshot.projects.find((p) => p.id === route.id)
       : snapshot.projects.find((p) => p.id === (finding?.projectId || channel?.projectId));
   const canInspect = !!project && !['runs', 'runtimes', 'channel', 'project', 'finding'].includes(route?.kind || '');
+  // The runtimes page acts on a project's channel; the most recently opened project is the only
+  // honest default, so it is derived here rather than guessed from the first Codex channel there.
+  function projectOf(target: Route): string | undefined {
+    if (target.kind === 'project') return target.id;
+    if (target.kind === 'channel') return snapshot.channels.find((c) => c.id === target.id)?.projectId;
+    if (target.kind === 'finding') {
+      const item = snapshot.items.find((i) => i.id === target.id);
+      return item?.projectId || snapshot.channels.find((c) => c.id === item?.channelId)?.projectId;
+    }
+    return undefined;
+  }
+  const activeTab = navigation.tabs.find((tab) => tab.id === navigation.activeId);
+  const recentRoutes = [
+    ...navigation.tabs.filter((tab) => tab.id !== navigation.activeId).map((tab) => tab.history[tab.index]),
+    ...(activeTab ? activeTab.history.slice(0, activeTab.index + 1) : []),
+  ];
+  const recentProjectId =
+    project?.id ||
+    recentRoutes.reduceRight<string | undefined>((found, target) => found || projectOf(target), undefined);
   const toggleSidebar = useCallback(
     () =>
       setSidebar((v) => {
@@ -156,22 +190,23 @@ export default function App() {
     showInspector: inspector && canInspect,
   };
   function feature() {
-    if (loading && snapshot.projects.length === 0)
-      return (
-        <div className="loading-workspace" role="status">
-          <div className="skeleton-line" />
-          <div className="skeleton-line" />
-          <div className="skeleton-line" />
-          <p>正在连接工作空间…</p>
-        </div>
-      );
+    if (loading && snapshot.projects.length === 0) return <LoadingWorkspace starting={!connection?.connected} />;
     if (!connection?.connected && snapshot.projects.length === 0)
       return (
         <EmptyState
           icon={<AlertCircle />}
           title="连接执行服务"
           description={error || '检查执行位置，连接后即可查看你的项目。'}
-          action={<Button onClick={() => setModal({ kind: 'settings' })}>打开设置</Button>}
+          action={
+            <>
+              {connection && (
+                <Button variant="primary" disabled={busy} onClick={() => void reconnect()}>
+                  重新连接
+                </Button>
+              )}
+              <Button onClick={() => setModal({ kind: 'settings' })}>打开设置</Button>
+            </>
+          }
         />
       );
     if (!route)
@@ -207,7 +242,7 @@ export default function App() {
       case 'runs':
         return <RunsView {...props} />;
       case 'runtimes':
-        return <RuntimesView {...props} connection={connection} />;
+        return <RuntimesView {...props} connection={connection} projectId={recentProjectId} />;
     }
   }
   const running = snapshot.channels.filter((c) => c.status === 'running').length;
@@ -456,6 +491,17 @@ export default function App() {
               )}
             </div>
           </header>
+          {/* The service stopped answering: the page below is a frozen read, so say so until it is back. */}
+          {stale && (
+            <div className="offline-banner" role="status" aria-label="执行服务离线">
+              <span className="offline-banner-text">
+                执行服务未响应，显示的是 {formatClock(lastSyncedAt)} 之前的数据。
+              </span>
+              <Button variant="ghost" disabled={busy} onClick={() => void reconnect()}>
+                重新连接
+              </Button>
+            </div>
+          )}
           <div
             className="feature-viewport"
             ref={viewportRef}
@@ -474,16 +520,22 @@ export default function App() {
         <div role="alert" className="error-toast">
           <AlertCircle size={16} />
           <p>{error}</p>
+          {/* Re-reading state cannot revive a dead daemon; while offline the retry reconnects instead. */}
           <Button
             variant="ghost"
+            disabled={busy}
             onClick={() => {
+              if (stale) {
+                void reconnect();
+                return;
+              }
               clearError();
               void refresh();
             }}
           >
-            重试
+            {stale ? '重新连接' : '重试'}
           </Button>
-          <IconButton label="关闭提示" onClick={clearError}>
+          <IconButton label="关闭提示" onClick={dismissError}>
             <X />
           </IconButton>
         </div>
@@ -494,4 +546,24 @@ export default function App() {
 }
 function FolderOpenIcon() {
   return <ArrowUpRight />;
+}
+/**
+ * A cold start can wait twelve seconds for the daemon's health probe and fifteen for the first read.
+ * Name the phase the app is actually in, and after eight seconds say where the log is.
+ */
+function LoadingWorkspace({ starting }: { starting: boolean }) {
+  const [slow, setSlow] = useState(false);
+  useEffect(() => {
+    const timer = window.setTimeout(() => setSlow(true), 8000);
+    return () => window.clearTimeout(timer);
+  }, []);
+  return (
+    <div className="loading-workspace" role="status">
+      <div className="skeleton-line" />
+      <div className="skeleton-line" />
+      <div className="skeleton-line" />
+      <p>{starting ? '正在启动执行服务…' : '正在读取工作空间…'}</p>
+      {slow && <p className="subtle">仍在启动，日志在数据目录的 service.log。</p>}
+    </div>
+  );
 }

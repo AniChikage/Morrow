@@ -14,7 +14,7 @@ import {
   X,
 } from 'lucide-react';
 import { isLegacyRuntime } from '../../shared/types';
-import type { Channel, WorkItem } from '../../shared/types';
+import type { Channel, ProjectUsage, WorkItem } from '../../shared/types';
 import type { FeatureProps } from './types';
 import { Button, EmptyState, IconButton, Markdown, PropertyPanel, StatusIcon } from '../components/ui';
 import { formatDate, kindLabel, statusLabel } from '../components/format';
@@ -79,6 +79,29 @@ export function ProjectView(props: FeatureProps & { id: string }) {
       cancelled = true;
     };
   }, [api, id, project?.briefRevision]);
+  const [usage, setUsage] = useState<ProjectUsage>();
+  // A usage hold shows up in the polled channels before any new account reading does; re-read the gate then.
+  const usageHold = channels
+    .map((channel) => `${channel.id}:${channel.usageWait?.kind || ''}:${channel.usageWait?.resetsAt || ''}`)
+    .join('|');
+  const readingAt = snapshot.usage?.reading?.at;
+  const budgetWindow = project?.usageBudget?.window;
+  const budgetLimit = project?.usageBudget?.limitPercent;
+  useEffect(() => {
+    if (!api.getProjectUsage) return;
+    let cancelled = false;
+    api.getProjectUsage(id).then(
+      (value) => {
+        if (!cancelled) setUsage(value);
+      },
+      () => {
+        if (!cancelled) setUsage(undefined);
+      }
+    );
+    return () => {
+      cancelled = true;
+    };
+  }, [api, id, readingAt, budgetWindow, budgetLimit, usageHold]);
   const [preferences, setPreferences] = useState(() => readPreferences(id));
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
   useEffect(() => {
@@ -139,47 +162,56 @@ export function ProjectView(props: FeatureProps & { id: string }) {
       : project.brief !== undefined
         ? !project.brief.trim()
         : project.briefRevision === 0;
-  const next = pendingQuestions.length
+  // A usage gate stops every automatic round, so it belongs in the one action this page offers,
+  // not only in the collapsed 项目属性. The service message already names the reason and the reset.
+  const gate = usage?.gate.blocked && !usage.gate.pending ? usage.gate : undefined;
+  const next = gate
     ? {
-        text: `${pendingQuestions.length} 个频道有问题待回答`,
-        label: '回答当前问题',
-        action: () => onNavigate({ kind: 'channel', id: pendingQuestions[0].id }),
+        text: gate.message,
+        label: '查看额度设置',
+        action: () => setPropertiesOpen(true),
       }
-    : pendingReleases.length
+    : pendingQuestions.length
       ? {
-          text: `${pendingReleases.length} 个版本等待你审核`,
-          label: '查看待审版本',
-          action: () => setTab('releases'),
+          text: `${pendingQuestions.length} 个频道有问题待回答`,
+          label: '回答当前问题',
+          action: () => onNavigate({ kind: 'channel', id: pendingQuestions[0].id }),
         }
-      : blocked
+      : pendingReleases.length
         ? {
-            text: blocked.title,
-            label: '查看阻塞事项',
-            action: () => openItem(blocked),
+            text: `${pendingReleases.length} 个版本等待你审核`,
+            label: '查看待审版本',
+            action: () => setTab('releases'),
           }
-        : missingBrief
+        : blocked
           ? {
-              text: '写下目标、约束和需要你决定的事',
-              label: '完善项目说明',
-              action: () => setTab('brief'),
+              text: blocked.title,
+              label: '查看阻塞事项',
+              action: () => openItem(blocked),
             }
-          : !codexChannel
+          : missingBrief
             ? {
-                text: '添加持续频道，再关联你在 Codex App 中创建的任务',
-                label: '添加频道',
-                action: () => onNewChannel(id),
+                text: '写下目标、约束和需要你决定的事',
+                label: '完善项目说明',
+                action: () => setTab('brief'),
               }
-            : !boundChannel
+            : !codexChannel
               ? {
-                  text: '在 Codex App 创建任务，再到频道关联',
-                  label: '关联已有任务',
-                  action: () => onNavigate({ kind: 'channel', id: codexChannel.id }),
+                  text: '添加持续频道，再关联你在 Codex App 中创建的任务',
+                  label: '添加频道',
+                  action: () => onNewChannel(id),
                 }
-              : {
-                  text: `${boundChannel.name} · 查看当前进展和下一步`,
-                  label: '打开工作日志',
-                  action: () => onNavigate({ kind: 'channel', id: boundChannel.id }),
-                };
+              : !boundChannel
+                ? {
+                    text: '在 Codex App 创建任务，再到频道关联',
+                    label: '关联已有任务',
+                    action: () => onNavigate({ kind: 'channel', id: codexChannel.id }),
+                  }
+                : {
+                    text: `${boundChannel.name} · 查看当前进展和下一步`,
+                    label: '打开工作日志',
+                    action: () => onNavigate({ kind: 'channel', id: boundChannel.id }),
+                  };
 
   const history = !filtered && resolvedItems.length > 0 && (
     <section className="project-history" aria-label="已解决历史">
@@ -208,7 +240,8 @@ export function ProjectView(props: FeatureProps & { id: string }) {
               className={tab === 'items' ? 'active' : ''}
               onClick={() => setTab('items')}
             >
-              功能看板 <span>{allItems.length}</span>
+              {/* The count has to be what the board actually shows; resolved items count in their own section. */}
+              功能看板 <span>{currentItems.length}</span>
             </button>
             <button
               role="tab"

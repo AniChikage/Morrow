@@ -11,7 +11,14 @@ import type {
 } from '../../shared/types';
 import type { FeatureProps } from './types';
 import { Button, Dropdown, DropdownItem, EmptyState, Markdown } from '../components/ui';
-import { channelStatusLabel, formatDate, runtimeLabel, usageWindowLabel } from '../components/format';
+import {
+  channelStatusLabel,
+  durationSeconds,
+  formatDate,
+  runTime,
+  runtimeLabel,
+  usageWindowLabel,
+} from '../components/format';
 import { ChannelQuestion, questionExcerpt } from './ChannelQuestion';
 import { ChannelAudit } from './ChannelAudit';
 import { ProjectReleases } from './ProjectWork';
@@ -50,6 +57,11 @@ const stateLabel = (value: string) =>
     failed: '失败',
     running: '工作中',
   })[value] || value;
+const normalizePath = (value: string) => value.replace(/\/+$/, '');
+/** An App task belongs to this project only when it was created for the same directory. */
+const sameDirectory = (cwd: string, path: string) => !!path && !!cwd && normalizePath(cwd) === normalizePath(path);
+const sortThreads = (threads: NativeThreadSummary[], path: string) =>
+  [...threads].sort((a, b) => Number(sameDirectory(b.cwd, path)) - Number(sameDirectory(a.cwd, path)));
 const runUsage = (run: Run) =>
   run.usage?.delta && Object.keys(run.usage.delta).length
     ? Object.entries(run.usage.delta)
@@ -96,15 +108,16 @@ function LogEntry({
   // Older services without list projections can still supply the summary through details.
   const log = run.log || detail?.run.log;
   const work = log?.work || currentWork;
-  const duration = run.finishedAt
-    ? Math.max(0, Math.round((Date.parse(run.finishedAt) - Date.parse(run.startedAt)) / 1000))
-    : undefined;
+  // A round owned by the Codex App may carry no native timestamps at all: say so rather than
+  // reporting 尚未运行 for a finished round, or NaN 秒 for a duration nothing can be derived from.
+  const started = runTime(run, run.startedAt);
+  const duration = run.finishedAt ? durationSeconds(run.startedAt, run.finishedAt) : undefined;
   return (
-    <article className="channel-log-entry" aria-label={`轮次 ${formatDate(run.startedAt)}`}>
+    <article className="channel-log-entry" aria-label={`轮次 ${started}`}>
       <header>
-        <time dateTime={run.startedAt}>{formatDate(run.startedAt)}</time>
+        <time dateTime={run.startedAt || undefined}>{started}</time>
         <span>{stateLabel(run.status)}</span>
-        <span>{duration === undefined ? '尚未结束' : `${duration} 秒`}</span>
+        <span>{!run.finishedAt ? '尚未结束' : duration === undefined ? '时长未记录' : `${duration} 秒`}</span>
         <span>{runUsage(run)}</span>
       </header>
       <h3>{work?.focus || log?.direction || (log ? '未记录本轮关注点' : '本轮摘要尚未载入')}</h3>
@@ -211,6 +224,8 @@ export function ChannelView(props: FeatureProps & { id: string }) {
   const [nativeError, setNativeError] = useState('');
   const [threads, setThreads] = useState<NativeThreadSummary[]>([]);
   const [threadId, setThreadId] = useState('');
+  const [threadNotice, setThreadNotice] = useState('');
+  const [threadError, setThreadError] = useState('');
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [linkOpen, setLinkOpen] = useState(false);
   const [releasesOpen, setReleasesOpen] = useState(false);
@@ -263,6 +278,8 @@ export function ChannelView(props: FeatureProps & { id: string }) {
     setError('');
     setThreads([]);
     setThreadId('');
+    setThreadNotice('');
+    setThreadError('');
     setSettingsOpen(false);
     setLinkOpen(false);
     setReleasesOpen(false);
@@ -338,6 +355,15 @@ export function ChannelView(props: FeatureProps & { id: string }) {
   const paused =
     channel.autonomyEnabled === undefined ? ['paused', 'blocked'].includes(channel.status) : !channel.autonomyEnabled;
   const nativeBusy = active(conversation);
+  // Approvals and follow-up questions raised inside the App are fetched with the conversation but were
+  // never shown: a round stuck on one of them looked like Codex was merely slow to answer.
+  const appRequests = (conversation?.requests || []).filter(
+    (request) => !['completed', 'resolved', 'cancelled', 'canceled', 'rejected'].includes(request.status)
+  );
+  const appRequestTitles = appRequests
+    .map((request) => request.title || request.type)
+    .filter(Boolean)
+    .join('、');
   // The API keeps App availability even when a task sync error marks this conversation disconnected.
   const unloaded =
     native && !!conversation?.threadId && conversation.status.available && conversation.status.readyThreadCount === 0;
@@ -357,7 +383,9 @@ export function ChannelView(props: FeatureProps & { id: string }) {
         : !conversation?.status.capabilities.send
           ? '当前不能发送到原生对话'
           : nativeBusy
-            ? 'Codex 正在回应，请稍候'
+            ? appRequests.length
+              ? 'Codex 在 App 里等你处理（审批/追问）'
+              : 'Codex 正在回应，请稍候'
             : '';
   const pendingReleases = (snapshot.releases || []).filter(
     (row) => row.projectId === project.id && row.channelId === id && row.status === 'awaiting_approval'
@@ -369,7 +397,13 @@ export function ChannelView(props: FeatureProps & { id: string }) {
       (item.channelId === id || item.sourceChannelIds?.includes(id))
   );
   const reviewingRelease = releasesOpen && pendingReleases.length > 0;
-  const needs = !!channel.work?.awaitingReply || pendingReleases.length > 0 || blocked.length > 0;
+  const usageGate = usage?.gate.blocked && !usage.gate.pending ? usage.gate : undefined;
+  const needs =
+    !!channel.work?.awaitingReply ||
+    pendingReleases.length > 0 ||
+    blocked.length > 0 ||
+    appRequests.length > 0 ||
+    !!usageGate;
   const needsLink = native && !!conversation && !conversation.threadId;
   const primary = needsLink
     ? 'link'
@@ -411,6 +445,12 @@ export function ChannelView(props: FeatureProps & { id: string }) {
             {demo && <span className="feature-demo-label">示例数据</span>}
           </div>
           <div className="channel-actions">
+            {/* Until the section is open this is the page's one action; inside it, the step takes over. */}
+            {primary === 'link' && (
+              <Button variant={linkOpen ? 'secondary' : 'primary'} disabled={busy} onClick={() => setLinkOpen(true)}>
+                关联 App 任务
+              </Button>
+            )}
             {primary === 'open' && (
               <Button variant="primary" disabled={busy} onClick={openApp}>
                 {unloaded ? '在 Codex App 中打开' : '在 Codex App 中打开对话'}
@@ -438,7 +478,8 @@ export function ChannelView(props: FeatureProps & { id: string }) {
                 </DropdownItem>
               )}
               <DropdownItem onSelect={() => onEditChannel(channel)}>调整方向</DropdownItem>
-              <DropdownItem onSelect={() => setSettingsOpen((value) => !value)}>方向与额度</DropdownItem>
+              {/* Two neighbouring entries read as the same thing; this one only reads the current state back. */}
+              <DropdownItem onSelect={() => setSettingsOpen((value) => !value)}>当前方向与额度</DropdownItem>
               <DropdownItem onSelect={() => onNavigate({ kind: 'project', id: project.id })}>项目功能看板</DropdownItem>
               {primary !== 'resume' && (
                 <DropdownItem
@@ -452,8 +493,8 @@ export function ChannelView(props: FeatureProps & { id: string }) {
           </div>
         </header>
         {settingsOpen && (
-          <section className="channel-settings-summary" aria-label="方向与额度">
-            <h2>方向与额度</h2>
+          <section className="channel-settings-summary" aria-label="当前方向与额度">
+            <h2>当前方向与额度</h2>
             <p>{channel.goal}</p>
             <span>
               {usage?.budget
@@ -516,16 +557,37 @@ export function ChannelView(props: FeatureProps & { id: string }) {
             open={linkOpen}
             onToggle={(event) => setLinkOpen(event.currentTarget.open)}
           >
-            <summary className={!linkOpen && !reviewingRelease ? 'log-primary-action' : undefined}>
-              关联 App 任务
-            </summary>
+            {/* The header carries the primary action; this section is where the choice is made. */}
+            <summary>选择要关联的任务</summary>
             <p>在 Codex App 为同一目录创建任务并发送首条消息，再选择关联。</p>
+            {!!project.path && <p className="subtle">本项目目录：{project.path}</p>}
             <Button
               variant={linkOpen && !threadId && !reviewingRelease ? 'primary' : 'secondary'}
+              disabled={busy}
               onClick={() =>
                 void onMutate(async () => {
-                  const result = await api.listNativeThreads(id);
-                  setThreads(result.threads);
+                  setThreadError('');
+                  try {
+                    const result = await api.listNativeThreads(id);
+                    const sorted = sortThreads(result.threads, project.path);
+                    const matching = sorted.filter((thread) => sameDirectory(thread.cwd, project.path));
+                    setThreads(sorted);
+                    // A read that found nothing usable must say so; silence looked like a broken button.
+                    setThreadNotice(
+                      !sorted.length
+                        ? project.path
+                          ? `没有找到目录为 ${project.path} 的任务：请在 Codex App 里对这个目录新建任务并发一条消息，再读取。`
+                          : '没有读取到任务：请在 Codex App 里新建任务并发一条消息，再读取。'
+                        : !matching.length && project.path
+                          ? `读取到 ${sorted.length} 个任务，但没有目录为 ${project.path} 的任务：请在 Codex App 里对这个目录新建任务并发一条消息，再读取。`
+                          : `读取到 ${sorted.length} 个任务`
+                    );
+                    setThreadId(matching[0]?.id || '');
+                  } catch (failure) {
+                    setThreads([]);
+                    setThreadNotice('');
+                    setThreadError(failure instanceof Error ? failure.message : '读取 App 任务失败');
+                  }
                 })
               }
             >
@@ -535,7 +597,7 @@ export function ChannelView(props: FeatureProps & { id: string }) {
               <option value="">选择任务</option>
               {threads.map((thread) => (
                 <option key={thread.id} value={thread.id}>
-                  {thread.title || thread.id}
+                  {thread.title || thread.id} · {thread.cwd || '目录未提供'}
                 </option>
               ))}
             </select>
@@ -550,6 +612,12 @@ export function ChannelView(props: FeatureProps & { id: string }) {
             >
               关联选中任务
             </Button>
+            {threadNotice && <p role="status">{threadNotice}</p>}
+            {threadError && (
+              <p role="alert" className="feature-inline-error">
+                {threadError}
+              </p>
+            )}
           </details>
         )}
         {legacy && (
@@ -588,6 +656,22 @@ export function ChannelView(props: FeatureProps & { id: string }) {
                     />
                   )}
                 </details>
+              )}
+              {!!appRequests.length && (
+                <p className="channel-needs-note">
+                  <span>
+                    Codex 在 App 里等你处理（审批/追问）
+                    {appRequestTitles ? ` · ${appRequestTitles}` : ''}
+                  </span>
+                  <Button variant="ghost" disabled={busy || demo || legacy} onClick={openApp}>
+                    在 Codex App 中打开
+                  </Button>
+                </p>
+              )}
+              {usageGate && (
+                <p className="channel-needs-note">
+                  <span>{usageGate.message}</span>
+                </p>
               )}
               {!!blocked.length && (
                 <ul>

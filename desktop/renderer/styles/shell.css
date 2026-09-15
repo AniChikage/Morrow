@@ -469,6 +469,27 @@
   flex-direction: column;
   gap: 2px;
 }
+/* One compact line at the top of the content: the service stopped answering and this read is frozen. */
+.offline-banner {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 18px;
+  background: var(--hover);
+  border-bottom: 1px solid var(--line);
+  color: var(--muted);
+  font-size: 11px;
+  flex-shrink: 0;
+}
+.offline-banner-text {
+  color: var(--warning);
+}
+.offline-banner .button {
+  font-size: 11px;
+  min-height: 24px;
+  padding: 3px 7px;
+  white-space: nowrap;
+}
 .error-toast {
   position: fixed;
   bottom: 22px;
