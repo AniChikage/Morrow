@@ -187,7 +187,6 @@ export function featureProps(patch: Partial<FeatureProps> = {}) {
     snapshot: state,
     api: api as DesktopAPI,
     busy: false,
-    showInspector: true,
     onNavigate: vi.fn(),
     onEditChannel: vi.fn(),
     onNewChannel: vi.fn(),

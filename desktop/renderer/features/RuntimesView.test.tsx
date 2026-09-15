@@ -138,7 +138,6 @@ test('missing installation metadata does not hide a confirmed App connection', a
 
 test('a connected App guides task association without enabling a launcher', async () => {
   const { props, api } = runtimeProps();
-  props.api.setupNativeBackground = vi.fn();
   api.getNativeStatus.mockResolvedValue(
     status({ connected: true, connectionMode: 'app-follower', boundThreadCount: 0, readyThreadCount: 0 })
   );
@@ -151,7 +150,6 @@ test('a connected App guides task association without enabling a launcher', asyn
     kind: 'channel',
     id: props.snapshot.channels.find((c) => c.runtime === 'codex')!.id,
   });
-  expect(props.api.setupNativeBackground).not.toHaveBeenCalled();
   expect(api.openNativeApp).not.toHaveBeenCalled();
 });
 test('associated tasks must actually be available before the checklist says ready', async () => {

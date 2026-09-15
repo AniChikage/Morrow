@@ -474,7 +474,6 @@ export interface DesktopAPI {
   channelAction(id: string, action: 'run' | 'pause' | 'resume'): Promise<unknown>;
   sendMessage(id: string, text: string): Promise<WorkspaceEvent>;
   getNativeStatus(refreshUsage?: boolean): Promise<NativeConnectionStatus>;
-  setupNativeBackground?(): Promise<{ restartRequired: boolean; detail: string }>;
   restoreNativeBackground?(): Promise<{ restartRequired: boolean; detail: string }>;
   listNativeThreads(channelId: string): Promise<{ status: NativeConnectionStatus; threads: NativeThreadSummary[] }>;
   getNativeConversation(channelId: string, query?: NativeHistoryQuery): Promise<NativeConversation>;

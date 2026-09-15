@@ -209,11 +209,6 @@ function registerIPC(): void {
     if (typeof refreshUsage !== 'boolean') throw new Error('额度刷新参数必须是开或关。');
     return service.request(`native/status${refreshUsage ? '?refreshUsage=1' : ''}`);
   });
-  handle('setup-native-background', 0, async () => {
-    if ((await service.getInfo()).config.mode !== 'local')
-      throw new Error('后台桥接需要在 Codex App 所在的本机 Mac 设置。');
-    return service.request('native/background/setup', 'POST', {});
-  });
   handle('restore-native-background', 0, async () => {
     if ((await service.getInfo()).config.mode !== 'local') throw new Error('请在本机 Mac 恢复连接设置。');
     return service.request('native/background/restore', 'POST', {});

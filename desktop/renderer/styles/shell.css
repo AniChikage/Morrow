@@ -367,9 +367,6 @@
   position: relative;
   z-index: 1;
 }
-.inspected .breadcrumb {
-  width: calc(100% - var(--inspector-width, 280px));
-}
 .breadcrumbs {
   display: flex;
   align-items: center;
@@ -429,11 +426,6 @@
 .feature-viewport > div {
   width: 100%;
   min-width: 0;
-}
-.inspected .property-panel {
-  margin-top: -46px;
-  height: calc(100% + 46px);
-  z-index: 2;
 }
 /* One compact line above the workspace: a new version is installed, and what is happening about it. */
 .upgrade-banner {
@@ -566,9 +558,6 @@
 @media (max-width: 900px) {
   .property-panel {
     display: none;
-  }
-  .inspected .breadcrumb {
-    width: 100%;
   }
   .titlebar-tools {
     width: 180px;

@@ -117,11 +117,9 @@ describe('native App conversation', () => {
   it('never offers the retired launcher setup on an existing task', async () => {
     const initial = conversation();
     const { props, api } = setup(initial);
-    props.api.setupNativeBackground = vi.fn();
     render(<NativeConversationView channelId="channel-system" api={props.api} />, { wrapper: TestProviders });
     await screen.findByRole('textbox', { name: '发送到 Codex App 原生对话' });
     expect(screen.queryByRole('button', { name: '启用后台连接' })).toBeNull();
-    expect(props.api.setupNativeBackground).not.toHaveBeenCalled();
     expect(api.openNativeApp).not.toHaveBeenCalled();
   });
   const imageData =
