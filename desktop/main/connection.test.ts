@@ -1,11 +1,29 @@
 import { afterEach, beforeEach, expect, test, vi } from 'vitest';
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { EventEmitter } from 'node:events';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import type { ChildProcess } from 'node:child_process';
 import { ServiceConnection } from './connection';
-import { emptySnapshot, type Channel, type Snapshot, type WorkspaceEvent } from '../shared/types';
+import {
+  emptySnapshot,
+  type Channel,
+  type ConnectionConfig,
+  type Snapshot,
+  type WorkspaceEvent,
+} from '../shared/types';
 
-vi.mock('electron', () => ({ app: { isPackaged: false, getAppPath: () => '/unused-morrow-test-app' } }));
+let appPath = '/unused-morrow-test-app';
+vi.mock('electron', () => ({ app: { isPackaged: false, getAppPath: () => appPath } }));
+const noDaemonExpected = (): ChildProcess => {
+  throw new Error('no daemon start was expected in this test');
+};
+/** Only `spawn` is replaced, so the Node version check still runs the real binary through execFile. */
+let spawnDaemon: () => ChildProcess = noDaemonExpected;
+vi.mock('node:child_process', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('node:child_process')>()),
+  spawn: () => spawnDaemon(),
+}));
 
 let directory = '';
 let service: ServiceConnection;
@@ -42,9 +60,122 @@ beforeEach(async () => {
   await service.initialize(); // A live health response prevents any process start.
 });
 afterEach(async () => {
+  vi.useRealTimers();
   vi.unstubAllGlobals();
   vi.unstubAllEnvs();
+  appPath = '/unused-morrow-test-app';
+  spawnDaemon = noDaemonExpected;
   await rm(directory, { recursive: true, force: true });
+});
+
+/** A child that behaves like the detached daemon: it announces its start and can be made to leave. */
+class FakeDaemon extends EventEmitter {
+  exitCode: number | null = null;
+  signalCode: NodeJS.Signals | null = null;
+  unref(): void {}
+  /** `spawn` returns before the caller attaches its listener, so the event has to be deferred. */
+  starting(): ChildProcess {
+    queueMicrotask(() => this.emit('spawn'));
+    return this as unknown as ChildProcess;
+  }
+  leave(code = 1): void {
+    this.exitCode = code;
+    this.emit('exit', code, null);
+  }
+}
+/** Only the clock the wait itself uses, so the real Node version check and file reads keep working. */
+const fakeClock: Parameters<typeof vi.useFakeTimers>[0] = { toFake: ['setTimeout', 'clearTimeout', 'Date'] };
+/** Moves the fake clock in probe-sized steps so every probe and its file reads settle in between. */
+const advance = async (ms: number) => {
+  for (let moved = 0; moved < ms; moved += 250) await vi.advanceTimersByTimeAsync(250);
+};
+const localConfig = (): ConnectionConfig => ({ mode: 'local', host: '', port: 43821, directory });
+const refused = (): never => {
+  throw new TypeError('fetch failed', { cause: { code: 'ECONNREFUSED' } });
+};
+/** Counts `/health` probes and answers them only once `online` is flipped. */
+const healthProbes = (state: { online: boolean }) => {
+  const counter = { probes: 0 };
+  reply = (url) => {
+    if (!url.endsWith('/health')) return json(snapshot);
+    counter.probes += 1;
+    return state.online ? json({ ok: true, service: 'morrow' }) : refused();
+  };
+  return counter;
+};
+/**
+ * Prepares a daemon start and reports when the child has been spawned. The fake clock takes over
+ * from the spawn on, so the service entry check and the real Node version check run untouched.
+ */
+const startWithDaemon = async (daemon: FakeDaemon): Promise<{ spawned: Promise<void> }> => {
+  const root = join(directory, 'app');
+  await mkdir(join(root, 'service'), { recursive: true });
+  await writeFile(join(root, 'service/server.ts'), '');
+  appPath = root;
+  vi.stubEnv('MORROW_NODE', process.execPath);
+  let announce = () => {};
+  const spawned = new Promise<void>((resolve) => (announce = resolve));
+  spawnDaemon = () => {
+    vi.useFakeTimers(fakeClock);
+    announce();
+    return daemon.starting();
+  };
+  return { spawned };
+};
+
+test('a daemon this app started is waited for as long as it lives, well past the old 12 s', async () => {
+  const state = { online: false };
+  const counter = healthProbes(state);
+  const daemon = new FakeDaemon();
+  const { spawned } = await startWithDaemon(daemon);
+  const connecting = service.connect(localConfig());
+  await spawned;
+  await advance(20000);
+  // The fixed 48 × 250 ms cap would already have given up; a live child keeps the wait going.
+  expect(counter.probes).toBeGreaterThan(48);
+  state.online = true;
+  await advance(500);
+  vi.useRealTimers();
+  const info = await connecting;
+  expect(info).toMatchObject({ connected: true });
+  expect(info.error).toBeUndefined();
+});
+
+test('a daemon that exits before answering health fails the connection at once', async () => {
+  const counter = healthProbes({ online: false });
+  const daemon = new FakeDaemon();
+  const { spawned } = await startWithDaemon(daemon);
+  const connecting = service.connect(localConfig());
+  await spawned;
+  await advance(1000);
+  const before = counter.probes;
+  daemon.leave(1);
+  await advance(500);
+  vi.useRealTimers();
+  expect(await connecting).toMatchObject({ connected: false, error: expect.stringContaining('执行服务未能启动') });
+  // One last probe covers a child that only left because another daemon holds the lock; no more.
+  expect(counter.probes).toBe(before + 1);
+});
+
+test('a daemon this app did not start keeps the original 12 s wait', async () => {
+  const counter = healthProbes({ online: false });
+  vi.useFakeTimers(fakeClock);
+  const started = Date.now();
+  // `ensureLocalService` always spawns, so nothing else reaches the adopted cap to exercise it.
+  const outcome = (service as unknown as { waitForHealth(port: number, child?: ChildProcess): Promise<void> })
+    .waitForHealth(43821)
+    .then(
+      () => ({ at: Date.now() - started, message: '' }),
+      (error: Error) => ({ at: Date.now() - started, message: error.message })
+    );
+  await advance(13000);
+  const failure = await outcome;
+  vi.useRealTimers();
+  expect(failure.message).toContain('执行服务未能启动');
+  expect(failure.at).toBeGreaterThanOrEqual(12000);
+  expect(failure.at).toBeLessThan(12500);
+  expect(counter.probes).toBeGreaterThan(40);
+  expect(counter.probes).toBeLessThan(60);
 });
 
 test('the lifecycle routes use the local daemon and the desktop credential', async () => {

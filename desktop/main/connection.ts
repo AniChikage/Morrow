@@ -50,6 +50,9 @@ export class ServiceConnection {
   private transitioning = false;
   private initialized?: Promise<void>;
   private readonly tunnelPort = 43822;
+  /** A daemon this app started may prune a large journal before it listens; 12 s was far too short. */
+  private readonly spawnedHealthTimeout = 120000;
+  private readonly adoptedHealthTimeout = 12000;
   private readonly preferencesPath = join(this.dataDirectory, 'desktop-connection.json');
 
   initialize(): Promise<void> {
@@ -187,6 +190,7 @@ export class ServiceConnection {
     await access(entry);
     await mkdir(this.dataDirectory, { recursive: true, mode: 0o700 });
     const log = await open(join(this.dataDirectory, 'service.log'), 'a', 0o600);
+    let spawned: ChildProcess | undefined;
     try {
       const path = [
         join(homedir(), '.local/bin'),
@@ -212,17 +216,33 @@ export class ServiceConnection {
       child.unref(); // The independent daemon intentionally survives app shutdown.
       // Kept only to observe its exit during a version switch; nothing here ever signals it.
       this.daemon = child;
+      spawned = child; // `this.daemon` is cleared on exit, so the wait keeps its own reference.
       child.once('exit', () => {
         if (this.daemon === child) this.daemon = undefined;
       });
     } finally {
       await log.close();
     }
-    for (let attempt = 0; attempt < 48; attempt += 1) {
-      if ((await this.probe(this.localPort)) === 'online') return;
-      await delay(250);
+    await this.waitForHealth(this.localPort, spawned);
+  }
+  /**
+   * Probes `/health` every 250 ms until the local service answers. A daemon this app spawned is
+   * waited for as long as it stays alive, up to a hard cap: its first start on a large database
+   * prunes the journal before it listens, which takes far longer than the old fixed 12 s. That
+   * child's exit ends the wait at once, after one last probe so a child that only left because
+   * another daemon already holds the lock still connects to that daemon. A daemon this app did not
+   * spawn keeps the original 12 s — there is no child whose life could extend the wait.
+   */
+  private async waitForHealth(port: number, child?: ChildProcess): Promise<void> {
+    const exited = () => !!child && (child.exitCode !== null || child.signalCode !== null);
+    const exit = child && !exited() ? new Promise<void>((resolve) => child.once('exit', () => resolve())) : undefined;
+    const deadline = Date.now() + (child ? this.spawnedHealthTimeout : this.adoptedHealthTimeout);
+    for (;;) {
+      if ((await this.probe(port)) === 'online') return;
+      if (exited() || Date.now() >= deadline)
+        throw new Error('执行服务未能启动，请查看数据目录中的 service.log。现有服务不会被自动重启。');
+      await (exit ? Promise.race([delay(250), exit]) : delay(250));
     }
-    throw new Error('执行服务未能启动，请查看数据目录中的 service.log。现有服务不会被自动重启。');
   }
   private async startTunnel(config: ConnectionConfig): Promise<void> {
     const quote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
