@@ -7,6 +7,7 @@ import { formatDate, kindLabel, runtimeLabel, statusLabel } from '../components/
 import { usePagedHistory } from '../components/history';
 import { byRecordOrder, EventLog } from './EventLog';
 import { featureNumber } from './featureOwnership';
+import { asRecord, itemChangeSummary } from './itemChangeSummary';
 
 const actions: Record<string, string> = {
   'verification.queued': '准备独立复核',
@@ -90,9 +91,6 @@ Object.assign(actions, {
   'decision.chosen': '选择下一步',
   'decision.reviewed': '复盘实际结果',
 });
-function asRecord(value: unknown): Record<string, unknown> {
-  return value && typeof value === 'object' && !Array.isArray(value) ? (value as Record<string, unknown>) : {};
-}
 function fieldValue(field: string, value: unknown, channels: FeatureProps['snapshot']['channels']): string {
   if (field === 'ownerChannelId') {
     if (value === undefined) return '未记录';
@@ -107,35 +105,6 @@ function fieldValue(field: string, value: unknown, channels: FeatureProps['snaps
   if (Array.isArray(value))
     return value.map((item) => (typeof item === 'string' ? item : JSON.stringify(item))).join('\n') || '无';
   return typeof value === 'string' ? value : JSON.stringify(value, null, 2);
-}
-function itemChangeSummary(event: WorkspaceEvent, channels: FeatureProps['snapshot']['channels']): string {
-  if (!event.itemId || !['item.updated', 'feature.updated', 'item.assigned'].includes(event.action || '')) return '';
-  const before = asRecord(event.changes?.before),
-    after = asRecord(event.changes?.after);
-  // Missing old values are not proof of a change. In particular, older Agent
-  // records only stored after; leave their original description intact.
-  const changed = (key: string) => key in before && key in after && before[key] !== after[key];
-  const parts: string[] = [];
-  if (changed('status') && typeof before.status === 'string' && typeof after.status === 'string')
-    parts.push(`状态 ${statusLabel(before.status)} → ${statusLabel(after.status)}`);
-  for (const [key, label] of [
-    ['nextStep', '下一步已更新'],
-    ['summary', '说明已修改'],
-  ])
-    if (changed(key) && typeof before[key] === 'string' && typeof after[key] === 'string') parts.push(label);
-  const validOwner = (value: unknown) => value === null || typeof value === 'string';
-  if (
-    changed('ownerChannelId') &&
-    validOwner(before.ownerChannelId) &&
-    validOwner(after.ownerChannelId) &&
-    (before.ownerChannelId || null) !== (after.ownerChannelId || null)
-  ) {
-    const name = after.ownerChannelId
-      ? channels.find((channel) => channel.id === after.ownerChannelId)?.name || '频道信息未载入'
-      : '无人负责';
-    parts.push(`负责频道 → ${name}`);
-  }
-  return parts.join('、');
 }
 export function ProjectRecords({ projectId, itemId, ...props }: FeatureProps & { projectId: string; itemId?: string }) {
   const { snapshot, api, onNavigate } = props;

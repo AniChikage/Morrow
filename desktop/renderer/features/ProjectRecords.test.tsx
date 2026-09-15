@@ -83,7 +83,9 @@ it.each([undefined, 'finding-import'])(
   }
 );
 
-it.each(['item.updated', 'feature.updated'])(
+// Every action the service records with both sides: the two agent item writes, the completion a
+// passing review applies, and the three ways responsibility moves.
+it.each(['item.updated', 'feature.updated', 'feature.completed', 'item.claimed', 'item.released'])(
   'summarizes applied item changes while preserving the original description and full differences (%s)',
   async (action) => {
     const row = records([action])[0];

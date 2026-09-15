@@ -1,4 +1,6 @@
-import { isLegacyRuntime, type Channel, type LegacyRuntimeID, type Run, type UsageWindow } from '../../shared/types';
+// The explicit `.ts` extension keeps this module loadable by `node --test` as well as by Vite, so a
+// service test can check the desktop's own labels against real work-interface writes.
+import { isLegacyRuntime, type Channel, type LegacyRuntimeID, type Run, type UsageWindow } from '../../shared/types.ts';
 export const statuses: Record<string, string> = {
   open: '待处理',
   investigating: '调查中',
