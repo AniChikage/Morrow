@@ -24,6 +24,7 @@ import type { Verification } from './verification-types.ts';
 import { sanitizeEventDetail } from './event-details.ts';
 import type { EventDetail } from './protocol.ts';
 import { Store, now } from './store.ts';
+import { logError } from './log.ts';
 import { decodeLine, diagnoseFailure, invocation } from './runtimes.ts';
 import { projectTreeState } from './source-version.ts';
 import { extractReport } from './reports.ts';
@@ -277,6 +278,9 @@ export class Engine {
     this.setControl(id, { enabled: false });
     this.store.put('channels', { ...c, status: 'blocked', nextRunAt: '' });
     this.event(id, '', 'error', error instanceof Error ? error.message : '调度失败');
+    // A channel that stops scheduling itself is the failure a person notices hours later; the
+    // reason belongs in the daemon's own log too, not only in that channel's timeline.
+    logError('schedule.failed', error, { channelId: id, projectId: c.projectId });
   }
   budgetCount(id: string) {
     const day = now().slice(0, 10);

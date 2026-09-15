@@ -1,6 +1,7 @@
 import { realpathSync } from 'node:fs';
 import { APIError, keys, string } from './protocol.ts';
 import { now } from './store.ts';
+import { log } from './log.ts';
 import type { Store } from './store.ts';
 import { buildIdentity, isCommit, isFingerprint, unknownFingerprint } from './build-identity.ts';
 import type { BuildIdentity } from './build-identity.ts';
@@ -90,6 +91,18 @@ export class UpgradeManager {
     return this.store.all<UpgradeRecord>('upgrades');
   }
   save(row: UpgradeRecord): UpgradeRecord {
+    // The switch is the one thing that makes a daemon refuse new work, and it was invisible from
+    // outside. Every phase change is one log line; the repeated blocker refreshes are not.
+    const previous = this.store.get<UpgradeRecord>('upgrades', row.id)?.phase;
+    if (previous !== row.phase)
+      log('upgrade.phase', {
+        phase: row.phase,
+        from: previous,
+        target: row.targetFingerprint.slice(0, 12),
+        running: this.identity.fingerprint.slice(0, 12),
+        blockers: row.blockers?.length ?? 0,
+        error: row.error,
+      });
     return this.store.put('upgrades', { ...row, updatedAt: now() });
   }
   /**

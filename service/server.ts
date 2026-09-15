@@ -30,6 +30,7 @@ import {
 } from './protocol.ts';
 import type { Channel, Project, ProjectBriefRevision, Run, WorkItem } from './protocol.ts';
 import { now, Store } from './store.ts';
+import { log, logError, setLogRedactor } from './log.ts';
 import { Engine } from './engine.ts';
 import { buildIdentity } from './build-identity.ts';
 import type { BuildIdentity } from './build-identity.ts';
@@ -187,14 +188,29 @@ export async function startServer(
     writeFileSync(join(home, 'token'), token, { flag: 'wx', mode: 0o600 });
   }
   chmodSync(join(home, 'token'), 0o600);
+  const openedAt = Date.now();
   const store = new Store(join(home, 'workspace.sqlite'));
+  const storeMs = Date.now() - openedAt;
   const engine = new Engine(store, home, token, options.identity ?? buildIdentity(import.meta.url));
+  // Every log line from here on passes through this daemon's own redactor, so no field can carry
+  // the service token. One daemon runs per process; the last service started owns the redactor.
+  setLogRedactor((value) => engine.redact(value));
   const native = new NativeConversations(store, engine, options.nativeTransport);
   engine.native = native;
   engine.loop.verification.connect(options.reviewTransport ?? native.transport, (value) => engine.redact(value));
   if (!options.reviewTransport)
     engine.loop.verification.connectRunner(options.reviewRunner ?? new CodexCliReviewRunner());
   engine.usage.connect(native.transport);
+  // Counted before recovery runs, since recovery is what turns these rows into `interrupted`.
+  const interruptedRuns = Number(
+    (
+      store.db
+        .prepare(
+          "SELECT count(*) AS n FROM runs WHERE json_extract(data,'$.status')='running' AND (json_extract(data,'$.executionOwner') IS NULL OR json_extract(data,'$.executionOwner')<>'codex-app')"
+        )
+        .get() as any
+    ).n
+  );
   engine.recover();
   /** A raised or cleared limit lets waiting channels and held reviews re-check the gate on the next tick. */
   const releaseUsageWaits = (projectIds?: string[]) => {
@@ -917,7 +933,19 @@ export async function startServer(
   }
   engine.loop.baseURL = `http://127.0.0.1:${(server.address() as any).port}`;
   engine.startScheduler();
-  void native.start();
+  log('boot', {
+    version: engine.upgrade.identity.version,
+    commit: engine.upgrade.identity.commit.slice(0, 12),
+    fingerprint: engine.upgrade.identity.fingerprint.slice(0, 12),
+    bootId: engine.upgrade.identity.bootId,
+    home,
+    port: (server.address() as any).port,
+    storeMs,
+    interruptedRuns,
+  });
+  // A rejected background start left the daemon half-alive and said nothing; now it is recorded and
+  // the native side reports its own state through the interface.
+  void native.start().catch((error) => logError('native.start.failed', error));
   engine.usage.start();
   let closing = false;
   const close = async () => {
@@ -1067,6 +1095,10 @@ function createDemo(store: Store, engine: Engine) {
   });
 }
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  // A rejected promise nobody awaited used to end the daemon on Node's default behaviour, taking
+  // every scheduled channel and native binding with it. It is recorded here instead; the exit
+  // behaviour of an uncaught *exception* is deliberately left alone.
+  process.on('unhandledRejection', (reason) => logError('unhandled.rejection', reason));
   // The one place a Morrow process leaves for a newly installed build: after the close path above,
   // with a dedicated exit code, so the Electron main can tell a switch from a crash.
   startServer({ onUpgradeExit: (code) => process.exit(code) })
@@ -1077,10 +1109,12 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
         process.on(signal, () => {
           if (closing) return;
           closing = true;
+          log('shutdown', { signal, port: service.port });
           service.close().then(() => process.exit(0));
         });
     })
     .catch((e) => {
+      logError('boot.failed', e, { home: process.env.MORROW_HOME || process.env.NOHUMAN_HOME });
       console.error(`Morrow: ${e instanceof Error ? e.message : '启动失败'}`);
       process.exit(1);
     });

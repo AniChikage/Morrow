@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { choice, integer, keys, object, usageWindows } from './protocol.ts';
+import { logError } from './log.ts';
 import type {
   Channel,
   Project,
@@ -225,7 +226,9 @@ export class UsageMonitor {
   refreshInBackground() {
     if (this.reading) return;
     if (this.lastError && Date.now() - this.lastAttemptAt < usageRetryBackoffMs) return;
-    void this.refresh();
+    // `refresh()` records its own read failures; an unexpected rejection here would otherwise be
+    // unhandled, and taking the daemon down is never the right answer to a missing quota reading.
+    void this.refresh().catch((error) => logError('usage.refresh.failed', error));
   }
   async sample(
     phase: 'before' | 'after',
@@ -353,9 +356,10 @@ export class UsageMonitor {
         /* The first periodic read reports the connection state instead. */
       }
       if (!this.closed && this.configured()) await this.refresh();
-    })();
+    })().catch((error) => logError('usage.refresh.failed', error));
     this.timer = setInterval(() => {
-      if (!this.closed && this.configured()) void this.refresh();
+      if (!this.closed && this.configured())
+        void this.refresh().catch((error) => logError('usage.refresh.failed', error));
     }, usageFreshnessMs);
     this.timer.unref();
   }

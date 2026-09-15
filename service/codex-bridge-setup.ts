@@ -2,6 +2,7 @@ import { execFileSync } from 'node:child_process';
 import { existsSync, readFileSync, readdirSync, unlinkSync } from 'node:fs';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
+import { logError } from './log.ts';
 
 export const shellQuote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
 /** The command-line runtime the Codex App launches for its own tasks. */
@@ -33,8 +34,14 @@ export function restoreCodexBridge(home: string) {
     /* Already restored. */
   }
   if (current === launcher) {
-    execFileSync('/bin/launchctl', ['unsetenv', 'CODEX_CLI_PATH'], { stdio: 'pipe' });
-    changed = true;
+    // `launchctl` can refuse (no GUI session, a domain that went away). Unsetting is best-effort:
+    // the login agent below is what brings it back, and throwing here would abort that removal.
+    try {
+      execFileSync('/bin/launchctl', ['unsetenv', 'CODEX_CLI_PATH'], { stdio: 'pipe' });
+      changed = true;
+    } catch (error) {
+      logError('bridge.unsetenv.failed', error);
+    }
   }
   for (const label of [currentAgentLabel, legacyAgentLabel]) {
     const agentPath = loginAgentPath(label);
@@ -44,8 +51,14 @@ export function restoreCodexBridge(home: string) {
       } catch {
         /* It may not have been loaded since login. */
       }
-      unlinkSync(agentPath);
-      changed = true;
+      // A plist that cannot be removed (read-only volume, a race with another removal) leaves the
+      // rest of the restoration intact and says so, rather than failing the whole request.
+      try {
+        unlinkSync(agentPath);
+        changed = true;
+      } catch (error) {
+        logError('bridge.unlink.failed', error, { label });
+      }
     }
   }
   // Leave the running App's executable and sockets intact until it exits itself.
