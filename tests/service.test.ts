@@ -916,6 +916,85 @@ test('legacy project board migration is idempotent and mirrors existing artifact
   }
 });
 
+test('start-up backfills run once and the native journal keeps only what checkpoint recovery can read', () => {
+  const home = mkdtempSync(join(tmpdir(), 'morrow-prune-'));
+  const path = join(home, 'workspace.sqlite');
+  let store = new Store(path);
+  try {
+    const threadId = randomUUID();
+    store.put('native_threads', { id: threadId, threadId, ownerClientId: 'client-a', revision: 5 });
+    for (const revision of [4, 5, 6])
+      store.put('native_events', {
+        id: `patch-${revision}`,
+        kind: 'native.patch',
+        threadId,
+        ownerClientId: 'client-a',
+        revision,
+      });
+    store.put('native_events', {
+      id: 'other-owner',
+      kind: 'native.patch',
+      threadId,
+      ownerClientId: 'client-b',
+      revision: 9,
+    });
+    // A projection row: written without a `kind`, so no reader ever selected it.
+    store.put('native_events', { id: 'projection', threadId, ownerClientId: 'client-a', revision: 9 });
+    const orphan = randomUUID();
+    store.put('native_events', {
+      id: 'no-checkpoint',
+      kind: 'native.patch',
+      threadId: orphan,
+      ownerClientId: 'client-a',
+      revision: 1,
+    });
+    // Rows written after the backfills recorded their markers; a replayed scan would rewrite them.
+    store.put('channels', { id: 'c1', projectId: 'p1' });
+    store.put('items', { id: 'i1', channelId: 'c1', title: '迁移标记之后写入的事项' });
+    store.db.prepare('DELETE FROM migrations WHERE id=?').run('native-events-prune-v1');
+    store.close();
+    store = new Store(path);
+    assert.deepEqual(
+      store
+        .all<any>('native_events')
+        .map((row) => row.id)
+        .sort(),
+      ['no-checkpoint', 'patch-6']
+    );
+    assert.equal(store.get<any>('migrations', 'native-events-prune-v1').removed, 4);
+    // The index the only reader needs, built over what survived the prune.
+    assert.equal(
+      (
+        store.db
+          .prepare(
+            "SELECT count(*) AS n FROM sqlite_master WHERE type='index' AND name='native_events_thread_revision'"
+          )
+          .get() as any
+      ).n,
+      1
+    );
+    for (const marker of ['project-runtime-brief-v1', 'item-number-v1', 'run-project-report-v1', 'event-project-v1'])
+      assert(store.get('migrations', marker), marker);
+    assert.equal(store.get<any>('items', 'i1').number, undefined);
+    // Replaying the events backfill fills a missing project from the row's own channel in one statement.
+    store.put('events', { id: 'e1', channelId: 'c1', runId: '', kind: 'assistant', text: '旧事件' });
+    store.put('events', { id: 'e2', channelId: 'gone', runId: '', kind: 'assistant', text: '频道已不存在' });
+    store.db.prepare('DELETE FROM migrations WHERE id=?').run('event-project-v1');
+    store.close();
+    store = new Store(path);
+    assert.equal(store.get<any>('events', 'e1').projectId, 'p1');
+    assert.equal(store.get<any>('events', 'e2').projectId, '');
+    // With the marker in place the journal is never swept again.
+    store.put('native_events', { id: 'later', threadId, ownerClientId: 'client-a', revision: 1 });
+    store.close();
+    store = new Store(path);
+    assert(store.all<any>('native_events').some((row) => row.id === 'later'));
+  } finally {
+    store.close();
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
 test('incremental raw output cursors never revise prior chunks, lose suffixes or expose pending token prefixes', () => {
   const home = mkdtempSync(join(tmpdir(), 'morrow-output-cursors-'));
   const path = join(home, 'workspace.sqlite');

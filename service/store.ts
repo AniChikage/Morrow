@@ -13,7 +13,12 @@ export class Store {
   constructor(path: string) {
     this.db = new DatabaseSync(path);
     chmodSync(path, 0o600);
-    this.db.exec('PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000;');
+    // In WAL mode a commit is durable once the write-ahead log has it, so `NORMAL` only gives up
+    // the fsync per commit, never a committed row; `journal_size_limit` truncates the log back to
+    // 32 MiB after a checkpoint instead of leaving a large one behind for the rest of the run.
+    this.db.exec(
+      'PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000; PRAGMA synchronous=NORMAL; PRAGMA journal_size_limit=33554432;'
+    );
     for (const table of [
       'projects',
       'channels',
@@ -84,53 +89,80 @@ export class Store {
       'usage_samples',
     ])
       this.db.exec(`CREATE INDEX IF NOT EXISTS ${table}_project ON ${table}(json_extract(data,'$.projectId'))`);
+    // Built after `migrate` pruned the journal, not before: the only reader walks one thread's rows
+    // forward from its checkpoint revision, and indexing a pruned table is far cheaper.
+    this.db.exec(
+      "CREATE INDEX IF NOT EXISTS native_events_thread_revision ON native_events(json_extract(data,'$.threadId'), CAST(json_extract(data,'$.revision') AS INTEGER))"
+    );
   }
+  /**
+   * One-time backfills of rows written before a field existed. Each records its own marker, so a
+   * start-up never reads a whole table again once its pass is done; deleting a marker replays it.
+   */
   migrate(home: string) {
-    this.transaction(() => {
-      // Projects written before the brief existed keep an empty brief at revision 0.
-      for (const p of this.all<Project>('projects'))
-        if (!p.runtime || p.briefRevision === undefined)
-          this.put('projects', {
-            ...p,
-            runtime: p.runtime || this.all<Channel>('channels').find((c) => c.projectId === p.id)?.runtime || 'codex',
-            briefRevision: p.briefRevision ?? 0,
-          });
-      const numbers = new Map<string, number>();
-      for (const item of this.all<WorkItem>('items')) {
-        const projectId = item.projectId || this.get<Channel>('channels', item.channelId)?.projectId || '';
-        if (item.number) numbers.set(projectId, Math.max(item.number, numbers.get(projectId) || 0));
-      }
-      for (const item of this.all<WorkItem>('items')) {
-        const projectId = item.projectId || this.get<Channel>('channels', item.channelId)?.projectId || '';
-        const number = item.number || (numbers.get(projectId) || 0) + 1;
-        numbers.set(projectId, Math.max(number, numbers.get(projectId) || 0));
-        const migrated = {
-          ...item,
-          projectId,
-          number,
-          sourceChannelIds: item.sourceChannelIds || (item.channelId ? [item.channelId] : []),
-          lastRunId: item.lastRunId || '',
-          revision: item.revision || 1,
-        };
-        if (JSON.stringify(migrated) !== JSON.stringify(item)) this.put('items', migrated);
-      }
-      for (const run of this.all<Run>('runs')) {
-        const channel = this.get<Channel>('channels', run.channelId);
-        const migrated = {
-          ...run,
-          projectId: run.projectId || channel?.projectId || '',
-          resumedFromSessionId: run.resumedFromSessionId || '',
-          reportStatus:
-            run.reportStatus ||
-            (this.get('results', run.id) ? 'valid' : run.status === 'running' ? 'pending' : 'missing'),
-          reportError: run.reportError || '',
-        };
-        if (JSON.stringify(migrated) !== JSON.stringify(run)) this.put('runs', migrated);
-      }
-      for (const event of this.all<Event>('events'))
-        if (event.projectId === undefined)
-          this.put('events', { ...event, projectId: this.get<Channel>('channels', event.channelId)?.projectId || '' });
-    });
+    // Projects written before the brief existed keep an empty brief at revision 0.
+    if (!this.get('migrations', 'project-runtime-brief-v1'))
+      this.transaction(() => {
+        for (const p of this.all<Project>('projects'))
+          if (!p.runtime || p.briefRevision === undefined)
+            this.put('projects', {
+              ...p,
+              runtime: p.runtime || this.all<Channel>('channels').find((c) => c.projectId === p.id)?.runtime || 'codex',
+              briefRevision: p.briefRevision ?? 0,
+            });
+        this.put('migrations', { id: 'project-runtime-brief-v1', createdAt: now() });
+      });
+    if (!this.get('migrations', 'item-number-v1'))
+      this.transaction(() => {
+        const numbers = new Map<string, number>();
+        for (const item of this.all<WorkItem>('items')) {
+          const projectId = item.projectId || this.get<Channel>('channels', item.channelId)?.projectId || '';
+          if (item.number) numbers.set(projectId, Math.max(item.number, numbers.get(projectId) || 0));
+        }
+        for (const item of this.all<WorkItem>('items')) {
+          const projectId = item.projectId || this.get<Channel>('channels', item.channelId)?.projectId || '';
+          const number = item.number || (numbers.get(projectId) || 0) + 1;
+          numbers.set(projectId, Math.max(number, numbers.get(projectId) || 0));
+          const migrated = {
+            ...item,
+            projectId,
+            number,
+            sourceChannelIds: item.sourceChannelIds || (item.channelId ? [item.channelId] : []),
+            lastRunId: item.lastRunId || '',
+            revision: item.revision || 1,
+          };
+          if (JSON.stringify(migrated) !== JSON.stringify(item)) this.put('items', migrated);
+        }
+        this.put('migrations', { id: 'item-number-v1', createdAt: now() });
+      });
+    if (!this.get('migrations', 'run-project-report-v1'))
+      this.transaction(() => {
+        for (const run of this.all<Run>('runs')) {
+          const channel = this.get<Channel>('channels', run.channelId);
+          const migrated = {
+            ...run,
+            projectId: run.projectId || channel?.projectId || '',
+            resumedFromSessionId: run.resumedFromSessionId || '',
+            reportStatus:
+              run.reportStatus ||
+              (this.get('results', run.id) ? 'valid' : run.status === 'running' ? 'pending' : 'missing'),
+            reportError: run.reportError || '',
+          };
+          if (JSON.stringify(migrated) !== JSON.stringify(run)) this.put('runs', migrated);
+        }
+        this.put('migrations', { id: 'run-project-report-v1', createdAt: now() });
+      });
+    // One statement instead of reading every event row: an event written before the column existed
+    // takes its own channel's project, or '' when that channel is gone. `json_type(...) IS NULL`
+    // matches only a missing key, the way the previous `=== undefined` check did.
+    if (!this.get('migrations', 'event-project-v1'))
+      this.transaction(() => {
+        this.db.exec(
+          "UPDATE events SET data=json_set(data,'$.projectId',COALESCE((SELECT json_extract(c.data,'$.projectId') FROM channels c WHERE c.id=json_extract(events.data,'$.channelId')),'')) WHERE json_type(data,'$.projectId') IS NULL"
+        );
+        this.put('migrations', { id: 'event-project-v1', createdAt: now() });
+      });
+    this.pruneNativeEvents();
     // Who opened an item is now stored on the row. Older rows are read once from their own
     // `item.created` audit event; an item with no such event keeps the agent default.
     if (!this.get('migrations', 'item-origin-v1')) {
@@ -186,6 +218,72 @@ export class Store {
       }
       this.put('migrations', { id: 'run-io-v1', createdAt: now() });
     }
+  }
+  /**
+   * The native IPC journal is read in exactly one place: checkpoint recovery walks one thread's
+   * `native.patch` rows forward from the revision its `native_threads` checkpoint already covers.
+   * Everything else in the table can never be read again — rows at or below that checkpoint, rows
+   * left by a different owning client, and the projection rows that were written without a `kind`
+   * and never had a reader at all. Rows of a thread with no checkpoint row are left untouched.
+   *
+   * Both halves are shaped around one row being huge — hundreds of KiB of conversation state, and
+   * 8 GiB across a dogfood journal. The pass that decides asks for all four small fields in a single
+   * `json_extract`, because every extra call over `data` parses the whole document again. The rows
+   * that go are then removed by one unqualified DELETE, which frees the b-tree in bulk (three
+   * seconds) instead of walking every overflow page row by row (minutes): the survivors are copied
+   * aside by rowid first and put back after, inside one transaction, and they are only what no
+   * checkpoint has covered yet — normally a handful.
+   *
+   * Deleting never shrinks the file; `scripts/compact-db.sh` reclaims the space while the daemon is
+   * stopped. The index over what survives is built afterwards, by the constructor.
+   */
+  pruneNativeEvents() {
+    if (this.get('migrations', 'native-events-prune-v1')) return 0;
+    const startedAt = Date.now();
+    const checkpoints = new Map<string, { owner: string; revision: number }>(
+      this.db
+        .prepare(
+          "SELECT id, json_extract(data,'$.ownerClientId') AS owner, CAST(json_extract(data,'$.revision') AS INTEGER) AS revision FROM native_threads"
+        )
+        .all()
+        .map((row: any) => [String(row.id), { owner: String(row.owner ?? ''), revision: Number(row.revision ?? 0) }])
+    );
+    const keep: number[] = [];
+    let total = 0;
+    for (const row of this.db
+      .prepare(
+        "SELECT rowid AS rid, json_extract(data,'$.kind','$.threadId','$.ownerClientId','$.revision') AS fields FROM native_events ORDER BY rowid"
+      )
+      .iterate() as Iterable<{ rid: number; fields: string }>) {
+      total += 1;
+      const [kind, threadId, owner, revision] = JSON.parse(row.fields) as [unknown, string, string, unknown];
+      const checkpoint = checkpoints.get(String(threadId));
+      const dead =
+        kind === null || (!!checkpoint && (checkpoint.owner !== owner || Number(revision) <= checkpoint.revision));
+      if (!dead) keep.push(Number(row.rid));
+    }
+    const removed = total - keep.length;
+    if (removed) {
+      // A previous attempt that died before its own cleanup leaves this behind; it is never read.
+      this.db.exec('DROP TABLE IF EXISTS native_events_keep');
+      this.transaction(() => {
+        this.db.exec('CREATE TABLE native_events_keep (id TEXT PRIMARY KEY, data TEXT NOT NULL)');
+        const copy = this.db.prepare(
+          'INSERT INTO native_events_keep (id,data) SELECT id,data FROM native_events WHERE rowid=?'
+        );
+        for (const rid of keep) copy.run(rid);
+        this.db.exec('DELETE FROM native_events');
+        this.db.exec('INSERT INTO native_events (id,data) SELECT id,data FROM native_events_keep ORDER BY rowid');
+      });
+      this.db.exec('DROP TABLE native_events_keep');
+    }
+    this.put('migrations', {
+      id: 'native-events-prune-v1',
+      createdAt: now(),
+      removed,
+      durationMs: Date.now() - startedAt,
+    });
+    return removed;
   }
   projectItems(projectId: string): WorkItem[] {
     return this.all<WorkItem>('items').filter((item) => item.projectId === projectId);

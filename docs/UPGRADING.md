@@ -13,6 +13,19 @@
 
 备份运行中的数据请使用 SQLite 在线备份，或先停止执行服务再完整复制数据目录。不要仅复制仍在写入的 `workspace.sqlite`。
 
+## 回收数据库占用的磁盘空间
+
+原生任务的 IPC 增量日志（`native_events`）此前既没有索引也没有清理，旧数据目录里它可能占到几个 GB。启动时的一次性迁移（marker `native-events-prune-v1`）会删掉再也读不到的行：每个线程 checkpoint 已经覆盖的修订、属于其他客户端的行、以及没有 `kind` 的投影行。迁移只删行，**不会缩小文件**——SQLite 把这些页放回自己的空闲列表，留给后续写入复用，文件大小不变。
+
+要把空间还给磁盘，在**服务已停止**时运行：
+
+```
+bash scripts/compact-db.sh            # 默认数据目录
+bash scripts/compact-db.sh /某个/副本  # 指定目录，例如一份拷贝
+```
+
+脚本先检查 `daemon.lock` 没有活进程、磁盘剩余空间够放下两份文件，然后 `PRAGMA wal_checkpoint(TRUNCATE)`、`VACUUM INTO` 到新文件、校验完整性，再替换原文件，并把替换前的文件留作 `workspace.sqlite.before-compact`。确认新库可用后再删掉它。不要在服务运行时执行这一步。
+
 ## 更新 Morrow
 
 重新运行 `npm run build:app` 和 `bash scripts/install-app.sh`。安装器先校验完整应用，在临时目录保留旧包用于失败回退，成功后删除该副本；不会持续积累时间戳版本。退出并重新打开 Morrow 界面可加载新界面与图标。
