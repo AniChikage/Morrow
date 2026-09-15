@@ -11,9 +11,9 @@
     'PingFang SC',
     'Microsoft YaHei',
     sans-serif;
-  color: #252528;
-  background: #f4f4f6;
-  font-size: 14px;
+  color: var(--text);
+  background: var(--shell);
+  font-size: var(--text-md);
   font-synthesis: none;
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;

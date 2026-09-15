@@ -1,89 +1,142 @@
 .channel-stage-hint {
   margin: 0;
-  padding: 8px 28px 14px;
-  font-size: 12px;
+  padding: var(--space-2) var(--space-5) var(--space-3);
+  font-size: var(--text-sm);
   line-height: 1.6;
   color: var(--muted);
   border-bottom: 1px solid var(--line);
 }
 .channel-stage-hint strong {
   color: var(--text);
-  font-weight: 550;
+  font-weight: 600;
 }
 .channel-settings-summary {
-  margin: 0 28px 12px;
-  padding: 12px 0;
+  margin: 0 var(--space-5) var(--space-3);
+  padding: var(--space-3) 0;
   border-bottom: 1px solid var(--line);
-  font-size: 12px;
+  font-size: var(--text-sm);
+  line-height: var(--text-sm-lh);
 }
 .channel-settings-summary h2 {
-  font-size: 12px;
-  margin: 0 0 8px;
+  font-size: var(--text-xs);
+  line-height: var(--text-xs-lh);
+  font-weight: 500;
+  color: var(--muted);
+  margin: 0 0 var(--space-2);
 }
 .channel-settings-summary > span {
   display: block;
-  margin: 4px 0;
+  margin: var(--space-1) 0;
   color: var(--muted);
 }
 .channel-log-scroll {
-  padding: 20px 28px 36px;
+  padding: var(--space-5) var(--space-5) var(--space-6);
 }
 .channel-log-heading {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  margin: 12px 0 4px;
+  margin: 0;
 }
 .channel-log-heading h2,
 .channel-needs h2 {
-  font-size: 13px;
+  font-size: var(--text-md);
+  line-height: var(--text-md-lh);
   font-weight: 600;
-  margin: 0 0 8px;
+  margin: 0 0 var(--space-2);
 }
+/* 需要你: the only block allowed a tint, because it is the only one asking for a person now. */
 .channel-needs {
-  padding-bottom: 18px;
-  border-bottom: 1px solid var(--line);
+  margin: 0 0 var(--space-5);
+  padding: var(--space-4);
+  border-left: 3px solid var(--accent);
+  border-radius: var(--radius-lg);
+  background: var(--accent-soft);
 }
 .channel-needs .channel-question {
-  margin: 8px 0 12px;
+  margin: var(--space-3) 0 0;
+}
+.channel-needs ul {
+  margin: var(--space-2) 0 0;
+  padding: 0;
+  list-style: none;
+}
+.channel-needs > details {
+  font-size: var(--text-sm);
+  line-height: var(--text-sm-lh);
 }
 /* One plain line per waiting reason: an App approval, or a usage gate holding every round. */
 .channel-needs-note {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 8px;
-  margin: 0 0 8px;
-  font-size: 12px;
+  gap: var(--space-2);
+  margin: 0 0 var(--space-2);
+  font-size: var(--text-sm);
+  line-height: var(--text-sm-lh);
   color: var(--muted);
 }
+/* The work log's time rail. One hairline runs down the left of the rounds; every round puts
+   a tick on it and rides it with a monospace timestamp, so a channel reads like a ledger
+   rather than a feed. The round still wanting something from you keeps the accent tick and
+   the rest settle to neutral — this is the one place the interface has a personality. */
 .channel-log-entry {
+  --log-tick: var(--faint);
+  position: relative;
   max-width: 850px;
-  padding: 20px 0;
-  border-bottom: 1px solid var(--line);
+  padding: var(--space-4) 0 var(--space-4) var(--space-4);
+}
+.channel-log-entry:first-of-type,
+.channel-log-entry:has(.log-primary-action) {
+  --log-tick: var(--accent);
+}
+.channel-log-entry::before {
+  content: '';
+  position: absolute;
+  left: 3px;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  background: var(--line);
+}
+.channel-log-entry::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: calc(var(--space-4) + 5px);
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--log-tick);
 }
 .channel-log-entry > header {
   display: flex;
   flex-wrap: wrap;
-  gap: 8px 16px;
+  align-items: baseline;
+  gap: var(--space-1) var(--space-3);
   color: var(--muted);
-  font-size: 11px;
+  font-size: var(--text-xs);
+  line-height: var(--text-xs-lh);
+}
+.channel-log-entry > header > time {
+  color: var(--text);
 }
 .channel-log-entry h3 {
-  font-size: 15px;
-  line-height: 1.5;
-  margin: 12px 0 4px;
-  font-weight: 550;
+  font-size: var(--text-md);
+  line-height: var(--text-md-lh);
+  margin: var(--space-2) 0 var(--space-1);
+  font-weight: 500;
 }
 .channel-log-entry h4 {
-  font-size: 11px;
+  font-size: var(--text-xs);
+  line-height: var(--text-xs-lh);
   color: var(--muted);
-  font-weight: 550;
-  margin: 12px 0 5px;
+  font-weight: 500;
+  margin: var(--space-3) 0 var(--space-1);
 }
 .channel-log-entry p {
-  margin: 4px 0;
-  font-size: 12px;
+  margin: var(--space-1) 0;
+  font-size: var(--text-sm);
   line-height: 1.7;
   overflow-wrap: anywhere;
 }
@@ -95,16 +148,18 @@
   list-style: none;
   padding: 0;
   margin: 0;
-  font-size: 11px;
+  font-size: var(--text-xs);
+  line-height: var(--text-xs-lh);
 }
 .log-commands li {
   display: flex;
   align-items: baseline;
   justify-content: space-between;
-  gap: 14px;
-  padding: 4px 0;
+  gap: var(--space-3);
+  padding: var(--space-1) 0;
 }
 .log-commands code {
+  font-family: var(--font-mono);
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
@@ -114,7 +169,7 @@
 }
 .log-outputs li {
   display: flex;
-  gap: 10px;
+  gap: var(--space-2);
   padding: 3px 0;
 }
 .log-outputs li > span:first-child {
@@ -134,8 +189,9 @@
   text-decoration: underline;
 }
 .channel-log-entry > details {
-  margin-top: 12px;
-  font-size: 11px;
+  margin-top: var(--space-3);
+  font-size: var(--text-xs);
+  line-height: var(--text-xs-lh);
   color: var(--muted);
 }
 .channel-log summary {
@@ -146,44 +202,53 @@
 }
 .log-work-details > summary {
   width: fit-content;
-  padding: 5px 0;
+  padding: var(--space-1) 0;
 }
+/* The log's one primary action, so it is the one button shaped like a primary button. */
 .channel-log summary.log-primary-action {
   display: inline-block;
-  padding: 6px 10px;
-  border-radius: 6px;
-  background: var(--text);
-  color: var(--bg);
+  padding: var(--space-1) var(--space-3);
+  border-radius: var(--radius);
+  background: var(--accent);
+  color: #fff;
+  font-size: var(--text-base);
   font-weight: 500;
+  line-height: var(--text-sm-lh);
   list-style: none;
+  transition: background-color 0.12s;
+}
+.channel-log summary.log-primary-action:hover {
+  background: var(--accent-strong);
 }
 .channel-log pre {
   white-space: pre-wrap;
   overflow-wrap: anywhere;
-  font-size: 11px;
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  line-height: 1.7;
   max-height: 320px;
   overflow: auto;
 }
 .channel-audit {
-  margin-top: 24px;
-  font-size: 11px;
+  margin-top: var(--space-5);
+  font-size: var(--text-xs);
 }
 .channel-link-task {
-  padding: 10px 24px;
-  font-size: 12px;
+  padding: var(--space-2) var(--space-5);
+  font-size: var(--text-sm);
   border-bottom: 1px solid var(--line);
 }
 .channel-link-task select {
-  margin: 8px;
+  margin: var(--space-2) 0;
   max-width: 260px;
 }
 /* One line and one expandable reason for an App-started continuation; ids stay in the work log. */
 .channel-app-resume {
-  padding: 8px 24px;
-  font-size: 12px;
+  padding: var(--space-2) var(--space-5);
+  font-size: var(--text-sm);
   color: var(--muted);
   border-bottom: 1px solid var(--line);
 }
 .channel-app-resume p {
-  margin: 6px 0 0;
+  margin: var(--space-1) 0 0;
 }
