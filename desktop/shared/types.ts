@@ -101,7 +101,7 @@ export type UsageGate =
   | { blocked: false }
   | {
       blocked: true;
-      kind: 'reserve' | 'budget' | 'unknown';
+      kind: 'reserve' | 'budget' | 'unknown' | 'account';
       window?: UsageWindow;
       resetsAt?: string;
       until: string;
