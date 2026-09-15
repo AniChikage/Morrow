@@ -1,3 +1,6 @@
+/* The one place colour, type, spacing and radius are decided. Morrow reads as a work ledger:
+   a quiet neutral ground, one restrained accent for 现在需要你 and 正在进行, and monospace
+   for every time, number and percentage so data stays scannable. Light mode only. */
 :root {
   font-family:
     'Inter Variable',
@@ -8,12 +11,13 @@
     'PingFang SC',
     'Microsoft YaHei',
     sans-serif;
-  color: #252528;
-  background: #f4f4f6;
-  font-size: 14px;
+  color: var(--text);
+  background: var(--shell);
+  font-size: var(--text-md);
   font-synthesis: none;
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
+  /* Neutrals: the ground everything sits on. */
   --shell: #f4f4f6;
   --canvas: #fcfcfc;
   --surface: #fff;
@@ -27,12 +31,45 @@
   --nav-text: #4b4b54;
   --nav-muted: #6b6b73;
   --nav-icon: #767680;
-  --accent: #6356d9;
-  --success: #547d61;
-  --danger: #b04a3c;
-  --warning: #ad7c27;
+  /* Accent (ink teal): only 现在需要你 and 正在进行 earn it. */
+  --accent: #1f6f78;
+  --accent-soft: #e3f0f1;
+  --accent-strong: #165158;
+  /* Semantic: 已完成 / 等待 / 失败. --info is the accent, never a second blue. */
+  --success: #3e7d5a;
+  --success-soft: #e6f2ea;
+  --warning: #a86f1d;
+  --warning-soft: #f7efe0;
+  --danger: #b3433a;
+  --danger-soft: #f8e8e6;
+  --info: var(--accent);
+  /* Type scale. Body base, help sm, table heads and chips xs, page titles xl. */
+  --text-xs: 11px;
+  --text-xs-lh: 16px;
+  --text-sm: 12px;
+  --text-sm-lh: 18px;
+  --text-base: 13px;
+  --text-base-lh: 20px;
+  --text-md: 14px;
+  --text-md-lh: 20px;
+  --text-lg: 16px;
+  --text-lg-lh: 24px;
+  --text-xl: 20px;
+  --text-xl-lh: 28px;
   --font-mono: 'Geist Mono Variable', ui-monospace, SFMono-Regular, Menlo, monospace;
+  /* Spacing: label→content 1, items 3, sections 5, sidebar gutter 4, content gutter 5. */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 24px;
+  --space-6: 32px;
+  --radius-sm: 4px;
   --radius: 6px;
+  --radius-lg: 8px;
+  /* Cards, panels and dialogs stay flat; only floating layers lift, and only once. */
+  --shadow-card: 0 1px 2px #0000000a;
+  --shadow-pop: 0 6px 20px #18182714;
   --sidebar-width: 236px;
 }
 * {
@@ -73,32 +110,33 @@ button {
 button:focus-visible,
 a:focus-visible,
 [tabindex]:focus-visible {
-  outline: 2px solid #8f88c8;
+  outline: 2px solid var(--accent);
   outline-offset: 2px;
 }
 input:focus,
 textarea:focus,
 select:focus {
   outline: 0;
-  border-color: #9b96bf;
-  box-shadow: 0 0 0 2px #6356d912;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent-soft);
 }
 input,
 textarea,
 select {
-  border: 1px solid #dedee4;
+  border: 1px solid var(--line);
   background: var(--surface);
-  border-radius: 6px;
-  padding: 8px 10px;
+  border-radius: var(--radius);
+  padding: var(--space-2) var(--space-3);
   min-width: 0;
-  line-height: 20px;
+  font-size: var(--text-base);
+  line-height: var(--text-base-lh);
 }
 textarea {
   resize: vertical;
 }
 input::placeholder,
 textarea::placeholder {
-  color: #96969c;
+  color: var(--faint);
 }
 svg {
   flex-shrink: 0;
@@ -114,7 +152,7 @@ a {
   color: inherit;
 }
 ::selection {
-  background: #ded9fa;
+  background: var(--accent-soft);
 }
 ::-webkit-scrollbar {
   width: 8px;
@@ -124,7 +162,7 @@ a {
   background: #00000020;
   border: 2px solid transparent;
   background-clip: padding-box;
-  border-radius: 6px;
+  border-radius: var(--radius);
 }
 ::-webkit-scrollbar-thumb:hover {
   background-color: #00000035;
@@ -135,8 +173,12 @@ a {
 .muted {
   color: var(--muted);
 }
-.mono {
+/* Times, durations, ids, versions and percentages are monospace everywhere, with
+   tabular figures so columns of numbers line up. */
+.mono,
+time {
   font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
 }
 .truncate {
   overflow: hidden;

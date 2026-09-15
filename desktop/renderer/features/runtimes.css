@@ -7,21 +7,22 @@
   justify-content: center;
   min-width: 18px;
   height: 18px;
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
   background: var(--hover);
-  font-size: 11px;
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
 }
 .runtime-settings-body {
   width: 100%;
   max-width: 1440px;
   margin: 0 auto;
-  padding: 25px 26px 32px;
+  padding: var(--space-5) var(--space-5) var(--space-6);
 }
 .runtime-settings-heading {
   display: flex;
   align-items: center;
-  gap: 12px;
-  margin-bottom: 22px;
+  gap: var(--space-3);
+  margin-bottom: var(--space-5);
   padding: 2px 0;
 }
 .runtime-settings-host-icon {
@@ -32,7 +33,7 @@
   height: 40px;
   flex-shrink: 0;
   border: 1px solid var(--line);
-  border-radius: 8px;
+  border-radius: var(--radius-lg);
   background: var(--surface);
   color: var(--muted);
 }
@@ -41,30 +42,30 @@
   min-width: 0;
 }
 .runtime-settings-heading h1 {
-  font-size: 14px;
-  font-weight: 500;
-  line-height: 20px;
+  font-size: var(--text-md);
+  font-weight: 600;
+  line-height: var(--text-md-lh);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 .runtime-settings-heading p {
-  margin-top: 3px;
+  margin-top: var(--space-1);
   color: var(--muted);
-  font-size: 12px;
-  line-height: 18px;
+  font-size: var(--text-sm);
+  line-height: var(--text-sm-lh);
 }
 .runtime-settings-host-state {
   display: flex;
   align-items: center;
-  gap: 24px;
+  gap: var(--space-5);
   padding-right: 5px;
-  font-size: 12px;
+  font-size: var(--text-sm);
   color: var(--muted);
 }
 .runtime-settings-table {
   border: 1px solid var(--line);
-  border-radius: 8px;
+  border-radius: var(--radius-lg);
   background: var(--surface);
   overflow: hidden;
 }
@@ -72,17 +73,17 @@
 .runtime-settings-row {
   display: grid;
   grid-template-columns: minmax(146px, 1fr) 100px 82px 90px 130px 16px;
-  gap: 12px;
+  gap: var(--space-3);
   align-items: center;
-  padding: 0 14px;
+  padding: 0 var(--space-3);
 }
 .runtime-settings-columns {
-  min-height: 35px;
-  background: #fafafa;
+  min-height: 36px;
   border-bottom: 1px solid var(--line);
   color: var(--muted);
-  font-size: 11px;
-  line-height: 16px;
+  font-size: var(--text-xs);
+  font-weight: 500;
+  line-height: var(--text-xs-lh);
 }
 .runtime-settings-group + .runtime-settings-group {
   border-top: 1px solid var(--line-soft);
@@ -91,25 +92,25 @@
   width: 100%;
   min-height: 60px;
   text-align: left;
-  transition: background-color 0.12s ease;
+  transition: background-color 0.12s;
 }
 .runtime-settings-row:hover {
-  background: #f7f7f8;
+  background: var(--hover);
 }
 .runtime-settings-row:focus-visible {
   outline-offset: -2px;
 }
 .runtime-settings-row[aria-expanded='true'] {
-  background: #f8f8fa;
+  background: var(--hover);
 }
 .runtime-settings-name {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: var(--space-2);
   min-width: 0;
-  font-size: 13px;
+  font-size: var(--text-md);
   font-weight: 500;
-  line-height: 18px;
+  line-height: var(--text-sm-lh);
 }
 .runtime-settings-name > span:last-child {
   overflow: hidden;
@@ -123,14 +124,14 @@
   flex-shrink: 0;
   width: 28px;
   height: 28px;
-  border-radius: 7px;
-  font: 600 10px/1 var(--font-mono);
-  letter-spacing: -0.4px;
+  border-radius: var(--radius);
+  font: 600 var(--text-xs) / 1 var(--font-mono);
+  letter-spacing: -0.02em;
   user-select: none;
 }
 .runtime-settings-mark.codex {
-  background: #eeeef0;
-  color: #33333a;
+  background: var(--selected);
+  color: var(--text);
 }
 .runtime-settings-mark.other {
   background: var(--hover);
@@ -139,9 +140,9 @@
 .runtime-settings-detection {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--space-2);
   white-space: nowrap;
-  font-size: 12px;
+  font-size: var(--text-sm);
   color: var(--muted);
 }
 .runtime-settings-dot {
@@ -149,16 +150,16 @@
   height: 6px;
   flex-shrink: 0;
   border-radius: 50%;
-  background: #b7b7bf;
+  background: var(--faint);
 }
 .runtime-settings-detection.detected .runtime-settings-dot {
-  background: #6b9477;
+  background: var(--success);
 }
 .runtime-settings-detection.attention .runtime-settings-dot {
-  background: #b79250;
+  background: var(--warning);
 }
 .runtime-settings-auth {
-  font-size: 12px;
+  font-size: var(--text-sm);
   color: var(--muted);
   white-space: nowrap;
 }
@@ -166,18 +167,18 @@
   display: flex;
   align-items: center;
   gap: 5px;
-  font-size: 12px;
+  font-size: var(--text-sm);
   color: var(--muted);
   white-space: nowrap;
 }
 .runtime-settings-usage .runtime-settings-dot {
-  background: #6b9477;
+  background: var(--success);
 }
 .runtime-settings-version {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font: 11px/18px var(--font-mono);
+  font: var(--text-xs) / var(--text-sm-lh) var(--font-mono);
   color: var(--muted);
 }
 .runtime-settings-chevron {
@@ -188,16 +189,15 @@
   transform: rotate(90deg);
 }
 .runtime-settings-details {
-  padding: 16px 18px 18px 52px;
+  padding: var(--space-4) var(--space-4) var(--space-4) 52px;
   border-top: 1px solid var(--line-soft);
-  background: #fdfdfd;
 }
 .runtime-settings-details dl {
   display: grid;
   grid-template-columns: 76px minmax(0, 1fr);
-  gap: 12px 16px;
+  gap: var(--space-3) var(--space-4);
   margin: 0;
-  font-size: 12px;
+  font-size: var(--text-sm);
   line-height: 19px;
 }
 .runtime-settings-details dt {
@@ -206,26 +206,26 @@
 .runtime-settings-details dd {
   margin: 0;
   min-width: 0;
-  color: #50505a;
+  color: var(--text);
   overflow-wrap: anywhere;
 }
 .runtime-settings-details code {
-  font: 11px/19px var(--font-mono);
-  color: #63636d;
+  font: var(--text-xs) / 19px var(--font-mono);
+  color: var(--muted);
   overflow-wrap: anywhere;
 }
 .runtime-settings-channel-links {
   display: flex;
   flex-wrap: wrap;
-  gap: 6px 14px;
+  gap: var(--space-2) var(--space-3);
 }
 .runtime-settings-channel-link {
   display: inline-flex;
   align-items: center;
   gap: 5px;
   max-width: 100%;
-  font-size: 12px;
-  color: #575761;
+  font-size: var(--text-sm);
+  color: var(--muted);
   text-align: left;
 }
 .runtime-settings-channel-link span {
@@ -240,9 +240,9 @@
   text-underline-offset: 3px;
 }
 .runtime-settings-checklist {
-  padding: 8px 18px 10px 52px;
+  padding: var(--space-2) var(--space-4) var(--space-3) 52px;
   border-top: 1px solid var(--line-soft);
-  font-size: 12px;
+  font-size: var(--text-sm);
   line-height: 19px;
 }
 .runtime-settings-checklist ol {
@@ -258,27 +258,27 @@
   white-space: normal;
 }
 .runtime-settings-checklist code {
-  font: 11px/19px var(--font-mono);
-  color: #63636d;
+  font: var(--text-xs) / 19px var(--font-mono);
+  color: var(--muted);
 }
 .runtime-settings-next {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 6px 10px;
-  margin: 8px 0 0;
-  color: #50505a;
+  gap: var(--space-2);
+  margin: var(--space-2) 0 0;
+  color: var(--text);
 }
 .runtime-settings-next > b {
   font-weight: 500;
   color: var(--muted);
 }
 .runtime-settings-next .button {
-  min-height: 24px;
-  font-size: 11px;
+  height: 26px;
+  font-size: var(--text-xs);
 }
 .runtime-settings-receipt {
-  margin: 4px 0 0;
+  margin: var(--space-1) 0 0;
   color: var(--muted);
 }
 /* The account's rate-limit windows under the checklist; `.runtime-settings-usage` is the table's channel column. */
@@ -286,9 +286,9 @@
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 4px 10px;
-  margin: 6px 0 0;
-  color: #50505a;
+  gap: var(--space-1) var(--space-3);
+  margin: var(--space-2) 0 0;
+  color: var(--text);
 }
 .runtime-settings-account-usage > b {
   font-weight: 500;
@@ -297,11 +297,11 @@
 .runtime-settings-note {
   display: flex;
   align-items: flex-start;
-  gap: 7px;
-  margin: 14px 2px 0;
+  gap: var(--space-2);
+  margin: var(--space-3) 2px 0;
   max-width: 720px;
   color: var(--muted);
-  font-size: 11px;
+  font-size: var(--text-xs);
   line-height: 19px;
 }
 .runtime-settings-note > svg {
@@ -309,23 +309,23 @@
   color: var(--faint);
 }
 .runtime-settings-empty {
-  padding: 30px 0;
+  padding: var(--space-6) 0;
   border: 1px dashed var(--line);
-  border-radius: 8px;
+  border-radius: var(--radius-lg);
   background: var(--surface);
 }
 @container (max-width:760px) {
   .runtime-settings-body {
-    padding: 22px 20px;
+    padding: var(--space-5) var(--space-4);
   }
   .runtime-settings-columns,
   .runtime-settings-row {
     grid-template-columns: minmax(130px, 1fr) 86px 68px 72px 100px 14px;
-    gap: 8px;
-    padding: 0 12px;
+    gap: var(--space-2);
+    padding: 0 var(--space-3);
   }
   .runtime-settings-name {
-    gap: 8px;
+    gap: var(--space-2);
   }
   .runtime-settings-details,
   .runtime-settings-checklist {
@@ -342,28 +342,28 @@
     display: none;
   }
   .runtime-settings-body {
-    padding: 18px 16px;
+    padding: var(--space-4);
   }
   .runtime-settings-host-state {
     flex-direction: column;
     align-items: flex-end;
-    gap: 4px;
+    gap: var(--space-1);
   }
   .runtime-settings-details {
-    padding: 14px 16px;
+    padding: var(--space-3) var(--space-4);
   }
   .runtime-settings-checklist {
-    padding: 8px 16px 10px;
+    padding: var(--space-2) var(--space-4) var(--space-3);
   }
   .runtime-settings-details dl {
     grid-template-columns: 66px minmax(0, 1fr);
-    gap: 10px;
+    gap: var(--space-2);
   }
 }
 
 .runtime-settings-diagnostics {
-  margin-top: 12px;
-  font-size: 12px;
+  margin-top: var(--space-3);
+  font-size: var(--text-sm);
   color: var(--muted);
 }
 .runtime-settings-diagnostics > summary {
@@ -371,5 +371,5 @@
   width: fit-content;
 }
 .runtime-settings-diagnostics > ol {
-  margin-top: 10px;
+  margin-top: var(--space-2);
 }
