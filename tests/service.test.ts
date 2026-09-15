@@ -1043,6 +1043,57 @@ test('start-up backfills run once and the native journal keeps only what checkpo
   }
 });
 
+test('the native conversation state moves out of the checkpoint header once, and a replay leaves split rows alone', () => {
+  const home = mkdtempSync(join(tmpdir(), 'morrow-thread-state-'));
+  const path = join(home, 'workspace.sqlite');
+  let store = new Store(path);
+  try {
+    const threadId = randomUUID();
+    const legacy = {
+      id: threadId,
+      threadId,
+      ownerClientId: 'client-a',
+      revision: 7,
+      syncedAt: new Date().toISOString(),
+      summary: { id: threadId, title: '原生任务', cwd: '/tmp/native', status: 'idle' },
+      hash: 'projection-hash',
+      projectionVersion: 3,
+      state: { turns: [{ turnId: 't', status: 'completed', items: [{ id: 'i', text: 'x'.repeat(200000) }] }] },
+    };
+    // Exactly what a checkpoint wrote before the split: one row carrying the whole state.
+    store.write('native_threads', threadId, JSON.stringify(legacy));
+    store.db.prepare('DELETE FROM migrations WHERE id=?').run('native-thread-state-v1');
+    store.close();
+    store = new Store(path);
+    assert.equal(store.get<any>('migrations', 'native-thread-state-v1').threads, 1);
+    assert.equal(store.get<any>('migrations', 'native-thread-state-v1').split, 1);
+    const header = () =>
+      JSON.parse((store.db.prepare('SELECT data FROM native_threads WHERE id=?').get(threadId) as any).data);
+    assert.equal(header().state, undefined);
+    assert.equal(header().revision, 7);
+    assert.equal(header().summary.status, 'idle');
+    assert(JSON.stringify(header()).length < 1024);
+    // Nothing is lost: the reader still returns the snapshot that checkpoint wrote.
+    assert.deepEqual(store.get<any>('native_threads', threadId), { ...legacy, stateHash: header().stateHash });
+    // A replay finds nothing left to split and never rewrites a row that is already split.
+    const stateRow = () => store.db.prepare('SELECT data FROM native_thread_state WHERE id=?').get(threadId) as any;
+    const before = stateRow().data;
+    store.db.prepare('DELETE FROM migrations WHERE id=?').run('native-thread-state-v1');
+    store.close();
+    store = new Store(path);
+    assert.equal(store.get<any>('migrations', 'native-thread-state-v1').split, 0);
+    assert.equal(stateRow().data, before);
+    assert.equal(store.get<any>('native_threads', threadId).state.turns[0].items[0].text.length, 200000);
+    // A header written with no state of its own replaces both halves of the row.
+    store.put('native_threads', { id: threadId, threadId, ownerClientId: 'client-a', revision: 8 });
+    assert.equal((store.db.prepare('SELECT COUNT(*) AS n FROM native_thread_state').get() as any).n, 0);
+    assert.equal(store.get<any>('native_threads', threadId).state, undefined);
+  } finally {
+    store.close();
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
 test('resolved native requests age out after 30 days while pending ones and recent answers stay', () => {
   const home = mkdtempSync(join(tmpdir(), 'morrow-requests-'));
   const path = join(home, 'workspace.sqlite');

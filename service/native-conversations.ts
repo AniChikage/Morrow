@@ -515,6 +515,8 @@ export class NativeConversations {
     this.checkpointAt.set(threadId, Date.now());
   }
   recoverCheckpoint(threadId: string) {
+    // The header and the conversation state behind it are one row again by the time this reads it
+    // (`Store.putNativeThread`), so recovery still starts from the whole checkpointed snapshot.
     const initial = this.cachedThread(threadId);
     if (!initial) return;
     const rows = this.store.db

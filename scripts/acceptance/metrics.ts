@@ -722,7 +722,11 @@ function config(store: MetricsStore, runs: Run[], input: MetricsInput) {
 
 function threadModel(store: MetricsStore) {
   try {
-    return store.all<any>('native_threads').at(-1)?.state?.model as string | undefined;
+    // The conversation state lives in `native_thread_state`; `native_threads` keeps only the header.
+    // A data directory this copy was taken from before that split still carries the state inline,
+    // and nothing migrates a read-only copy, so both places are read.
+    return (store.all<any>('native_thread_state').at(-1)?.state?.model ||
+      store.all<any>('native_threads').at(-1)?.state?.model) as string | undefined;
   } catch {
     return undefined;
   }
@@ -819,6 +823,7 @@ const tables = [
   'strategy_understanding',
   'usage_samples',
   'native_threads',
+  'native_thread_state',
 ] as const;
 
 /**

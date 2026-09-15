@@ -1,5 +1,5 @@
 import { DatabaseSync } from 'node:sqlite';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { chmodSync, readFileSync, statSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { appResumeSummary } from './protocol.ts';
@@ -22,6 +22,12 @@ const scheduledSource =
   "(json_extract(data,'$.source') IS NULL OR json_extract(data,'$.source') IN ('morrow-schedule','nohuman-schedule'))";
 /** One stored row, the shape every table has: the primary key and the JSON document in `data`. */
 export type Row = { id: string; data: string };
+/**
+ * The part of a `native_threads` row this file itself reads: its id, the projection hash naming the
+ * owner and revision it was taken at, and the hash of the `native_thread_state` row holding the
+ * conversation state. A row written before the split has no `stateHash` and carries its own state.
+ */
+type ThreadHeader = { id: string; hash?: string; stateHash?: string };
 /** The parsed documents of the rows one `SELECT data …` returned. */
 export const parseRows = <T>(rows: unknown[]): T[] =>
   (rows as Pick<Row, 'data'>[]).map((row) => JSON.parse(row.data) as T);
@@ -65,6 +71,7 @@ export const TABLES = [
   'loop_finalizations',
   'native_bindings',
   'native_threads',
+  'native_thread_state',
   'native_items',
   'native_events',
   'native_requests',
@@ -233,6 +240,35 @@ export class Store {
         );
         this.put('migrations', { id: 'event-project-v1', createdAt: now() });
       });
+    // The conversation state of a native task moved off its `native_threads` row into
+    // `native_thread_state` (see `putNativeThread`). Existing rows are split once, one row and one
+    // transaction at a time so a data directory with several large tasks never builds a single
+    // enormous one; a row that already carries no state of its own is left alone, so the pass is
+    // idempotent and deleting the marker replays only what is still unsplit. On a large database
+    // this is the one slow part of the first start after this build (see docs/UPGRADING.md).
+    if (!this.get('migrations', 'native-thread-state-v1')) {
+      const startedAt = Date.now();
+      const ids = this.db
+        .prepare('SELECT id FROM native_threads ORDER BY rowid')
+        .all()
+        .map((row) => String((row as { id: string }).id));
+      let split = 0;
+      for (const id of ids) {
+        const row = parseRow<{ id: string; state?: unknown }>(
+          this.db.prepare('SELECT data FROM native_threads WHERE id=?').get(id)
+        );
+        if (!row || row.state === undefined) continue;
+        this.putNativeThread(row);
+        split += 1;
+      }
+      this.put('migrations', {
+        id: 'native-thread-state-v1',
+        createdAt: now(),
+        threads: ids.length,
+        split,
+        durationMs: Date.now() - startedAt,
+      });
+    }
     this.pruneNativeEvents();
     // Who opened an item is now stored on the row. Older rows are read once from their own
     // `item.created` audit event; an item with no such event keeps the agent default.
@@ -428,7 +464,8 @@ export class Store {
     return Math.max(0, ...this.projectItems(projectId).map((item) => item.number || 0)) + 1;
   }
   all<T = any>(table: string): T[] {
-    return parseRows<T>(this.db.prepare(`SELECT data FROM ${this.table(table)} ORDER BY rowid`).all());
+    const rows = parseRows<T>(this.db.prepare(`SELECT data FROM ${this.table(table)} ORDER BY rowid`).all());
+    return table === 'native_threads' ? rows.map((row) => this.withThreadState(row as ThreadHeader) as T) : rows;
   }
   /**
    * The rows of one table whose state needs attention, chosen by an index instead of by reading and
@@ -536,15 +573,75 @@ export class Store {
     ).reverse();
   }
   get<T = any>(table: string, id: string): T | undefined {
-    return parseRow<T>(this.db.prepare(`SELECT data FROM ${this.table(table)} WHERE id=?`).get(id));
+    const row = parseRow<T>(this.db.prepare(`SELECT data FROM ${this.table(table)} WHERE id=?`).get(id));
+    return row && table === 'native_threads' ? (this.withThreadState(row as unknown as ThreadHeader) as T) : row;
   }
   put<T extends { id: string }>(table: string, row: T): T {
+    if (table === 'native_threads') return this.putNativeThread(row);
+    this.write(table, row.id, JSON.stringify(row));
+    return row;
+  }
+  /** One row written from text that is already JSON, so a large document is serialized only once. */
+  write(table: string, id: string, data: string) {
     this.db
       .prepare(
         `INSERT INTO ${this.table(table)} (id,data) VALUES (?,?) ON CONFLICT(id) DO UPDATE SET data=excluded.data`
       )
-      .run(row.id, JSON.stringify(row));
-    return row;
+      .run(id, data);
+  }
+  /**
+   * One native task's checkpoint, written as a small header plus the conversation state behind it.
+   *
+   * The state used to live on the `native_threads` row itself, so every checkpoint rewrote all of
+   * it — 43 MB on the author's own database, at most every 30 s for as long as a turn streams, and
+   * again on every re-read of an idle task. The header — ids, owner, revision, hashes, projection
+   * version and the summary the interface reads — is a few hundred bytes and is still rewritten
+   * every time; `native_thread_state` holds the state and is written only when the state there is
+   * not already the right one. Two cases are therefore skipped rather than repeated: a checkpoint at
+   * a revision the stored state already covers, which is what a re-read of an idle task produces
+   * (a new `syncedAt` and nothing else), and a reprojection that produced the same bytes.
+   *
+   * `stateHash` on the header names the state row it belongs to, so deciding reads the small row
+   * rather than parsing the large one, and both halves are written in one transaction so a header
+   * can never name a state that is not there. `get`/`all` put them back together, so every reader
+   * of `native_threads` still sees the whole snapshot.
+   */
+  putNativeThread<T extends { id: string }>(row: T): T {
+    const { state, ...header } = row as T & { state?: unknown; hash?: string };
+    const stored = parseRow<ThreadHeader>(this.db.prepare('SELECT data FROM native_threads WHERE id=?').get(row.id));
+    const present = !!this.db.prepare('SELECT 1 AS n FROM native_thread_state WHERE id=?').get(row.id);
+    return this.transaction(() => {
+      if (state === undefined) {
+        // A caller replacing the row without a state replaces both of its halves.
+        if (present) this.db.prepare('DELETE FROM native_thread_state WHERE id=?').run(row.id);
+        this.write('native_threads', row.id, JSON.stringify(header));
+        return row;
+      }
+      // The projection hash is the owner and revision this state came from, so an equal one is the
+      // same state and the large document is never serialized again to find that out.
+      if (present && stored?.stateHash && stored.hash && (row as { hash?: string }).hash === stored.hash) {
+        this.write('native_threads', row.id, JSON.stringify({ ...header, stateHash: stored.stateHash }));
+        return row;
+      }
+      const text = JSON.stringify(state);
+      const stateHash = createHash('sha256').update(text).digest('hex');
+      if (!present || stateHash !== stored?.stateHash)
+        this.write(
+          'native_thread_state',
+          row.id,
+          `{"id":${JSON.stringify(row.id)},"hash":"${stateHash}","updatedAt":${JSON.stringify(now())},"state":${text}}`
+        );
+      this.write('native_threads', row.id, JSON.stringify({ ...header, stateHash }));
+      return row;
+    });
+  }
+  /** A `native_threads` header with the conversation state behind it put back onto it. */
+  withThreadState<T extends ThreadHeader>(header: T): T {
+    if (!header.stateHash) return header;
+    const row = parseRow<{ state: unknown }>(
+      this.db.prepare('SELECT data FROM native_thread_state WHERE id=?').get(header.id)
+    );
+    return row ? { ...header, state: row.state } : header;
   }
   table(t: string) {
     if (!(TABLES as readonly string[]).includes(t)) throw new Error('Unknown table');

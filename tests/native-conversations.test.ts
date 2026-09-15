@@ -1196,6 +1196,98 @@ test('a streaming turn checkpoints at most every 30 s, bounds the journal by tha
   }
 });
 
+test('a checkpoint rewrites only the thread header, stores the state once per change, and still recovers a 25 s mid-turn death', async () => {
+  const s = await setup();
+  let recovered: NativeConversations | undefined;
+  try {
+    await s.api('POST', `/api/channels/${s.channel.id}/native/bind`, { threadId: s.transport.threadId });
+    const items = Array.from({ length: 200 }, (_, index) => ({
+      id: `item-${index}`,
+      type: 'agentMessage',
+      phase: 'commentary',
+      text: `${index}:` + 'history '.repeat(256),
+    }));
+    const state = { turns: [{ turnId: 'split-turn', status: 'inProgress', items }], requests: [] };
+    let snapshot = { ...s.transport.snapshot, revision: s.transport.snapshot.revision + 1, state };
+    s.native.ingest(snapshot, true);
+    const raw = (table: 'native_threads' | 'native_thread_state') =>
+      JSON.parse(
+        (s.store.db.prepare(`SELECT data FROM ${table} WHERE id=?`).get(snapshot.threadId) as { data: string }).data
+      );
+    // The header carries no conversation state of its own, and names the state row that holds it.
+    assert.equal(raw('native_threads').state, undefined);
+    assert(JSON.stringify(raw('native_threads')).length < 1024);
+    assert.equal(raw('native_threads').stateHash, raw('native_thread_state').hash);
+    assert.equal(raw('native_thread_state').state.turns[0].items.length, 200);
+    // Every reader of `native_threads` still sees one whole snapshot.
+    assert.equal(s.store.get<any>('native_threads', snapshot.threadId).state.turns[0].items.length, 200);
+    assert.equal(s.store.all<any>('native_threads')[0].state.turns[0].items.length, 200);
+    const bytes: Record<string, number> = { native_threads: 0, native_thread_state: 0 };
+    const write = s.store.write.bind(s.store);
+    s.store.write = ((table: string, id: string, data: string) => {
+      if (table in bytes) bytes[table] += data.length;
+      return write(table, id, data);
+    }) as typeof s.store.write;
+    /** The same task read again, which is what a poll of an open channel page produces. */
+    const reread = (revision = snapshot.revision) => {
+      s.native.observed.clear();
+      s.native.ingest({ ...snapshot, revision, syncedAt: new Date().toISOString() }, true);
+    };
+    reread();
+    // The state at this revision is already stored, so the large row is not rewritten to say so.
+    assert.equal(bytes.native_thread_state, 0);
+    assert(bytes.native_threads > 0 && bytes.native_threads < 1024);
+    // Nor at a later revision whose projection produced the same bytes.
+    reread(snapshot.revision + 1);
+    assert.equal(bytes.native_thread_state, 0);
+    snapshot = { ...snapshot, revision: snapshot.revision + 1 };
+    // A state that is actually different is written once, and the header still costs a few hundred.
+    const header = bytes.native_threads;
+    s.native.observed.clear();
+    snapshot = {
+      ...snapshot,
+      revision: snapshot.revision + 1,
+      syncedAt: new Date().toISOString(),
+      state: { ...state, turns: [{ ...state.turns[0], items: [...items, { ...items[0], id: 'extra' }] }] },
+    };
+    s.native.ingest(snapshot, true);
+    assert(bytes.native_thread_state > 400_000);
+    assert(bytes.native_threads - header < 1024);
+    assert.equal(raw('native_thread_state').state.turns[0].items.length, 201);
+    // The turn keeps streaming without a checkpoint for 25 s, then the process dies; recovery reads
+    // the header, the state behind it and the journal, and still ends on the last delta.
+    const change = {
+      type: 'patches' as const,
+      baseRevision: snapshot.revision,
+      revision: snapshot.revision + 1,
+      patches: [{ op: 'replace' as const, path: ['turns', 0, 'items', 200, 'text'], value: '25 秒后死亡' }],
+    };
+    s.native.checkpointAt.set(snapshot.threadId, Date.now() - 25000);
+    const latest = {
+      ...snapshot,
+      revision: change.revision,
+      syncedAt: new Date().toISOString(),
+      state: applyDesktopPatches(snapshot.state, change.patches) as typeof state,
+    };
+    s.native.queueSnapshot(latest, change);
+    s.native.flushPending(latest.threadId);
+    assert.equal(raw('native_threads').revision, snapshot.revision);
+    s.native.closed = true;
+    s.transport.connected = false;
+    recovered = new NativeConversations(s.store, s.engine, s.transport);
+    recovered.recoverCheckpoint(latest.threadId);
+    const view = await recovered.conversation(s.channel.id, {});
+    assert.equal(view.status.connected, false);
+    assert.equal(view.items.at(-1)?.text, '25 秒后死亡');
+    assert.equal(raw('native_threads').revision, latest.revision);
+    assert.equal(s.store.get<any>('native_threads', latest.threadId).state.turns[0].items.at(-1).text, '25 秒后死亡');
+    assert.equal(s.transport.interruptions.length, 0);
+  } finally {
+    recovered?.close();
+    await s.cleanup();
+  }
+});
+
 test('renamed service recovers a legacy responsibility run without resending or resetting its budget', async () => {
   const s = await setup();
   let restarted: IsolatedService | undefined;

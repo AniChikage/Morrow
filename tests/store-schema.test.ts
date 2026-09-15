@@ -38,6 +38,7 @@ const expected = [
   'native_items',
   'native_outbox',
   'native_requests',
+  'native_thread_state',
   'native_threads',
   'native_turns',
   'project_brief_revisions',
