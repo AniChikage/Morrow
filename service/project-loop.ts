@@ -19,20 +19,27 @@ import { basename, join, relative, isAbsolute, resolve } from 'node:path';
 import { homedir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { APIError, choice, integer, keys, object, string, itemKinds, itemStatuses } from './protocol.ts';
-import type { Channel, Project, Run, WorkItem } from './protocol.ts';
+import type { Channel, Control, Project, Run, WorkItem } from './protocol.ts';
 import type { Evidence, Learning, FeedbackWatch, Release, ReleaseScript, ProjectLoop } from './autonomy-types.ts';
 import { nativeEvidenceItems, nativeEvidenceSnapshot } from './native-evidence.ts';
 import { nativeCapabilities } from './native-capabilities.ts';
 import { workContract } from './prompts/work-contract.ts';
-import { Store, now } from './store.ts';
+import { Store, now, parseRows } from './store.ts';
 import { ProjectStrategy } from './project-strategy.ts';
 import { WorkVerification } from './work-verification.ts';
 import { ExecutionEvidence } from './execution-evidence.ts';
 import { isFingerprint } from './build-identity.ts';
 import type { UpgradeManager } from './upgrade.ts';
 import type { UsageMonitor } from './usage.ts';
+import type { ExecutionCapture } from './verification-types.ts';
 
 export type Scope = { id: string; projectId: string; channelId: string; runId: string; expiresAt: string };
+/**
+ * One already-answered work-interface call, kept so a repeated `requestId` returns the same result
+ * instead of writing twice. `hash` covers the operation and its input, so the same id with different
+ * content is a conflict rather than a replay.
+ */
+type LoopCall = { id: string; projectId: string; runId: string; hash: string; result: unknown };
 type Wait = {
   id: string;
   projectId: string;
@@ -114,7 +121,7 @@ async function jsonRequest(url: string, init: RequestInit = {}) {
   const chunks: Uint8Array[] = [];
   let bytes = 0;
   if (response.body)
-    for await (const chunk of response.body as any) {
+    for await (const chunk of response.body as unknown as AsyncIterable<Uint8Array>) {
       bytes += chunk.length;
       if (bytes > 512 * 1024) throw new Error('响应超过 512 KB');
       chunks.push(chunk);
@@ -221,17 +228,19 @@ export class ProjectWorkLoop {
     this.executions = new ExecutionEvidence(this);
   }
   rows<T>(table: string, projectId: string): T[] {
-    return this.store.db
-      .prepare(`SELECT data FROM ${this.store.table(table)} WHERE json_extract(data,'$.projectId')=? ORDER BY rowid`)
-      .all(projectId)
-      .map((r: any) => JSON.parse(r.data));
+    return parseRows<T>(
+      this.store.db
+        .prepare(`SELECT data FROM ${this.store.table(table)} WHERE json_extract(data,'$.projectId')=? ORDER BY rowid`)
+        .all(projectId)
+    );
   }
   view(
     projectId: string,
     itemId?: string,
     verificationOptions: { before?: string; includeLatest?: boolean } = {}
   ): ProjectLoop {
-    const linked = (r: any) => !itemId || r.itemId === itemId || r.itemIds?.includes(itemId);
+    const linked = (r: { itemId?: string; itemIds?: string[] }) =>
+      !itemId || r.itemId === itemId || r.itemIds?.includes(itemId);
     const learning = this.rows<Learning>('loop_learning', projectId).filter(linked).slice(-150);
     const allReleases = this.rows<Release>('loop_releases', projectId).filter(linked);
     const releases = allReleases.filter(
@@ -476,7 +485,7 @@ export class ProjectWorkLoop {
           .prepare(
             `SELECT COUNT(*) AS n FROM loop_learning WHERE json_extract(data,'$.projectId')=?${item ? " AND json_extract(data,'$.itemId')=?" : ''}`
           )
-          .get(...(item ? [project.id, item.id] : [project.id])) as any
+          .get(...(item ? [project.id, item.id] : [project.id])) as { n: number }
       ).n
     );
     return {
@@ -508,7 +517,7 @@ export class ProjectWorkLoop {
       ),
       verifications: view.verifications,
       finalizations: view.finalizations,
-      executions: this.rows<any>('loop_executions', project.id).slice(-12),
+      executions: this.rows<ExecutionCapture>('loop_executions', project.id).slice(-12),
     };
   }
   async call(scope: Scope, payload: unknown): Promise<unknown> {
@@ -534,7 +543,7 @@ export class ProjectWorkLoop {
     const requestId = text(body.requestId, 'requestId', 200);
     const key = `${scope.runId}:${requestId}`;
     const hash = digest(JSON.stringify({ operation, input }));
-    const previous = this.store.get<any>('loop_calls', key);
+    const previous = this.store.get<LoopCall>('loop_calls', key);
     if (previous) {
       if (previous.hash !== hash) throw new APIError(409, '请求 ID 已用于不同内容');
       return previous.result;
@@ -1469,7 +1478,7 @@ export class ProjectWorkLoop {
   }
   wake(channelId: string, reason: string) {
     const channel = this.store.get<Channel>('channels', channelId);
-    if (!channel || !this.store.get<any>('controls', channelId)?.enabled) return;
+    if (!channel || !this.store.get<Control>('controls', channelId)?.enabled) return;
     if (channel.status === 'running') {
       this.store.put('channels', {
         ...channel,
@@ -1484,7 +1493,7 @@ export class ProjectWorkLoop {
     if (!wait || wait.runId !== run.id) return;
     const c = this.store.get<Channel>('channels', run.channelId)!;
     if (run.workDirection !== undefined && run.workDirection !== c.goal) return;
-    if (!this.store.get<any>('controls', c.id)?.enabled) return;
+    if (!this.store.get<Control>('controls', c.id)?.enabled) return;
     const ready =
       wait.status === 'ready' ||
       wait.deadline <= now() ||
@@ -1639,7 +1648,7 @@ export class ProjectWorkLoop {
     }
     // A watch's due condition mixes two ranges, which no single index answers; this stays a scan of
     // a small table, but only the rows that are actually due are parsed and turned into objects.
-    const due = this.store.db
+    const rows = this.store.db
       .prepare(
         `SELECT data FROM loop_watches
          WHERE (json_extract(data,'$.nextPollAt')<=?
@@ -1647,12 +1656,12 @@ export class ProjectWorkLoop {
            AND (json_extract(data,'$.status') IS NULL OR json_extract(data,'$.status')<>'cancelled')
          ORDER BY rowid`
       )
-      .all(time, time)
-      .map((row: any) => JSON.parse(row.data) as FeedbackWatch);
+      .all(time, time);
+    const due = parseRows<FeedbackWatch>(rows);
     for (const watch of due)
       if (
         this.inFlight.size < 4 &&
-        this.store.get<any>('controls', watch.channelId)?.enabled &&
+        this.store.get<Control>('controls', watch.channelId)?.enabled &&
         (watch.status === 'watching' || watch.continuous !== false)
       )
         this.track(this.poll(watch.id));

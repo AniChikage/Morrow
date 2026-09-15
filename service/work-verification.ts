@@ -1,16 +1,16 @@
 import type { ReviewRunner, ReviewObservation } from './codex-cli-review.ts';
 import { createHash, randomUUID } from 'node:crypto';
 import { APIError, choice, keys, string } from './protocol.ts';
-import type { Channel, Project, Run, WorkItem } from './protocol.ts';
+import type { Channel, Control, Project, Run, WorkItem } from './protocol.ts';
 import type { Evidence } from './autonomy-types.ts';
 import type { StrategyDecision } from './strategy-types.ts';
 import type { ProjectWorkLoop, Scope } from './project-loop.ts';
 import type { NativeSnapshot, NativeTransport } from './native-conversations.ts';
 import { nativeTurns } from './native-conversations.ts';
-import { now } from './store.ts';
+import { now, parseRows } from './store.ts';
 import { readSourceVersion, sourceVersion } from './source-version.ts';
 import { evidenceData } from './measurement.ts';
-import type { Verification, Finalization } from './verification-types.ts';
+import type { Verification, Finalization, SourceVersion } from './verification-types.ts';
 import { itemReviewText, releaseReviewText } from './prompts/verification.ts';
 
 const hash = (v: unknown) =>
@@ -18,6 +18,43 @@ const hash = (v: unknown) =>
     .update(JSON.stringify(v) ?? 'undefined')
     .digest('hex');
 const terminal = (v: Verification) => !['queued', 'running'].includes(v.status);
+/** The execution record an `execution` evidence row carries; these are the fields a check reads. */
+type ExecutionData = {
+  boundVersion?: boolean;
+  outputComplete?: boolean;
+  exitCode?: number;
+  sourceVersion?: SourceVersion;
+  command?: string;
+  cwd?: string;
+  output?: string;
+};
+/** One field of an already observed native item that changed, so growing output is not stored twice. */
+type ObservationPatch = { field: string; removed?: boolean; append?: string; value?: unknown };
+/**
+ * One bounded observation of the reviewer's native turn: a whole redacted item, or only the fields
+ * that changed since the last one. A retry replays these rows to rebuild the items it already saw.
+ */
+type VerificationEvent = {
+  id: string;
+  projectId: string;
+  channelId: string;
+  runId: string;
+  verificationId: string;
+  threadId: string;
+  turnId: string;
+  nativeItemId: string;
+  createdAt: string;
+  raw?: Record<string, unknown>;
+  patches?: ObservationPatch[];
+};
+/** The verdict block a reviewer turn has to output. Every field is checked before any of it is kept. */
+type ReviewReport = {
+  verdict: string;
+  summary: string;
+  checks: Verification['checks'];
+  findings: Verification['findings'];
+  limitations: string[];
+};
 const outputLimit = 4 * 1024 * 1024;
 /** How many items one release-level review may cover, and how much of a command's output it is shown. */
 const releaseItemLimit = 30;
@@ -29,7 +66,7 @@ const itemList = (value: unknown): string[] => {
 };
 /** Only a native execution record bound to exactly this source version can stand for a check run. */
 const currentExecution = (row: Evidence | undefined, digest: string) => {
-  const data = row?.origin === 'execution' ? (row.data as any) : undefined;
+  const data = row?.origin === 'execution' ? (row.data as ExecutionData) : undefined;
   return (
     !!data &&
     data.boundVersion === true &&
@@ -152,7 +189,7 @@ export class WorkVerification {
         (
           this.loop.store.db
             .prepare("SELECT MAX(rowid) AS n FROM events WHERE json_extract(data,'$.projectId')=?")
-            .get(projectId) as any
+            .get(projectId) as { n: number } | undefined
         )?.n,
       hasMore: end > 30,
       cursor: recent[0]?.id,
@@ -256,7 +293,7 @@ export class WorkVerification {
           `预期 ${expected.id} 缺少原观察窗口内的新证据；窗口已关闭时，保留旧结论并为当前工作建立新行动，不能事后追认`
         );
       if (latest.origin === 'execution') {
-        const data = latest.data as any;
+        const data = latest.data as ExecutionData;
         if (
           data?.boundVersion !== true ||
           data?.outputComplete !== true ||
@@ -430,7 +467,7 @@ export class WorkVerification {
       };
     });
     const checks = executions.map((row) => {
-      const data = row.data as any;
+      const data = row.data as ExecutionData;
       return {
         evidenceId: row.id,
         command: data.command,
@@ -548,7 +585,7 @@ export class WorkVerification {
           intents.findLast((i) => i.targetId === intent.targetId && i.operation === intent.operation)?.id !== intent.id
         )
           continue;
-        const target = this.loop.store.get<any>(
+        const target = this.loop.store.get<{ revision: number; status: string }>(
           intent.operation === 'feature.complete' ? 'items' : 'strategy_decisions',
           intent.targetId
         );
@@ -581,7 +618,7 @@ export class WorkVerification {
   retryContext(row: Verification) {
     const items = new Map<string, Record<string, any>>();
     for (const event of this.loop
-      .rows<any>('loop_verification_events', row.projectId)
+      .rows<VerificationEvent>('loop_verification_events', row.projectId)
       .filter((e) => e.verificationId === row.id)) {
       if (event.raw) items.set(event.nativeItemId, structuredClone(event.raw));
       else
@@ -794,7 +831,7 @@ export class WorkVerification {
       ...summary,
       current: this.current(row),
       events: this.loop
-        .rows<any>('loop_verification_events', scope.projectId)
+        .rows<VerificationEvent>('loop_verification_events', scope.projectId)
         .filter((e) => e.verificationId === row.id),
     };
   }
@@ -806,12 +843,12 @@ export class WorkVerification {
       this.settle(id);
     // One reading for both loops instead of two scans of the same table: the interrupts are started
     // first, exactly as before, and `interrupt()` only clears its own flag, never a row's status.
-    const waiting = this.loop.store.db
+    const rows = this.loop.store.db
       .prepare(
         "SELECT data FROM loop_verifications WHERE json_extract(data,'$.interruptPending')=1 OR json_extract(data,'$.status')='queued' ORDER BY rowid"
       )
-      .all()
-      .map((row: any) => JSON.parse(row.data) as Verification);
+      .all();
+    const waiting = parseRows<Verification>(rows);
     for (const row of waiting)
       if (row.interruptPending && !this.interrupting.has(row.id)) this.loop.track(this.interrupt(row.id));
     for (const row of waiting.filter((row) => row.status === 'queued')) {
@@ -819,7 +856,7 @@ export class WorkVerification {
       if (row.retryAt && row.retryAt > now()) continue;
       const channel = this.loop.store.get<Channel>('channels', row.channelId),
         run = this.loop.store.get<Run>('runs', row.runId);
-      if (!channel || (!this.loop.store.get<any>('controls', row.channelId)?.enabled && run?.status !== 'running'))
+      if (!channel || (!this.loop.store.get<Control>('controls', row.channelId)?.enabled && run?.status !== 'running'))
         continue;
       if (this.loop.store.runCount(row.channelId, now().slice(0, 10)) >= channel.maxRunsPerDay) continue;
       this.loop.track(this.start(row.id));
@@ -928,7 +965,7 @@ export class WorkVerification {
       const response = (await this.transport!.sendMessage(snapshot.threadId, row.prompt, id, [], {
         approvalPolicy: 'never',
         sandboxPolicy: { type: 'readOnly', networkAccess: false },
-      })) as any;
+      })) as { turn?: { id?: string }; turnId?: string } | undefined;
       this.update(id, { turnId: response?.turn?.id || response?.turnId });
       const afterSend = this.loop.store.get<Verification>('loop_verifications', id)!;
       if (terminal(afterSend)) {
@@ -1050,14 +1087,14 @@ export class WorkVerification {
       this.finish(id, 'unknown', '复核期间源版本或目标变化，旧结论不能用于当前版本');
       return;
     }
-    const messages = items.filter((r: any) => r.type === 'agentMessage' && r.phase === 'final_answer');
-    const text = (messages.length ? messages : items.filter((r: any) => r.type === 'agentMessage').slice(-1))
-      .map((r: any) => r.text || '')
+    const messages = items.filter((r) => r.type === 'agentMessage' && r.phase === 'final_answer');
+    const text = (messages.length ? messages : items.filter((r) => r.type === 'agentMessage').slice(-1))
+      .map((r) => r.text || '')
       .join('\n');
     try {
       const blocks = [...text.matchAll(/```(?:morrow|nohuman)-verification\s*\n([\s\S]*?)```/g)];
       if (blocks.length !== 1) throw new Error('缺少唯一的结构化复核结论');
-      const report = JSON.parse(blocks[0][1]);
+      const report = JSON.parse(blocks[0][1]) as ReviewReport;
       if (
         !['pass', 'fail', 'unknown'].includes(report.verdict) ||
         typeof report.summary !== 'string' ||
@@ -1073,9 +1110,9 @@ export class WorkVerification {
       const expected = decision?.expectations?.length ? decision.expectations.map((e) => e.id) : ['feature'];
       if (
         report.checks.length !== expected.length ||
-        new Set(report.checks.map((c: any) => c.expectationId)).size !== expected.length ||
+        new Set(report.checks.map((c) => c.expectationId)).size !== expected.length ||
         report.checks.some(
-          (c: any) =>
+          (c) =>
             !expected.includes(c.expectationId) ||
             !['met', 'not_met', 'unknown'].includes(c.verdict) ||
             typeof c.reason !== 'string' ||
@@ -1085,16 +1122,16 @@ export class WorkVerification {
         throw new Error('复核遗漏或重复了原始预期');
       if (
         report.findings.length > 30 ||
-        report.findings.some((f: any) => !['blocking', 'note'].includes(f.severity) || typeof f.message !== 'string') ||
+        report.findings.some((f) => !['blocking', 'note'].includes(f.severity) || typeof f.message !== 'string') ||
         report.limitations.length > 30 ||
-        report.limitations.some((v: any) => typeof v !== 'string')
+        report.limitations.some((v) => typeof v !== 'string')
       )
         throw new Error('复核问题格式无效');
       if (
         report.verdict === 'pass' &&
         (!commandCount ||
-          report.checks.some((c: any) => c.verdict !== 'met') ||
-          report.findings.some((f: any) => f.severity === 'blocking'))
+          report.checks.some((c) => c.verdict !== 'met') ||
+          report.findings.some((f) => f.severity === 'blocking'))
       )
         throw new Error('没有实际只读检查或仍有未通过项，不能判定通过');
       this.update(id, { checks: report.checks, findings: report.findings, limitations: report.limitations });

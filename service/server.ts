@@ -1,6 +1,7 @@
 import { CodexCliReviewRunner, type ReviewRunner } from './codex-cli-review.ts';
 import { createServer } from 'node:http';
 import type { IncomingMessage, ServerResponse } from 'node:http';
+import type { AddressInfo } from 'node:net';
 import { randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
 import {
   mkdirSync,
@@ -151,16 +152,16 @@ export async function startServer(
   const acquire = () => writeFileSync(lockPath, lockText, { flag: 'wx', mode: 0o600 });
   try {
     acquire();
-  } catch (e: any) {
-    if (e.code !== 'EEXIST') throw e;
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code !== 'EEXIST') throw e;
     let live = true;
     try {
       const lock = JSON.parse(readFileSync(lockPath, 'utf8'));
       if (!Number.isInteger(lock.pid) || lock.pid <= 0) throw new Error('Invalid lock');
       try {
         process.kill(lock.pid, 0);
-      } catch (error: any) {
-        if (error.code === 'ESRCH') live = false;
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === 'ESRCH') live = false;
         else throw error;
       }
     } catch {
@@ -179,8 +180,8 @@ export async function startServer(
   try {
     token = readFileSync(join(home, 'token'), 'utf8').trim();
     if (!/^[a-f0-9]{64}$/.test(token)) throw new Error('令牌文件无效');
-  } catch (e: any) {
-    if (e.code !== 'ENOENT') {
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code !== 'ENOENT') {
       release();
       throw e;
     }
@@ -208,7 +209,7 @@ export async function startServer(
         .prepare(
           "SELECT count(*) AS n FROM runs WHERE json_extract(data,'$.status')='running' AND (json_extract(data,'$.executionOwner') IS NULL OR json_extract(data,'$.executionOwner')<>'codex-app')"
         )
-        .get() as any
+        .get() as { n: number }
     ).n
   );
   engine.recover();
@@ -223,7 +224,7 @@ export async function startServer(
         store.put('loop_verifications', { ...row, retryAt: undefined });
   };
   engine.runtimes = await discoverRuntimes();
-  const respond = (res: ServerResponse, status: number, data: any) => {
+  const respond = (res: ServerResponse, status: number, data: unknown) => {
     res.writeHead(status, {
       'Content-Type': 'application/json; charset=utf-8',
       'Cache-Control': 'no-store',
@@ -939,7 +940,7 @@ export async function startServer(
     release();
     throw e;
   }
-  engine.loop.baseURL = `http://127.0.0.1:${(server.address() as any).port}`;
+  engine.loop.baseURL = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
   engine.startScheduler();
   log('boot', {
     version: engine.upgrade.identity.version,
@@ -947,7 +948,7 @@ export async function startServer(
     fingerprint: engine.upgrade.identity.fingerprint.slice(0, 12),
     bootId: engine.upgrade.identity.bootId,
     home,
-    port: (server.address() as any).port,
+    port: (server.address() as AddressInfo).port,
     storeMs,
     interruptedRuns,
   });
@@ -991,7 +992,7 @@ export async function startServer(
     engine,
     native,
     home,
-    port: (server.address() as any).port,
+    port: (server.address() as AddressInfo).port,
     close,
   };
 }

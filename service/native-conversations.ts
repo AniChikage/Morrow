@@ -117,6 +117,42 @@ type Outbox = NativeMessageReceipt & {
   createdAt: string;
   source: 'chat' | 'schedule';
   runId?: string;
+  /** Set once an accepted chat message has been handed to the engine as human guidance. */
+  guidanceHandled?: boolean;
+};
+/** What Morrow can answer on the task's behalf; `unsupported` has to be handled in the App itself. */
+type RequestKind = 'command' | 'file' | 'permissions' | 'userInput' | 'mcp' | 'unsupported';
+/** One request the task is waiting on, as stored: the App's own record plus Morrow's own keys. */
+type StoredRequest = Omit<NativeRequest, 'type' | 'raw'> & {
+  type: RequestKind;
+  /** The App's own request record. `id` is the handle the App expects back with the answer. */
+  raw: { id: string | number } & Record<string, unknown>;
+  nativeId: string;
+  threadId: string;
+  resolvedAt?: string;
+  response?: unknown;
+};
+/** The marker row that records whether the background bridge is configured for this data directory. */
+type BridgeMarker = { id: string; enabled?: boolean; restoredAt?: string };
+/**
+ * One projected native turn as Morrow stores it: the App's own turn record without its items (each
+ * item is already its own row), plus the keys Morrow needs to recognize and reuse the projection.
+ */
+type StoredTurn = {
+  id: string;
+  threadId: string;
+  nativeTurnId: string;
+  channelId: string;
+  projectId: string;
+  runId: string;
+  hash: string;
+  projectionVersion: number;
+  raw: Record<string, unknown>;
+  promptItemIds: string[];
+  firstObservedAt: string;
+  updatedAt: string;
+  /** Set once the turn ended, so a later identical snapshot is recognized as the same final turn. */
+  finalHash?: string;
 };
 const stable = (threadId: string, key: string) => createHash('sha256').update(`${threadId}\0${key}`).digest('hex');
 const PROJECTION_VERSION = 3;
@@ -164,7 +200,7 @@ function finalText(turn: any): string {
     .map((item: any) => item.text || '')
     .join('\n\n');
 }
-const requestKind = (method: string): NativeRequest['type'] =>
+const requestKind = (method: string): RequestKind =>
   method.includes('commandExecution')
     ? 'command'
     : method.includes('fileChange')
@@ -294,7 +330,7 @@ export class NativeConversations {
   observed = new Map<string, { owner: string; revision: number; syncedAt: string }>();
   threadCache = new Map<string, StoredThread>();
   itemCache = new Map<string, Map<string, StoredItem>>();
-  turnCache = new Map<string, { raw: unknown; row: any }>();
+  turnCache = new Map<string, { raw: unknown; row: StoredTurn }>();
   projectedItems = new WeakMap<object, StoredItem>();
   safeValues = new WeakMap<object, any>();
   pendingSnapshots = new Map<string, NativeSnapshot>();
@@ -325,7 +361,7 @@ export class NativeConversations {
     const found = this.safeValues.get(value as object);
     if (found) return found;
     let changed = false;
-    const result: any = Array.isArray(value) ? [] : {};
+    const result: Record<string, unknown> | unknown[] = Array.isArray(value) ? [] : {};
     for (const [key, child] of Object.entries(value)) {
       const next = this.safe(child);
       Object.defineProperty(result, key, { value: next, writable: true, enumerable: true, configurable: true });
@@ -482,7 +518,8 @@ export class NativeConversations {
       connected = value.connected && !connectionError;
     const restartRequired = process.env.MORROW_TEST_MODE !== '1' && legacyBridgeRunning(this.engine.home);
     const backgroundReady = connected && !!this.transport.backgroundReady && !restartRequired;
-    const backgroundConfigured = this.store.get<any>('migrations', 'codex-background-bridge')?.enabled === true;
+    const backgroundConfigured =
+      this.store.get<BridgeMarker>('migrations', 'codex-background-bridge')?.enabled === true;
     const appInstalled = codexAppInstalled();
     const appVersion = await this.cachedAppVersion();
     const runtimeVersion = (connected && this.transport.runtimeVersion) || '';
@@ -533,7 +570,7 @@ export class NativeConversations {
     if (
       actor === 'human' ||
       result.restartRequired ||
-      this.store.get<any>('migrations', 'codex-background-bridge')?.enabled
+      this.store.get<BridgeMarker>('migrations', 'codex-background-bridge')?.enabled
     )
       this.store.transaction(() => {
         this.store.put('migrations', { id: 'codex-background-bridge', enabled: false, restoredAt: now() });
@@ -777,7 +814,7 @@ export class NativeConversations {
     this.recordNativeRuns(safe, checkpoint);
     this.engine.loop.executions.observe(safe.threadId, changedItems);
     for (const entry of this.store.nativeRows<Outbox>('native_outbox', safe.threadId))
-      if (entry.state === 'accepted' && entry.source === 'chat' && !(entry as any).guidanceHandled) this.receipt(entry);
+      if (entry.state === 'accepted' && entry.source === 'chat' && !entry.guidanceHandled) this.receipt(entry);
     const channelBinding = this.store.bindingsForThread<Binding>(safe.threadId)[0];
     if (channelBinding) {
       const work = this.store.get<Channel>('channels', channelBinding.id)?.work;
@@ -1015,7 +1052,7 @@ export class NativeConversations {
         : {}),
     }));
     const requests = this.store
-      .all<any>('native_requests')
+      .all<StoredRequest>('native_requests')
       .filter((row) => row.threadId === binding.threadId && row.status === 'pending')
       .map(({ nativeId, threadId, ...row }) => ({ ...row, id: nativeId }));
     const readiness = this.transport.threadStatus?.(binding.threadId);
@@ -1121,13 +1158,8 @@ export class NativeConversations {
         });
       });
       try {
-        const response = (await this.transport.sendMessage(
-          binding.threadId,
-          text,
-          requestId,
-          images,
-          workOptions
-        )) as any;
+        const response = (await this.transport.sendMessage(binding.threadId, text, requestId, images, workOptions)) as
+          { turn?: { id?: string }; turnId?: string } | undefined;
         const turnId = response?.turn?.id || response?.turnId;
         const result = {
           ...entry,
@@ -1146,7 +1178,7 @@ export class NativeConversations {
       } catch (error) {
         const current = this.store.get<Outbox>('native_outbox', key)!;
         if (current.state === 'accepted') return this.receipt(current);
-        const definitive = (error as any)?.outcomeUnknown === false;
+        const definitive = (error as { outcomeUnknown?: boolean } | null)?.outcomeUnknown === false;
         const result = {
           ...entry,
           state: definitive ? ('failed' as const) : ('unknown' as const),
@@ -1166,7 +1198,7 @@ export class NativeConversations {
     }
   }
   receipt(entry: Outbox): NativeMessageReceipt {
-    if (entry.state === 'accepted' && entry.source === 'chat' && !(entry as any).guidanceHandled) {
+    if (entry.state === 'accepted' && entry.source === 'chat' && !entry.guidanceHandled) {
       this.engine.acceptNativeGuidance(entry.channelId);
       this.store.put('native_outbox', { ...entry, guidanceHandled: true });
     }
@@ -1193,7 +1225,7 @@ export class NativeConversations {
         }
         continue;
       }
-      const previous = cached?.row || this.store.get<any>('native_turns', key);
+      const previous = cached?.row || this.store.get<StoredTurn>('native_turns', key);
       const ended = !['inProgress', 'running'].includes(turn.status);
       const rawHash = ended
         ? createHash('sha256').update(JSON.stringify(turn)).digest('hex')
@@ -1321,7 +1353,7 @@ export class NativeConversations {
     this.channel(id);
     const binding = this.bound(id);
     await this.sync(binding.threadId);
-    const request = this.store.get<any>('native_requests', stable(binding.threadId, `request:${requestId}`));
+    const request = this.store.get<StoredRequest>('native_requests', stable(binding.threadId, `request:${requestId}`));
     if (!request || request.status !== 'pending') throw new APIError(409, '原生请求已经处理或已失效');
     if (request.type === 'unsupported') throw new APIError(409, '请在 Codex App 中处理此类原生请求');
     const result = await this.transport.respond(binding.threadId, request.raw.id, request.type, response);

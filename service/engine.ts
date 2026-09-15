@@ -21,7 +21,7 @@ import { appendFileSync, mkdirSync, readFileSync, writeFileSync, statSync } from
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { APIError, isLegacyRuntime, resultSchema } from './protocol.ts';
-import type { AgentResult, Channel, Event, Project, Run, Runtime, WorkItem } from './protocol.ts';
+import type { AgentResult, Channel, Control, Event, Project, Run, Runtime, WorkItem } from './protocol.ts';
 import type { Verification } from './verification-types.ts';
 import { sanitizeEventDetail } from './event-details.ts';
 import type { EventDetail } from './protocol.ts';
@@ -30,7 +30,6 @@ import { logError } from './log.ts';
 import { decodeLine, diagnoseFailure, invocation } from './runtimes.ts';
 import { projectTreeState } from './source-version.ts';
 import { extractReport } from './reports.ts';
-type Control = { id: string; enabled: boolean; pid: number; runId: string };
 /** A Morrow-orchestrated turn, as opposed to native chat or a turn the App itself started. */
 const scheduledRun = (row: Run) => !row.source || ['morrow-schedule', 'nohuman-schedule'].includes(row.source);
 const legacyRuntimeMessage =

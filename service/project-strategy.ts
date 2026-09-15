@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { APIError, choice, integer, keys, object, string } from './protocol.ts';
-import type { Channel, Project, Run } from './protocol.ts';
+import type { Channel, Control, Project, Run } from './protocol.ts';
 import type { Evidence, FeedbackWatch, Release, Learning } from './autonomy-types.ts';
 import type {
   ActionOption,
@@ -318,7 +318,7 @@ export class ProjectStrategy {
   }
   finish(run: Run) {
     const channel = this.store.get<Channel>('channels', run.channelId);
-    if (!channel || !this.store.get<any>('controls', channel.id)?.enabled) return;
+    if (!channel || !this.store.get<Control>('controls', channel.id)?.enabled) return;
     const decision = this.active(run.projectId).find((d) => d.channelId === channel.id);
     if (!decision) return;
     const view = this.decisionView(decision);

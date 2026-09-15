@@ -3,6 +3,7 @@ import { choice, integer, keys, object, usageWindows } from './protocol.ts';
 import { logError } from './log.ts';
 import type {
   Channel,
+  Control,
   Project,
   Run,
   Settings,
@@ -142,7 +143,7 @@ export class UsageMonitor {
     return (
       !!this.settings().usageReserve ||
       this.store.all<Project>('projects').some((project) => !!project.usageBudget) ||
-      this.store.all<any>('controls').some((control) => control.enabled)
+      this.store.all<Control>('controls').some((control) => control.enabled)
     );
   }
   latest(): UsageSample | undefined {

@@ -3,11 +3,33 @@ import { randomUUID } from 'node:crypto';
 import { chmodSync, readFileSync, statSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { appResumeSummary } from './protocol.ts';
-import type { AppResumeRecord, Channel, Event, EventDetail, Project, Run, RunIO, WorkItem } from './protocol.ts';
+import type {
+  AppResumeRecord,
+  Channel,
+  Control,
+  Event,
+  EventDetail,
+  Knowledge,
+  Project,
+  Run,
+  RunIO,
+  Runtime,
+  WorkItem,
+} from './protocol.ts';
 export const now = () => new Date().toISOString();
 /** A Morrow-orchestrated turn, as opposed to native chat or a turn the App itself started. */
 const scheduledSource =
   "(json_extract(data,'$.source') IS NULL OR json_extract(data,'$.source') IN ('morrow-schedule','nohuman-schedule'))";
+/** One stored row, the shape every table has: the primary key and the JSON document in `data`. */
+export type Row = { id: string; data: string };
+/** The parsed documents of the rows one `SELECT data …` returned. */
+export const parseRows = <T>(rows: unknown[]): T[] =>
+  (rows as Pick<Row, 'data'>[]).map((row) => JSON.parse(row.data) as T);
+/** The parsed document of the row one `SELECT data …` returned, or undefined when there was none. */
+export const parseRow = <T>(row: unknown): T | undefined =>
+  row ? (JSON.parse((row as Pick<Row, 'data'>).data) as T) : undefined;
+/** The one number one `SELECT COUNT(…) AS n` or `SELECT …(…) AS n` returned. */
+const scalar = (row: unknown) => Number((row as { n: number }).n);
 /**
  * Every table in `workspace.sqlite`, in creation order. One list: the constructor creates exactly
  * these, `table()` accepts exactly these as an interpolated table name, and nothing else reaches
@@ -221,7 +243,7 @@ export class Store {
             "SELECT json_extract(data,'$.itemId') AS itemId, json_extract(data,'$.actor') AS actor FROM events WHERE json_extract(data,'$.action')='item.created'"
           )
           .all()
-          .map((row: any) => [row.itemId, row.actor])
+          .map((row) => [String(row.itemId), String(row.actor)] as const)
       );
       this.transaction(() => {
         for (const item of this.all<WorkItem>('items'))
@@ -314,7 +336,9 @@ export class Store {
           "SELECT id, json_extract(data,'$.ownerClientId') AS owner, CAST(json_extract(data,'$.revision') AS INTEGER) AS revision FROM native_threads"
         )
         .all()
-        .map((row: any) => [String(row.id), { owner: String(row.owner ?? ''), revision: Number(row.revision ?? 0) }])
+        .map(
+          (row) => [String(row.id), { owner: String(row.owner ?? ''), revision: Number(row.revision ?? 0) }] as const
+        )
     );
     const keep: number[] = [];
     let total = 0;
@@ -387,10 +411,11 @@ export class Store {
     table: 'native_items' | 'native_outbox' | 'native_turns' | 'native_bindings',
     threadId: string
   ): T[] {
-    return this.db
-      .prepare(`SELECT data FROM ${this.table(table)} WHERE json_extract(data,'$.threadId')=? ORDER BY rowid`)
-      .all(threadId)
-      .map((row: any) => JSON.parse(row.data));
+    return parseRows<T>(
+      this.db
+        .prepare(`SELECT data FROM ${this.table(table)} WHERE json_extract(data,'$.threadId')=? ORDER BY rowid`)
+        .all(threadId)
+    );
   }
   /**
    * The channel bindings of one native task. Ingest asked for these by reading and parsing every
@@ -403,22 +428,20 @@ export class Store {
     return Math.max(0, ...this.projectItems(projectId).map((item) => item.number || 0)) + 1;
   }
   all<T = any>(table: string): T[] {
-    return this.db
-      .prepare(`SELECT data FROM ${this.table(table)} ORDER BY rowid`)
-      .all()
-      .map((r: any) => JSON.parse(r.data));
+    return parseRows<T>(this.db.prepare(`SELECT data FROM ${this.table(table)} ORDER BY rowid`).all());
   }
   /**
    * The rows of one table whose state needs attention, chosen by an index instead of by reading and
    * parsing the whole table. The scheduler asks once a second, so nothing here may be a full scan.
    */
   byStatus<T = any>(table: string, states: string[], column: 'status' | 'phase' | 'state' = 'status'): T[] {
-    return this.db
-      .prepare(
-        `SELECT data FROM ${this.table(table)} WHERE json_extract(data,'$.${column}') IN (${states.map(() => '?').join(',')}) ORDER BY rowid`
-      )
-      .all(...states)
-      .map((r: any) => JSON.parse(r.data));
+    return parseRows<T>(
+      this.db
+        .prepare(
+          `SELECT data FROM ${this.table(table)} WHERE json_extract(data,'$.${column}') IN (${states.map(() => '?').join(',')}) ORDER BY rowid`
+        )
+        .all(...states)
+    );
   }
   /**
    * Channels whose autonomy control is on. A scheduler tick can only act on these — both the legacy
@@ -426,35 +449,34 @@ export class Store {
    * be read, and a paused project costs the tick nothing.
    */
   enabledChannels(): Channel[] {
-    return this.db
-      .prepare(
-        "SELECT channels.data AS data FROM controls JOIN channels ON channels.id=controls.id WHERE json_extract(controls.data,'$.enabled')=1 ORDER BY channels.rowid"
-      )
-      .all()
-      .map((r: any) => JSON.parse(r.data));
+    return parseRows<Channel>(
+      this.db
+        .prepare(
+          "SELECT channels.data AS data FROM controls JOIN channels ON channels.id=controls.id WHERE json_extract(controls.data,'$.enabled')=1 ORDER BY channels.rowid"
+        )
+        .all()
+    );
   }
   recent<T = any>(table: string, limit: number): T[] {
-    return this.db
-      .prepare(`SELECT data FROM ${this.table(table)} ORDER BY rowid DESC LIMIT ?`)
-      .all(limit)
-      .map((r: any) => JSON.parse(r.data))
-      .reverse();
+    return parseRows<T>(
+      this.db.prepare(`SELECT data FROM ${this.table(table)} ORDER BY rowid DESC LIMIT ?`).all(limit)
+    ).reverse();
   }
   messages(channelId: string, limit = 100): Event[] {
-    return this.db
-      .prepare(
-        "SELECT data FROM events WHERE json_extract(data,'$.channelId')=? AND json_extract(data,'$.kind')='message' ORDER BY rowid DESC LIMIT ?"
-      )
-      .all(channelId, limit)
-      .map((r: any) => JSON.parse(r.data))
-      .reverse();
+    return parseRows<Event>(
+      this.db
+        .prepare(
+          "SELECT data FROM events WHERE json_extract(data,'$.channelId')=? AND json_extract(data,'$.kind')='message' ORDER BY rowid DESC LIMIT ?"
+        )
+        .all(channelId, limit)
+    ).reverse();
   }
   channelRuns(channelId: string, limit = 8): Run[] {
-    return this.db
-      .prepare("SELECT data FROM runs WHERE json_extract(data,'$.channelId')=? ORDER BY rowid DESC LIMIT ?")
-      .all(channelId, limit)
-      .map((r: any) => JSON.parse(r.data))
-      .reverse();
+    return parseRows<Run>(
+      this.db
+        .prepare("SELECT data FROM runs WHERE json_extract(data,'$.channelId')=? ORDER BY rowid DESC LIMIT ?")
+        .all(channelId, limit)
+    ).reverse();
   }
   /**
    * The latest Morrow-orchestrated turn matching the filter, selected in SQL instead of by filtering
@@ -480,45 +502,41 @@ export class Store {
       values.push(filter.exceptId);
     }
     if (filter.withTreeState) conditions.push("json_type(data,'$.treeState')='object'");
-    const row = this.db
-      .prepare(`SELECT data FROM runs WHERE ${conditions.join(' AND ')} ORDER BY rowid DESC LIMIT 1`)
-      .get(...values) as { data: string } | undefined;
-    return row ? (JSON.parse(row.data) as Run) : undefined;
+    return parseRow<Run>(
+      this.db
+        .prepare(`SELECT data FROM runs WHERE ${conditions.join(' AND ')} ORDER BY rowid DESC LIMIT 1`)
+        .get(...values)
+    );
   }
   runCount(channelId: string, day: string): number {
     return (
-      Number(
-        (
-          this.db
-            .prepare(
-              `SELECT COUNT(*) AS count FROM runs WHERE json_extract(data,'$.channelId')=? AND substr(json_extract(data,'$.startedAt'),1,10)=? AND ${scheduledSource}`
-            )
-            .get(channelId, day) as any
-        ).count
+      scalar(
+        this.db
+          .prepare(
+            `SELECT COUNT(*) AS n FROM runs WHERE json_extract(data,'$.channelId')=? AND substr(json_extract(data,'$.startedAt'),1,10)=? AND ${scheduledSource}`
+          )
+          .get(channelId, day)
       ) +
-      Number(
-        (
-          this.db
-            .prepare(
-              "SELECT COUNT(*) AS n FROM loop_verifications WHERE json_extract(data,'$.channelId')=? AND substr(json_extract(data,'$.startedAt'),1,10)=?"
-            )
-            .get(channelId, day) as any
-        ).n
+      scalar(
+        this.db
+          .prepare(
+            "SELECT COUNT(*) AS n FROM loop_verifications WHERE json_extract(data,'$.channelId')=? AND substr(json_extract(data,'$.startedAt'),1,10)=?"
+          )
+          .get(channelId, day)
       )
     );
   }
-  contextKnowledge(projectId: string, channelId: string): any[] {
-    return this.db
-      .prepare(
-        "SELECT data FROM knowledge WHERE json_extract(data,'$.projectId')=? AND (json_extract(data,'$.confirmed')=1 OR json_extract(data,'$.channelId')=?) ORDER BY rowid DESC LIMIT 150"
-      )
-      .all(projectId, channelId)
-      .map((r: any) => JSON.parse(r.data))
-      .reverse();
+  contextKnowledge(projectId: string, channelId: string): Knowledge[] {
+    return parseRows<Knowledge>(
+      this.db
+        .prepare(
+          "SELECT data FROM knowledge WHERE json_extract(data,'$.projectId')=? AND (json_extract(data,'$.confirmed')=1 OR json_extract(data,'$.channelId')=?) ORDER BY rowid DESC LIMIT 150"
+        )
+        .all(projectId, channelId)
+    ).reverse();
   }
   get<T = any>(table: string, id: string): T | undefined {
-    const r = this.db.prepare(`SELECT data FROM ${this.table(table)} WHERE id=?`).get(id) as any;
-    return r ? JSON.parse(r.data) : undefined;
+    return parseRow<T>(this.db.prepare(`SELECT data FROM ${this.table(table)} WHERE id=?`).get(id));
   }
   put<T extends { id: string }>(table: string, row: T): T {
     this.db
@@ -571,14 +589,12 @@ export class Store {
     // row carries so that equal timestamps still order. Counted for every event, stored only on
     // the ones that have a detail, exactly as counting the rows again each time used to.
     const sequence = this.nextSequence(this.eventSequence, `${runId}\0${channelId}`, () =>
-      Number(
-        (
-          this.db
-            .prepare(
-              "SELECT COUNT(*) AS count FROM events WHERE json_extract(data,'$.runId')=? AND json_extract(data,'$.channelId')=?"
-            )
-            .get(runId, channelId) as any
-        ).count
+      scalar(
+        this.db
+          .prepare(
+            "SELECT COUNT(*) AS n FROM events WHERE json_extract(data,'$.runId')=? AND json_extract(data,'$.channelId')=?"
+          )
+          .get(runId, channelId)
       )
     );
     return this.put('events', {
@@ -654,14 +670,12 @@ export class Store {
   }
   io(runId: string, stream: RunIO['stream'], text: string): RunIO {
     const sequence = this.nextSequence(this.ioSequence, runId, () =>
-      Number(
-        (
-          this.db
-            .prepare(
-              "SELECT COALESCE(MAX(CAST(json_extract(data,'$.sequence') AS INTEGER)),0) AS n FROM run_io WHERE json_extract(data,'$.runId')=?"
-            )
-            .get(runId) as any
-        ).n
+      scalar(
+        this.db
+          .prepare(
+            "SELECT COALESCE(MAX(CAST(json_extract(data,'$.sequence') AS INTEGER)),0) AS n FROM run_io WHERE json_extract(data,'$.runId')=?"
+          )
+          .get(runId)
       )
     );
     return this.put('run_io', { id: randomUUID(), runId, stream, text, createdAt: now(), sequence });
@@ -698,15 +712,17 @@ export class Store {
     return { chunks, hasMore: rows.length > limit, ...(cursor ? { cursor } : {}) };
   }
   runText(runId: string, stream: RunIO['stream']): string {
-    return this.db
-      .prepare(
-        "SELECT data FROM run_io WHERE json_extract(data,'$.runId')=? AND json_extract(data,'$.stream')=? ORDER BY rowid"
-      )
-      .all(runId, stream)
-      .map((row: any) => JSON.parse(row.data).text)
+    return parseRows<RunIO>(
+      this.db
+        .prepare(
+          "SELECT data FROM run_io WHERE json_extract(data,'$.runId')=? AND json_extract(data,'$.stream')=? ORDER BY rowid"
+        )
+        .all(runId, stream)
+    )
+      .map((row) => row.text)
       .join('');
   }
-  snapshot(runtimes: any[]) {
+  snapshot(runtimes: Runtime[]) {
     return {
       // The polled snapshot carries the brief's revision, not its text; GET /api/projects/:id/brief returns the text.
       projects: this.all<Project>('projects').map(({ brief, ...project }) => ({
@@ -715,13 +731,17 @@ export class Store {
       })),
       channels: this.all<Channel>('channels').map((channel) => {
         // One line and one expandable reason per channel; the ids stay in the record itself.
-        const resume = this.db
-          .prepare("SELECT data FROM app_resumes WHERE json_extract(data,'$.channelId')=? ORDER BY rowid DESC LIMIT 1")
-          .get(channel.id) as { data: string } | undefined;
+        const resume = parseRow<AppResumeRecord>(
+          this.db
+            .prepare(
+              "SELECT data FROM app_resumes WHERE json_extract(data,'$.channelId')=? ORDER BY rowid DESC LIMIT 1"
+            )
+            .get(channel.id)
+        );
         return {
           ...channel,
-          autonomyEnabled: !!this.get<any>('controls', channel.id)?.enabled,
-          ...(resume ? { appResume: appResumeSummary(JSON.parse(resume.data) as AppResumeRecord) } : {}),
+          autonomyEnabled: !!this.get<Control>('controls', channel.id)?.enabled,
+          ...(resume ? { appResume: appResumeSummary(resume) } : {}),
         };
       }),
       items: this.all<WorkItem>('items'),

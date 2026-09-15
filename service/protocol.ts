@@ -358,6 +358,19 @@ export type RunIO = {
   createdAt: string;
   sequence: number;
 };
+/** One channel's autonomy switch, and the run it is currently holding. One row per channel. */
+export type Control = { id: string; enabled: boolean; pid: number; runId: string };
+/** One observation a board report recorded: what was seen, where to recheck it, and whether it is confirmed. */
+export type Knowledge = {
+  id: string;
+  projectId: string;
+  channelId: string;
+  runId: string;
+  text: string;
+  source: string;
+  confirmed: boolean;
+  createdAt: string;
+};
 export type Runtime = {
   id: RuntimeID;
   name: string;
