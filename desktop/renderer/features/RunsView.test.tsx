@@ -1,11 +1,20 @@
 // @vitest-environment jsdom
-import { afterEach, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, expect, it, vi } from 'vitest';
 import { act, cleanup, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import type { Run, RunDetails, RunOutputChunk, RunsPage } from '../../shared/types';
 import { RunHistory, RunsView } from './RunsView';
 import { featureProps, TestProviders, timestamp } from './testFixtures';
 
+const previousTZ = vi.hoisted(() => {
+  const previous = process.env.TZ;
+  process.env.TZ = 'America/Chicago';
+  return previous;
+});
+afterAll(() => {
+  if (previousTZ === undefined) delete process.env.TZ;
+  else process.env.TZ = previousTZ;
+});
 afterEach(cleanup);
 function run(id: string, patch: Partial<Run> = {}): Run {
   return {
@@ -33,6 +42,42 @@ function headings() {
   // across the entire 180-row accessibility tree on every count and order check.
   return [...document.querySelectorAll<HTMLButtonElement>('button.run-heading')];
 }
+
+it('groups by the same local calendar day as the row time across UTC and local midnight', async () => {
+  const { props } = featureProps();
+  const rows = [
+    run('next-local-day', { startedAt: '2026-09-13T05:30:00.000Z' }),
+    run('after-utc-midnight', { startedAt: '2026-09-13T01:17:00.000Z' }),
+    run('before-utc-midnight', { startedAt: '2026-09-12T23:30:00.000Z' }),
+  ];
+  props.snapshot.runs = rows;
+  vi.mocked(props.api.getRuns).mockResolvedValue({ runs: rows, hasMore: false });
+  render(<RunsView {...props} />, { wrapper: TestProviders });
+  await waitFor(() => expect(props.api.getRuns).toHaveBeenCalled());
+  expect(headings().map((button) => button.querySelector('time')?.textContent)).toEqual([
+    '09/13 00:30',
+    '09/12 20:17',
+    '09/12 18:30',
+  ]);
+  expect(headings().map((button) => button.closest('section')?.querySelector('.run-day')?.textContent)).toEqual([
+    '2026-09-13',
+    '2026-09-12',
+    undefined,
+  ]);
+});
+
+it('preserves distinct missing-time headings for native and CLI runs', async () => {
+  const { props } = featureProps();
+  const rows = [
+    run('native-missing', { startedAt: '', executionOwner: 'codex-app', permission: 'native' }),
+    run('cli-missing', { startedAt: '', permission: 'read-only' }),
+  ];
+  props.snapshot.runs = rows;
+  vi.mocked(props.api.getRuns).mockResolvedValue({ runs: rows, hasMore: false });
+  render(<RunsView {...props} />, { wrapper: TestProviders });
+  expect(await screen.findByRole('heading', { name: '原生时间未提供' })).toBeTruthy();
+  expect(screen.getByRole('heading', { name: '时间未记录' })).toBeTruthy();
+});
 
 it('labels unavailable native timestamps truthfully for completed App turns and identifies their source', async () => {
   const { props } = featureProps(),

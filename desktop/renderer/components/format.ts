@@ -37,6 +37,19 @@ export function formatDate(value: string) {
   const date = new Date(value);
   return !value || Number.isNaN(date.getTime()) ? '尚未运行' : timeFormatter.format(date);
 }
+const dayFormatter = new Intl.DateTimeFormat('en-CA', {
+  timeZone: timeFormatter.resolvedOptions().timeZone,
+  year: 'numeric',
+  month: '2-digit',
+  day: '2-digit',
+});
+/** Calendar date in the same local timezone used by the row's timestamp. */
+export function localCalendarDay(value: string) {
+  const date = new Date(value);
+  if (!value || Number.isNaN(date.getTime())) return '';
+  const parts = dayFormatter.formatToParts(date);
+  return ['year', 'month', 'day'].map((type) => parts.find((part) => part.type === type)!.value).join('-');
+}
 /** A run executed inside the Codex App can legitimately carry no native timestamp; never call that 尚未运行. */
 export const nativeRun = (run: Pick<Run, 'executionOwner' | 'permission'>) =>
   run.executionOwner === 'codex-app' || run.permission === 'native';

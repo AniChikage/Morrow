@@ -3,7 +3,7 @@ import { ArrowUpRight, ChevronDown, Clock3, Copy, History, LoaderCircle, Termina
 import type { Run, RunDetails, RunOutputChunk, RunsQuery, WorkspaceEvent } from '../../shared/types';
 import type { FeatureProps } from './types';
 import { Button, EmptyState, Markdown, StatusLabel, TabRow, tabPanel } from '../components/ui';
-import { formatDate, nativeRun, runTime, runtimeLabel, shortId } from '../components/format';
+import { formatDate, localCalendarDay, nativeRun, runTime, runtimeLabel, shortId } from '../components/format';
 import { mergeById } from '../components/collections';
 import { usePagedHistory } from '../components/history';
 import { EventLog } from './EventLog';
@@ -124,7 +124,7 @@ export function RunHistory({
       {merged.map((run) => {
         const channel = props.snapshot.channels.find((channel) => channel.id === run.channelId),
           project = props.snapshot.projects.find((project) => project.id === runProject(run, props));
-        const day = run.startedAt.slice(0, 10) || (nativeRun(run) ? '原生时间未提供' : '时间未记录'),
+        const day = localCalendarDay(run.startedAt) || (nativeRun(run) ? '原生时间未提供' : '时间未记录'),
           heading = day !== lastDay;
         lastDay = day;
         return (
