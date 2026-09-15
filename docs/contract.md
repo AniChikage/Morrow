@@ -118,11 +118,9 @@ Claude uses `--print --verbose --output-format stream-json` and an exact `--resu
 
 Only one Morrow run holds a project-path lock at a time. Other projects may run independently. A conflicting manual run returns 409; continuous work waits. Budgets count started attempts per UTC date (1–100 runs/day), intervals are 1–1440 minutes, and suggested rechecks cannot shorten the configured minimum. Single runs time out after 15 minutes; combined stdout/stderr is capped at 20 MiB, individual unbroken log lines at 1 MiB, and input context at 1 MiB. These limits are not token/dollar metering. Pause terminates the CLI process group and disables scheduling. Crash recovery marks unfinished runs interrupted and pauses channels, retaining exact native session IDs for explicit continuation.
 
-## Native-terminal handoff
+## Opening the task a channel works in
 
-`POST /api/channels/:id/native-handoff {}` returns `{projectPath,runtime,executable,sessionId}`. The project must be real, the CLI available, every project channel paused/blocked/idle with scheduling disabled, and no project run active. Otherwise the service rejects the request. It persists a human `native-session-opened` intent but does not launch the terminal or claim launch succeeded.
-
-Desktop `openNativeSession(channelId)` obtains that metadata and launches the native CLI through the main process for local connections. Remote mode requires continuing in a terminal on the execution host. An existing exact session ID is used rather than selecting an unrelated latest session. Morrow does not capture subsequent interactive terminal I/O or automatically infer completion of that manual session.
+Launching a native CLI in a terminal is gone: `POST /api/channels/:id/native-handoff` and the desktop method that called it were removed with the desktop clean-up, and work now happens in the task the channel is bound to. `GET /api/channels/:id/native/open` returns `{projectPath,threadId?}`, and desktop `openNativeApp(channelId)` uses it to open that exact task in the Codex App. Morrow does not capture interactive terminal I/O and does not infer that a manual session finished.
 
 ## Desktop bridge and connection state
 
@@ -131,7 +129,7 @@ Desktop `openNativeSession(channelId)` obtains that metadata and launches the na
 - `getState`, `getConnection`, `connect`.
 - `createProject`, `createChannel`, `updateChannel`, `channelAction`, `sendMessage`.
 - `createItem`, `patchItem`, legacy `updateItem(id,status)`, `getEvents`.
-- `getRuns`, `getRun`, `getRunOutput`, `openNativeSession`.
+- `getRuns`, `getRun`, `getRunOutput`, `openNativeApp`.
 - `loadDemo`, `refreshRuntimes`, `chooseFolder`, `openProjectFolder`, `openDataFolder`, `openExternal`.
 - `onCommand(callback) -> unsubscribe` for new-project/search/settings/close-tab/back/forward/toggle-sidebar.
 

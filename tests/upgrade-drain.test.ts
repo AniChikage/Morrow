@@ -61,13 +61,11 @@ test('while a switch waits, every entry point that would start work is refused a
     assert.equal((await s.call('context', {})).project.id, s.project.id);
     const interrupt = await s.api('POST', `/api/channels/${s.channel.id}/native/interrupt`, { turnId: 'turn-1' }, 409);
     assert.doesNotMatch(interrupt.error, switching);
-    const respond = await s.api(
-      'POST',
-      `/api/channels/${s.channel.id}/native/respond`,
-      { requestId: 'request-1', response: {} },
-      409
+    // Answering the task's own question goes through the service, not an HTTP route, and is not gated either.
+    await assert.rejects(
+      () => s.native.respond(s.channel.id, 'request-1', {}),
+      (error: Error) => !switching.test(error.message)
     );
-    assert.doesNotMatch(respond.error, switching);
     // Declining a release starts no work, so it stays available.
     const declined = await s.call('release.propose', { ...s.local(), title: '切换期间可以否决' });
     await s.api('POST', `/api/releases/${declined.id}/review`, {

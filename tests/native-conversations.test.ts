@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { NativeConversations } from '../service/native-conversations.ts';
 import { applyDesktopPatches } from '../service/codex-desktop-transport.ts';
+import { importNativeImages, readNativeImage } from '../service/native-media.ts';
 import type { NativeTransport, NativeSnapshot, NativeWorkOptions } from '../service/native-conversations.ts';
 import { startIsolated, type IsolatedService } from './harness/service.ts';
 class FakeNative implements NativeTransport {
@@ -130,10 +131,7 @@ test('shared background creates one native task per channel and records creation
     const status = await s.api('GET', '/api/native/status');
     assert.equal(status.backgroundReady, true);
     assert.equal(status.capabilities.create, true);
-    const [first, second] = await Promise.all([
-      s.api('POST', `/api/channels/${s.channel.id}/native/create`, {}),
-      s.api('POST', `/api/channels/${s.channel.id}/native/create`, {}),
-    ]);
+    const [first, second] = await Promise.all([s.native.create(s.channel.id), s.native.create(s.channel.id)]);
     assert.equal(created, 1);
     assert.equal(first.threadId, second.threadId);
     assert.equal(first.threadId, s.transport.threadId);
@@ -215,7 +213,7 @@ for (const legacy of [false, true])
           return originalRead(s.transport.threadId);
         },
       });
-      const first = await s.api('POST', `/api/channels/${s.channel.id}/native/create`, {});
+      const first = await s.native.create(s.channel.id);
       missing = first.threadId;
       if (legacy) {
         const { createdByMorrow, ...binding } = s.store.get<any>('native_bindings', s.channel.id);
@@ -224,7 +222,7 @@ for (const legacy of [false, true])
       let view = await s.api('GET', `/api/channels/${s.channel.id}/native/conversation`);
       assert.equal(view.canRecreateEmpty, true);
       assert.equal(created, 1);
-      const replacement = await s.api('POST', `/api/channels/${s.channel.id}/native/create`, {});
+      const replacement = await s.native.create(s.channel.id);
       assert.notEqual(replacement.threadId, first.threadId);
       assert.equal(created, 2);
       assert(
@@ -238,7 +236,7 @@ for (const legacy of [false, true])
       s.store.put('native_outbox', { id: 'uncertain', threadId: missing, state: 'unknown' });
       view = await s.api('GET', `/api/channels/${s.channel.id}/native/conversation`);
       assert.equal(view.canRecreateEmpty, false);
-      await s.api('POST', `/api/channels/${s.channel.id}/native/create`, {});
+      await s.native.create(s.channel.id);
       assert.equal(created, 2);
     } finally {
       await s.cleanup();
@@ -517,7 +515,7 @@ test('an obsolete direction never installs the old next step', async () => {
 test('follower-only and failed background connection cannot claim native creation is available', async () => {
   const s = await setup();
   try {
-    await s.api('POST', `/api/channels/${s.channel.id}/native/create`, {}, 409);
+    await assert.rejects(() => s.native.create(s.channel.id), /Codex App/);
     assert.equal(s.store.all('native_bindings').length, 0);
     Object.assign(s.transport, {
       backgroundReady: true,
@@ -627,16 +625,8 @@ test('unknown sends are never retried and native approvals and interrupt are sco
     await s.api('POST', `/api/channels/${s.channel.id}/native/interrupt`, { turnId: 'wrong' }, 409);
     await s.api('POST', `/api/channels/${s.channel.id}/native/interrupt`, { turnId: 'external-turn' });
     assert.deepEqual(s.transport.interruptions, ['external-turn']);
-    await s.api(
-      'POST',
-      `/api/channels/${s.channel.id}/native/respond`,
-      { requestId: 'wrong', response: { decision: 'accept' } },
-      409
-    );
-    await s.api('POST', `/api/channels/${s.channel.id}/native/respond`, {
-      requestId: '42',
-      response: { decision: 'decline' },
-    });
+    await assert.rejects(() => s.native.respond(s.channel.id, 'wrong', { decision: 'accept' }), /已经处理或已失效/);
+    await s.native.respond(s.channel.id, '42', { decision: 'decline' });
     assert.equal(s.transport.answers[0].requestId, 42);
     assert.equal(s.transport.answers[0].kind, 'command');
     const answered = s.store.all<any>('native_requests')[0];
@@ -813,7 +803,7 @@ test('native image API persists selected bytes and sends opaque attachments once
       )
     );
     await s.api('POST', `/api/channels/${s.channel.id}/native/bind`, { threadId: s.transport.threadId });
-    const images = await s.api('POST', `/api/channels/${s.channel.id}/native/images`, { paths: [path] });
+    const images = importNativeImages(s.store, s.home, s.channel.id, [path]);
     const requestId = randomUUID();
     await s.api('POST', `/api/channels/${s.channel.id}/native/messages`, { text: '', requestId, attachments: images });
     assert.equal(s.transport.sent[0].text, '');
@@ -826,7 +816,7 @@ test('native image API persists selected bytes and sends opaque attachments once
     });
     assert.equal(s.transport.sent.length, 1);
     const conversation = await s.api('GET', `/api/channels/${s.channel.id}/native/conversation`);
-    const loaded = await s.api('GET', `/api/channels/${s.channel.id}/native/images/${conversation.items[0].id}/1`);
+    const loaded = readNativeImage(s.store, s.channel.id, conversation.items[0].id, 1);
     assert.match(loaded.dataUrl, /^data:image\/png;base64,/);
   } finally {
     await s.cleanup();

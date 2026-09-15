@@ -216,8 +216,6 @@ test('channels from retired runtimes stay readable but never execute again', asy
     assert.equal(current.sessionId, 'legacy-claude-session');
     assert.equal(notices().length, 1);
     assert.equal(notices()[0].kind, 'system');
-    const handoff = await s.api('POST', `/api/channels/${legacy.id}/native-handoff`, {}, 409);
-    assert.match(handoff.error, /停止支持/);
     await s.api('POST', `/api/channels/${legacy.id}/action`, { action: 'pause' });
     assert.equal(s.store.get<any>('channels', legacy.id).status, 'paused');
     assert.equal(s.store.all('runs').length, 0);
@@ -844,31 +842,6 @@ test('unfinished native stdout and stderr persist before exit and split tokens r
     assert(text.includes('prefix [REDACTED] suffix'));
     await s.api('POST', `/api/channels/${c.id}/action`, { action: 'pause' });
     await until(() => s.store.get<any>('runs', run.id).status === 'interrupted');
-  } finally {
-    await s.cleanup();
-  }
-});
-
-test('native handoff requires every project channel paused and records intent with exact native session', async () => {
-  const s = await setup();
-  try {
-    const [a, b] = s.channels;
-    s.store.put('channels', { ...a, sessionId: 'native-exact' });
-    const result = await s.api('POST', `/api/channels/${a.id}/native-handoff`, {});
-    assert.equal(result.sessionId, 'native-exact');
-    assert.equal(result.projectPath, s.project.path);
-    assert.equal(result.executable, fixture);
-    assert(s.store.all<any>('events').some((e) => e.action === 'native-session-opened' && e.actor === 'human'));
-    s.engine.setControl(b.id, { enabled: true });
-    await s.api('POST', `/api/channels/${a.id}/native-handoff`, {}, 409);
-    s.engine.setControl(b.id, { enabled: false });
-    s.config({ sleep: true });
-    await s.api('POST', `/api/channels/${a.id}/action`, { action: 'run' });
-    await until(() => s.store.get<any>('channels', a.id).sessionId === 'fixture-session-1');
-    await s.api('POST', `/api/channels/${a.id}/native-handoff`, {}, 409);
-    await s.api('POST', `/api/channels/${a.id}/action`, { action: 'pause' });
-    await until(() => s.store.all<any>('runs').some((run) => run.status === 'interrupted'));
-    assert.equal(s.store.get<any>('channels', a.id).sessionId, 'fixture-session-1');
   } finally {
     await s.cleanup();
   }

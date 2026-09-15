@@ -93,7 +93,7 @@ MORROW_HOME="$HOME/.local/share/morrow" npm start
 
 ### 已停止支持的运行时
 
-早期版本支持过 Claude Code 与 Trae。它们的频道、运行和事件记录保持可读，服务不再调度或执行：`run`/`resume` 与 `native-handoff` 返回 409；巡检发现仍启用的旧频道时，会关闭其调度、置为暂停并写一条系统事件；`pause` 仍然可用。创建项目和频道只接受 `codex`。旧频道仍可通过 API 原地转换为 Codex 频道：`PATCH /api/channels/:id` 传入 `{ "runtime": "codex" }` 后，运行时变为 `codex`，已保存的会话 ID 被清空并写一条系统事件，事项、证据和历史记录保留。这是有意保留的迁移路径，桌面界面不提供该操作。
+早期版本支持过 Claude Code 与 Trae。它们的频道、运行和事件记录保持可读，服务不再调度或执行：`run`/`resume` 返回 409；巡检发现仍启用的旧频道时，会关闭其调度、置为暂停并写一条系统事件；`pause` 仍然可用。创建项目和频道只接受 `codex`。旧频道仍可通过 API 原地转换为 Codex 频道：`PATCH /api/channels/:id` 传入 `{ "runtime": "codex" }` 后，运行时变为 `codex`，已保存的会话 ID 被清空并写一条系统事件，事项、证据和历史记录保留。这是有意保留的迁移路径，桌面界面不提供该操作。
 
 运行时发现只探测 Codex：优先使用 Codex App 自带的 `codex` 可执行文件，其次查找 PATH。CLI 安装检测不等于登录或额度验证；实际失败与原始输出会落库。
 
@@ -173,9 +173,9 @@ MORROW_HOME="$HOME/.local/share/morrow" npm start
 | 路由 | 用途 |
 | --- | --- |
 | `GET /api/native/status` | 实际连接状态、后台就绪、支持能力与最近账户用量读数（含 `attempted`/`lastError`，用于区分「尚未读取」和「协议未返回」）。 |
-| `/api/channels/:id/native/threads`、`bind`、`create` | 项目任务目录、明确绑定、创建原生任务。 |
-| `/api/channels/:id/native/conversation`、`messages` | 分页原生历史、提交/追加消息与幂等回执。 |
-| `/api/channels/:id/native/interrupt`、`respond` | 精确停止轮次、回答待处理原生请求。 |
+| `/api/channels/:id/native/threads`、`bind` | 项目任务目录与明确绑定。 |
+| `/api/channels/:id/native/conversation`、`messages`、`open` | 分页原生历史、提交/追加消息与幂等回执、在 App 中打开该任务所需的信息。 |
+| `/api/channels/:id/native/interrupt` | 精确停止当前原生轮次。 |
 | `GET /api/projects/:id/work` | 项目工作记录，可通过 `itemId` 限定事项。 |
 | `GET /api/projects/:id/brief` | 项目目标与用户写下的项目说明及其版本；`/api/state` 只带版本号不带正文。 |
 | `PATCH /api/projects/:id` | `{goal?, brief?, revision}` 修改目标或项目说明，版本不符返回 409；每次保存写入版本记录与审计，并要求进行中的判断重新评估。 |

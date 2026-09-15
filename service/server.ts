@@ -21,7 +21,6 @@ import {
   choice,
   engines,
   integer,
-  isLegacyRuntime,
   itemStatuses,
   itemKinds,
   keys,
@@ -43,7 +42,6 @@ import { discoverRuntimes } from './runtimes.ts';
 import { NativeConversations } from './native-conversations.ts';
 import { NativeDesktopError } from './codex-desktop-transport.ts';
 import type { BridgeRestore, NativeTransport } from './native-conversations.ts';
-import { importNativeImages, readNativeImage } from './native-media.ts';
 import { usageBudgetInput, usageReserveInput, usageWindowLabels } from './usage.ts';
 import type { Verification } from './verification-types.ts';
 function model(value: unknown) {
@@ -462,22 +460,8 @@ export async function startServer(
         respond(res, 200, native.restoreBackground());
         return;
       }
-      const nativeImageMatch = path.match(/^\/api\/channels\/([^/]+)\/native\/images(?:\/([^/]+)\/([0-9]+))?$/);
-      if (nativeImageMatch) {
-        const [, id, itemId, index] = nativeImageMatch;
-        if (req.method === 'POST' && !itemId) {
-          keys(data, ['paths']);
-          respond(res, 200, importNativeImages(store, home, id, data.paths));
-          return;
-        }
-        if (req.method === 'GET' && itemId) {
-          respond(res, 200, readNativeImage(store, id, itemId, Number(index)));
-          return;
-        }
-        throw new APIError(405, '图片操作不支持此请求方法');
-      }
       const nativeMatch = path.match(
-        /^\/api\/channels\/([^/]+)\/native\/(threads|conversation|bind|create|messages|interrupt|respond|open)$/
+        /^\/api\/channels\/([^/]+)\/native\/(threads|conversation|bind|messages|interrupt|open)$/
       );
       if (nativeMatch) {
         const id = nativeMatch[1],
@@ -509,11 +493,6 @@ export async function startServer(
           respond(res, 200, await native.bind(id, string(data.threadId, 'threadId', 200)));
           return;
         }
-        if (req.method === 'POST' && action === 'create') {
-          keys(data, []);
-          respond(res, 200, await native.create(id));
-          return;
-        }
         if (req.method === 'POST' && action === 'messages') {
           // A chat message starts a native turn. Answers to the task's own questions, interrupts and
           // reads stay available while a switch waits.
@@ -534,12 +513,6 @@ export async function startServer(
         if (req.method === 'POST' && action === 'interrupt') {
           keys(data, ['turnId']);
           respond(res, 200, await native.interrupt(id, string(data.turnId, 'turnId', 200)));
-          return;
-        }
-        if (req.method === 'POST' && action === 'respond') {
-          keys(data, ['requestId', 'response']);
-          if (!Object.hasOwn(data, 'response')) throw new APIError(400, '缺少原生请求答复');
-          respond(res, 200, await native.respond(id, string(data.requestId, 'requestId', 200), data.response));
           return;
         }
         throw new APIError(405, '原生对话操作不支持此请求方法');
@@ -720,7 +693,7 @@ export async function startServer(
         respond(res, 201, c);
         return;
       }
-      const channelMatch = path.match(/^\/api\/channels\/([^/]+)(?:\/(action|messages|native-handoff))?$/);
+      const channelMatch = path.match(/^\/api\/channels\/([^/]+)(?:\/(action|messages))?$/);
       if (channelMatch) {
         const id = channelMatch[1];
         const c = store.get<Channel>('channels', id);
@@ -807,42 +780,6 @@ export async function startServer(
               action: 'message.created',
             })
           );
-          return;
-        }
-        if (req.method === 'POST' && channelMatch[2] === 'native-handoff') {
-          if (native.binding(id)) throw new APIError(409, '此频道使用 Codex App 共享会话，请在原生 App 中打开');
-          keys(data, []);
-          const project = store.get<Project>('projects', c.projectId)!;
-          if (project.isDemo) throw new APIError(409, '示例项目不能打开原生会话');
-          if (isLegacyRuntime(c.runtime)) throw new APIError(409, '此频道使用已停止支持的运行时，无法打开原生会话');
-          if (
-            store
-              .all<Channel>('channels')
-              .some(
-                (other) =>
-                  other.projectId === project.id &&
-                  (engine.active.has(other.id) ||
-                    engine.control(other.id).enabled ||
-                    !['paused', 'blocked', 'idle'].includes(other.status))
-              )
-          )
-            throw new APIError(409, '请先暂停项目全部频道，等待运行结束后再打开原生会话');
-          const runtime = engine.runtimes.find((runtime) => runtime.id === c.runtime);
-          if (!runtime?.available) throw new APIError(409, '原生 CLI 不可用，请检查安装');
-          engine.audit({
-            projectId: project.id,
-            channelId: id,
-            actor: 'human',
-            action: 'native-session-opened',
-            text: `已请求打开 ${runtime.name} 原生${c.sessionId ? '会话' : '终端'}；项目持续执行保持暂停。`,
-            after: { runtime: c.runtime, sessionId: c.sessionId },
-          });
-          respond(res, 200, {
-            projectPath: project.path,
-            runtime: c.runtime,
-            executable: runtime.path,
-            sessionId: c.sessionId,
-          });
           return;
         }
       }
