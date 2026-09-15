@@ -69,7 +69,7 @@ MORROW_HOME="$HOME/.local/share/morrow" npm start
 
 ## 运行日志
 
-服务把生命周期事实按**每行一个 JSON 对象**写到 stdout，也就是登录启动项和 Electron 主进程指向的 `service.log`：`boot`（版本、commit/指纹前缀、`bootId`、数据目录、端口、打开数据库耗时、恢复时判为中断的轮次数）、`shutdown`（信号）、`schedule.failed`（某频道自动调度失败并因此停用）、`upgrade.phase`（切换阶段变化，阻塞项刷新不记）、`usage.refresh.failed`、`native.start.failed`、`native.sync.failed`（某个原生任务同步失败，带 `threadId`；同时仍写入该频道的时间线）、`boot.failed` 与 `unhandled.rejection`。
+服务把生命周期事实按**每行一个 JSON 对象**写到 stdout，也就是登录启动项和 Electron 主进程指向的 `service.log`：`boot`（版本、commit/指纹前缀、`bootId`、数据目录、端口、打开数据库耗时、恢复时判为中断的轮次数）、`shutdown`（信号）、`schedule.failed`（某频道自动调度失败并因此停用）、`upgrade.phase`（切换阶段变化，阻塞项刷新不记）、`usage.refresh.failed`、`native.start.failed`、`native.sync.failed`（某个原生任务同步失败，带 `threadId`；同时仍写入该频道的时间线）、`bridge.unsetenv.failed` 与 `bridge.unlink.failed`（撤销旧 `CODEX_CLI_PATH` 转接时 `launchctl` 或删除 plist 失败，其余步骤照旧完成）、`boot.failed` 与 `unhandled.rejection`。
 
 每行都经过本服务自己的脱敏，因此不会写出服务 token。**不记录请求体、查询串和请求头**，与请求错误路径同一条规矩。日志写入失败不影响它所描述的操作。transport 的连接/断开仍只进入频道时间线，尚未接入这里。
 
