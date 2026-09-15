@@ -240,7 +240,8 @@ export function ProjectView(props: FeatureProps & { id: string }) {
               className={tab === 'items' ? 'active' : ''}
               onClick={() => setTab('items')}
             >
-              功能看板 <span>{allItems.length}</span>
+              {/* The count has to be what the board actually shows; resolved items count in their own section. */}
+              功能看板 <span>{currentItems.length}</span>
             </button>
             <button
               role="tab"

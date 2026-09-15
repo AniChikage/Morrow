@@ -102,8 +102,8 @@ it('prioritizes the current question and keeps direction and duplicate question 
   expect(screen.getByRole('button', { name: '回答' }).classList.contains('button-primary')).toBe(true);
   expect(screen.queryByRole('button', { name: '继续工作' })).toBeNull();
   await userEvent.setup().click(screen.getByRole('button', { name: '频道选项' }));
-  await userEvent.setup().click(screen.getByRole('menuitem', { name: '方向与额度' }));
-  const settings = within(screen.getByRole('region', { name: '方向与额度' }));
+  await userEvent.setup().click(screen.getByRole('menuitem', { name: '当前方向与额度' }));
+  const settings = within(screen.getByRole('region', { name: '当前方向与额度' }));
   expect(settings.getByText(state.channels[0].goal)).toBeTruthy();
   expect(settings.getByText(/每日上限/)).toBeTruthy();
   expect(api.channelAction).not.toHaveBeenCalled();

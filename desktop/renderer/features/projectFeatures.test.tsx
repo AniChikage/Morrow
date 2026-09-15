@@ -641,3 +641,61 @@ it('shows unavailable saved filters explicitly and offers one clear action', asy
   expect(screen.getByRole('button', { name: /CSV 重试会重复提交/ })).toBeTruthy();
   expect(screen.queryByText('没有符合条件的功能')).toBeNull();
 });
+
+const gatedUsage = {
+  stale: false,
+  attempted: true,
+  reading: { at: timestamp, source: 'protocol' as const, windows: [{ name: '5h' as const, usedPercent: 96 }] },
+  budget: { window: '5h' as const, limitPercent: 40 },
+  project: { usedPercent: 41, runs: 3, windowStart: timestamp },
+  gate: {
+    blocked: true as const,
+    kind: 'budget' as const,
+    window: '5h' as const,
+    resetsAt: '2026-09-07T06:00:00.000Z',
+    until: '2026-09-07T06:00:00.000Z',
+    message: '本项目归因的5 小时额度估算已达上限 40%（已用 41%，估算），等待 09-07 06:00 重置',
+  },
+};
+
+it('makes a usage gate the project action, with the reason, instead of hiding it in 项目属性', async () => {
+  const user = userEvent.setup();
+  const state = snapshot();
+  state.channels[0].work = {
+    state: 'needs_input',
+    focus: '确认范围',
+    runId: 'question-run',
+    reason: '',
+    nextStep: '是否继续？',
+    awaitingReply: true,
+    updatedAt: timestamp,
+  };
+  const { props, api } = featureProps({ snapshot: state });
+  api.getProjectUsage.mockResolvedValue(gatedUsage);
+  render(<ProjectView {...props} id="project-atlas" />, { wrapper: TestProviders });
+  const next = within(screen.getByRole('region', { name: '项目下一步' }));
+  // Nothing can run while the gate holds, so it outranks the waiting question.
+  await waitFor(() => expect(next.getByText(gatedUsage.gate.message)).toBeTruthy());
+  await user.click(next.getByRole('button', { name: '查看额度设置' }));
+  expect(within(screen.getByRole('complementary')).getByRole('region', { name: '额度' })).toBeTruthy();
+  cleanup();
+  // A gate that only means "the reading is on its way" is not a stop worth an action.
+  api.getProjectUsage.mockResolvedValue({ ...gatedUsage, gate: { ...gatedUsage.gate, pending: true } });
+  render(<ProjectView {...props} id="project-atlas" />, { wrapper: TestProviders });
+  expect(await screen.findByRole('button', { name: '回答当前问题' })).toBeTruthy();
+  expect(screen.queryByText(gatedUsage.gate.message)).toBeNull();
+});
+
+it('counts the board tab by what the board shows, keeping resolved history in its own count', async () => {
+  const user = userEvent.setup();
+  const state = snapshot();
+  state.items.push(item({ id: 'finding-done', title: '已完成的功能', status: 'resolved' }));
+  const { props } = featureProps({ snapshot: state });
+  render(<ProjectView {...props} id="project-atlas" />, { wrapper: TestProviders });
+  expect(screen.getByRole('tab', { name: '功能看板 3' })).toBeTruthy();
+  expect(screen.getByRole('button', { name: '已解决历史 1' })).toBeTruthy();
+  await user.click(screen.getByRole('button', { name: '筛选' }));
+  await user.selectOptions(screen.getByRole('combobox', { name: '状态筛选' }), 'resolved');
+  expect(screen.getByRole('tab', { name: '功能看板 1' })).toBeTruthy();
+  expect(screen.queryByRole('button', { name: /已解决历史/ })).toBeNull();
+});

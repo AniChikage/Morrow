@@ -463,7 +463,8 @@ export function ChannelView(props: FeatureProps & { id: string }) {
                 </DropdownItem>
               )}
               <DropdownItem onSelect={() => onEditChannel(channel)}>调整方向</DropdownItem>
-              <DropdownItem onSelect={() => setSettingsOpen((value) => !value)}>方向与额度</DropdownItem>
+              {/* Two neighbouring entries read as the same thing; this one only reads the current state back. */}
+              <DropdownItem onSelect={() => setSettingsOpen((value) => !value)}>当前方向与额度</DropdownItem>
               <DropdownItem onSelect={() => onNavigate({ kind: 'project', id: project.id })}>项目功能看板</DropdownItem>
               {primary !== 'resume' && (
                 <DropdownItem
@@ -477,8 +478,8 @@ export function ChannelView(props: FeatureProps & { id: string }) {
           </div>
         </header>
         {settingsOpen && (
-          <section className="channel-settings-summary" aria-label="方向与额度">
-            <h2>方向与额度</h2>
+          <section className="channel-settings-summary" aria-label="当前方向与额度">
+            <h2>当前方向与额度</h2>
             <p>{channel.goal}</p>
             <span>
               {usage?.budget

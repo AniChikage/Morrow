@@ -629,7 +629,7 @@ describe('native App conversation', () => {
     render(<ChannelView {...props} id="channel-system" />, { wrapper: TestProviders });
     await screen.findByText('关联 App 任务');
     await user.click(screen.getByRole('button', { name: '频道选项' }));
-    await user.click(screen.getByRole('menuitem', { name: '方向与额度' }));
+    await user.click(screen.getByRole('menuitem', { name: '当前方向与额度' }));
     expect(screen.getByText(state.channels[0].goal)).toBeTruthy();
     expect(screen.queryByRole('tab')).toBeNull();
     expect(screen.queryByRole('button', { name: '运行一次' })).toBeNull();
