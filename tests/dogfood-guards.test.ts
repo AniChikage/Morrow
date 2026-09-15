@@ -9,6 +9,8 @@ import { tmpdir } from 'node:os';
 import { startIsolated } from './harness/service.ts';
 import { grantFor } from './harness/grant.ts';
 import { startServer } from '../service/server.ts';
+/** This bounds a spawn on a loaded machine, not the behaviour under test. */
+const slowHost = 20_000;
 
 test('execution preparation rejects the running service directory and its parents before sealing', async () => {
   const s = await startIsolated();
@@ -41,7 +43,7 @@ test('sandbox-marked main entry refuses implicit data and port before attempting
     const child = spawnSync(process.execPath, ['--permission', '--allow-fs-read=*', server], {
       env: { PATH: process.env.PATH, [marker]: '' },
       encoding: 'utf8',
-      timeout: 5000,
+      timeout: slowHost,
     });
     assert.equal(child.status, 1, child.stderr);
     assert.match(child.stderr, /检测到 CODEX_SANDBOX 环境.*MORROW_HOME/);
