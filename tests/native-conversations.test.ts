@@ -672,6 +672,44 @@ test('native bounded scheduling inherits compatible settings, observes completio
     await s.cleanup();
   }
 });
+test('a stored native turn keeps its own fields without a second copy of its items, and an older projection rebuilds', async () => {
+  const s = await setup();
+  try {
+    await s.api('POST', `/api/channels/${s.channel.id}/native/bind`, { threadId: s.transport.threadId });
+    s.transport.emit({
+      turns: [
+        {
+          turnId: 'recorded',
+          status: 'completed',
+          params: { turnTrigger: 'composer' },
+          items: [{ id: 'recorded-item', type: 'agentMessage', phase: 'final_answer', text: '原生轮次结果' }],
+        },
+      ],
+    });
+    const stored = () => s.store.nativeRows<any>('native_turns', s.transport.threadId)[0];
+    // Every item is already its own row; the turn keeps the fields only it has.
+    assert.equal(stored().raw.items, undefined);
+    assert.equal(stored().raw.params.turnTrigger, 'composer');
+    assert.equal(stored().nativeTurnId, 'recorded');
+    assert.equal(s.store.nativeRows<any>('native_items', s.transport.threadId).at(-1).text, '原生轮次结果');
+    const current = stored().projectionVersion;
+    assert(current > 2);
+    // A row an older projection cached with its items duplicated is rebuilt, not kept.
+    s.store.put('native_turns', {
+      ...stored(),
+      projectionVersion: 1,
+      raw: { ...stored().raw, items: [{ id: 'recorded-item' }] },
+    });
+    s.native.turnCache.clear();
+    s.native.observed.clear();
+    s.native.ingest(structuredClone(s.transport.snapshot));
+    assert.equal(stored().raw.items, undefined);
+    assert.equal(stored().projectionVersion, current);
+    assert.equal(s.store.all('runs').length, 1);
+  } finally {
+    await s.cleanup();
+  }
+});
 test('per-thread disconnect disables sending, same-revision reconnect clears errors without duplicate writes, and partial history retains older items', async () => {
   const s = await setup();
   try {

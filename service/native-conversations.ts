@@ -118,7 +118,14 @@ type Outbox = NativeMessageReceipt & {
   runId?: string;
 };
 const stable = (threadId: string, key: string) => createHash('sha256').update(`${threadId}\0${key}`).digest('hex');
-const PROJECTION_VERSION = 2;
+const PROJECTION_VERSION = 3;
+/**
+ * A turn without its items. Every item is already its own `native_items` row, so keeping them on
+ * the turn stored them a second time — 43 MB of a dogfood database — and nothing ever read them
+ * back: the only reader of a stored turn takes `raw.params`. The hash still covers the full turn,
+ * so a change inside an item is still what decides the row has to be rewritten.
+ */
+const withoutItems = ({ items, ...turn }: any) => turn;
 const isUserItem = (item: any) => item?.type === 'userMessage' || item?.type === 'steeringUserMessage';
 const inputParts = (item: any): any[] =>
   Array.isArray(item?.content) ? item.content : Array.isArray(item?.input) ? item.input : [];
@@ -1229,7 +1236,7 @@ export class NativeConversations {
         runId,
         hash: rawHash,
         projectionVersion: PROJECTION_VERSION,
-        raw: turn,
+        raw: withoutItems(turn),
         promptItemIds,
         firstObservedAt: previous?.firstObservedAt || now(),
         updatedAt: now(),
