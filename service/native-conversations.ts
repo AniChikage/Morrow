@@ -23,6 +23,7 @@ import { CodexNativeTransport } from './codex-native-transport.ts';
 import { restoreCodexBridge, legacyBridgeRunning } from './codex-bridge-setup.ts';
 import { codexAppInstalled, codexAppVersion } from './runtimes.ts';
 import { resolveNativeAttachments } from './native-media.ts';
+import { logError } from './log.ts';
 
 export type NativeSnapshot = {
   threadId: string;
@@ -577,6 +578,9 @@ export class NativeConversations {
   }
   recordError(threadId: string, error: unknown) {
     if (this.closed) return;
+    // The channel timeline is where a person sees this; the daemon log is where someone diagnosing
+    // a task that stopped syncing can see it without a running interface.
+    logError('native.sync.failed', error, { threadId });
     for (const binding of this.store.bindingsForThread<Binding>(threadId))
       this.store.put('native_bindings', { ...binding, syncError: errorText(error) });
   }
