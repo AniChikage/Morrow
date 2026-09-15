@@ -139,10 +139,21 @@ export interface PromptCharter {
   sentAt: string;
   turnsSince: number;
 }
+/**
+ * What the channel page shows about an interrupted turn the Codex App continued on its own: the
+ * current state and one expandable reason. The record's ids stay in the work-log detail.
+ */
+export interface AppResumeSummary {
+  state: 'observing' | 'unconfirmed' | 'linked' | 'resumed' | 'kept-paused';
+  reason: string;
+  recordId: string;
+}
 export interface Channel {
   work?: ChannelWork;
   promptCharter?: PromptCharter;
   autonomyEnabled?: boolean;
+  /** Present only while there is an App-resume observation on this channel. */
+  appResume?: AppResumeSummary;
   id: string;
   projectId: string;
   name: string;
@@ -451,8 +462,7 @@ export interface DesktopAPI {
   reconcileRelease?(id: string): Promise<Release>;
   /** The sealed script text of a `local-script` release, so a human can read it before approving. */
   getReleaseScript?(id: string): Promise<ReleaseScript>;
-  /** The automatic version switch: its state, and asking for it now. Absent on older desktops. */
-  getUpgrade?(): Promise<import('../../service/upgrade').UpgradeState>;
+  /** Asking the automatic version switch to happen now. Absent on older desktops. */
   requestUpgradeRestart?(): Promise<void>;
   getState(): Promise<Snapshot>;
   getConnection(): Promise<ConnectionInfo>;
@@ -461,27 +471,19 @@ export interface DesktopAPI {
   createChannel(data: CreateChannel): Promise<Channel>;
   updateChannel(id: string, data: ChannelPatch): Promise<Channel>;
   channelAction(id: string, action: 'run' | 'pause' | 'resume'): Promise<unknown>;
-  sendMessage(id: string, text: string): Promise<WorkspaceEvent>;
   getNativeStatus(refreshUsage?: boolean): Promise<NativeConnectionStatus>;
-  setupNativeBackground?(): Promise<{ restartRequired: boolean; detail: string }>;
   restoreNativeBackground?(): Promise<{ restartRequired: boolean; detail: string }>;
   listNativeThreads(channelId: string): Promise<{ status: NativeConnectionStatus; threads: NativeThreadSummary[] }>;
   getNativeConversation(channelId: string, query?: NativeHistoryQuery): Promise<NativeConversation>;
   bindNativeThread(channelId: string, threadId: string): Promise<NativeConversation>;
-  createNativeThread(channelId: string): Promise<NativeConversation>;
   sendNativeMessage(channelId: string, input: NativeMessageInput): Promise<NativeMessageReceipt>;
   interruptNativeTurn(channelId: string, turnId: string): Promise<unknown>;
-  respondNativeRequest(channelId: string, requestId: string, response: unknown): Promise<unknown>;
   openNativeApp(channelId: string): Promise<void>;
-  chooseNativeImages(channelId: string): Promise<NativeAttachment[]>;
-  getNativeImage(channelId: string, itemId: string, index: number): Promise<{ dataUrl: string }>;
-  updateItem(id: string, status: string): Promise<WorkItem>;
   createItem(data: CreateItem): Promise<WorkItem>;
   patchItem(id: string, data: ItemPatch): Promise<WorkItem>;
   getRuns(query: RunsQuery): Promise<RunsPage>;
   getRun(id: string): Promise<RunDetails>;
   getRunOutput(id: string, query: RunOutputQuery): Promise<RunOutputPage>;
-  openNativeSession(channelId: string): Promise<void>;
   loadDemo(): Promise<unknown>;
   refreshRuntimes(): Promise<Runtime[]>;
   getEvents(query: EventsQuery): Promise<EventsPage>;

@@ -1,4 +1,4 @@
-import { isLegacyRuntime, type Channel, type LegacyRuntimeID, type UsageWindow } from '../../shared/types';
+import { isLegacyRuntime, type Channel, type LegacyRuntimeID, type Run, type UsageWindow } from '../../shared/types';
 export const statuses: Record<string, string> = {
   open: '待处理',
   investigating: '调查中',
@@ -37,12 +37,28 @@ export function formatDate(value: string) {
   const date = new Date(value);
   return !value || Number.isNaN(date.getTime()) ? '尚未运行' : timeFormatter.format(date);
 }
+/** A run executed inside the Codex App can legitimately carry no native timestamp; never call that 尚未运行. */
+export const nativeRun = (run: Pick<Run, 'executionOwner' | 'permission'>) =>
+  run.executionOwner === 'codex-app' || run.permission === 'native';
+export const runTime = (run: Pick<Run, 'executionOwner' | 'permission'>, value: string) =>
+  value ? formatDate(value) : nativeRun(run) ? '原生时间未提供' : '时间未记录';
+/** Seconds between two moments, or nothing at all when either moment is missing or unreadable. */
+export function durationSeconds(from: string, to: string) {
+  const start = Date.parse(from);
+  const end = Date.parse(to);
+  return Number.isFinite(start) && Number.isFinite(end) ? Math.max(0, Math.round((end - start) / 1000)) : undefined;
+}
 export function shortId(value: string) {
   return (value.startsWith('demo-') ? value.slice(-3) : value.slice(0, 6)).toUpperCase();
 }
 export const usageWindowLabels: Record<UsageWindow, string> = { '5h': '5 小时', weekly: '每周' };
 export const usageWindowLabel = (value: string) => usageWindowLabels[value as UsageWindow] || value;
 const clockFormatter = new Intl.DateTimeFormat('zh-CN', { hour: '2-digit', minute: '2-digit', hour12: false });
+/** Wall-clock HH:MM, for lines that say how old the data on screen is. */
+export function formatClock(value: string) {
+  const date = new Date(value);
+  return !value || Number.isNaN(date.getTime()) ? '时间未知' : clockFormatter.format(date);
+}
 const sameDay = (a: Date, b: Date) =>
   a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate();
 /** Reset moments read relative to today ("今天 21:00", "明天 08:00"); other days fall back to the date. */

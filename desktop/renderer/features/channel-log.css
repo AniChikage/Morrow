@@ -47,6 +47,16 @@
 .channel-needs .channel-question {
   margin: 8px 0 12px;
 }
+/* One plain line per waiting reason: an App approval, or a usage gate holding every round. */
+.channel-needs-note {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 8px;
+  font-size: 12px;
+  color: var(--muted);
+}
 .channel-log-entry {
   max-width: 850px;
   padding: 20px 0;
@@ -166,4 +176,14 @@
 .channel-link-task select {
   margin: 8px;
   max-width: 260px;
+}
+/* One line and one expandable reason for an App-started continuation; ids stay in the work log. */
+.channel-app-resume {
+  padding: 8px 24px;
+  font-size: 12px;
+  color: var(--muted);
+  border-bottom: 1px solid var(--line);
+}
+.channel-app-resume p {
+  margin: 6px 0 0;
 }

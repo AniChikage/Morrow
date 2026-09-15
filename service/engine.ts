@@ -9,6 +9,7 @@ import {
 } from './channel-work.ts';
 import { ProjectWorkLoop } from './project-loop.ts';
 import { UpgradeManager } from './upgrade.ts';
+import { AppResumeTracker } from './app-resume.ts';
 import type { UpgradeBlocker } from './upgrade.ts';
 import type { BuildIdentity } from './build-identity.ts';
 import { UsageMonitor, nextUtcDay, usageDelta } from './usage.ts';
@@ -65,6 +66,8 @@ export class Engine {
   usage: UsageMonitor;
   /** The automatic version switch: one persisted request per installed build, and its phase. */
   upgrade: UpgradeManager;
+  /** Durable user intent, and the bounded recovery after the App continues an interrupted turn (#32). */
+  appResume: AppResumeTracker;
   /** Before-samples still in flight per run, so the after-sample can wait for its counterpart. */
   usageBefore = new Map<string, Promise<void>>();
   /** The working-tree wait each channel has already announced, so a repeated tick repeats no event. */
@@ -78,6 +81,7 @@ export class Engine {
     this.loop = new ProjectWorkLoop(store, home);
     this.usage = new UsageMonitor(store);
     this.upgrade = new UpgradeManager(store, home, identity);
+    this.appResume = new AppResumeTracker(store, this);
     this.upgrade.blockersOf = () => this.workBlockers();
     this.usage.redact = (value) => this.redact(value);
     this.loop.redact = (value) => this.redact(value);
@@ -366,6 +370,10 @@ export class Engine {
     const activationVersion = this.activationVersions.get(id) || 0;
     const c = this.store.get<Channel>('channels', id);
     if (!c) throw new APIError(404, '频道不存在');
+    // A person asked for this: pausing, running once, or continuing. The durable intent generation
+    // advances before anything else happens, so any continuation candidate still under observation
+    // is closed even if this action is then refused.
+    if (action === 'pause' || action === 'run' || action === 'resume') this.appResume.advance(id, action);
     if (action !== 'pause' && isLegacyRuntime(c.runtime)) throw new APIError(409, legacyRuntimeMessage);
     if (action === 'pause') {
       this.setControl(id, { enabled: false });
@@ -917,6 +925,8 @@ export class Engine {
   acceptNativeGuidance(id: string) {
     const channel = this.store.get<Channel>('channels', id);
     if (!channel) return;
+    // Guidance is the newer instruction, wherever it arrived from; it closes older App-resume candidates.
+    this.appResume.advance(id, 'guidance');
     for (const decision of this.loop.strategy.active(channel.projectId))
       if (decision.channelId === id)
         this.loop.strategy.notify(channel.projectId, '收到用户新指导，先判断是否需要调整当前选择', decision.id);
@@ -1132,6 +1142,9 @@ export class Engine {
     });
     this.setControl(run.channelId, { enabled: false });
     this.event(run.channelId, run.id, status === 'interrupted' ? 'system' : 'error', summary);
+    // The interrupted turn is final here: it keeps `interrupted`, its grant is already refused, and
+    // only a record of what to watch for is added. Nothing about the App's own turn is changed.
+    if (status === 'interrupted') this.appResume.observeInterruption(run);
     this.trackUsageAfter(run);
   }
   interrupt(id: string, reason: string) {

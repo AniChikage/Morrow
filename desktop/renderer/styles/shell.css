@@ -367,9 +367,6 @@
   position: relative;
   z-index: 1;
 }
-.inspected .breadcrumb {
-  width: calc(100% - var(--inspector-width, 280px));
-}
 .breadcrumbs {
   display: flex;
   align-items: center;
@@ -430,11 +427,6 @@
   width: 100%;
   min-width: 0;
 }
-.inspected .property-panel {
-  margin-top: -46px;
-  height: calc(100% + 46px);
-  z-index: 2;
-}
 /* One compact line above the workspace: a new version is installed, and what is happening about it. */
 .upgrade-banner {
   display: flex;
@@ -468,6 +460,27 @@
   display: flex;
   flex-direction: column;
   gap: 2px;
+}
+/* One compact line at the top of the content: the service stopped answering and this read is frozen. */
+.offline-banner {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 18px;
+  background: var(--hover);
+  border-bottom: 1px solid var(--line);
+  color: var(--muted);
+  font-size: 11px;
+  flex-shrink: 0;
+}
+.offline-banner-text {
+  color: var(--warning);
+}
+.offline-banner .button {
+  font-size: 11px;
+  min-height: 24px;
+  padding: 3px 7px;
+  white-space: nowrap;
 }
 .error-toast {
   position: fixed;
@@ -545,9 +558,6 @@
 @media (max-width: 900px) {
   .property-panel {
     display: none;
-  }
-  .inspected .breadcrumb {
-    width: 100%;
   }
   .titlebar-tools {
     width: 180px;

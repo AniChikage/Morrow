@@ -33,7 +33,9 @@ describe('project next step and secondary properties', () => {
     };
     render(<ProjectView {...props} id="project-atlas" />, { wrapper: TestProviders });
     expect(screen.queryByRole('complementary')).toBeNull();
-    expect(api.getProjectUsage).not.toHaveBeenCalled();
+    // The gate has to be known for 下一步, but nothing about 额度 is on screen until asked for.
+    expect(api.getProjectUsage).toHaveBeenCalledWith('project-atlas');
+    expect(screen.queryByRole('region', { name: '额度' })).toBeNull();
     const next = within(screen.getByRole('region', { name: '项目下一步' }));
     expect(next.getAllByRole('button')).toHaveLength(1);
     await userEvent.setup().click(next.getByRole('button', { name: '回答当前问题' }));
@@ -43,7 +45,7 @@ describe('project next step and secondary properties', () => {
     expect(await screen.findByRole('region', { name: '额度' })).toBeTruthy();
     await userEvent.setup().click(screen.getByRole('tab', { name: '全部记录' }));
     expect(screen.queryByRole('region', { name: '项目下一步' })).toBeNull();
-    expect(screen.queryByRole('button', { name: '新建功能' })).toBeNull();
+    expect(screen.queryByRole('button', { name: '新建事项' })).toBeNull();
   });
 
   it('uses actual brief content before guiding the user to an existing App task', async () => {
@@ -60,7 +62,6 @@ describe('project next step and secondary properties', () => {
     props.snapshot.channels[0].sessionId = 'bound-app-task';
     view.rerender(<ProjectView {...props} id="project-atlas" />);
     await userEvent.setup().click(screen.getByRole('button', { name: '打开工作日志' }));
-    expect(api.openNativeSession).not.toHaveBeenCalled();
     expect(api.channelAction).not.toHaveBeenCalled();
   });
 
@@ -104,7 +105,7 @@ describe('one project-owned feature board', () => {
     );
     const { props } = featureProps({ snapshot: state });
     render(<ProjectView {...props} id="project-atlas" />, { wrapper: TestProviders });
-    expect(screen.getByRole('tab', { name: '功能看板 4' })).toBeTruthy();
+    expect(screen.getByRole('tab', { name: '看板 4' })).toBeTruthy();
     expect(screen.getByRole('button', { name: /CSV 重试会重复提交/ })).toBeTruthy();
     expect(screen.getByRole('button', { name: /缩短激活路径/ })).toBeTruthy();
     expect(screen.getByRole('button', { name: /#7.*人工创建的功能/ })).toBeTruthy();
@@ -114,7 +115,7 @@ describe('one project-owned feature board', () => {
     await user.selectOptions(screen.getByRole('combobox', { name: '来源频道筛选' }), 'manual');
     expect(screen.getByRole('button', { name: /人工创建的功能/ })).toBeTruthy();
     expect(screen.queryByText('CSV 重试会重复提交')).toBeNull();
-    await user.click(screen.getByRole('button', { name: '新建功能' }));
+    await user.click(screen.getByRole('button', { name: '新建事项' }));
     expect(props.onNewFeature).toHaveBeenCalledWith('project-atlas');
   });
 
@@ -175,7 +176,7 @@ describe('the project brief is the user-owned document between the board and Cod
     });
     render(<ProjectView {...props} id="project-atlas" />, { wrapper: TestProviders });
     expect(screen.getAllByRole('tab').map((tab) => tab.textContent)).toEqual([
-      '功能看板 3',
+      '看板 3',
       '项目说明',
       '当前判断',
       '全部记录',
@@ -376,12 +377,11 @@ describe('manual feature details and audit', () => {
     const properties = within(screen.getByRole('complementary'));
     expect(properties.getByText('手动创建')).toBeTruthy();
     expect(properties.getByRole('button', { name: /Atlas 示例项目/ })).toBeTruthy();
-    await user.click(screen.getByRole('button', { name: '编辑功能' }));
+    await user.click(screen.getByRole('button', { name: '编辑事项' }));
     expect(props.onEditFeature).toHaveBeenCalledWith(manual);
     await user.click(properties.getByRole('button', { name: '待处理' }));
     await user.click(screen.getByRole('menuitem', { name: '已验证' }));
     await waitFor(() => expect(api.patchItem).toHaveBeenCalledWith('manual', { status: 'verified', revision: 3 }));
-    expect(api.updateItem).not.toHaveBeenCalled();
     expect(api.getEvents).toHaveBeenCalledWith({ projectId: 'project-atlas', itemId: 'manual', limit: 50 });
     await user.click(screen.getByText('变更记录'));
     await screen.findByText('修改了功能标题。');
@@ -481,7 +481,6 @@ describe('channels are execution sources, not separate boards', () => {
     expect((button as HTMLButtonElement).disabled).toBe(false);
     await userEvent.setup().click(button);
     expect(api.openNativeApp).toHaveBeenCalledWith('channel-system');
-    expect(api.openNativeSession).not.toHaveBeenCalled();
     expect(api.channelAction).not.toHaveBeenCalled();
   });
 
@@ -506,7 +505,6 @@ describe('channels are execution sources, not separate boards', () => {
     expect(entry.disabled).toBe(true);
     expect(entry.title).toContain('已停止支持');
     expect(screen.queryByRole('button', { name: '在原生 CLI 中继续' })).toBeNull();
-    expect(api.openNativeSession).not.toHaveBeenCalled();
   });
 
   it('keeps channel activity and run history and navigates to the single project board', async () => {
@@ -516,7 +514,7 @@ describe('channels are execution sources, not separate boards', () => {
     expect(screen.queryByRole('tab')).toBeNull();
     expect(screen.queryByRole('tab', { name: /发现|功能/ })).toBeNull();
     await userEvent.setup().click(screen.getByRole('button', { name: '频道选项' }));
-    await userEvent.setup().click(screen.getByRole('menuitem', { name: '项目功能看板' }));
+    await userEvent.setup().click(screen.getByRole('menuitem', { name: '项目看板' }));
     expect(props.onNavigate).toHaveBeenCalledWith({ kind: 'project', id: 'project-atlas' });
   });
 
@@ -531,7 +529,6 @@ describe('channels are execution sources, not separate boards', () => {
     await userEvent.setup().click(screen.getByRole('button', { name: '项目属性' }));
     await userEvent.setup().click(screen.getByRole('button', { name: '在 Codex App 中继续此项目' }));
     expect(api.openNativeApp).toHaveBeenCalledWith('channel-system');
-    expect(api.openNativeSession).not.toHaveBeenCalled();
     expect(within(screen.getByRole('complementary')).getByText('1 个旧频道，历史可读')).toBeTruthy();
   });
 
@@ -559,7 +556,6 @@ describe('channels are execution sources, not separate boards', () => {
     await userEvent.setup().keyboard('{Escape}');
     expect(screen.getByRole('note').textContent).toContain('已停止支持');
     expect(screen.getByRole('article', { name: /轮次/ })).toBeTruthy();
-    expect(api.openNativeSession).not.toHaveBeenCalled();
   });
 });
 
@@ -579,7 +575,7 @@ for (const layout of ['list', 'board']) {
     const original = JSON.stringify(props.snapshot.items);
     render(<ProjectView {...props} id="project-atlas" />, { wrapper: TestProviders });
     expect(screen.queryByText(done.title)).toBeNull();
-    expect(screen.queryByRole('textbox', { name: '搜索功能和证据' })).toBeNull();
+    expect(screen.queryByRole('textbox', { name: '搜索事项和证据' })).toBeNull();
     const history = screen.getByRole('button', { name: '已解决历史 1' });
     expect(history.getAttribute('aria-expanded')).toBe('false');
     await user.click(history);
@@ -587,7 +583,7 @@ for (const layout of ['list', 'board']) {
     expect(props.onNavigate).toHaveBeenCalledWith({ kind: 'finding', id: 'done' });
     await user.click(history);
     await user.click(screen.getByRole('button', { name: '筛选' }));
-    const search = screen.getByRole('textbox', { name: '搜索功能和证据' });
+    const search = screen.getByRole('textbox', { name: '搜索事项和证据' });
     await user.type(search, '历史唯一关键词');
     expect(screen.getByRole('button', { name: new RegExp(done.title) })).toBeTruthy();
     expect(screen.queryByRole('region', { name: '已解决历史' })).toBeNull();
@@ -626,7 +622,7 @@ it('shows unavailable saved filters explicitly and offers one clear action', asy
   );
   const { props } = featureProps();
   render(<ProjectView {...props} id="project-atlas" />, { wrapper: TestProviders });
-  expect(screen.getByText('没有符合条件的功能')).toBeTruthy();
+  expect(screen.getByText('没有符合条件的事项')).toBeTruthy();
   await userEvent.setup().click(screen.getByRole('button', { name: '已筛选' }));
   expect((screen.getByRole('combobox', { name: '状态筛选' }) as HTMLSelectElement).selectedOptions[0].textContent).toBe(
     '原状态筛选已不可用'
@@ -637,5 +633,63 @@ it('shows unavailable saved filters explicitly and offers one clear action', asy
   expect(screen.getAllByRole('button', { name: '清除筛选' })).toHaveLength(1);
   await userEvent.setup().click(screen.getByRole('button', { name: '清除筛选' }));
   expect(screen.getByRole('button', { name: /CSV 重试会重复提交/ })).toBeTruthy();
-  expect(screen.queryByText('没有符合条件的功能')).toBeNull();
+  expect(screen.queryByText('没有符合条件的事项')).toBeNull();
+});
+
+const gatedUsage = {
+  stale: false,
+  attempted: true,
+  reading: { at: timestamp, source: 'protocol' as const, windows: [{ name: '5h' as const, usedPercent: 96 }] },
+  budget: { window: '5h' as const, limitPercent: 40 },
+  project: { usedPercent: 41, runs: 3, windowStart: timestamp },
+  gate: {
+    blocked: true as const,
+    kind: 'budget' as const,
+    window: '5h' as const,
+    resetsAt: '2026-09-07T06:00:00.000Z',
+    until: '2026-09-07T06:00:00.000Z',
+    message: '本项目归因的5 小时额度估算已达上限 40%（已用 41%，估算），等待 09-07 06:00 重置',
+  },
+};
+
+it('makes a usage gate the project action, with the reason, instead of hiding it in 项目属性', async () => {
+  const user = userEvent.setup();
+  const state = snapshot();
+  state.channels[0].work = {
+    state: 'needs_input',
+    focus: '确认范围',
+    runId: 'question-run',
+    reason: '',
+    nextStep: '是否继续？',
+    awaitingReply: true,
+    updatedAt: timestamp,
+  };
+  const { props, api } = featureProps({ snapshot: state });
+  api.getProjectUsage.mockResolvedValue(gatedUsage);
+  render(<ProjectView {...props} id="project-atlas" />, { wrapper: TestProviders });
+  const next = within(screen.getByRole('region', { name: '项目下一步' }));
+  // Nothing can run while the gate holds, so it outranks the waiting question.
+  await waitFor(() => expect(next.getByText(gatedUsage.gate.message)).toBeTruthy());
+  await user.click(next.getByRole('button', { name: '查看额度设置' }));
+  expect(within(screen.getByRole('complementary')).getByRole('region', { name: '额度' })).toBeTruthy();
+  cleanup();
+  // A gate that only means "the reading is on its way" is not a stop worth an action.
+  api.getProjectUsage.mockResolvedValue({ ...gatedUsage, gate: { ...gatedUsage.gate, pending: true } });
+  render(<ProjectView {...props} id="project-atlas" />, { wrapper: TestProviders });
+  expect(await screen.findByRole('button', { name: '回答当前问题' })).toBeTruthy();
+  expect(screen.queryByText(gatedUsage.gate.message)).toBeNull();
+});
+
+it('counts the board tab by what the board shows, keeping resolved history in its own count', async () => {
+  const user = userEvent.setup();
+  const state = snapshot();
+  state.items.push(item({ id: 'finding-done', title: '已完成的功能', status: 'resolved' }));
+  const { props } = featureProps({ snapshot: state });
+  render(<ProjectView {...props} id="project-atlas" />, { wrapper: TestProviders });
+  expect(screen.getByRole('tab', { name: '看板 3' })).toBeTruthy();
+  expect(screen.getByRole('button', { name: '已解决历史 1' })).toBeTruthy();
+  await user.click(screen.getByRole('button', { name: '筛选' }));
+  await user.selectOptions(screen.getByRole('combobox', { name: '状态筛选' }), 'resolved');
+  expect(screen.getByRole('tab', { name: '看板 1' })).toBeTruthy();
+  expect(screen.queryByRole('button', { name: /已解决历史/ })).toBeNull();
 });

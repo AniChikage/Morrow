@@ -77,11 +77,11 @@ it('routes the project primary action to its pending release without approving i
   await userEvent.setup().click(screen.getByRole('button', { name: '查看待审版本' }));
   expect(screen.getByRole('tab', { name: /上线确认/ }).getAttribute('aria-selected')).toBe('true');
   expect(f.reviewRelease).not.toHaveBeenCalled();
-  expect(screen.queryByRole('button', { name: '新建功能' })).toBeNull();
+  expect(screen.queryByRole('button', { name: '新建事项' })).toBeNull();
   f.props.snapshot.releases = [{ ...f.release, projectId: 'project-other' }];
   f.props.snapshot.items[0].status = 'blocked';
   view.rerender(<ProjectView {...f.props} id="project-atlas" />);
-  await userEvent.setup().click(screen.getByRole('tab', { name: /功能看板/ }));
+  await userEvent.setup().click(screen.getByRole('tab', { name: /看板/ }));
   await userEvent.setup().click(screen.getByRole('button', { name: '查看阻塞事项' }));
   expect(f.props.onNavigate).toHaveBeenCalledWith({ kind: 'finding', id: 'finding-import' });
   expect(screen.queryByRole('button', { name: '查看待审版本' })).toBeNull();
@@ -748,7 +748,7 @@ describe('AI work and release review', () => {
     render(<ProjectView {...props} api={api} id="demo-atlas" />, { wrapper: TestProviders });
     await userEvent.setup().click(screen.getByRole('tab', { name: '当前判断' }));
     expect(await screen.findByRole('heading', { name: '此示例暂未提供项目判断数据' })).toBeTruthy();
-    expect(screen.getByText(/可先查看「功能看板」/)).toBeTruthy();
+    expect(screen.getByText(/可先查看「看板」/)).toBeTruthy();
     expect(screen.queryByText(/连接新版 Morrow 服务/)).toBeNull();
   });
   it('keeps real old-service hints while distinguishing demo data that lacks strategy', async () => {
@@ -923,25 +923,25 @@ describe('AI work and release review', () => {
     ];
     const original = structuredClone(f.props.snapshot.releases);
     const view = render(<ProjectReleases {...f.props} projectId="project-atlas" />, { wrapper: TestProviders });
-    const current = screen.getByRole('region', { name: '待确认与发布进度' });
+    const current = screen.getByRole('region', { name: '待确认与上线进度' });
     expect(within(current).getAllByRole('button')[0].textContent).toContain(f.release.title);
     expect(within(current).getAllByRole('button')).toHaveLength(4);
     expect(screen.getByRole('button', { name: /published/ }).closest('details')?.open).toBe(false);
     const user = userEvent.setup();
-    await user.click(screen.getByText('历史发布', { selector: 'summary' }));
+    await user.click(screen.getByText('历史上线', { selector: 'summary' }));
     await user.click(screen.getByRole('button', { name: /failed/ }));
     expect(screen.getByRole('heading', { name: 'failed' })).toBeTruthy();
     expect(screen.queryByRole('button', { name: '确认这个版本上线' })).toBeNull();
     expect(f.reviewRelease).not.toHaveBeenCalled();
     expect(f.props.snapshot.releases).toEqual(original);
-    await user.click(screen.getByRole('button', { name: '所有发布' }));
+    await user.click(screen.getByRole('button', { name: '所有上线' }));
     f.props.snapshot.releases = f.props.snapshot.releases!.filter((r) =>
       ['published', 'failed', 'rejected'].includes(r.status)
     );
     view.rerender(<ProjectReleases {...f.props} projectId="project-atlas" />);
-    expect(within(screen.getByRole('region', { name: '最近发布结果' })).getAllByRole('button')).toHaveLength(1);
+    expect(within(screen.getByRole('region', { name: '最近上线结果' })).getAllByRole('button')).toHaveLength(1);
     expect(screen.getByRole('button', { name: /rejected/ })).toBeTruthy();
-    expect(screen.getByText('历史发布', { selector: 'summary' }).closest('details')?.open).toBe(false);
+    expect(screen.getByText('历史上线', { selector: 'summary' }).closest('details')?.open).toBe(false);
   });
   it('resets release feedback and disclosures when selecting another version', async () => {
     const f = fixture();
@@ -954,7 +954,7 @@ describe('AI work and release review', () => {
     await user.click(screen.getByText('关联事项', { selector: 'summary' }));
     await user.click(screen.getByRole('button', { name: /CSV 重试会重复提交/ }));
     expect(f.props.onNavigate).toHaveBeenCalledWith({ kind: 'finding', id: 'finding-import' });
-    await user.click(screen.getByRole('button', { name: '所有发布' }));
+    await user.click(screen.getByRole('button', { name: '所有上线' }));
     await user.click(screen.getByRole('button', { name: /第二个候选/ }));
     expect((screen.getByRole('textbox', { name: '上线指导意见' }) as HTMLTextAreaElement).value).toBe('');
     expect(screen.getByText('背景与预期收益', { selector: 'summary' }).closest('details')?.open).toBe(false);
@@ -985,7 +985,7 @@ describe('AI work and release review', () => {
     const user = userEvent.setup();
     await user.click(screen.getByRole('button', { name: /导入失败恢复/ }));
     expect(screen.queryByRole('button', { name: '确认这个版本上线' })).toBeNull();
-    await user.click(screen.getByRole('button', { name: '核对发布结果' }));
+    await user.click(screen.getByRole('button', { name: '核对上线结果' }));
     expect(f.reconcileRelease).toHaveBeenCalledWith('release-one');
     expect(f.reviewRelease).not.toHaveBeenCalled();
   });
@@ -1046,7 +1046,7 @@ describe('AI work and release review', () => {
     expect(screen.getByText('测试发布环境')).not.toBeNull();
     expect(screen.getByText('https://deploy.example.test/releases')).not.toBeNull();
     expect(screen.queryByRole('button', { name: '查看将要执行的脚本' })).toBeNull();
-    expect(screen.queryByText(/发布脚本输出/)).toBeNull();
+    expect(screen.queryByText(/上线脚本输出/)).toBeNull();
   });
   it('shows a local-script target by kind, reads the sealed script on request and keeps the publish log', async () => {
     const f = fixture();
@@ -1083,7 +1083,7 @@ describe('AI work and release review', () => {
     expect(screen.getByText(`脚本 SHA256 ${sha.slice(0, 12)}…`)).not.toBeNull();
     expect(screen.getByText('状态脚本 scripts/release-status.sh')).not.toBeNull();
     expect(screen.queryByText('https://deploy.example.test/releases')).toBeNull();
-    expect(screen.getByText(/发布脚本输出/)).not.toBeNull();
+    expect(screen.getByText(/上线脚本输出/)).not.toBeNull();
     expect(screen.getByText(/已安装 ~\/Applications\/Morrow\.app/)).not.toBeNull();
     expect(screen.queryByRole('button', { name: '确认这个版本上线' })).toBeNull();
     await user.click(screen.getByRole('button', { name: '查看将要执行的脚本' }));
@@ -1119,7 +1119,7 @@ describe('AI work and release review', () => {
     );
     await userEvent.setup().click(screen.getByRole('button', { name: /导入失败恢复/ }));
     expect(
-      await screen.findByText('发布级复核：独立复核通过 · 候选版本的检查与各事项改动一致', { exact: false })
+      await screen.findByText('上线级复核：独立复核通过 · 候选版本的检查与各事项改动一致', { exact: false })
     ).not.toBeNull();
     // The item's own review is listed as it stands: passed at an earlier source version.
     expect(screen.getByText('源码或核验材料已变化，需要重新复核')).not.toBeNull();
@@ -1130,7 +1130,7 @@ describe('AI work and release review', () => {
         <FeatureWork api={f.api} projectId="project-atlas" itemId="finding-import" />
       </TestProviders>
     );
-    expect(await screen.findByText('发布级')).not.toBeNull();
+    expect(await screen.findByText('上线级')).not.toBeNull();
     expect(screen.getByText('候选版本的检查与各事项改动一致', { exact: false })).not.toBeNull();
   });
   it('requires every cited check to remain reviewable before approval', async () => {
@@ -1142,7 +1142,7 @@ describe('AI work and release review', () => {
       </TestProviders>
     );
     await userEvent.setup().click(screen.getByRole('button', { name: /导入失败恢复/ }));
-    expect((await screen.findByRole('alert')).textContent).toContain('部分验证证据尚未读取');
+    expect((await screen.findByRole('alert')).textContent).toContain('部分复核证据尚未读取');
     expect((screen.getByRole('button', { name: '确认这个版本上线' }) as HTMLButtonElement).disabled).toBe(true);
     expect(f.reviewRelease).not.toHaveBeenCalled();
   });

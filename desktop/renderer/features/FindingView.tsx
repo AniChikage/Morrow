@@ -25,7 +25,7 @@ export function FindingView(props: FeatureProps & { id: string }) {
     : undefined;
   if (!item)
     return (
-      <EmptyState icon={<FileText />} title="未找到这个功能" description="它可能已被移除，请返回项目查看其他功能。" />
+      <EmptyState icon={<FileText />} title="未找到这个事项" description="它可能已被移除，请返回项目查看其他事项。" />
     );
   /** Channels of this item's project: the only ones a human may make responsible for it. */
   const projectChannels = snapshot.channels.filter((channel) => channel.projectId === project?.id);
@@ -61,7 +61,7 @@ export function FindingView(props: FeatureProps & { id: string }) {
           )}
           <Button variant="ghost" disabled={busy} onClick={() => onEditFeature(item)}>
             <Pencil size={13} />
-            编辑功能
+            编辑事项
           </Button>
           <Button variant="ghost" aria-expanded={propertiesOpen} onClick={() => setPropertiesOpen((open) => !open)}>
             事项属性
@@ -76,7 +76,7 @@ export function FindingView(props: FeatureProps & { id: string }) {
             </section>
             {project && <FeatureWork key={item.id} api={api} projectId={project.id} itemId={item.id} compact />}
             <section className="finding-section">
-              <h2>功能说明</h2>
+              <h2>事项说明</h2>
               {item.summary.length > 240 ? (
                 <>
                   <p className="finding-summary-preview">{questionExcerpt(item.summary, 160)}</p>
@@ -86,7 +86,7 @@ export function FindingView(props: FeatureProps & { id: string }) {
                   </details>
                 </>
               ) : (
-                <Markdown>{item.summary || '尚未填写功能说明。'}</Markdown>
+                <Markdown>{item.summary || '尚未填写事项说明。'}</Markdown>
               )}
             </section>
             <details key={item.id + ':evidence'} className="finding-section finding-disclosure">

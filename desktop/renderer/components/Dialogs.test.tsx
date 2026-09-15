@@ -214,7 +214,7 @@ it('creates a project-owned feature with evidence and no invented source channel
   await user.type(screen.getByRole('textbox', { name: '证据 1' }), '  test/import.test.ts 验证通过  ');
   await user.click(screen.getByRole('button', { name: '添加证据' }));
   await user.type(screen.getByRole('textbox', { name: '下一步' }), '  验证第二次导入  ');
-  await user.click(screen.getByRole('button', { name: '创建功能' }));
+  await user.click(screen.getByRole('button', { name: '创建事项' }));
   await waitFor(() =>
     expect(context.current.api.createItem).toHaveBeenCalledWith({
       projectId: 'project-atlas',

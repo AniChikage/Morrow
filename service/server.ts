@@ -635,7 +635,12 @@ export async function startServer(
           // are scheduled, so a manually paused channel stays paused.
           engine.loop.strategy.notify(project.id, reason);
           for (const c of store.all<Channel>('channels'))
-            if (c.projectId === project.id) engine.loop.wake(c.id, reason);
+            if (c.projectId === project.id) {
+              // New requirements are a new intent: an App continuation inferred under the old ones
+              // no longer justifies restoring automatic work.
+              engine.appResume.advance(c.id, 'project-brief', reason);
+              engine.loop.wake(c.id, reason);
+            }
         });
         respond(res, 200, updated);
         return;
@@ -753,6 +758,9 @@ export async function startServer(
             updated.sessionId = '';
           store.transaction(() => {
             store.put('channels', updated);
+            // A changed direction or permission is the user's own new intent for this channel.
+            if (updated.goal !== c.goal) engine.appResume.advance(id, 'direction');
+            if (updated.permission !== c.permission) engine.appResume.advance(id, 'permission');
             engine.audit({
               projectId: c.projectId,
               channelId: id,

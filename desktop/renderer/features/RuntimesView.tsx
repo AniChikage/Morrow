@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import { ArrowUpRight, ChevronRight, Hash, Info, Monitor, RefreshCw, Server, Terminal } from 'lucide-react';
-import type { ConnectionInfo, DesktopAPI, NativeConnectionStatus, Runtime } from '../../shared/types';
+import type { Channel, ConnectionInfo, DesktopAPI, NativeConnectionStatus, Project, Runtime } from '../../shared/types';
 import type { FeatureProps } from './types';
 import { Button, EmptyState } from '../components/ui';
 import { formatResetTime, usageWindowLabel } from '../components/format';
@@ -39,11 +39,52 @@ function connectionSteps(native: NativeConnectionStatus) {
     },
   ];
 }
+/** The channel a page-level task action applies to: one candidate acts directly, several are chosen. */
+function ChannelChoice({
+  label,
+  targets,
+  projects,
+  busy,
+  onAct,
+}: {
+  label: string;
+  targets: Channel[];
+  projects: Project[];
+  busy: boolean;
+  onAct: (channelId: string) => void;
+}) {
+  const [choice, setChoice] = useState('');
+  if (!targets.length) return null;
+  const selected = targets.some((target) => target.id === choice) ? choice : targets[0].id;
+  return (
+    <>
+      {targets.length > 1 && (
+        <select aria-label="选择频道" value={selected} onChange={(event) => setChoice(event.target.value)}>
+          {targets.map((target) => {
+            const project = projects.find((value) => value.id === target.projectId);
+            return (
+              <option key={target.id} value={target.id}>
+                {project ? `${project.name} / ` : ''}
+                {target.name}
+              </option>
+            );
+          })}
+        </select>
+      )}
+      <Button variant="primary" disabled={busy} onClick={() => onAct(selected)}>
+        {label}
+      </Button>
+    </>
+  );
+}
 function AppChecklist({
   native,
   remote,
   api,
   busy,
+  projects,
+  linkTargets,
+  openTargets,
   onMutate,
   onRefresh,
   onLink,
@@ -53,44 +94,54 @@ function AppChecklist({
   remote: boolean;
   api: DesktopAPI;
   busy: boolean;
+  projects: Project[];
+  linkTargets: Channel[];
+  openTargets: Channel[];
   onMutate: FeatureProps['onMutate'];
   onRefresh: () => Promise<void>;
-  onLink?: () => void;
-  onOpen?: () => void;
+  onLink: (channelId: string) => void;
+  onOpen: (channelId: string) => void;
 }) {
   const [receipt, setReceipt] = useState('');
   const steps = connectionSteps(native);
   const pending = steps.findIndex((step) => !step.done);
+  // Every step that waits on something happening outside Morrow says that coming back is enough.
   let next: ReactNode;
   if (native.restartRequired) next = <span>旧转接设置已撤销；当前任务结束后重开 Codex App，再重新检测。</span>;
+  // `native.detail` is a finished sentence of its own, so it gets its own span instead of being
+  // glued to the next one with a 「；」 the reader would see as 「。；」.
   else if (pending === 0)
     next = (
-      <span>
-        {native.appInstalled === false
-          ? '安装并登录 Codex App'
-          : native.detail || '无法确认安装状态，请在 Morrow 桌面应用中重新检测。'}
-      </span>
+      <>
+        <span>
+          {native.appInstalled === false
+            ? '安装并登录 Codex App。'
+            : native.detail || '无法确认安装状态，请在 Morrow 桌面应用中重新检测。'}
+        </span>
+        <span>装好后回到这里，会自动重新检测。</span>
+      </>
     );
-  else if (pending === 1) next = <span>打开 Codex App</span>;
+  else if (pending === 1) next = <span>打开 Codex App；打开后回到这里，会自动重新检测。</span>;
   else if (pending === 2)
     next = (
       <>
-        <span>在 Codex App 为同一项目目录创建任务、发送首条消息，再回到频道关联。</span>
-        {onLink && (
-          <Button variant="primary" disabled={busy} onClick={onLink}>
-            去关联任务
-          </Button>
-        )}
+        <span>在 Codex App 为同一项目目录创建任务、发送首条消息，再回到频道关联；回到这里会自动重新检测。</span>
+        <ChannelChoice label="去关联任务" targets={linkTargets} projects={projects} busy={busy} onAct={onLink} />
+        {!linkTargets.length && <span>还没有可关联的 Codex 频道，请先在项目里添加频道。</span>}
       </>
     );
   else if (pending === 3)
     next = (
       <>
-        <span>任务未在 Codex App 中打开。请在 Codex App 打开已关联任务，然后重新检测。</span>
-        {onOpen && !remote && (
-          <Button variant="primary" disabled={busy} onClick={onOpen}>
-            在 Codex App 中打开
-          </Button>
+        <span>任务未在 Codex App 中打开。请在 Codex App 打开已关联任务；打开后回到这里，会自动重新检测。</span>
+        {!remote && (
+          <ChannelChoice
+            label="在 Codex App 中打开"
+            targets={openTargets}
+            projects={projects}
+            busy={busy}
+            onAct={onOpen}
+          />
         )}
       </>
     );
@@ -182,35 +233,45 @@ export function RuntimesView({
   onMutate,
   onNavigate,
   connection,
-}: FeatureProps & { connection?: ConnectionInfo | null }) {
+  projectId,
+}: FeatureProps & { connection?: ConnectionInfo | null; projectId?: string }) {
   const [expanded, setExpanded] = useState<string | null>(null);
   const [native, setNative] = useState<NativeConnectionStatus>();
   const [nativeUnreachable, setNativeUnreachable] = useState(false);
   const nativeRequest = useRef(0);
-  const refreshNative = useCallback(async () => {
-    if (typeof api.getNativeStatus !== 'function') return;
-    const request = ++nativeRequest.current;
-    try {
-      const next = await api.getNativeStatus(true);
-      if (request !== nativeRequest.current) return;
-      setNative(next);
-      setNativeUnreachable(false);
-    } catch {
-      if (request !== nativeRequest.current) return;
-      setNative({
-        available: false,
-        connected: false,
-        detail: '暂时无法连接 Codex App。',
-        capabilities: { list: false, read: false, send: false, create: false, interrupt: false, respond: false },
-      });
-      setNativeUnreachable(true);
-    }
-  }, [api]);
+  const refreshNative = useCallback(
+    async (refreshUsage = true) => {
+      if (typeof api.getNativeStatus !== 'function') return;
+      const request = ++nativeRequest.current;
+      try {
+        const next = await api.getNativeStatus(refreshUsage);
+        if (request !== nativeRequest.current) return;
+        setNative(next);
+        setNativeUnreachable(false);
+      } catch {
+        if (request !== nativeRequest.current) return;
+        setNative({
+          available: false,
+          connected: false,
+          detail: '暂时无法连接 Codex App。',
+          capabilities: { list: false, read: false, send: false, create: false, interrupt: false, respond: false },
+        });
+        setNativeUnreachable(true);
+      }
+    },
+    [api]
+  );
   useEffect(() => {
     setNative(undefined);
     setNativeUnreachable(false);
     void refreshNative();
+    // Installing or opening the App happens outside Morrow; this page has to notice on its own.
+    // The periodic read skips the account usage refresh, which stays on entry and manual detection.
+    const timer = window.setInterval(() => {
+      if (document.visibilityState !== 'hidden') void refreshNative(false);
+    }, 8000);
     return () => {
+      window.clearInterval(timer);
       nativeRequest.current++;
     };
   }, [
@@ -224,13 +285,18 @@ export function RuntimesView({
   const runningCount = snapshot.channels.filter((channel) => channel.status === 'running').length;
   const remote = connection?.config.mode === 'ssh';
   const appPending = native ? connectionSteps(native).findIndex((step) => !step.done) : -1;
+  // A task action belongs to a project. Prefer the most recently opened one; otherwise let the
+  // user pick, rather than silently acting on whichever Codex channel happens to come first.
+  const codexChannels = snapshot.channels.filter((channel) => channel.runtime === 'codex');
+  const scoped = projectId ? codexChannels.filter((channel) => channel.projectId === projectId) : [];
+  const linkTargets = scoped.length ? scoped : codexChannels;
+  const openTargets = linkTargets.filter((channel) => channel.sessionId);
   const taskAction =
     !!native &&
     !nativeUnreachable &&
     !native.restartRequired &&
     snapshot.runtimes.some((r) => r.id === 'codex') &&
-    ((appPending === 2 && snapshot.channels.some((c) => c.runtime === 'codex')) ||
-      (appPending === 3 && !remote && snapshot.channels.some((c) => c.runtime === 'codex' && c.sessionId)));
+    ((appPending === 2 && linkTargets.length > 0) || (appPending === 3 && !remote && openTargets.length > 0));
   const HostIcon = remote ? Server : Monitor;
   return (
     <main className="feature-main runtime-settings">
@@ -344,29 +410,13 @@ export function RuntimesView({
                         remote={remote}
                         api={api}
                         busy={busy}
+                        projects={snapshot.projects}
+                        linkTargets={linkTargets}
+                        openTargets={openTargets}
                         onMutate={onMutate}
                         onRefresh={refreshNative}
-                        onOpen={
-                          snapshot.channels.some((channel) => channel.runtime === 'codex' && channel.sessionId)
-                            ? () =>
-                                void onMutate(() =>
-                                  api.openNativeApp(
-                                    snapshot.channels.find(
-                                      (channel) => channel.runtime === 'codex' && channel.sessionId
-                                    )!.id
-                                  )
-                                )
-                            : undefined
-                        }
-                        onLink={
-                          snapshot.channels.find((channel) => channel.runtime === 'codex')
-                            ? () =>
-                                onNavigate({
-                                  kind: 'channel',
-                                  id: snapshot.channels.find((channel) => channel.runtime === 'codex')!.id,
-                                })
-                            : undefined
-                        }
+                        onOpen={(channelId) => void onMutate(() => api.openNativeApp(channelId))}
+                        onLink={(channelId) => onNavigate({ kind: 'channel', id: channelId })}
                       />
                     )}
                     {isExpanded && (
