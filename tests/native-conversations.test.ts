@@ -1665,3 +1665,31 @@ test("the App's own compaction is announced once, however often the task is read
     await s.cleanup();
   }
 });
+test('an App turn spent only on compacting is named for that instead of a missing report', async () => {
+  const s = await setup();
+  try {
+    await s.native.bind(s.channel.id, s.transport.threadId);
+    const compaction = compactionTurn('automatic');
+    const ordinary = {
+      turnId: randomUUID(),
+      status: 'completed',
+      items: [{ id: randomUUID(), type: 'agentMessage', phase: 'final_answer', text: '在 App 里聊完的一轮。' }],
+    };
+    const run = (turnId: string) => s.store.all<any>('runs').find((row) => row.nativeTurnId === turnId);
+    s.transport.emit({
+      turns: [{ ...compaction, status: 'inProgress', items: [{ ...compaction.items[0], completed: false }] }],
+    });
+    assert.equal(run(compaction.turnId).status, 'running');
+    assert.equal(run(compaction.turnId).summary, 'Codex App 正在压缩任务上下文。');
+    s.transport.emit({ turns: [compaction, ordinary] });
+    assert.equal(run(compaction.turnId).summary, 'Codex App 压缩了任务上下文。');
+    assert.equal(run(compaction.turnId).reportStatus, 'missing');
+    assert.equal(run(compaction.turnId).reportError, '此轮只压缩了任务上下文，看板未改动。');
+    // An ordinary App turn is still read for its own report, and still says the board was not one.
+    assert.equal(run(ordinary.turnId).summary, '在 App 里聊完的一轮。');
+    assert.equal(run(ordinary.turnId).reportStatus, 'missing');
+    assert.equal(run(ordinary.turnId).reportError, '此轮是原生对话，未作为持续职责报告自动更新看板。');
+  } finally {
+    await s.cleanup();
+  }
+});

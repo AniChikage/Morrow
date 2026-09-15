@@ -1425,6 +1425,13 @@ export class NativeConversations {
           ? new Date(turn.turnStartedAtMs + turn.durationMs).toISOString()
           : existing?.finishedAt || '';
       const final = finalText(turn);
+      // A turn the App spent only on compacting the context carries no prompt and no report. Naming
+      // it for what it did keeps it from reading as a responsibility whose report went missing.
+      const turnItems: any[] = Array.isArray(turn.items) ? turn.items : [];
+      const compactionOnly =
+        turnItems.length > 0 &&
+        turnItems.every((item) => item?.type === 'contextCompaction') &&
+        !turnItems.some(isUserItem);
       const promptItemIds: string[] = [...(previous?.promptItemIds || [])];
       const row = {
         id: key,
@@ -1456,7 +1463,9 @@ export class NativeConversations {
             resumedFromSessionId: snapshot.threadId,
             nativeTurnId: turnId,
             reportStatus: 'missing',
-            reportError: '此轮是原生对话，未作为持续职责报告自动更新看板。',
+            reportError: compactionOnly
+              ? '此轮只压缩了任务上下文，看板未改动。'
+              : '此轮是原生对话，未作为持续职责报告自动更新看板。',
             status: ended
               ? turn.status === 'completed'
                 ? 'completed'
@@ -1466,10 +1475,12 @@ export class NativeConversations {
               : 'running',
             startedAt,
             finishedAt,
-            summary: (final || (ended ? turn.error?.message || '原生轮次已结束' : '原生任务正在执行。')).slice(
-              0,
-              20000
-            ),
+            summary: (compactionOnly
+              ? ended
+                ? 'Codex App 压缩了任务上下文。'
+                : 'Codex App 正在压缩任务上下文。'
+              : final || (ended ? turn.error?.message || '原生轮次已结束' : '原生任务正在执行。')
+            ).slice(0, 20000),
             sessionId: snapshot.threadId,
           };
           this.store.put('runs', run);
