@@ -102,7 +102,7 @@ test('the checklist marks the first unmet step and names installing, then openin
   expect(step('App 已连接')).toBe('pending');
   expect(step('任务已关联')).toBe('pending');
   expect(step('关联任务可用')).toBe('pending');
-  expect(nextStep().textContent).toBe('下一步安装并登录 Codex App');
+  expect(nextStep().textContent).toBe('下一步安装并登录 Codex App；装好后回到这里，会自动重新检测。');
   expect(screen.queryByRole('button', { name: /启用后台连接|撤销设置/ })).toBeNull();
   cleanup();
   api.getNativeStatus.mockResolvedValue(status({ appInstalled: true, appVersion: '1.2.3' }));
@@ -111,7 +111,7 @@ test('the checklist marks the first unmet step and names installing, then openin
   expect(step('Codex App 已安装')).toBe('done');
   expect(list.getByText('1.2.3')).toBeTruthy();
   expect(step('App 已连接')).toBe('next');
-  expect(nextStep().textContent).toBe('下一步打开 Codex App');
+  expect(nextStep().textContent).toBe('下一步打开 Codex App；打开后回到这里，会自动重新检测。');
   expect(screen.queryByRole('button', { name: /启用后台连接|撤销设置/ })).toBeNull();
 });
 
@@ -395,4 +395,61 @@ test('keeps the next step visible and highlights one action while diagnostics re
   await screen.findByText(/已就绪；/);
   expect(screen.getByRole('button', { name: '重新检测' }).classList.contains('button-primary')).toBe(true);
   expect(screen.queryByRole('button', { name: '在 Codex App 中打开' })).toBeNull();
+});
+
+test('the page rereads App status on its own, without re-reading the account usage every time', async () => {
+  vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
+  try {
+    const { props, api } = runtimeProps();
+    api.getNativeStatus.mockResolvedValue(status({ appInstalled: false }));
+    render(<RuntimesView {...props} />);
+    await act(async () => {});
+    expect(api.getNativeStatus).toHaveBeenCalledTimes(1);
+    expect(api.getNativeStatus).toHaveBeenLastCalledWith(true);
+    // Installing or opening the App happens elsewhere; the copy promises this page notices it.
+    expect(nextStep().textContent).toContain('会自动重新检测');
+    api.getNativeStatus.mockResolvedValue(status({ connected: true, boundThreadCount: 1, readyThreadCount: 1 }));
+    await act(async () => void vi.advanceTimersByTime(8000));
+    expect(api.getNativeStatus).toHaveBeenCalledTimes(2);
+    expect(api.getNativeStatus).toHaveBeenLastCalledWith(false);
+    expect(screen.getByText(/已就绪；/)).toBeTruthy();
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+test('task actions stay in the project the user came from, and otherwise ask which channel', async () => {
+  const user = userEvent.setup();
+  const { props, api } = runtimeProps();
+  api.getNativeStatus.mockResolvedValue(status({ connected: true, boundThreadCount: 0, readyThreadCount: 0 }));
+  const view = render(<RuntimesView {...props} projectId="project-other" />);
+  await user.click(await screen.findByRole('button', { name: '去关联任务' }));
+  // channel-system is the first Codex channel overall; only channel-other belongs to this project.
+  expect(screen.queryByRole('combobox', { name: '选择频道' })).toBeNull();
+  expect(props.onNavigate).toHaveBeenCalledWith({ kind: 'channel', id: 'channel-other' });
+  view.unmount();
+  render(<RuntimesView {...props} />);
+  const select = (await screen.findByRole('combobox', { name: '选择频道' })) as HTMLSelectElement;
+  expect([...select.options].map((option) => option.textContent)).toEqual([
+    'Atlas 示例项目 / 系统完善',
+    'Atlas 示例项目 / 运营洞察',
+    'Other / 系统完善',
+  ]);
+  await user.selectOptions(select, 'channel-growth');
+  await user.click(screen.getByRole('button', { name: '去关联任务' }));
+  expect(props.onNavigate).toHaveBeenLastCalledWith({ kind: 'channel', id: 'channel-growth' });
+});
+
+test('opening the associated task offers nothing rather than another project task', async () => {
+  const { props, api } = runtimeProps();
+  props.snapshot.channels[2].sessionId = 'other-project-task';
+  api.getNativeStatus.mockResolvedValue(status({ connected: true, boundThreadCount: 1, readyThreadCount: 0 }));
+  render(<RuntimesView {...props} projectId="project-atlas" />);
+  await screen.findByText(/请在 Codex App 打开已关联任务/);
+  expect(screen.queryByRole('button', { name: '在 Codex App 中打开' })).toBeNull();
+  cleanup();
+  props.snapshot.channels[0].sessionId = 'atlas-task';
+  render(<RuntimesView {...props} projectId="project-atlas" />);
+  await userEvent.setup().click(await screen.findByRole('button', { name: '在 Codex App 中打开' }));
+  expect(api.openNativeApp).toHaveBeenCalledWith('channel-system');
 });

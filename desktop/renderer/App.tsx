@@ -101,6 +101,25 @@ export default function App() {
       ? snapshot.projects.find((p) => p.id === route.id)
       : snapshot.projects.find((p) => p.id === (finding?.projectId || channel?.projectId));
   const canInspect = !!project && !['runs', 'runtimes', 'channel', 'project', 'finding'].includes(route?.kind || '');
+  // The runtimes page acts on a project's channel; the most recently opened project is the only
+  // honest default, so it is derived here rather than guessed from the first Codex channel there.
+  function projectOf(target: Route): string | undefined {
+    if (target.kind === 'project') return target.id;
+    if (target.kind === 'channel') return snapshot.channels.find((c) => c.id === target.id)?.projectId;
+    if (target.kind === 'finding') {
+      const item = snapshot.items.find((i) => i.id === target.id);
+      return item?.projectId || snapshot.channels.find((c) => c.id === item?.channelId)?.projectId;
+    }
+    return undefined;
+  }
+  const activeTab = navigation.tabs.find((tab) => tab.id === navigation.activeId);
+  const recentRoutes = [
+    ...navigation.tabs.filter((tab) => tab.id !== navigation.activeId).map((tab) => tab.history[tab.index]),
+    ...(activeTab ? activeTab.history.slice(0, activeTab.index + 1) : []),
+  ];
+  const recentProjectId =
+    project?.id ||
+    recentRoutes.reduceRight<string | undefined>((found, target) => found || projectOf(target), undefined);
   const toggleSidebar = useCallback(
     () =>
       setSidebar((v) => {
@@ -223,7 +242,7 @@ export default function App() {
       case 'runs':
         return <RunsView {...props} />;
       case 'runtimes':
-        return <RuntimesView {...props} connection={connection} />;
+        return <RuntimesView {...props} connection={connection} projectId={recentProjectId} />;
     }
   }
   const running = snapshot.channels.filter((c) => c.status === 'running').length;

@@ -646,7 +646,7 @@ describe('native App conversation', () => {
     });
     api.bindNativeThread.mockResolvedValue(conversation());
     await user.click(screen.getByRole('button', { name: '读取已有任务' }));
-    await screen.findByRole('option', { name: '已创建的任务' });
+    await screen.findByRole('option', { name: '已创建的任务 · /tmp/atlas' });
     await user.selectOptions(screen.getByRole('combobox', { name: '已有 App 任务' }), 'existing');
     await user.click(screen.getByRole('button', { name: '关联选中任务' }));
     expect(api.bindNativeThread).toHaveBeenCalledWith('channel-system', 'existing');
@@ -700,5 +700,75 @@ describe('native App conversation', () => {
     expect(api.openNativeApp).toHaveBeenCalledWith('channel-system');
     expect(api.sendNativeMessage).not.toHaveBeenCalled();
     expect(api.sendMessage).not.toHaveBeenCalled();
+  });
+  it('offers first association as a header action and names the directory of every App task', async () => {
+    const user = userEvent.setup(),
+      state = snapshot();
+    state.projects[0].isDemo = false;
+    state.projects[0].path = '/tmp/atlas';
+    const { props, api } = featureProps({ snapshot: state });
+    const unbound = conversation({ threadId: undefined, thread: undefined, items: [] });
+    vi.mocked(props.api.getNativeConversation).mockResolvedValue(unbound);
+    vi.mocked(props.api.listNativeThreads).mockResolvedValue({
+      status: unbound.status,
+      threads: [
+        { id: 'other-dir', title: '别的目录的任务', cwd: '/tmp/other', status: 'idle' },
+        { id: 'same-dir', title: '同目录任务', cwd: '/tmp/atlas/', status: 'idle' },
+      ],
+    });
+    api.bindNativeThread.mockResolvedValue(conversation());
+    render(<ChannelView {...props} id="channel-system" />, { wrapper: TestProviders });
+    const action = await screen.findByRole('button', { name: '关联 App 任务' });
+    expect(action.classList.contains('button-primary')).toBe(true);
+    await user.click(action);
+    await user.click(screen.getByRole('button', { name: '读取已有任务' }));
+    // One primary action at a time: the header hands it to the step inside the open section.
+    expect(document.querySelectorAll('.button-primary')).toHaveLength(1);
+    const select = (await screen.findByRole('combobox', { name: '已有 App 任务' })) as HTMLSelectElement;
+    // The project's own directory sorts first and is selected, so the obvious click is the right one.
+    expect([...select.options].map((option) => option.textContent)).toEqual([
+      '选择任务',
+      '同目录任务 · /tmp/atlas/',
+      '别的目录的任务 · /tmp/other',
+    ]);
+    expect(select.value).toBe('same-dir');
+    expect(screen.getByText('读取到 2 个任务')).toBeTruthy();
+    await user.click(screen.getByRole('button', { name: '关联选中任务' }));
+    expect(api.bindNativeThread).toHaveBeenCalledWith('channel-system', 'same-dir');
+  });
+
+  it('gives a receipt when a read finds no task for the project directory, and shows why a read failed', async () => {
+    const user = userEvent.setup(),
+      state = snapshot();
+    state.projects[0].isDemo = false;
+    state.projects[0].path = '/tmp/atlas';
+    const { props } = featureProps({ snapshot: state });
+    const unbound = conversation({ threadId: undefined, thread: undefined, items: [] });
+    vi.mocked(props.api.getNativeConversation).mockResolvedValue(unbound);
+    vi.mocked(props.api.listNativeThreads).mockResolvedValue({ status: unbound.status, threads: [] });
+    render(<ChannelView {...props} id="channel-system" />, { wrapper: TestProviders });
+    await user.click(await screen.findByRole('button', { name: '关联 App 任务' }));
+    await user.click(screen.getByRole('button', { name: '读取已有任务' }));
+    expect(
+      await screen.findByText(
+        '没有找到目录为 /tmp/atlas 的任务：请在 Codex App 里对这个目录新建任务并发一条消息，再读取。'
+      )
+    ).toBeTruthy();
+    vi.mocked(props.api.listNativeThreads).mockResolvedValue({
+      status: unbound.status,
+      threads: [{ id: 'other-dir', title: '别的目录的任务', cwd: '/tmp/other', status: 'idle' }],
+    });
+    await user.click(screen.getByRole('button', { name: '读取已有任务' }));
+    expect(
+      await screen.findByText(
+        '读取到 1 个任务，但没有目录为 /tmp/atlas 的任务：请在 Codex App 里对这个目录新建任务并发一条消息，再读取。'
+      )
+    ).toBeTruthy();
+    expect((screen.getByRole('combobox', { name: '已有 App 任务' }) as HTMLSelectElement).value).toBe('');
+    vi.mocked(props.api.listNativeThreads).mockRejectedValue(new Error('原生后台暂不可用'));
+    await user.click(screen.getByRole('button', { name: '读取已有任务' }));
+    const failure = await screen.findByRole('alert');
+    expect(failure.textContent).toContain('原生后台暂不可用');
+    expect(screen.queryByRole('option', { name: /别的目录的任务/ })).toBeNull();
   });
 });

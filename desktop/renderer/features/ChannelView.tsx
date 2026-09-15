@@ -42,6 +42,11 @@ const stateLabel = (value: string) =>
     failed: '失败',
     running: '工作中',
   })[value] || value;
+const normalizePath = (value: string) => value.replace(/\/+$/, '');
+/** An App task belongs to this project only when it was created for the same directory. */
+const sameDirectory = (cwd: string, path: string) => !!path && !!cwd && normalizePath(cwd) === normalizePath(path);
+const sortThreads = (threads: NativeThreadSummary[], path: string) =>
+  [...threads].sort((a, b) => Number(sameDirectory(b.cwd, path)) - Number(sameDirectory(a.cwd, path)));
 const runUsage = (run: Run) =>
   run.usage?.delta && Object.keys(run.usage.delta).length
     ? Object.entries(run.usage.delta)
@@ -204,6 +209,8 @@ export function ChannelView(props: FeatureProps & { id: string }) {
   const [nativeError, setNativeError] = useState('');
   const [threads, setThreads] = useState<NativeThreadSummary[]>([]);
   const [threadId, setThreadId] = useState('');
+  const [threadNotice, setThreadNotice] = useState('');
+  const [threadError, setThreadError] = useState('');
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [linkOpen, setLinkOpen] = useState(false);
   const [releasesOpen, setReleasesOpen] = useState(false);
@@ -256,6 +263,8 @@ export function ChannelView(props: FeatureProps & { id: string }) {
     setError('');
     setThreads([]);
     setThreadId('');
+    setThreadNotice('');
+    setThreadError('');
     setSettingsOpen(false);
     setLinkOpen(false);
     setReleasesOpen(false);
@@ -421,6 +430,12 @@ export function ChannelView(props: FeatureProps & { id: string }) {
             {demo && <span className="feature-demo-label">示例数据</span>}
           </div>
           <div className="channel-actions">
+            {/* Until the section is open this is the page's one action; inside it, the step takes over. */}
+            {primary === 'link' && (
+              <Button variant={linkOpen ? 'secondary' : 'primary'} disabled={busy} onClick={() => setLinkOpen(true)}>
+                关联 App 任务
+              </Button>
+            )}
             {primary === 'open' && (
               <Button variant="primary" disabled={busy} onClick={openApp}>
                 {unloaded ? '在 Codex App 中打开' : '在 Codex App 中打开对话'}
@@ -520,16 +535,37 @@ export function ChannelView(props: FeatureProps & { id: string }) {
             open={linkOpen}
             onToggle={(event) => setLinkOpen(event.currentTarget.open)}
           >
-            <summary className={!linkOpen && !reviewingRelease ? 'log-primary-action' : undefined}>
-              关联 App 任务
-            </summary>
+            {/* The header carries the primary action; this section is where the choice is made. */}
+            <summary>选择要关联的任务</summary>
             <p>在 Codex App 为同一目录创建任务并发送首条消息，再选择关联。</p>
+            {!!project.path && <p className="subtle">本项目目录：{project.path}</p>}
             <Button
               variant={linkOpen && !threadId && !reviewingRelease ? 'primary' : 'secondary'}
+              disabled={busy}
               onClick={() =>
                 void onMutate(async () => {
-                  const result = await api.listNativeThreads(id);
-                  setThreads(result.threads);
+                  setThreadError('');
+                  try {
+                    const result = await api.listNativeThreads(id);
+                    const sorted = sortThreads(result.threads, project.path);
+                    const matching = sorted.filter((thread) => sameDirectory(thread.cwd, project.path));
+                    setThreads(sorted);
+                    // A read that found nothing usable must say so; silence looked like a broken button.
+                    setThreadNotice(
+                      !sorted.length
+                        ? project.path
+                          ? `没有找到目录为 ${project.path} 的任务：请在 Codex App 里对这个目录新建任务并发一条消息，再读取。`
+                          : '没有读取到任务：请在 Codex App 里新建任务并发一条消息，再读取。'
+                        : !matching.length && project.path
+                          ? `读取到 ${sorted.length} 个任务，但没有目录为 ${project.path} 的任务：请在 Codex App 里对这个目录新建任务并发一条消息，再读取。`
+                          : `读取到 ${sorted.length} 个任务`
+                    );
+                    setThreadId(matching[0]?.id || '');
+                  } catch (failure) {
+                    setThreads([]);
+                    setThreadNotice('');
+                    setThreadError(failure instanceof Error ? failure.message : '读取 App 任务失败');
+                  }
                 })
               }
             >
@@ -539,7 +575,7 @@ export function ChannelView(props: FeatureProps & { id: string }) {
               <option value="">选择任务</option>
               {threads.map((thread) => (
                 <option key={thread.id} value={thread.id}>
-                  {thread.title || thread.id}
+                  {thread.title || thread.id} · {thread.cwd || '目录未提供'}
                 </option>
               ))}
             </select>
@@ -554,6 +590,12 @@ export function ChannelView(props: FeatureProps & { id: string }) {
             >
               关联选中任务
             </Button>
+            {threadNotice && <p role="status">{threadNotice}</p>}
+            {threadError && (
+              <p role="alert" className="feature-inline-error">
+                {threadError}
+              </p>
+            )}
           </details>
         )}
         {legacy && (
