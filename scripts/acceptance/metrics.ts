@@ -452,7 +452,7 @@ export type Exploration = {
   findingsWithEvidence: number;
   evidencePercent: Maybe<number>;
   /** The low-usage planted problems, and whether the run gave each one the right cause. */
-  attribution: { cases: number; correct: number; wrong: number; missing: number; percent: Maybe<number> };
+  attribution: Attribution;
   /** What the improvements this run proposed were framed with, and whether they were really observed. */
   improvements: {
     chosen: number;
@@ -477,6 +477,9 @@ export type Exploration = {
  * `defineScenario` rejects feature ids that contain one another. The labels are never visible to the
  * service or to a policy, so `unknown` without them; a scenario whose planted problems carry no
  * `kind` is not an exploration scenario and is `unknown` too, not 0.
+ *
+ * Attribution reads the whole matched set per case (`attributionVerdicts`), so no number here depends
+ * on the order the board happens to hold its items in.
  */
 function exploration(
   store: MetricsStore,
@@ -504,18 +507,8 @@ function exploration(
         (row.itemId === item.id || (item.evidence || []).some((line) => line.startsWith(`[${row.id}]`)))
     );
 
-  const cases = planted.filter((row) => row.kind === 'entrance' || row.kind === 'not-needed');
-  let correct = 0,
-    wrong = 0,
-    missing = 0;
-  for (const row of cases) {
-    const item = found(row).at(0);
-    if (!item) missing++;
-    // The counterexample is a judgement that still has to be verified, not a defect; the buried
-    // entrance is the other way round. The item's own kind is what the run committed to.
-    else if (row.kind === 'not-needed' ? item.kind === 'hypothesis' : item.kind !== 'hypothesis') correct++;
-    else wrong++;
-  }
+  const details = attributionVerdicts(items, planted);
+  const verdicts = (verdict: AttributionVerdict) => details.filter((row) => row.verdict === verdict).length;
 
   const acting = decisions.filter((row) => row.options?.[row.selected]?.kind === 'act');
   const framed = (decision: StrategyDecision) =>
@@ -551,7 +544,15 @@ function exploration(
     findings: filed.length,
     findingsWithEvidence: filed.filter(cited).length,
     evidencePercent: share(filed.filter(cited).length, filed.length),
-    attribution: { cases: cases.length, correct, wrong, missing, percent: share(correct, cases.length) },
+    attribution: {
+      cases: details.length,
+      correct: verdicts('correct'),
+      wrong: verdicts('wrong'),
+      missing: verdicts('missing'),
+      contradictory: verdicts('contradictory'),
+      percent: share(verdicts('correct'), details.length),
+      details,
+    },
     improvements: {
       chosen: acting.length,
       withExpectation: acting.filter((row) => framed(row).length > 0).length,
@@ -593,6 +594,79 @@ export const namesFeature = (
   feature: string,
   aliases: string[] = []
 ): boolean => matchedName(item, feature, aliases) !== undefined;
+
+/**
+ * What a filed item committed the feature to. Two buckets and no third: a `hypothesis` is a judgement
+ * still to be verified, and anything else — an issue, a bug, a feature — is something to act on.
+ */
+export type FiledAs = 'judgement' | 'action';
+
+/** The one rule that reads it, so the metric and the report can never disagree about an item. */
+export const filedAs = (item: { kind?: string }): FiledAs => (item.kind === 'hypothesis' ? 'judgement' : 'action');
+
+/**
+ * How one attribution case came out. `contradictory` is neither `correct` nor `wrong`: the run filed
+ * both readings of the same feature, so it never committed to either and must not be scored as if it
+ * had. `missing` is nothing filed about the feature at all.
+ */
+export type AttributionVerdict = 'correct' | 'wrong' | 'missing' | 'contradictory';
+
+/** One attribution case with what its verdict was read from, so a report can show the working. */
+export type AttributionDetail = {
+  /** The planted problem's own id. */
+  id: string;
+  /** Its `/usage` feature id. */
+  feature: string;
+  verdict: AttributionVerdict;
+  /** Every item that names the feature, whatever it said about it. */
+  itemIds: string[];
+};
+
+export type Attribution = {
+  cases: number;
+  correct: number;
+  wrong: number;
+  missing: number;
+  /** Cases the run filed both ways at once. Counted here instead of `correct` or `wrong`. */
+  contradictory: number;
+  /** `correct / cases`: a contradiction is not a correct attribution, so it lowers this. */
+  percent: Maybe<number>;
+  details: AttributionDetail[];
+};
+
+/** The planted problems attribution judges: the two low-usage causes, and nothing else. */
+const attributionCases = (planted: PlantedProblem[]): PlantedProblem[] =>
+  planted.filter((row) => !!row.feature && (row.kind === 'entrance' || row.kind === 'not-needed'));
+
+/**
+ * What the run committed to about each low-usage case. The set of items that name the feature is what
+ * decides it — **all** of them, never whichever one the board happens to hold first, so inserting the
+ * same findings in another order cannot change a verdict.
+ *
+ * The buried entrance is a defect to act on; the counterexample is a judgement that still has to be
+ * verified with the target users, not a defect. A case filed only the expected way is `correct`, only
+ * the other way `wrong`, and **both ways `contradictory`** — a run that says a feature is a defect and
+ * a hypothesis at the same time has not told the two causes apart, and silently keeping the first of
+ * the two would read as if it had.
+ */
+export function attributionVerdicts(
+  items: Array<{ id: string; kind?: string; title?: string; summary?: string; nextStep?: string }>,
+  planted: PlantedProblem[]
+): AttributionDetail[] {
+  return attributionCases(planted).map((row) => {
+    const matched = items.filter((item) => namesFeature(item, row.feature!, row.aliases));
+    const filed = new Set<FiledAs>(matched.map(filedAs));
+    const expected: FiledAs = row.kind === 'not-needed' ? 'judgement' : 'action';
+    const verdict: AttributionVerdict = !filed.size
+      ? 'missing'
+      : filed.size > 1
+        ? 'contradictory'
+        : filed.has(expected)
+          ? 'correct'
+          : 'wrong';
+    return { id: row.id, feature: row.feature!, verdict, itemIds: matched.map((item) => item.id) };
+  });
+}
 
 /** A percentage, or `unknown` when there is nothing to divide — 0 of 0 is not 0 percent. */
 const share = (part: number, total: number): Maybe<number> => (total ? Math.round((part / total) * 100) : unknown);
