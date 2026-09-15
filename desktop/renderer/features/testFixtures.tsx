@@ -173,10 +173,14 @@ export function featureProps(patch: Partial<FeatureProps> = {}) {
     openDataFolder: vi.fn(),
     openExternal: vi.fn(),
     onCommand: vi.fn(() => () => {}),
-  } satisfies Partial<DesktopAPI>;
+    // A complete `DesktopAPI`, not a cast partial: renaming or removing a method has to fail
+    // `npm run typecheck` here rather than surface as a runtime error in one test. The optional
+    // methods stay out on purpose, so a test can add the ones it needs and the rest keep standing
+    // in for a service too old to offer them.
+  } satisfies DesktopAPI;
   const props: FeatureProps = {
     snapshot: state,
-    api: api as DesktopAPI,
+    api,
     busy: false,
     onNavigate: vi.fn(),
     onEditChannel: vi.fn(),
