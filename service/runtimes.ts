@@ -180,6 +180,13 @@ export function decodeLine(line: string): {
   };
 }
 
+/**
+ * A failure that is about the account's quota or rate limit rather than about the project: the same
+ * classification `diagnoseFailure` reports on a turn, reused where a spent account must not be
+ * recorded as a result of the work (`service/work-verification.ts`).
+ */
+export const quotaFailure = /insufficient[_ -]quota|quota exceeded|usage limit|rate[_ -]limit|\b429\b|credit balance/i;
+
 export function diagnoseFailure(runtime: RuntimeID, text: string): { priority: number; summary: string } | undefined {
   const command = 'codex login';
   if (
@@ -191,7 +198,7 @@ export function diagnoseFailure(runtime: RuntimeID, text: string): { priority: n
       priority: 100,
       summary: `${titles[runtime]} 登录无效或已过期。请在执行主机的终端运行 ${command}，完成登录后重试；未产生有效分析结果。`,
     };
-  if (/insufficient[_ -]quota|quota exceeded|usage limit|rate[_ -]limit|\b429\b|credit balance/i.test(text))
+  if (quotaFailure.test(text))
     return {
       priority: 90,
       summary: `${titles[runtime]} 配额不足或触发速率限制。请检查该 CLI 账户的用量与重置时间后重试。`,

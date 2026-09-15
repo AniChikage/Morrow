@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import { realpathSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
-import { usageFreshnessMs } from '../service/usage.ts';
+import { usageFreshnessMs, usageResetAt } from '../service/usage.ts';
 import type { UsageReading, UsageWindow } from '../service/protocol.ts';
 import { FakeReviewer } from './harness/fake-reviewer.ts';
 import { startIsolated } from './harness/service.ts';
@@ -263,6 +263,53 @@ test('a queued independent review stays queued while the gate blocks and runs on
     s.transport.complete();
     assert.equal(row().status, 'passed');
     assert.equal(s.store.get<any>('items', item.id).status, 'verified');
+  } finally {
+    await s.cleanup();
+  }
+});
+test('a spent-account message holds every turn on this account, with or without a limit of our own', async () => {
+  const s = await setup();
+  try {
+    // The exact text a real review received, read as this machine's own wall clock.
+    assert.equal(
+      usageResetAt("You've hit your usage limit. … try again at Sep 15th, 2026 11:41 AM."),
+      new Date(2026, 8, 15, 11, 41).toISOString()
+    );
+    // Nothing to trust: no moment at all, a day that does not exist, an hour no 12-hour clock has,
+    // and a month that is not one. A guess would park the scheduler on an invented time.
+    for (const text of [
+      "You've hit your usage limit.",
+      'try again at Sep 31st, 2026 11:41 AM',
+      'try again at Sep 15th, 2026 13:41 PM',
+      'try again at Sept.ember 15th, 2026 11:41 AM',
+    ])
+      assert.equal(usageResetAt(text), undefined, text);
+    // Midnight and noon are the two hours a 12-hour clock gets wrong.
+    assert.equal(usageResetAt('try again at Jan 2nd, 2027 12:05 AM'), new Date(2027, 0, 2, 0, 5).toISOString());
+    assert.equal(usageResetAt('try again at Jan 2nd, 2027 12:05 PM'), new Date(2027, 0, 2, 12, 5).toISOString());
+    // A moment already past is no wait, and the longest wait learned so far stands.
+    s.engine.usage.noteAccountExhausted(iso(-1000));
+    assert.deepEqual(s.engine.usage.gate(s.projectRow()), { blocked: false });
+    const until = iso(3600_000);
+    s.engine.usage.noteAccountExhausted(until);
+    s.engine.usage.noteAccountExhausted(iso(60_000));
+    const gate = s.engine.usage.gate(s.projectRow());
+    assert.equal(gate.blocked && gate.kind, 'account');
+    assert.equal(gate.blocked && gate.until, until);
+    assert.match(gate.blocked ? gate.message : '', /账号额度已用尽，等待/);
+    // This project set no budget and the account no reserve: a spent plan is not that kind of limit.
+    assert.equal(s.projectRow().usageBudget, undefined);
+    assert.equal(s.engine.usage.settings().usageReserve, undefined);
+    assert.equal(s.transport.reads, 0);
+    const refused = await s.api('POST', `/api/channels/${s.channel.id}/action`, { action: 'run' }, 429);
+    assert.match(refused.error, /账号额度已用尽/);
+    await s.engine.action(s.channel.id, 'resume');
+    assert.equal(s.channelRow().status, 'waiting');
+    assert.equal(s.channelRow().usageWait.kind, 'account');
+    assert.equal(s.channelRow().nextRunAt, until);
+    assert.equal(s.systemEvents('账号额度已用尽').length, 1);
+    assert.equal(s.transport.sent.length, 0);
+    assert.equal(s.store.all('runs').length, 0);
   } finally {
     await s.cleanup();
   }

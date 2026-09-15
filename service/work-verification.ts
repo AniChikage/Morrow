@@ -8,6 +8,8 @@ import type { ProjectWorkLoop, Scope } from './project-loop.ts';
 import type { NativeSnapshot, NativeTransport } from './native-conversations.ts';
 import { nativeTurns } from './native-conversations.ts';
 import { now, parseRows } from './store.ts';
+import { quotaFailure } from './runtimes.ts';
+import { clock, usageResetAt } from './usage.ts';
 import { readSourceVersion, sourceVersion } from './source-version.ts';
 import { evidenceData } from './measurement.ts';
 import type { Verification, Finalization, SourceVersion } from './verification-types.ts';
@@ -18,6 +20,16 @@ const hash = (v: unknown) =>
     .update(JSON.stringify(v) ?? 'undefined')
     .digest('hex');
 const terminal = (v: Verification) => !['queued', 'running'].includes(v.status);
+/**
+ * A review the account's spent quota stopped. It is recorded `unknown`, so the history says what
+ * happened, but it concluded nothing: the tick re-queues this same row once the wait has passed, and
+ * until then the completion requests saved against it stay pending.
+ */
+const accountWait = (v: Verification) => v.status === 'unknown' && v.usageWait?.kind === 'account' && !!v.retryAt;
+/** How long to hold a review whose quota message named no moment of its own. */
+const blindAccountWaitMs = 60 * 60_000;
+/** The shortest hold in any case, so a message naming a moment already past cannot re-queue per tick. */
+const minAccountWaitMs = 60_000;
 /** The execution record an `execution` evidence row carries; these are the fields a check reads. */
 type ExecutionData = {
   boundVersion?: boolean;
@@ -539,6 +551,8 @@ export class WorkVerification {
     if (row?.projectId !== scope.projectId) throw new APIError(404, '复核不属于当前项目');
     if (row.status !== 'unknown' || row.interruptPending || !this.current(row))
       throw new APIError(409, '仅可在原复核已停止、材料仍有效时重试未知结果；失败反例需要先修正');
+    if (accountWait(row))
+      throw new APIError(409, '复核因账号额度用尽停下，额度恢复后会自动重试同一次，不必消耗当天的重试次数');
     const history = this.rows(scope.projectId);
     const latest = history.findLast(
       (r) => r.subjectHash === row.subjectHash && r.version.digest === row.version.digest
@@ -710,7 +724,9 @@ export class WorkVerification {
   }
   settle(verificationId: string) {
     const verification = this.loop.store.get<Verification>('loop_verifications', verificationId);
-    if (!verification || !terminal(verification)) return;
+    // A review waiting for the account has reached no verdict of its own, so the requests saved
+    // against it are neither applied nor rejected until the re-queued attempt concludes.
+    if (!verification || !terminal(verification) || accountWait(verification)) return;
     const intents = this.loop
       .rows<Finalization>('loop_finalizations', verification.projectId)
       .filter((row) => row.verificationId === verificationId && row.status === 'pending')
@@ -849,16 +865,23 @@ export class WorkVerification {
       this.loop.store.byStatus<Finalization>('loop_finalizations', ['pending']).map((row) => row.verificationId)
     ))
       this.settle(id);
-    // One reading for both loops instead of two scans of the same table: the interrupts are started
-    // first, exactly as before, and `interrupt()` only clears its own flag, never a row's status.
+    // One reading for all three loops instead of separate scans of the same table: the interrupts
+    // are started first, exactly as before, and `interrupt()` only clears its own flag, never a
+    // row's status. The account-wait rows are the ones a spent quota stopped; they leave that state
+    // in the same tick their wait passes, so the set stays as small as the queued one.
     const rows = this.loop.store.db
       .prepare(
-        "SELECT data FROM loop_verifications WHERE json_extract(data,'$.interruptPending')=1 OR json_extract(data,'$.status')='queued' ORDER BY rowid"
+        `SELECT data FROM loop_verifications
+           WHERE json_extract(data,'$.interruptPending')=1
+              OR json_extract(data,'$.status')='queued'
+              OR (json_extract(data,'$.status')='unknown' AND json_extract(data,'$.usageWait.kind')='account')
+           ORDER BY rowid`
       )
       .all();
     const waiting = parseRows<Verification>(rows);
     for (const row of waiting)
       if (row.interruptPending && !this.interrupting.has(row.id)) this.loop.track(this.interrupt(row.id));
+    for (const row of waiting.filter((row) => accountWait(row) && row.retryAt! <= now())) this.resume(row);
     for (const row of waiting.filter((row) => row.status === 'queued')) {
       if (this.active.size >= 1) return;
       if (row.retryAt && row.retryAt > now()) continue;
@@ -869,6 +892,43 @@ export class WorkVerification {
       if (this.loop.store.runCount(row.channelId, now().slice(0, 10)) >= channel.maxRunsPerDay) continue;
       this.loop.track(this.start(row.id));
     }
+  }
+  /**
+   * Puts a review the account's quota stopped back in the queue once its wait has passed: the same
+   * row, so the day's retry budget is untouched, with the previous attempt's per-run counters and
+   * native task cleared. It starts on the next tick, like any queued review. Newer material for the
+   * same subject and version supersedes it instead — then the wait is dropped and the row stays the
+   * unknown result it is, so its saved completion requests settle.
+   */
+  resume(row: Verification) {
+    const latest = this.rows(row.projectId).findLast(
+      (r) => r.subjectHash === row.subjectHash && r.version.digest === row.version.digest
+    );
+    if (latest?.id !== row.id) {
+      this.update(row.id, { retryAt: undefined, usageWait: undefined });
+      return;
+    }
+    this.update(row.id, {
+      status: 'queued',
+      summary: '账号额度已恢复，等待重新核验',
+      retryAt: undefined,
+      usageWait: undefined,
+      startedAt: undefined,
+      finishedAt: undefined,
+      threadId: undefined,
+      turnId: undefined,
+      model: undefined,
+      bytes: 0,
+      commandCount: 0,
+    });
+    this.loop.audit(
+      row,
+      'verification.requeued',
+      '账号额度已恢复，自动重新核验同一次，不占用当天的重试次数',
+      row.itemId,
+      { verificationId: row.id },
+      'system'
+    );
   }
   async start(id: string) {
     const row = this.loop.store.get<Verification>('loop_verifications', id)!;
@@ -1084,6 +1144,10 @@ export class WorkVerification {
     }
     if (observation.status === 'inProgress') return;
     if (observation.status !== 'completed') {
+      if (observation.error && quotaFailure.test(observation.error)) {
+        this.waitForAccount(id, observation.error);
+        return;
+      }
       this.finish(
         id,
         'unknown',
@@ -1151,6 +1215,26 @@ export class WorkVerification {
     } catch (error) {
       this.finish(id, 'unknown', `复核结果无法核验：${error instanceof Error ? error.message : '格式错误'}`);
     }
+  }
+  /**
+   * A spent account is not a review result. The row is recorded `unknown` with the wait it has to
+   * serve, and keeps this attempt: the tick re-queues this same row once the wait has passed, so it
+   * consumes neither one of the day's two retries nor the completion requests saved against it. The
+   * provider's own text stays in `error`, and `UsageMonitor` learns the same wait, so no turn or
+   * review on this account is launched before then.
+   */
+  waitForAccount(id: string, raw: string) {
+    const named = usageResetAt(raw);
+    const until = new Date(
+      Math.max(named ? Date.parse(named) : Date.now() + blindAccountWaitMs, Date.now() + minAccountWaitMs)
+    ).toISOString();
+    this.loop.usage?.noteAccountExhausted(until);
+    this.update(id, {
+      retryAt: until,
+      usageWait: { kind: 'account', until, since: now() },
+      error: this.redact(raw).slice(0, 2000),
+    });
+    this.finish(id, 'unknown', `账号额度已用尽，${clock(until)} 后自动重试`);
   }
   finish(id: string, status: Verification['status'], summary: string) {
     const row = this.loop.store.get<Verification>('loop_verifications', id);

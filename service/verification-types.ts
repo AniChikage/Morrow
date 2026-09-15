@@ -58,8 +58,14 @@ export type Verification = {
   interruptPending?: boolean;
   /** A queued review held by the usage gate is not re-attempted before this time. */
   retryAt?: string;
-  /** Set while the usage gate holds this queued review; cleared when it starts. */
-  usageWait?: { kind: 'budget' | 'reserve' | 'unknown'; window?: string; since: string };
+  /**
+   * Set while the usage gate holds this queued review; cleared when it starts. `account` is the
+   * provider's own spent-quota message on a review that had already started: that review is not a
+   * result, so it keeps `until` and is re-queued as the same attempt once the account is back.
+   */
+  usageWait?: { kind: 'budget' | 'reserve' | 'unknown' | 'account'; window?: string; until?: string; since: string };
+  /** The original failure text behind an `unknown` result; the summary stays the short sentence. */
+  error?: string;
   prompt: string;
   bytes: number;
   commandCount: number;

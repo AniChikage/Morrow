@@ -43,9 +43,12 @@ export type RunUsage = {
   delta?: Partial<Record<UsageWindow, number>>;
   attribution: 'estimated';
 };
-/** Why a channel is waiting on usage rather than on its own schedule. */
+/**
+ * Why a channel is waiting on usage rather than on its own schedule. `account` is the provider's own
+ * spent-quota message, which no rate-limit reading reports.
+ */
 export type UsageWait = {
-  kind: 'budget' | 'reserve' | 'unknown';
+  kind: 'budget' | 'reserve' | 'unknown' | 'account';
   window?: UsageWindow;
   resetsAt?: string;
   since: string;

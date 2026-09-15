@@ -31,7 +31,7 @@ export type UsageGate =
   | { blocked: false }
   | {
       blocked: true;
-      kind: 'reserve' | 'budget' | 'unknown';
+      kind: 'reserve' | 'budget' | 'unknown' | 'account';
       window?: UsageWindow;
       resetsAt?: string;
       until: string;
@@ -68,6 +68,35 @@ export function clock(iso: string): string {
 }
 const percent = (value: number) => (Number.isInteger(value) ? String(value) : value.toFixed(1));
 const future = (iso?: string) => !!iso && Date.parse(iso) > Date.now();
+const months = ['jan', 'feb', 'mar', 'apr', 'may', 'jun', 'jul', 'aug', 'sep', 'oct', 'nov', 'dec'];
+/**
+ * The moment a spent-quota message says the account works again, as in 「You've hit your usage
+ * limit. … try again at Sep 15th, 2026 11:41 AM.」. Read in this machine's own time zone: that is the
+ * wall clock the provider writes the message in and the one the person reading it is on. `undefined`
+ * when the text carries no such moment, or names a day that does not exist — the caller then decides
+ * how long to wait rather than being handed a guess.
+ */
+export function usageResetAt(text: string): string | undefined {
+  const match =
+    /try again at\s+([A-Za-z]{3,9})\.?\s+(\d{1,2})(?:st|nd|rd|th)?,?\s+(\d{4}),?\s+(\d{1,2}):(\d{2})\s*([AP])?\.?M?\.?/i.exec(
+      text
+    );
+  if (!match) return undefined;
+  const month = months.indexOf(match[1]!.slice(0, 3).toLowerCase());
+  const day = Number(match[2]),
+    year = Number(match[3]),
+    minute = Number(match[5]);
+  const meridiem = match[6]?.toUpperCase();
+  let hour = Number(match[4]);
+  if (month < 0 || minute > 59) return undefined;
+  if (meridiem) {
+    if (hour < 1 || hour > 12) return undefined;
+    hour = (hour % 12) + (meridiem === 'P' ? 12 : 0);
+  } else if (hour > 23) return undefined;
+  const at = new Date(year, month, day, hour, minute);
+  // A rolled-over date (`Feb 31st`) is not the day the message named, so it is not a reset time.
+  return at.getMonth() === month && at.getDate() === day ? at.toISOString() : undefined;
+}
 function usageWindowInput(value: unknown, field: string): UsageWindow {
   return choice(value, field, usageWindows);
 }
@@ -113,6 +142,13 @@ export class UsageMonitor {
   lastError = '';
   /** Strips the desktop token before an error reaches the UI; the engine replaces it with its own. */
   redact: (value: string) => string = (value) => value;
+  /**
+   * Until when a runner itself reported the account's quota spent. No rate-limit reading carries
+   * this: the App reports window percentages, while a plan-level exhaustion arrives only as the text
+   * of a failed turn. Kept in memory on purpose — it is a scheduling hint a restart re-learns from
+   * the next failure, and each waiting review keeps its own `retryAt` in the database.
+   */
+  exhaustedUntil = '';
   timer: NodeJS.Timeout | undefined;
   closed = false;
   constructor(store: Store, transport?: NativeTransport) {
@@ -284,6 +320,15 @@ export class UsageMonitor {
    * project's budget applies; the reserve (exact account reading) is checked before the budget (estimate).
    */
   gate(project: Project): UsageGate {
+    // A runner's own spent-quota failure is in no reading, and it holds whether or not this project
+    // set a limit: nothing runs on this account until the moment that failure named.
+    if (future(this.exhaustedUntil))
+      return {
+        blocked: true,
+        kind: 'account',
+        until: this.exhaustedUntil,
+        message: `账号额度已用尽，等待 ${clock(this.exhaustedUntil)} 恢复`,
+      };
     const settings = this.settings();
     const reserve = settings.usageReserve;
     const budget = project.usageBudget;
@@ -346,6 +391,14 @@ export class UsageMonitor {
       until: at,
       message: `额度读数不可用，已按设置停止自动工作，${clock(at)} 后重试`,
     };
+  }
+  /**
+   * What a failed turn reported about the account itself, so nothing else is launched until then.
+   * The longest wait learned so far stands: a later message that names an earlier moment would send
+   * the scheduler back into a limit that is still in force, and the wait expires on its own anyway.
+   */
+  noteAccountExhausted(until: string) {
+    if (future(until) && (!future(this.exhaustedUntil) || until > this.exhaustedUntil)) this.exhaustedUntil = until;
   }
   /** Periodic refresh while limits are configured; one read right away once the transport is reachable. */
   start() {

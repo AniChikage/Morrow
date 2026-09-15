@@ -7,8 +7,10 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { sourceVersion } from '../service/source-version.ts';
 import { executionCommand } from '../service/execution-evidence.ts';
+import { clock } from '../service/usage.ts';
+import type { ReviewRunner } from '../service/codex-cli-review.ts';
 import { FakeReviewer } from './harness/fake-reviewer.ts';
-import { startIsolated, type IsolatedService } from './harness/service.ts';
+import { startIsolated, stopScheduler, type IsolatedService } from './harness/service.ts';
 import { grantFor } from './harness/grant.ts';
 const future = () => new Date(Date.now() + 3600000).toISOString();
 async function fixture() {
@@ -853,6 +855,126 @@ test('expired-window and stale-source execution cannot queue a reviewer even whe
     await f.call('verification.request', { decisionId: d.id, evidenceIds: [evidence.id] }, 409);
     assert.equal(f.store.all('loop_verifications').length, 0);
   } finally {
+    await f.cleanup();
+  }
+});
+
+/** English month names, to build the provider's own wording around a moment this test controls. */
+const monthNames = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+const ordinal = (day: number) =>
+  day % 10 === 1 && day !== 11
+    ? 'st'
+    : day % 10 === 2 && day !== 12
+      ? 'nd'
+      : day % 10 === 3 && day !== 13
+        ? 'rd'
+        : 'th';
+/**
+ * The message a real review received on the author's own project, around any moment: 「You've hit
+ * your usage limit. … try again at Sep 15th, 2026 11:41 AM.」 A fixed date would make this test pass
+ * or fail by the calendar, so the wording is kept and the moment is the argument.
+ */
+const usageLimitText = (at: Date) =>
+  `You've hit your usage limit. Upgrade to Pro (https://openai.com/chatgpt/pricing) or try again at ` +
+  `${monthNames[at.getMonth()]} ${at.getDate()}${ordinal(at.getDate())}, ${at.getFullYear()} ` +
+  `${at.getHours() % 12 || 12}:${String(at.getMinutes()).padStart(2, '0')} ${at.getHours() < 12 ? 'AM' : 'PM'}.`;
+/** A `ReviewRunner` with a scripted outcome: no CLI is started, no model is called. */
+const scriptedRunner = () => {
+  const state: { starts: number; error?: string; items: Record<string, any>[] } = { starts: 0, items: [] };
+  const runner: ReviewRunner = {
+    start: ({ observe }) => {
+      state.starts++;
+      const { error, items } = state;
+      return {
+        cancel: () => {},
+        done: Promise.resolve().then(() =>
+          observe({ threadId: 'scripted-cli-session', items, status: error ? 'failed' : 'completed', error })
+        ),
+      };
+    },
+  };
+  return { state, runner };
+};
+const passReport = (cwd: string) => [
+  {
+    id: 'check',
+    type: 'commandExecution',
+    command: 'node -e "process.stdout.write(String(1))"',
+    cwd,
+    status: 'completed',
+    exitCode: 0,
+    aggregatedOutput: '1',
+  },
+  {
+    id: 'final',
+    type: 'agentMessage',
+    phase: 'final_answer',
+    text:
+      '```morrow-verification\n' +
+      JSON.stringify({
+        verdict: 'pass',
+        summary: '脚本化运行器完成只读核验',
+        checks: [{ expectationId: 'feature', verdict: 'met', reason: '仅为运行器夹具的检查结果' }],
+        findings: [],
+        limitations: ['scripted runner only'],
+      }) +
+      '\n```',
+  },
+];
+test('a spent account is not a review result: the same attempt waits for the account and is re-queued', async (t) => {
+  const f = await fixture();
+  // The tick is driven by this test, so the re-queue happens where the assertions can see it.
+  stopScheduler(f);
+  try {
+    const at = new Date(Date.now() + 90 * 60_000);
+    at.setSeconds(0, 0);
+    const until = at.toISOString();
+    const { state, runner } = scriptedRunner();
+    state.error = usageLimitText(at);
+    f.engine.loop.verification.connectRunner(runner);
+    const queued = await f.call('verification.request', { itemId: f.item.id, evidenceIds: [f.evidence.id] });
+    await f.engine.loop.verification.start(queued.id);
+    const row = () => f.store.get<any>('loop_verifications', queued.id);
+    // Not a verdict about the work: a wait, with the provider's own text kept for whoever reads it.
+    assert.equal(row().status, 'unknown');
+    assert.equal(row().summary, `账号额度已用尽，${clock(until)} 后自动重试`);
+    assert.equal(row().usageWait.kind, 'account');
+    assert.equal(row().usageWait.until, until);
+    assert.equal(row().retryAt, until);
+    assert.equal(row().error, state.error);
+    // The account, not this project's own limits, is what the whole service now waits for.
+    assert.equal(f.engine.usage.exhaustedUntil, until);
+    const gate = f.engine.usage.gate(f.store.get<any>('projects', f.project.id));
+    assert.equal(gate.blocked && gate.kind, 'account');
+    assert.equal(gate.blocked && gate.until, until);
+    // The attempt is kept, so the day's two tries for this material are untouched.
+    assert.equal(f.store.all('loop_verifications').length, 1);
+    const refused = await f.call('verification.retry', { id: queued.id }, 409);
+    assert.match(refused.error, /账号额度用尽.*自动重试同一次/);
+    assert.equal(f.store.all('loop_verifications').length, 1);
+    // Before the wait passes the tick leaves it alone; nothing is started on a spent account.
+    f.engine.loop.verification.tick();
+    assert.equal(row().status, 'unknown');
+    assert.equal(state.starts, 1);
+    t.mock.timers.enable({ apis: ['Date'], now: Date.now() });
+    t.mock.timers.tick(91 * 60_000);
+    f.engine.loop.verification.tick();
+    assert.equal(row().status, 'queued');
+    assert.equal(row().usageWait, undefined);
+    assert.equal(row().retryAt, undefined);
+    assert.equal(row().bytes, 0);
+    assert.equal(f.store.all<any>('events').filter((e) => e.action === 'verification.requeued').length, 1);
+    // The same row reaches its verdict, and it is still the only attempt ever created.
+    state.error = undefined;
+    state.items = passReport(f.path);
+    await f.engine.loop.verification.start(queued.id);
+    assert.equal(row().status, 'passed');
+    assert.equal(row().summary, '脚本化运行器完成只读核验');
+    assert.equal(state.starts, 2);
+    assert.equal(f.store.all('loop_verifications').length, 1);
+    assert.equal(f.native.sent.length, 0);
+  } finally {
+    t.mock.timers.reset();
     await f.cleanup();
   }
 });
