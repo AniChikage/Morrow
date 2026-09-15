@@ -186,7 +186,7 @@ export function EvidenceReferences({ ids, data }: { ids: string[]; data?: Projec
         const e = data?.evidence.find((row) => row.id === id);
         return (
           <details key={id}>
-            <summary>
+            <summary title={id}>
               {e?.summary || `证据 ${id.slice(0, 8)}`}{' '}
               <span className="subtle">
                 {e?.origin === 'native'
@@ -203,7 +203,8 @@ export function EvidenceReferences({ ids, data }: { ids: string[]; data?: Projec
             {e && (
               <>
                 <p className="work-source">
-                  {e.source} · {formatDate(e.observedAt)}
+                  {e.source && !e.summary.includes(e.source) && <>{e.source} · </>}
+                  {formatDate(e.observedAt)}
                 </p>
                 {e.origin === 'native' && <p className="subtle">原生工具历史快照，不等同于执行检查或验收通过。</p>}
                 {e.origin === 'file' && (

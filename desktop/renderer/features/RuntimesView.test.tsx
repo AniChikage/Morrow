@@ -105,7 +105,12 @@ test('CLI detection stays separate from authentication and details are progressi
 test('Codex reports the live App connection and bundle version separately from the installed CLI used for review', async () => {
   const { props, api } = runtimeProps();
   api.getNativeStatus.mockResolvedValue(
-    status({ connected: true, detail: '原生会话连接已建立', appVersion: '1.0-test', runtimeVersion: 'app-server/7' })
+    status({
+      connected: true,
+      detail: '已连接 Codex App 已加载的任务。',
+      appVersion: '1.0-test',
+      runtimeVersion: 'app-server/7',
+    })
   );
   render(<RuntimesView {...props} />);
   const row = await screen.findByRole('button', { name: 'Codex，App 已连接，查看详情' });
@@ -115,7 +120,7 @@ test('Codex reports the live App connection and bundle version separately from t
   expect(within(row).queryByText(installed.version)).toBeNull();
   await userEvent.setup().click(row);
   const details = within(screen.getByRole('region', { name: 'Codex 详情' }));
-  expect(details.getByText('App 任务连接已建立')).toBeTruthy();
+  expect(details.getByText('已连接 Codex App 已加载的任务。')).toBeTruthy();
   expect(details.getByText(/绑定 Codex App 的同一条任务/)).toBeTruthy();
   expect(details.getByText('app-server/7')).toBeTruthy();
   expect(details.getByText(installed.version)).toBeTruthy();
