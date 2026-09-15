@@ -260,7 +260,14 @@ export type Run = {
 export type NativeConnectionStatus = {
   available: boolean;
   connected: boolean;
+  /**
+   * One short human sentence about the connection, which the channel page shows under the channel
+   * title. Never a filesystem path and never an errno: the transport's own `connect ECONNREFUSED
+   * /Users/<name>/.codex/ipc/ipc.sock` is mapped by `connectionDetail`.
+   */
   detail: string;
+  /** The transport's original text, kept for diagnosis; present only when `detail` differs from it. */
+  rawDetail?: string;
   /** The Codex App bundle is present on the machine running the service. */
   appInstalled?: boolean;
   /** Version of the installed Codex App bundle, when it can be read. */
@@ -319,7 +326,10 @@ export type NativeConversation = {
   hasMore: boolean;
   cursor?: string;
   lastSyncedAt?: string;
+  /** Why this task is not syncing, as one short human sentence; mapped the same way as `detail`. */
   syncError?: string;
+  /** The original sync failure text, kept for diagnosis; present only when `syncError` differs. */
+  rawSyncError?: string;
 };
 export type NativeMessageReceipt = {
   requestId: string;

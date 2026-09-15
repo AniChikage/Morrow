@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import { readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
-import { NativeConversations } from '../service/native-conversations.ts';
+import { connectionDetail, NativeConversations } from '../service/native-conversations.ts';
 import { applyDesktopPatches } from '../service/codex-desktop-transport.ts';
 import { importNativeImages, readNativeImage } from '../service/native-media.ts';
 import type { NativeTransport, NativeSnapshot, NativeWorkOptions } from '../service/native-conversations.ts';
@@ -530,6 +530,86 @@ test('follower-only and failed background connection cannot claim native creatio
     assert.equal(status.connected, false);
     assert.equal(status.capabilities.create, false);
     assert.match(status.detail, /ambiguous/);
+    assert.equal(status.rawDetail, undefined);
+  } finally {
+    await s.cleanup();
+  }
+});
+test('each known native connection failure reads as one human sentence, and nothing else leaks a path or an errno', () => {
+  /** What the socket reported, and the one line a person is shown instead of it. */
+  const cases: Array<[string, string]> = [
+    ['connect ECONNREFUSED /Users/yukun/.codex/ipc/ipc.sock', 'Codex App 未运行，打开后会自动重连'],
+    [
+      "ENOENT: no such file or directory, connect '/Users/yukun/.codex/ipc/ipc.sock'",
+      'Codex App 未运行，打开后会自动重连',
+    ],
+    ['connect ETIMEDOUT /Users/yukun/.codex/ipc/ipc.sock', 'Codex App 没有响应，稍后会重试'],
+    ['Request timed out after 15000ms', 'Codex App 没有响应，稍后会重试'],
+    ["EACCES: permission denied, connect '/Users/yukun/.codex/ipc/ipc.sock'", '无法访问 Codex App 的本机连接（权限）'],
+    ['EPERM: operation not permitted', '无法访问 Codex App 的本机连接（权限）'],
+    // Anything else keeps its own first line, without the path and without the errno.
+    ['ECONNRESET while reading /Users/yukun/.codex/ipc/ipc.sock\n    at Socket.onError (node:net)', 'while reading'],
+    ['no rollout found for /Users/yukun/.codex/sessions/rollout.jsonl', 'no rollout found for'],
+    // Text with nothing technical in it is shown exactly as the service wrote it.
+    ['未找到 Codex App 的本机对话连接，请打开 Codex App。', '未找到 Codex App 的本机对话连接，请打开 Codex App。'],
+    ['读/写权限不足', '读/写权限不足'],
+    ['', ''],
+  ];
+  for (const [raw, human] of cases) {
+    const detail = connectionDetail(raw);
+    assert.equal(detail, human, raw);
+    // Whatever the reason, what a person reads carries neither an absolute path nor an errno.
+    assert.doesNotMatch(detail, /(?<![\w一-鿿])\/[\w.~@+-]/, raw);
+    assert.doesNotMatch(detail, /\bE(?!RROR\b)[A-Z][A-Z0-9]{2,}\b/, raw);
+    assert.equal(detail.includes('\n'), false, raw);
+    // Mapping is idempotent, so a stored human sentence read back is never rewritten again.
+    assert.equal(connectionDetail(detail), detail, raw);
+  }
+  // A transport that reports readiness without a reason at all still means there is no reason.
+  assert.equal(connectionDetail(undefined), '');
+});
+test('a failed native task sync tells the channel page the App is not running and keeps the socket text beside it', async () => {
+  const s = await setup();
+  try {
+    await s.api('POST', `/api/channels/${s.channel.id}/native/bind`, { threadId: s.transport.threadId });
+    const raw = 'connect ECONNREFUSED /Users/yukun/.codex/ipc/ipc.sock';
+    const human = 'Codex App 未运行，打开后会自动重连';
+    const read = s.transport.readThread.bind(s.transport);
+    Object.assign(s.transport, {
+      readThread: async () => {
+        throw new Error(raw);
+      },
+    });
+    const failed = await s.api('GET', `/api/channels/${s.channel.id}/native/conversation`);
+    assert.equal(failed.syncError, human);
+    assert.equal(failed.rawSyncError, raw);
+    // The same channel page reads the connection detail; it must not fall back to the raw text.
+    assert.equal(failed.status.detail, human);
+    assert.equal(failed.status.rawDetail, raw);
+    const binding = s.store.get<any>('native_bindings', s.channel.id);
+    assert.equal(binding.syncError, human);
+    assert.equal(binding.rawSyncError, raw);
+    // Connecting failing the same way says the same thing, with the original kept for diagnosis.
+    s.transport.connected = false;
+    Object.assign(s.transport, {
+      connect: async () => {
+        throw new Error(raw);
+      },
+    });
+    const status = await s.api('GET', '/api/native/status');
+    assert.equal(status.connected, false);
+    assert.equal(status.detail, human);
+    assert.equal(status.rawDetail, raw);
+    // Once the App answers again both the human sentence and the text behind it are gone.
+    s.transport.connected = true;
+    Object.assign(s.transport, { connect: async () => {}, readThread: read });
+    const recovered = await s.api('GET', `/api/channels/${s.channel.id}/native/conversation`);
+    assert.equal(recovered.syncError, undefined);
+    assert.equal(recovered.rawSyncError, undefined);
+    const restored = s.store.get<any>('native_bindings', s.channel.id);
+    assert.equal(restored.syncError, '');
+    assert.equal(restored.rawSyncError, undefined);
+    assert.equal(s.transport.interruptions.length, 0);
   } finally {
     await s.cleanup();
   }

@@ -95,7 +95,10 @@ type Binding = {
   cwd: string;
   createdAt: string;
   lastSyncedAt?: string;
+  /** Why this task stopped syncing, already mapped to one short human sentence. */
   syncError?: string;
+  /** The original failure text behind `syncError`; absent when the two would be the same. */
+  rawSyncError?: string;
   createdByMorrow?: boolean;
   createdByNoHuman?: boolean;
 };
@@ -191,6 +194,46 @@ const isCanonicalSteer = (steering: any, canonical: any) =>
       (id) => typeof id === 'string' && itemMatchesRequest(canonical, id)
     ));
 const errorText = (error: unknown) => (error instanceof Error ? error.message : '原生会话同步失败');
+/**
+ * An absolute path, which names the user's own home directory. Only matched where a `/` starts a
+ * word, so ordinary prose (`读/写`, `on-request/auto_review`) keeps its slashes.
+ */
+const absolutePath = /(?<![\w一-鿿])\/(?:[\w.~@+\-一-鿿]+\/)*[\w.~@+\-一-鿿]+\/?/g;
+/**
+ * An errno token. Deliberately broad rather than a list of the codes Node happens to raise today,
+ * because an errno reaching the channel page is the failure this maps away; `ERROR` is the one
+ * ordinary word shaped like one.
+ */
+const errnoToken = /\bE(?!RROR\b)[A-Z][A-Z0-9]{2,}\b/g;
+/**
+ * What a person is told about a native connection that is not working. The transport reports what
+ * the socket reported — `connect ECONNREFUSED /Users/<name>/.codex/ipc/ipc.sock` — which the channel
+ * page showed under the channel title while the Codex App was simply not running. Each known failure
+ * of the App's own IPC socket therefore becomes one short sentence, and any other text keeps its
+ * first line with every absolute path and errno taken out, so what a person reads never carries a
+ * path or an errno. Text with nothing technical in it is returned exactly as written, which is how
+ * the service's own already-human connection messages pass through untouched.
+ *
+ * The original text is never discarded: the caller keeps it beside the mapped one (`rawDetail`,
+ * `rawSyncError`) for whoever is diagnosing the connection rather than using it.
+ */
+export function connectionDetail(raw: string | undefined): string {
+  // A transport double can leave a readiness detail out entirely; no reason is still no reason.
+  const text = typeof raw === 'string' ? raw.split(/[\r\n]+/, 1)[0]!.trim() : '';
+  if (!text) return '';
+  if (/\bE(?:CONNREFUSED|NOENT)\b/.test(text)) return 'Codex App 未运行，打开后会自动重连';
+  if (/\bETIME(?:DOUT)?\b/.test(text) || /\btime(?:d)?[\s_]*out\b/i.test(text)) return 'Codex App 没有响应，稍后会重试';
+  if (/\bE(?:ACCES|PERM)\b/.test(text)) return '无法访问 Codex App 的本机连接（权限）';
+  const stripped = text.replace(absolutePath, '').replace(errnoToken, '');
+  if (stripped === text) return text;
+  const tidied = stripped
+    .replace(/['"`]{2}/g, '')
+    .replace(/\s+/g, ' ')
+    .replace(/\s+([,.;:)\]，。；：）】])/g, '$1')
+    .replace(/^[\s,.;:\-，。；：]+/, '')
+    .trim();
+  return tidied || 'Codex App 本机连接出错，稍后会重试';
+}
 const sameFolder = (left: string, right: string) => {
   try {
     return realpathSync(left) === realpathSync(right);
@@ -538,7 +581,8 @@ export class NativeConversations {
     const readyThreadCount = connected
       ? bindings.filter((binding) => this.transport.threadStatus?.(binding.threadId).ready).length
       : 0;
-    const detail =
+    // What the transport reported, and the one short sentence a person reads instead of it.
+    const rawDetail =
       connectionError ||
       (restartRequired
         ? '旧转接仍随当前 App 运行。设置已撤销；请在当前任务结束后重开 Codex App。'
@@ -549,6 +593,7 @@ export class NativeConversations {
             : backgroundReady
               ? '已连接原生测试后台。'
               : '已连接 Codex App 已加载的任务。');
+    const detail = connectionDetail(rawDetail);
     return {
       available: connected,
       connected,
@@ -563,6 +608,7 @@ export class NativeConversations {
       ...(runtimeVersion ? { runtimeVersion } : {}),
       usage: this.engine.usage.status(),
       detail,
+      ...(detail === rawDetail ? {} : { rawDetail }),
       capabilities: {
         list: connected,
         read: connected,
@@ -629,8 +675,14 @@ export class NativeConversations {
     // The channel timeline is where a person sees this; the daemon log is where someone diagnosing
     // a task that stopped syncing can see it without a running interface.
     logError('native.sync.failed', error, { threadId });
+    const raw = errorText(error);
+    const syncError = connectionDetail(raw);
     for (const binding of this.store.bindingsForThread<Binding>(threadId))
-      this.store.put('native_bindings', { ...binding, syncError: errorText(error) });
+      this.store.put('native_bindings', {
+        ...binding,
+        syncError,
+        rawSyncError: syncError === raw ? undefined : raw,
+      });
   }
   async attach(threadId: string) {
     if (this.subscriptions.has(threadId)) return;
@@ -689,7 +741,12 @@ export class NativeConversations {
       for (const binding of this.store
         .bindingsForThread<Binding>(snapshot.threadId)
         .filter((row) => row.syncError || !row.lastSyncedAt))
-        this.store.put('native_bindings', { ...binding, syncError: '', lastSyncedAt: snapshot.syncedAt });
+        this.store.put('native_bindings', {
+          ...binding,
+          syncError: '',
+          rawSyncError: undefined,
+          lastSyncedAt: snapshot.syncedAt,
+        });
       return;
     }
     const safe = this.safe(snapshot);
@@ -786,7 +843,12 @@ export class NativeConversations {
             });
       }
       for (const binding of this.store.bindingsForThread<Binding>(safe.threadId))
-        this.store.put('native_bindings', { ...binding, lastSyncedAt: safe.syncedAt, syncError: '' });
+        this.store.put('native_bindings', {
+          ...binding,
+          lastSyncedAt: safe.syncedAt,
+          syncError: '',
+          rawSyncError: undefined,
+        });
       for (const entry of this.store
         .nativeRows<Outbox>('native_outbox', safe.threadId)
         .filter((row) => ['pending', 'unknown'].includes(row.state))) {
@@ -869,7 +931,8 @@ export class NativeConversations {
     if (
       !(binding.createdByMorrow || binding.createdByNoHuman) ||
       !this.transport.backgroundReady ||
-      !/no rollout found|missing source rollout/i.test(binding.syncError || '')
+      // The backend's own wording, so read the original text rather than the human sentence.
+      !/no rollout found|missing source rollout/i.test(binding.rawSyncError || binding.syncError || '')
     )
       return false;
     this.flushPending(binding.threadId);
@@ -1067,14 +1130,21 @@ export class NativeConversations {
       .filter((row) => row.threadId === binding.threadId && row.status === 'pending')
       .map(({ nativeId, threadId, ...row }) => ({ ...row, id: nativeId }));
     const readiness = this.transport.threadStatus?.(binding.threadId);
-    const syncError =
-      latest.syncError || (readiness && !readiness.ready ? readiness.detail : !stored ? '尚未取得原生任务快照' : '');
+    const rawSyncError: string | undefined = latest.syncError
+      ? latest.rawSyncError || latest.syncError
+      : readiness && !readiness.ready
+        ? readiness.detail
+        : !stored
+          ? '尚未取得原生任务快照'
+          : '';
+    const syncError = connectionDetail(rawSyncError);
     const threadStatus = syncError
       ? {
           ...status,
           connected: false,
           // Preserve the current App connection failure; the stored task sync error remains below.
           detail: status.connected ? syncError : status.detail,
+          ...(status.connected && rawSyncError !== syncError ? { rawDetail: rawSyncError } : {}),
           capabilities: { ...status.capabilities, read: false, send: false, interrupt: false, respond: false },
         }
       : status;
@@ -1090,6 +1160,7 @@ export class NativeConversations {
       ...(page[0] ? { cursor: page[0].id } : {}),
       lastSyncedAt: latest.lastSyncedAt,
       ...(syncError ? { syncError } : {}),
+      ...(syncError && rawSyncError !== syncError ? { rawSyncError } : {}),
     };
   }
   async send(

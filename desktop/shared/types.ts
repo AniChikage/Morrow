@@ -367,7 +367,10 @@ export interface RunOutputPage {
 export interface NativeConnectionStatus {
   available: boolean;
   connected: boolean;
+  /** One short human sentence about the connection; never a filesystem path and never an errno. */
   detail: string;
+  /** The transport's original text, kept for diagnosis; present only when `detail` differs from it. */
+  rawDetail?: string;
   /** The Codex App bundle is present on the machine running the service. */
   appInstalled?: boolean;
   /** Version of the installed Codex App bundle, when it can be read. */
@@ -426,7 +429,10 @@ export interface NativeConversation {
   hasMore: boolean;
   cursor?: string;
   lastSyncedAt?: string;
+  /** Why this task is not syncing, as one short human sentence; mapped the same way as `detail`. */
   syncError?: string;
+  /** The original sync failure text, kept for diagnosis; present only when `syncError` differs. */
+  rawSyncError?: string;
 }
 export interface NativeAttachment {
   id: string;
