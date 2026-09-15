@@ -422,12 +422,21 @@ export class ProjectWorkLoop {
         .map((row) => [row.id, row.name])
     );
   }
+  /**
+   * The ownership rule itself: a channel may advance an item nobody is responsible for, or one it is
+   * responsible for, and nothing else. `requireOwner` refuses a work-interface write with it; the
+   * turn report entry point (`Engine.finishSuccess`) needs the same rule as a value, because one
+   * refused report entry must not discard the rest of an otherwise valid report.
+   */
+  mayAdvance(channelId: string, item: WorkItem) {
+    return !item.ownerChannelId || item.ownerChannelId === channelId;
+  }
   /** Refuses a work-interface write on an item another channel of this project is responsible for. */
   requireOwner(scope: Scope, item: WorkItem) {
-    if (item.ownerChannelId && item.ownerChannelId !== scope.channelId)
+    if (!this.mayAdvance(scope.channelId, item))
       throw new APIError(
         409,
-        `事项 #${item.number} 由频道「${this.channelName(item.ownerChannelId)}」负责；只能推进分派给本频道或无人负责的事项`
+        `事项 #${item.number} 由频道「${this.channelName(item.ownerChannelId!)}」负责；只能推进分派给本频道或无人负责的事项`
       );
   }
   /**

@@ -706,8 +706,11 @@ test('sibling channels advance one project item, preserve origin, reject other p
     const history = await s.api('GET', `/api/events?projectId=${s.project.id}&itemId=${item.id}`);
     assert.equal(history.events.at(-1).actor, 'agent');
     assert.equal(history.events.at(-1).channelId, b.id);
+    // Reporting an item nobody was responsible for claimed it, so the channel that may still write
+    // it — and whose stale report the human edit must survive — is that same channel.
+    assert.equal(updated.ownerChannelId, b.id);
     s.config({ delay: 300, result: report(updated, 'Agent stale overwrite') });
-    await s.api('POST', `/api/channels/${a.id}/action`, { action: 'run' });
+    await s.api('POST', `/api/channels/${b.id}/action`, { action: 'run' });
     await s.api('PATCH', `/api/items/${item.id}`, { title: 'Human latest', revision: updated.revision });
     await waitRuns(2);
     updated = s.store.get<any>('items', item.id);
