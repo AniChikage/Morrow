@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'nod
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { startServer } from '../../service/server.ts';
-import type { NativeTransport } from '../../service/native-conversations.ts';
+import type { BridgeRestore, NativeTransport } from '../../service/native-conversations.ts';
 import type { BuildIdentity } from '../../service/build-identity.ts';
 import type { Channel, Project } from '../../service/protocol.ts';
 
@@ -20,6 +20,11 @@ export type IsolatedOptions = {
   home?: string;
   /** The build this service should report as the one it runs; a dev identity is derived otherwise. */
   identity?: BuildIdentity;
+  /**
+   * Stands in for undoing the retired `CODEX_CLI_PATH` bridge, which the real one does with
+   * `launchctl`. Supply it to exercise the restore route without touching this Mac's login session.
+   */
+  restoreBridge?: BridgeRestore;
   /**
    * `false` stops the daemon's own one-second loop, here and after every `restart()`, for a test that
    * drives each step itself. Nothing else changes: every gate still runs when the test calls it.
@@ -81,6 +86,7 @@ export async function startIsolated(options: IsolatedOptions = {}): Promise<Isol
       port: 0,
       nativeTransport: transport,
       reviewTransport: transport,
+      ...(options.restoreBridge ? { restoreBridge: options.restoreBridge } : {}),
       ...(options.identity ? { identity: options.identity } : {}),
     });
     if (options.scheduler === false) stopScheduler(service);

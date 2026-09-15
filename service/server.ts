@@ -42,7 +42,7 @@ import { runLog } from './run-log.ts';
 import { discoverRuntimes } from './runtimes.ts';
 import { NativeConversations } from './native-conversations.ts';
 import { NativeDesktopError } from './codex-desktop-transport.ts';
-import type { NativeTransport } from './native-conversations.ts';
+import type { BridgeRestore, NativeTransport } from './native-conversations.ts';
 import { importNativeImages, readNativeImage } from './native-media.ts';
 import { usageBudgetInput, usageReserveInput, usageWindowLabels } from './usage.ts';
 import type { Verification } from './verification-types.ts';
@@ -124,6 +124,11 @@ export async function startServer(
     nativeTransport?: NativeTransport;
     reviewTransport?: NativeTransport;
     reviewRunner?: ReviewRunner;
+    /**
+     * How `POST /api/native/background/restore` undoes the retired bridge. The real one runs
+     * `launchctl` against the user's login session, so a test supplies its own instead.
+     */
+    restoreBridge?: BridgeRestore;
     /** The build this process runs; read from its own bundle when omitted. */
     identity?: BuildIdentity;
     /** Called after the close path finished for an automatic version switch; the daemon exits here. */
@@ -196,7 +201,7 @@ export async function startServer(
   // Every log line from here on passes through this daemon's own redactor, so no field can carry
   // the service token. One daemon runs per process; the last service started owns the redactor.
   setLogRedactor((value) => engine.redact(value));
-  const native = new NativeConversations(store, engine, options.nativeTransport);
+  const native = new NativeConversations(store, engine, options.nativeTransport, options.restoreBridge);
   engine.native = native;
   engine.loop.verification.connect(options.reviewTransport ?? native.transport, (value) => engine.redact(value));
   if (!options.reviewTransport)

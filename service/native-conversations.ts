@@ -132,6 +132,11 @@ type StoredRequest = Omit<NativeRequest, 'type' | 'raw'> & {
   resolvedAt?: string;
   response?: unknown;
 };
+/**
+ * Undoing the retired `CODEX_CLI_PATH` bridge: what it left behind is removed, and the caller is
+ * told whether anything changed. The real one talks to `launchctl`; `startServer` can inject another.
+ */
+export type BridgeRestore = (home: string) => { restartRequired: boolean; detail: string };
 /** The marker row that records whether the background bridge is configured for this data directory. */
 type BridgeMarker = { id: string; enabled?: boolean; restoredAt?: string };
 /**
@@ -331,6 +336,11 @@ export class NativeConversations {
   threadCache = new Map<string, StoredThread>();
   itemCache = new Map<string, Map<string, StoredItem>>();
   turnCache = new Map<string, { raw: unknown; row: StoredTurn }>();
+  /**
+   * How the old `CODEX_CLI_PATH` bridge is undone. It runs `launchctl` against the user's login
+   * session, so a test supplies its own instead of touching this Mac; nothing else replaces it.
+   */
+  restoreBridge: BridgeRestore = restoreCodexBridge;
   projectedItems = new WeakMap<object, StoredItem>();
   safeValues = new WeakMap<object, any>();
   pendingSnapshots = new Map<string, NativeSnapshot>();
@@ -343,9 +353,10 @@ export class NativeConversations {
   closed = false;
   store: Store;
   engine: Engine;
-  constructor(store: Store, engine: Engine, transport?: NativeTransport) {
+  constructor(store: Store, engine: Engine, transport?: NativeTransport, restoreBridge?: BridgeRestore) {
     this.store = store;
     this.engine = engine;
+    if (restoreBridge) this.restoreBridge = restoreBridge;
     this.transport =
       transport ||
       (process.env.MORROW_TEST_MODE === '1'
@@ -566,7 +577,7 @@ export class NativeConversations {
     throw new APIError(410, '旧后台转接已退役。请在 Codex App 中创建同一项目的任务，再回到 Morrow 关联。');
   }
   restoreBackground(actor: 'human' | 'system' = 'human') {
-    const result = restoreCodexBridge(this.engine.home);
+    const result = this.restoreBridge(this.engine.home);
     if (
       actor === 'human' ||
       result.restartRequired ||
