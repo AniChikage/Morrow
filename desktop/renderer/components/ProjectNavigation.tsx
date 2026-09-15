@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { AlertCircle, Columns3, Folder, Hash, Plus } from 'lucide-react';
 import type { Channel, Project, Route } from '../../shared/types';
+import { readPreference, writePreference } from '../state/preferences';
 import './project-navigation.css';
 
 interface Props {
@@ -26,9 +27,7 @@ export function ProjectNavigation({
   const legacyStorageKey = `nh:project-navigation:${scope}`;
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>(() => {
     try {
-      const saved: unknown = JSON.parse(
-        localStorage.getItem(storageKey) ?? localStorage.getItem(legacyStorageKey) ?? '{}'
-      );
+      const saved: unknown = JSON.parse(readPreference(storageKey, legacyStorageKey) ?? '{}');
       return saved && typeof saved === 'object' && !Array.isArray(saved)
         ? Object.fromEntries(Object.entries(saved).filter(([, value]) => value === true))
         : {};
@@ -37,11 +36,7 @@ export function ProjectNavigation({
     }
   });
   useEffect(() => {
-    try {
-      localStorage.setItem(storageKey, JSON.stringify(collapsed));
-    } catch {
-      /* Navigation still works when view preferences cannot be saved. */
-    }
+    writePreference(storageKey, JSON.stringify(collapsed));
   }, [collapsed, storageKey]);
 
   const routeKey = route ? `${route.kind}:${'id' in route ? route.id : ''}` : '';

@@ -300,7 +300,7 @@ describe('AI work and release review', () => {
         <FeatureWork api={f.api} projectId="project-atlas" itemId="finding-import" />
       </TestProviders>
     );
-    expect(await screen.findByText('复核发现问题')).not.toBeNull();
+    expect(await screen.findByText('复核未通过')).not.toBeNull();
     expect(screen.getByText('169 小时的数据被错误计入 7 天', { exact: false })).not.toBeNull();
     expect(screen.queryByRole('button', { name: /确认/ })).toBeNull();
     f.data.verifications[0] = { ...f.data.verifications[0], status: 'passed', current: false };
@@ -484,6 +484,45 @@ describe('AI work and release review', () => {
       })
     );
     expect(screen.queryByText('late old project')).toBeNull();
+  });
+  it('shares one work-page request and one poll between every consumer of the same page', async () => {
+    vi.useFakeTimers();
+    try {
+      const f = fixture();
+      f.data.strategy = { understanding: [], decisions: [], counts: { understanding: 0, decisions: 0 } };
+      const view = render(
+        <TestProviders>
+          <ProjectThinking api={f.props.api} projectId="project-atlas" onNavigate={f.props.onNavigate} />
+          <ProjectReleases {...f.props} projectId="project-atlas" />
+          <FeatureWork api={f.props.api} projectId="project-atlas" itemId="finding-import" compact />
+        </TestProviders>
+      );
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(0);
+      });
+      // 当前判断 and 上线确认 read the same page, so they ask for it once; the item page is its own.
+      expect(f.getProjectWork.mock.calls).toEqual([
+        ['project-atlas', undefined],
+        ['project-atlas', 'finding-import'],
+      ]);
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(5000);
+      });
+      expect(f.getProjectWork).toHaveBeenCalledTimes(4);
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(5000);
+      });
+      expect(f.getProjectWork).toHaveBeenCalledTimes(6);
+      view.unmount();
+      const settled = f.getProjectWork.mock.calls.length;
+      // The last consumer to leave takes the page and its poll with it.
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(20000);
+      });
+      expect(f.getProjectWork).toHaveBeenCalledTimes(settled);
+    } finally {
+      vi.useRealTimers();
+    }
   });
   it('invalidates an in-flight history page when the project revision changes', async () => {
     vi.useFakeTimers();
@@ -960,6 +999,27 @@ describe('AI work and release review', () => {
     expect(screen.getByText('背景与预期收益', { selector: 'summary' }).closest('details')?.open).toBe(false);
     expect(f.reviewRelease).not.toHaveBeenCalled();
   });
+  it('names a review that could not conclude an unknown result rather than an unfinished one', async () => {
+    const f = fixture();
+    f.data.strategy = { understanding: [], decisions: [], counts: { understanding: 0, decisions: 0 } };
+    f.data.verifications = [{ ...historyRow('inconclusive'), status: 'unknown', current: true }];
+    render(<ProjectThinking api={f.api} projectId="project-atlas" onNavigate={f.props.onNavigate} />, {
+      wrapper: TestProviders,
+    });
+    expect(await screen.findByText('复核结果未知')).not.toBeNull();
+    expect(screen.queryByText('复核尚不能判断')).toBeNull();
+  });
+  it('names an approved release as waiting rather than as already out', async () => {
+    const f = fixture();
+    f.release.status = 'approved';
+    render(
+      <TestProviders>
+        <ProjectReleases {...f.props} projectId="project-atlas" />
+      </TestProviders>
+    );
+    expect(screen.getAllByText('已确认，等待上线').length).toBeGreaterThan(0);
+    expect(screen.queryByText('已上线')).toBeNull();
+  });
   it('returns a concrete revision to the agent with feedback without approving it', async () => {
     const f = fixture();
     render(
@@ -983,6 +1043,8 @@ describe('AI work and release review', () => {
       </TestProviders>
     );
     const user = userEvent.setup();
+    // 结局未知 read as a verdict; the label says the receipt still has to be checked.
+    expect(screen.getAllByText('上线结果待核对').length).toBeGreaterThan(0);
     await user.click(screen.getByRole('button', { name: /导入失败恢复/ }));
     expect(screen.queryByRole('button', { name: '确认这个版本上线' })).toBeNull();
     await user.click(screen.getByRole('button', { name: '核对上线结果' }));
@@ -1132,6 +1194,33 @@ describe('AI work and release review', () => {
     );
     expect(await screen.findByText('上线级')).not.toBeNull();
     expect(screen.getByText('候选版本的检查与各事项改动一致', { exact: false })).not.toBeNull();
+  });
+  it('says why review status reads as unknown while the source version cannot be read', async () => {
+    const f = fixture();
+    f.data.strategy = { understanding: [], decisions: [], counts: { understanding: 0, decisions: 0 } };
+    f.data.verifications = [historyRow('recent')];
+    const notice = '源码版本暂时读不到：工作目录暂时不可读，复核状态按未知显示。';
+    render(<ProjectThinking api={f.api} projectId="project-atlas" onNavigate={f.props.onNavigate} />, {
+      wrapper: TestProviders,
+    });
+    // Nothing is said while the source version reads normally.
+    expect(await screen.findByRole('region', { name: '最近复核' })).not.toBeNull();
+    expect(screen.queryByText(notice)).toBeNull();
+    cleanup();
+    f.data.sourceStale = true;
+    f.data.sourceReason = '工作目录暂时不可读';
+    render(<ProjectThinking api={f.api} projectId="project-atlas" onNavigate={f.props.onNavigate} />, {
+      wrapper: TestProviders,
+    });
+    expect(await screen.findByText(notice)).not.toBeNull();
+    cleanup();
+    render(
+      <TestProviders>
+        <ProjectReleases {...f.props} projectId="project-atlas" />
+      </TestProviders>
+    );
+    await userEvent.setup().click(screen.getByRole('button', { name: /导入失败恢复/ }));
+    expect(await screen.findByText(notice)).not.toBeNull();
   });
   it('requires every cited check to remain reviewable before approval', async () => {
     const f = fixture();

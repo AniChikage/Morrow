@@ -173,10 +173,14 @@ export function featureProps(patch: Partial<FeatureProps> = {}) {
     openDataFolder: vi.fn(),
     openExternal: vi.fn(),
     onCommand: vi.fn(() => () => {}),
-  } satisfies Partial<DesktopAPI>;
+    // A complete `DesktopAPI`, not a cast partial: renaming or removing a method has to fail
+    // `npm run typecheck` here rather than surface as a runtime error in one test. The optional
+    // methods stay out on purpose, so a test can add the ones it needs and the rest keep standing
+    // in for a service too old to offer them.
+  } satisfies DesktopAPI;
   const props: FeatureProps = {
     snapshot: state,
-    api: api as DesktopAPI,
+    api,
     busy: false,
     onNavigate: vi.fn(),
     onEditChannel: vi.fn(),
@@ -201,6 +205,12 @@ export const nativeStatus = {
   detail: 'Codex App 未连接',
   capabilities: { list: false, read: false, send: false, create: false, interrupt: false, respond: false },
 };
+/**
+ * Matches the element whose whole sentence is `text`, nested spans included: a usage row keeps its
+ * numbers in monospace spans of their own, so the row's own text nodes are not the whole sentence.
+ */
+export const sentence = (text: string) => (_content: string, element: Element | null) =>
+  element?.textContent === text && !Array.from(element.children).some((child) => child.textContent === text);
 export function TestProviders({ children }: { children: ReactNode }) {
   return <Tooltip.Provider delayDuration={0}>{children}</Tooltip.Provider>;
 }

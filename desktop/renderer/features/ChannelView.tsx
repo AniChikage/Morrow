@@ -11,6 +11,7 @@ import type {
 } from '../../shared/types';
 import type { FeatureProps } from './types';
 import { Button, Dropdown, DropdownItem, EmptyState, Markdown } from '../components/ui';
+import { mergeById, replaceIfChanged } from '../components/collections';
 import {
   channelStatusLabel,
   durationSeconds,
@@ -36,10 +37,7 @@ const ready = (value: NativeConversation | null) =>
   );
 const active = (value: NativeConversation | null) =>
   !!value?.thread?.activeTurnId || ['active', 'running', 'inProgress'].includes(value?.thread?.status || '');
-const mergeRuns = (old: Run[], next: Run[]) =>
-  [...new Map([...old, ...next].map((run) => [run.id, run])).values()].sort((a, b) =>
-    b.startedAt.localeCompare(a.startedAt)
-  );
+const mergeRuns = (old: Run[], next: Run[]) => mergeById(old, next, (a, b) => b.startedAt.localeCompare(a.startedAt));
 /** One short line per App-resume state; the reason itself is the expanded body. */
 const appResumeLabel: Record<NonNullable<Channel['appResume']>['state'], string> = {
   observing: 'App 续跑：观察中',
@@ -113,7 +111,7 @@ function LogEntry({
   const started = runTime(run, run.startedAt);
   const duration = run.finishedAt ? durationSeconds(run.startedAt, run.finishedAt) : undefined;
   return (
-    <article className="channel-log-entry" aria-label={`轮次 ${started}`}>
+    <article className="channel-log-entry" data-status={run.status} aria-label={`轮次 ${started}`}>
       <header>
         <time dateTime={run.startedAt || undefined}>{started}</time>
         <span>{stateLabel(run.status)}</span>
@@ -244,9 +242,12 @@ export function ChannelView(props: FeatureProps & { id: string }) {
         const page = await api.getRuns({ channelId: id, limit: 20, ...(before ? { before } : {}) });
         if (gen !== generation.current) return;
         setRuns((previous) =>
-          mergeRuns(
+          replaceIfChanged(
             previous,
-            page.runs.filter((run) => run.channelId === id)
+            mergeRuns(
+              previous,
+              page.runs.filter((run) => run.channelId === id)
+            )
           )
         );
         if (before || !oldestCursor.current) {
@@ -316,7 +317,7 @@ export function ChannelView(props: FeatureProps & { id: string }) {
           ? api.getNativeConversation(id, { limit: 1 }).then(
               (value) => {
                 if (!cancelled) {
-                  setConversation(value);
+                  setConversation((previous) => replaceIfChanged(previous, value));
                   setNativeError('');
                 }
               },
@@ -331,7 +332,7 @@ export function ChannelView(props: FeatureProps & { id: string }) {
         project && api.getProjectUsage
           ? api.getProjectUsage(project.id).then(
               (value) => {
-                if (!cancelled) setUsage(value);
+                if (!cancelled) setUsage((previous) => replaceIfChanged(previous, value));
               },
               () => {
                 if (!cancelled) setUsage(undefined);

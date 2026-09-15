@@ -3,6 +3,9 @@ import type { WorkspaceEvent } from '../../shared/types';
 import { Markdown } from '../components/ui';
 import { formatDate, runtimeLabel, statusLabel } from '../components/format';
 import { readableEventText, toolPresentation } from './eventPresentation';
+/** Oldest first, and within one timestamp the order the service recorded the events in. */
+export const byRecordOrder = (a: WorkspaceEvent, b: WorkspaceEvent) =>
+  a.createdAt.localeCompare(b.createdAt) || (a.detail?.sequence ?? 0) - (b.detail?.sequence ?? 0);
 export function EventLog({
   event,
   runtime,

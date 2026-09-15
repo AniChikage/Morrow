@@ -48,6 +48,35 @@ describe('project next step and secondary properties', () => {
     expect(screen.queryByRole('button', { name: '新建事项' })).toBeNull();
   });
 
+  it('drives the project tabs from the keyboard and names the panel each one controls', async () => {
+    const { props } = featureProps();
+    render(<ProjectView {...props} id="project-atlas" />, { wrapper: TestProviders });
+    const tabs = screen.getAllByRole('tab');
+    const board = screen.getByRole('tab', { name: /看板/ });
+    // Only the selected tab is in the tab order, so one Tab press reaches the row and no more.
+    expect(tabs.map((tab) => tab.getAttribute('tabindex'))).toEqual(['0', '-1', '-1', '-1', '-1']);
+    const panel = screen.getByRole('tabpanel');
+    expect(tabs.every((tab) => tab.getAttribute('aria-controls') === panel.id)).toBe(true);
+    expect(panel.getAttribute('aria-labelledby')).toBe(board.id);
+    const user = userEvent.setup();
+    board.focus();
+    await user.keyboard('{ArrowRight}');
+    expect(screen.getByRole('tab', { name: '项目说明' }).getAttribute('aria-selected')).toBe('true');
+    expect(document.activeElement).toBe(screen.getByRole('tab', { name: '项目说明' }));
+    expect(screen.getByRole('tabpanel').getAttribute('aria-labelledby')).toBe(
+      screen.getByRole('tab', { name: '项目说明' }).id
+    );
+    await user.keyboard('{End}');
+    expect(screen.getByRole('tab', { name: /上线确认/ }).getAttribute('aria-selected')).toBe('true');
+    await user.keyboard('{ArrowRight}'); // Past the last tab, round to the first.
+    expect(screen.getByRole('tab', { name: /看板/ }).getAttribute('aria-selected')).toBe('true');
+    await user.keyboard('{ArrowLeft}'); // Before the first tab, round to the last.
+    expect(screen.getByRole('tab', { name: /上线确认/ }).getAttribute('aria-selected')).toBe('true');
+    await user.keyboard('{Home}');
+    expect(screen.getByRole('tab', { name: /看板/ }).getAttribute('aria-selected')).toBe('true');
+    expect(screen.getAllByRole('tabpanel')).toHaveLength(1);
+  });
+
   it('uses actual brief content before guiding the user to an existing App task', async () => {
     const { props, api } = featureProps();
     props.snapshot.projects[0].briefRevision = 3;

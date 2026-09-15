@@ -4,6 +4,7 @@ import { ArrowUpRight, ChevronRight, Hash, Info, Monitor, RefreshCw, Server, Ter
 import type { Channel, ConnectionInfo, DesktopAPI, NativeConnectionStatus, Project, Runtime } from '../../shared/types';
 import type { FeatureProps } from './types';
 import { Button, EmptyState } from '../components/ui';
+import { replaceIfChanged } from '../components/collections';
 import { formatResetTime, usageWindowLabel } from '../components/format';
 import './content.css';
 import './runtimes.css';
@@ -191,12 +192,19 @@ function AppChecklist({
           <b>账户用量</b>
           {native.usage?.reading && !native.usage.stale ? (
             <span>
-              {native.usage.reading.windows
-                .map(
-                  (entry) =>
-                    `${usageWindowLabel(entry.name)} 已用 ${entry.usedPercent}%，${entry.resetsAt ? `重置 ${formatResetTime(entry.resetsAt)}` : '重置时间未知'}`
-                )
-                .join('；')}
+              {native.usage.reading.windows.map((entry, index) => (
+                <span key={entry.name}>
+                  {index > 0 ? '；' : ''}
+                  {usageWindowLabel(entry.name)} 已用 <span className="mono">{entry.usedPercent}%</span>，
+                  {entry.resetsAt ? (
+                    <>
+                      重置 <span className="mono">{formatResetTime(entry.resetsAt)}</span>
+                    </>
+                  ) : (
+                    '重置时间未知'
+                  )}
+                </span>
+              ))}
             </span>
           ) : (
             <>
@@ -246,16 +254,19 @@ export function RuntimesView({
       try {
         const next = await api.getNativeStatus(refreshUsage);
         if (request !== nativeRequest.current) return;
-        setNative(next);
+        // The eight-second read repeats the same status most of the time; keep the page still.
+        setNative((previous) => replaceIfChanged(previous, next));
         setNativeUnreachable(false);
       } catch {
         if (request !== nativeRequest.current) return;
-        setNative({
-          available: false,
-          connected: false,
-          detail: '暂时无法连接 Codex App。',
-          capabilities: { list: false, read: false, send: false, create: false, interrupt: false, respond: false },
-        });
+        setNative((previous) =>
+          replaceIfChanged(previous, {
+            available: false,
+            connected: false,
+            detail: '暂时无法连接 Codex App。',
+            capabilities: { list: false, read: false, send: false, create: false, interrupt: false, respond: false },
+          })
+        );
         setNativeUnreachable(true);
       }
     },

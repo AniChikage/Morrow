@@ -2,8 +2,10 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { ArrowUpRight, ChevronDown, Clock3, Copy, History, LoaderCircle, Terminal } from 'lucide-react';
 import type { Run, RunDetails, RunOutputChunk, RunsQuery, WorkspaceEvent } from '../../shared/types';
 import type { FeatureProps } from './types';
-import { Button, EmptyState, Markdown, StatusLabel } from '../components/ui';
+import { Button, EmptyState, Markdown, StatusLabel, TabRow, tabPanel } from '../components/ui';
 import { formatDate, nativeRun, runTime, runtimeLabel, shortId } from '../components/format';
+import { mergeById } from '../components/collections';
+import { usePagedHistory } from '../components/history';
 import { EventLog } from './EventLog';
 import './content.css';
 import './runs.css';
@@ -78,69 +80,36 @@ export function RunHistory({
   query?: RunsQuery;
   statusFilter?: string;
 }) {
-  const [stored, setStored] = useState<Run[]>([]),
-    [historyLoaded, setHistoryLoaded] = useState(false),
-    [cursor, setCursor] = useState<string>(),
-    [hasMore, setHasMore] = useState(false),
-    [loading, setLoading] = useState(false),
-    [error, setError] = useState(''),
-    [expanded, setExpanded] = useState<string | null>(null);
+  const [expanded, setExpanded] = useState<string | null>(null);
   const scope = JSON.stringify({ projectId: query.projectId, channelId: query.channelId });
-  const generation = useRef(0),
-    snapshotBaseline = useRef(new Set<string>());
-  async function load(before?: string) {
-    const current = generation.current;
-    setLoading(true);
-    setError('');
-    try {
+  const { rows, loading, error, hasMore, cursor, load } = usePagedHistory({
+    scope,
+    live: runs,
+    sort: (a, b) => b.startedAt.localeCompare(a.startedAt),
+    failure: '暂时无法读取更早运行。',
+    onReset: () => setExpanded(null),
+    page: async (before) => {
       const page = await props.api.getRuns({ ...query, ...(before ? { before } : {}), limit: 80 });
-      if (current !== generation.current) return;
-      setStored((previous) => (before ? [...page.runs, ...previous] : page.runs));
-      setHistoryLoaded(true);
-      setCursor(page.cursor);
-      setHasMore(page.hasMore);
-    } catch (failure) {
-      if (current === generation.current)
-        setError(failure instanceof Error ? failure.message : '暂时无法读取更早运行。');
-    } finally {
-      if (current === generation.current) setLoading(false);
-    }
-  }
-  useEffect(() => {
-    generation.current++;
-    snapshotBaseline.current = new Set(runs.map((run) => run.id));
-    setStored([]);
-    setHistoryLoaded(false);
-    setExpanded(null);
-    setHasMore(false);
-    setCursor(undefined);
-    void load();
-    return () => {
-      generation.current++;
-    };
-  }, [scope]);
-  const merged = useMemo(() => {
-    const loadedIds = new Set(stored.map((run) => run.id));
-    // The history cursor owns the loaded range; snapshots refresh those rows and add new runs.
-    const live = historyLoaded
-      ? runs.filter((run) => loadedIds.has(run.id) || !snapshotBaseline.current.has(run.id))
-      : runs;
-    return [...new Map([...stored, ...live].map((run) => [run.id, run])).values()]
-      .filter(
+      return { rows: page.runs, hasMore: page.hasMore, cursor: page.cursor };
+    },
+  });
+  const merged = useMemo(
+    () =>
+      rows.filter(
         (run) =>
           (!query.projectId || runProject(run, props) === query.projectId) &&
           (!query.channelId || run.channelId === query.channelId) &&
           (statusFilter === 'all' || run.status === statusFilter)
-      )
-      .sort((a, b) => b.startedAt.localeCompare(a.startedAt));
-  }, [stored, runs, historyLoaded, statusFilter, scope, props.snapshot.channels]);
+      ),
+    [rows, statusFilter, scope, props.snapshot.channels]
+  );
   let lastDay = '';
   return (
     <div className="run-history">
       {error && (
         <div className="feature-inline-error" role="alert">
           {error}
-          <Button variant="ghost" onClick={() => void load(cursor)}>
+          <Button variant="ghost" onClick={() => load(cursor)}>
             重试
           </Button>
         </div>
@@ -193,7 +162,7 @@ export function RunHistory({
       })}
       {(loading || hasMore) && (
         <div className="load-history">
-          <Button variant="ghost" disabled={loading} onClick={() => void load(cursor)}>
+          <Button variant="ghost" disabled={loading} onClick={() => load(cursor)}>
             {loading ? <LoaderCircle className="spin" size={14} /> : <History size={14} />}{' '}
             {loading ? '正在读取记录…' : '加载更早运行'}
           </Button>
@@ -258,9 +227,8 @@ function RunInspector({ run, ...props }: FeatureProps & { run: Run }) {
         limit: 80,
       });
       if (!mounted.current) return;
-      setEvents((previous) => [
-        ...new Map([...page.events, ...(before ? previous : [])].map((event) => [event.id, event])).values(),
-      ]);
+      // The older page leads, and rows already shown win, as the newest page did before paging back.
+      setEvents((previous) => mergeById(page.events, before ? previous : []));
       setMoreEvents(page.hasMore);
       setEventCursor(page.cursor);
     } catch (failure) {
@@ -280,11 +248,7 @@ function RunInspector({ run, ...props }: FeatureProps & { run: Run }) {
     try {
       const page = await api.getRunOutput(run.id, { ...(outputCursor ? { after: outputCursor } : {}), limit: 60 });
       if (!mounted.current) return;
-      setChunks((previous) =>
-        [...new Map([...previous, ...page.chunks].map((chunk) => [chunk.id, chunk])).values()].sort(
-          (a, b) => a.sequence - b.sequence
-        )
-      );
+      setChunks((previous) => mergeById(previous, page.chunks, (a, b) => a.sequence - b.sequence));
       setMoreOutput(page.hasMore);
       setOutputCursor(page.cursor || outputCursor);
       setLoadedOutput(true);
@@ -304,6 +268,7 @@ function RunInspector({ run, ...props }: FeatureProps & { run: Run }) {
     ).values(),
   ].sort((a, b) => a.createdAt.localeCompare(b.createdAt) || (a.detail?.sequence ?? 0) - (b.detail?.sequence ?? 0));
   const visibleChunks = chunks.filter((chunk) => ['stdout', 'stderr', 'final'].includes(chunk.stream));
+  const tabScope = `run-detail-${run.id}`;
   const tabs = [
     ['activity', '执行动态'],
     ['input', '本轮输入'],
@@ -392,20 +357,15 @@ function RunInspector({ run, ...props }: FeatureProps & { run: Run }) {
           {value.resumedFromSessionId && <small>沿用已有会话</small>}
         </div>
       )}
-      <div className="feature-tabs run-detail-tabs" role="tablist" aria-label="运行详情">
-        {tabs.map(([key, label]) => (
-          <button
-            key={key}
-            role="tab"
-            aria-selected={tab === key}
-            className={tab === key ? 'active' : ''}
-            onClick={() => setTab(key)}
-          >
-            {label}
-          </button>
-        ))}
-      </div>
-      <div className="run-detail-content">
+      <TabRow
+        label="运行详情"
+        className="run-detail-tabs"
+        scope={tabScope}
+        active={tab}
+        onSelect={setTab}
+        tabs={tabs.map(([key, label]) => ({ key, content: label }))}
+      />
+      <div className="run-detail-content" {...tabPanel(tabScope, tab)}>
         {tab === 'activity' && (
           <>
             {eventError && (

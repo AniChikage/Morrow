@@ -124,6 +124,24 @@ it('marks only the newest round as the primary action while work is continuing',
   expect(screen.getByText('查看最新轮次').closest('article')!.textContent).toContain('关注 new');
   expect(screen.queryByRole('button', { name: '暂停' })).toBeNull();
 });
+it('carries each round outcome onto the time rail, so the tick can be coloured by it', async () => {
+  const { props } = featureProps();
+  vi.mocked(props.api.getRuns).mockResolvedValue({
+    runs: [
+      round('now', { status: 'running', finishedAt: '' }),
+      round('done', { startedAt: '2026-09-06T03:00:00Z' }),
+      round('gone', { status: 'failed', startedAt: '2026-09-06T02:00:00Z' }),
+      round('left', { status: 'interrupted', startedAt: '2026-09-06T01:00:00Z' }),
+    ],
+    hasMore: false,
+  });
+  const view = render(<ChannelView {...props} id="channel-system" />, { wrapper: TestProviders });
+  await screen.findByText('关注 now');
+  // The status is plain text inside the round, so only this attribute lets the rail read it.
+  expect(
+    Array.from(view.container.querySelectorAll('.channel-log-entry')).map((entry) => entry.getAttribute('data-status'))
+  ).toEqual(['running', 'completed', 'failed', 'interrupted']);
+});
 it('keeps historical work distinct from the channel current focus and renders honest missing fields', async () => {
   const state = snapshot();
   state.channels[0].work = {

@@ -14,9 +14,7 @@ import {
   ChevronDown,
   ArrowUpRight,
   RefreshCw,
-  CircleHelp,
   CircleDashed,
-  Command,
   FolderPlus,
   AlertCircle,
 } from 'lucide-react';
@@ -42,10 +40,12 @@ import { RuntimesView } from './features/RuntimesView';
 import { UpgradeBanner } from './features/UpgradeBanner';
 import { upgradeSwitching } from './features/upgradeState';
 import morrowMark from '../../assets/brand/morrow-mark.png';
+import { readPreference, writePreference } from './state/preferences';
 import type { Route } from '../shared/types';
 import type { FeatureProps } from './features/types';
 
-const savedPreference = (key: string) => localStorage.getItem(`morrow:${key}`) ?? localStorage.getItem(`nh:${key}`);
+const savedPreference = (key: string) => readPreference(`morrow:${key}`, `nh:${key}`);
+const savePreference = (key: string, value: string) => writePreference(`morrow:${key}`, value);
 
 export default function App() {
   const {
@@ -120,7 +120,7 @@ export default function App() {
   const toggleSidebar = useCallback(
     () =>
       setSidebar((v) => {
-        localStorage.setItem('morrow:sidebar', v ? 'closed' : 'open');
+        savePreference('sidebar', v ? 'closed' : 'open');
         return !v;
       }),
     []
@@ -258,7 +258,12 @@ export default function App() {
           {navigation.tabs.map((tab) => {
             const r = tab.history[tab.index];
             return (
-              <div className={`resource-tab ${tab.id === navigation.activeId ? 'active' : ''}`} key={tab.id}>
+              // Only the tab itself may be a `tab` in this list; the close button is its sibling.
+              <div
+                role="presentation"
+                className={`resource-tab ${tab.id === navigation.activeId ? 'active' : ''}`}
+                key={tab.id}
+              >
                 <button
                   role="tab"
                   aria-selected={tab.id === navigation.activeId}
@@ -415,7 +420,7 @@ export default function App() {
                   e.preventDefault();
                   setSidebarWidth((v) => {
                     const next = Math.max(204, Math.min(300, v + (e.key === 'ArrowRight' ? 12 : -12)));
-                    localStorage.setItem('morrow:sidebar-width', String(next));
+                    savePreference('sidebar-width', String(next));
                     return next;
                   });
                 }
@@ -434,7 +439,7 @@ export default function App() {
                   node.removeEventListener('pointermove', move);
                   node.removeEventListener('pointerup', stop);
                   node.removeEventListener('pointercancel', stop);
-                  localStorage.setItem('morrow:sidebar-width', String(latest));
+                  savePreference('sidebar-width', String(latest));
                 };
                 node.addEventListener('pointermove', move);
                 node.addEventListener('pointerup', stop);

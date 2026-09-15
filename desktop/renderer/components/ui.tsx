@@ -1,4 +1,12 @@
-import { useEffect, useRef, useState, type ButtonHTMLAttributes, type ReactNode, type PointerEvent } from 'react';
+import {
+  useEffect,
+  useRef,
+  useState,
+  type ButtonHTMLAttributes,
+  type KeyboardEvent,
+  type ReactNode,
+  type PointerEvent,
+} from 'react';
 import * as Menu from '@radix-ui/react-dropdown-menu';
 import * as Tooltip from '@radix-ui/react-tooltip';
 import {
@@ -11,6 +19,7 @@ import {
   GripVertical,
   Copy,
 } from 'lucide-react';
+import { readPreference, writePreference } from '../state/preferences';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { statusLabel } from './format';
@@ -23,6 +32,24 @@ export function Button({
 }: ButtonHTMLAttributes<HTMLButtonElement> & { variant?: 'primary' | 'secondary' | 'ghost' | 'danger' }) {
   return <button type={type} className={`button button-${variant} ${className}`} {...props} />;
 }
+/**
+ * Whether the interface is being driven from the keyboard right now, the same question
+ * `:focus-visible` answers and jsdom cannot. A tooltip opening on focus is right for a Tab press
+ * and wrong for the focus a dialog moves by itself: opening 设置 used to put the 「关闭」 tooltip on
+ * screen before anyone had pointed at anything. A shortcut is not navigation, so a keystroke with
+ * a modifier leaves this alone.
+ */
+let keyboardFocus = false;
+if (typeof window !== 'undefined') {
+  window.addEventListener(
+    'keydown',
+    (event) => {
+      if (!event.metaKey && !event.ctrlKey && !event.altKey) keyboardFocus = true;
+    },
+    true
+  );
+  window.addEventListener('pointerdown', () => (keyboardFocus = false), true);
+}
 export function IconButton({
   label,
   children,
@@ -32,7 +59,17 @@ export function IconButton({
   return (
     <Tooltip.Root>
       <Tooltip.Trigger asChild>
-        <button type="button" aria-label={label} className={`icon-button ${className}`} {...props}>
+        <button
+          type="button"
+          aria-label={label}
+          className={`icon-button ${className}`}
+          {...props}
+          onFocus={(event) => {
+            props.onFocus?.(event);
+            // Radix opens the tooltip on focus unless the event is already prevented.
+            if (!keyboardFocus) event.preventDefault();
+          }}
+        >
           {children}
         </button>
       </Tooltip.Trigger>
@@ -42,6 +79,76 @@ export function IconButton({
         </Tooltip.Content>
       </Tooltip.Portal>
     </Tooltip.Root>
+  );
+}
+const tabId = (scope: string, key: string) => `${scope}-tab-${key}`;
+/**
+ * The attributes of the panel a `TabRow` controls. Only the selected panel is on screen, so one
+ * element is the panel for whichever tab is selected and is labelled by that tab; every tab points
+ * at it, so no `aria-controls` ever names an element that is not there.
+ */
+export const tabPanel = (scope: string, active: string) => ({
+  id: `${scope}-panel`,
+  role: 'tabpanel' as const,
+  'aria-labelledby': tabId(scope, active),
+});
+/**
+ * One row of tabs with the keyboard behaviour the pattern requires: only the selected tab is in the
+ * tab order, and Left/Right/Home/End move between them, wrapping around. Each tab names the panel
+ * it controls; mark that panel with `tabPanel(scope, active)`.
+ */
+export function TabRow<T extends string>({
+  label,
+  scope,
+  tabs,
+  active,
+  onSelect,
+  className = '',
+}: {
+  label: string;
+  /** Unique per row on screen, so the ids stay distinct when more than one row is open. */
+  scope: string;
+  tabs: readonly { key: T; content: ReactNode }[];
+  active: T;
+  onSelect: (key: T) => void;
+  className?: string;
+}) {
+  const step = (event: KeyboardEvent<HTMLDivElement>) => {
+    const keys = tabs.map((tab) => tab.key);
+    const at = Math.max(0, keys.indexOf(active));
+    const next =
+      event.key === 'ArrowLeft'
+        ? keys[(at - 1 + keys.length) % keys.length]
+        : event.key === 'ArrowRight'
+          ? keys[(at + 1) % keys.length]
+          : event.key === 'Home'
+            ? keys[0]
+            : event.key === 'End'
+              ? keys[keys.length - 1]
+              : undefined;
+    if (next === undefined) return;
+    event.preventDefault();
+    if (next !== active) onSelect(next);
+    document.getElementById(tabId(scope, next))?.focus();
+  };
+  return (
+    <div className={`feature-tabs ${className}`.trim()} role="tablist" aria-label={label} onKeyDown={step}>
+      {tabs.map((tab) => (
+        <button
+          key={tab.key}
+          id={tabId(scope, tab.key)}
+          type="button"
+          role="tab"
+          aria-selected={tab.key === active}
+          aria-controls={`${scope}-panel`}
+          tabIndex={tab.key === active ? 0 : -1}
+          className={tab.key === active ? 'active' : ''}
+          onClick={() => onSelect(tab.key)}
+        >
+          {tab.content}
+        </button>
+      ))}
+    </div>
   );
 }
 export function Dropdown({ trigger, children }: { trigger: ReactNode; children: ReactNode }) {
@@ -171,19 +278,9 @@ function CodeBlock({ children }: { children: ReactNode }) {
   );
 }
 export function PropertyPanel({ children }: { children: ReactNode }) {
-  const [width, setWidth] = useState(() => {
-    try {
-      return Math.max(
-        240,
-        Math.min(
-          400,
-          Number(localStorage.getItem('morrow:inspector-width') ?? localStorage.getItem('nh:inspector-width')) || 280
-        )
-      );
-    } catch {
-      return 280;
-    }
-  });
+  const [width, setWidth] = useState(() =>
+    Math.max(240, Math.min(400, Number(readPreference('morrow:inspector-width', 'nh:inspector-width')) || 280))
+  );
   const widthRef = useRef(width);
   widthRef.current = width;
   useEffect(() => {
@@ -199,9 +296,7 @@ export function PropertyPanel({ children }: { children: ReactNode }) {
       node.removeEventListener('pointermove', move);
       node.removeEventListener('pointerup', end);
       node.removeEventListener('pointercancel', end);
-      try {
-        localStorage.setItem('morrow:inspector-width', String(widthRef.current));
-      } catch {}
+      writePreference('morrow:inspector-width', String(widthRef.current));
     };
     node.addEventListener('pointermove', move);
     node.addEventListener('pointerup', end);
@@ -224,9 +319,7 @@ export function PropertyPanel({ children }: { children: ReactNode }) {
             e.preventDefault();
             const next = Math.max(240, Math.min(400, width + (e.key === 'ArrowLeft' ? 16 : -16)));
             setWidth(next);
-            try {
-              localStorage.setItem('morrow:inspector-width', String(next));
-            } catch {}
+            writePreference('morrow:inspector-width', String(next));
           }
         }}
       >
