@@ -5,6 +5,7 @@ import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'no
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { BuildIdentity } from '../service/build-identity.ts';
+import { CodexCliReviewRunner } from '../service/codex-cli-review.ts';
 import { helperDirectory, pinHelpers, pruneHelpers } from '../service/runtime-helpers.ts';
 import { startIsolated } from './harness/service.ts';
 import { grantFor } from './harness/grant.ts';
@@ -16,6 +17,7 @@ import { grantFor } from './harness/grant.ts';
  * and the copy is never refreshed under a daemon that is already running.
  */
 const source = fileURLToPath(new URL('../service/agent-cli.ts', import.meta.url));
+const workerSource = fileURLToPath(new URL('../service/codex-cli-worker.ts', import.meta.url));
 const fingerprint = 'a'.repeat(64);
 const identity = (value = fingerprint, bundlePath = '/Applications/Morrow.app'): BuildIdentity => ({
   bootId: 'boot-under-test',
@@ -25,13 +27,19 @@ const identity = (value = fingerprint, bundlePath = '/Applications/Morrow.app'):
   bundlePath,
 });
 
-test('an installed build spawns the work-interface helper from its own copy, not from the bundle', async () => {
+test('an installed build spawns both helpers from its own copies, not from the bundle', async () => {
   const s = await startIsolated({ identity: identity() });
   try {
     const pinned = join(helperDirectory(s.home, fingerprint), 'agent-cli.ts');
     assert.equal(s.engine.loop.helpers['agent-cli.ts'], pinned);
     assert.deepEqual(readFileSync(pinned), readFileSync(source));
     assert.equal(statSync(pinned).mode & 0o777, 0o600);
+    // The review supervisor is pinned the same way, so an install cannot change the IPC contract
+    // under a review this daemon started.
+    const pinnedWorker = join(helperDirectory(s.home, fingerprint), 'codex-cli-worker.ts');
+    assert.equal(s.engine.loop.helpers['codex-cli-worker.ts'], pinnedWorker);
+    assert.deepEqual(readFileSync(pinnedWorker), readFileSync(workerSource));
+    assert.equal(statSync(pinnedWorker).mode & 0o777, 0o600);
     // The launcher every turn is told to run points at that copy, which no installer touches.
     const grant = grantFor(s, { projectId: s.project.id, channelId: s.channel.id });
     const launcher = readFileSync(join(s.home, 'runs', grant.run.id, 'tool.sh'), 'utf8');
@@ -42,10 +50,11 @@ test('an installed build spawns the work-interface helper from its own copy, not
   }
 });
 
-test('a development checkout keeps spawning the helper from the source tree', async () => {
+test('a development checkout keeps spawning the helpers from the source tree', async () => {
   const s = await startIsolated({ identity: identity('unknown', '') });
   try {
     assert.equal(s.engine.loop.helpers['agent-cli.ts'], source);
+    assert.equal(s.engine.loop.helpers['codex-cli-worker.ts'], workerSource);
     assert.equal(existsSync(join(s.home, 'runtime')), false);
     const grant = grantFor(s, { projectId: s.project.id, channelId: s.channel.id });
     const launcher = readFileSync(join(s.home, 'runs', grant.run.id, 'tool.sh'), 'utf8');
@@ -59,10 +68,14 @@ test('a copy already in place survives a new install, and other builds are prune
   const s = await startIsolated({ identity: identity(), project: false });
   try {
     const pinned = join(helperDirectory(s.home, fingerprint), 'agent-cli.ts');
+    const pinnedWorker = join(helperDirectory(s.home, fingerprint), 'codex-cli-worker.ts');
     // Stand in for the helper of the build that was running when a new bundle was installed: a
     // second resolution must keep it rather than copy the newly installed source over it.
     writeFileSync(pinned, '// the running build\n');
-    assert.deepEqual(pinHelpers(s.home, fingerprint), { 'agent-cli.ts': pinned });
+    assert.deepEqual(pinHelpers(s.home, fingerprint), {
+      'agent-cli.ts': pinned,
+      'codex-cli-worker.ts': pinnedWorker,
+    });
     assert.equal(readFileSync(pinned, 'utf8'), '// the running build\n');
     // A previous build's copies stay until a boot comes up with its own, and then go.
     const older = helperDirectory(s.home, 'b'.repeat(64));
@@ -74,6 +87,19 @@ test('a copy already in place survives a new install, and other builds are prune
     // A dev run prunes nothing, so an installed build's copies survive a development daemon.
     pruneHelpers(s.home, 'unknown');
     assert.equal(existsSync(pinned), true);
+  } finally {
+    await s.cleanup();
+  }
+});
+
+test('the review runner the daemon connects starts the supervisor from the pinned copy', async () => {
+  // No review transport double here, so this is the runner the real daemon builds for itself.
+  const s = await startIsolated({ identity: identity(), project: false });
+  try {
+    const runner = s.engine.loop.verification.runner;
+    assert(runner instanceof CodexCliReviewRunner, 'the daemon reviews through the official CLI runner');
+    assert.equal(runner.worker, join(helperDirectory(s.home, fingerprint), 'codex-cli-worker.ts'));
+    assert.notEqual(runner.worker, workerSource);
   } finally {
     await s.cleanup();
   }

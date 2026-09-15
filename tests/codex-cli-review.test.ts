@@ -1,7 +1,7 @@
 import './harness/env.ts';
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, readFileSync, existsSync, rmSync } from 'node:fs';
+import { copyFileSync, mkdtempSync, readFileSync, existsSync, rmSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { spawn } from 'node:child_process';
@@ -9,6 +9,7 @@ import { CodexCliReviewRunner, type ReviewObservation } from '../service/codex-c
 import { CodexUsageReader, parseUsageReading } from '../service/codex-usage.ts';
 import { until } from './harness/wait.ts';
 const executable = resolve('tests/fixtures/codex-review.mjs');
+const worker = resolve('service/codex-cli-worker.ts');
 const runner = (maxBytes?: number) =>
   new CodexCliReviewRunner({
     executable: () => executable,
@@ -148,6 +149,40 @@ test('a killed service cannot leave its review CLI running', async () => {
     parent.kill('SIGKILL');
     rmSync(root, { recursive: true, force: true });
   }
+});
+/**
+ * `service/runtime-helpers.ts` copies the supervisor into the data directory at boot and the daemon
+ * spawns that copy for as long as it runs, so an install cannot replace it under a review in flight.
+ * The copy has neither the source tree nor its `package.json` around it, which is what these two
+ * tests hold in place: it must run standalone, and it must keep importing `node:` builtins only.
+ */
+test('a supervisor copied out of the source tree runs a whole review on its own', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'morrow-review-pinned-'));
+  const copy = join(root, 'codex-cli-worker.ts');
+  copyFileSync(worker, copy);
+  try {
+    const pinned = new CodexCliReviewRunner({ executable: () => executable, worker: () => copy });
+    assert.equal(pinned.worker, copy);
+    const observations: ReviewObservation[] = [];
+    await pinned.start({
+      cwd: tmpdir(),
+      prompt: JSON.stringify({ mode: 'success' }),
+      timeoutMs: 5000,
+      observe: (o) => observations.push(o),
+    }).done;
+    const last = observations.at(-1)!;
+    assert.equal(last.status, 'completed', last.error);
+    assert.equal(last.threadId, 'fixture-cli-session');
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+test('the supervisor imports node: builtins only, so the pinned copy cannot lose a dependency', () => {
+  const specifiers = [...readFileSync(worker, 'utf8').matchAll(/\b(?:import|from)\s*\(?\s*['"]([^'"]+)['"]/g)].map(
+    (match) => match[1]
+  );
+  assert(specifiers.length > 0, 'the supervisor must still declare the imports it runs on');
+  for (const specifier of specifiers) assert(specifier.startsWith('node:'), specifier);
 });
 test('usage is read without creating a task, unknown percentages stay unknown, and concurrent reads share one request', async () => {
   const reader = new CodexUsageReader({ executable: () => executable, timeoutMs: 3000 });

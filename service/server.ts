@@ -204,7 +204,9 @@ export async function startServer(
   engine.native = native;
   engine.loop.verification.connect(options.reviewTransport ?? native.transport, (value) => engine.redact(value));
   if (!options.reviewTransport)
-    engine.loop.verification.connectRunner(options.reviewRunner ?? new CodexCliReviewRunner());
+    engine.loop.verification.connectRunner(
+      options.reviewRunner ?? new CodexCliReviewRunner({ worker: () => engine.loop.helpers['codex-cli-worker.ts'] })
+    );
   engine.usage.connect(native.transport);
   // Counted before recovery runs, since recovery is what turns these rows into `interrupted`.
   const interruptedRuns = Number(

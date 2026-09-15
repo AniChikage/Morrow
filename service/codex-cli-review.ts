@@ -76,16 +76,29 @@ function reviewItem(item: Record<string, any>) {
   if (item.type === 'file_change') return { ...item, type: 'fileChange' };
   return item;
 }
+/** This source tree's own supervisor: what a dev run and every test spawn without a pinned copy. */
+const workerSource = () => fileURLToPath(new URL('./codex-cli-worker.ts', import.meta.url));
+type ReviewRunnerOptions = {
+  executable?: () => string;
+  /** Where to spawn the supervisor from; the daemon passes the copy pinned for the build it runs. */
+  worker?: () => string;
+  env?: NodeJS.ProcessEnv;
+  maxBytes?: number;
+};
 /** Runs one official CLI session and exposes only actual streamed items. CLI exit must also succeed. */
 export class CodexCliReviewRunner implements ReviewRunner {
-  private options: { executable?: () => string; env?: NodeJS.ProcessEnv; maxBytes?: number };
-  constructor(options: { executable?: () => string; env?: NodeJS.ProcessEnv; maxBytes?: number } = {}) {
+  private options: ReviewRunnerOptions;
+  constructor(options: ReviewRunnerOptions = {}) {
     this.options = options;
+  }
+  /** The supervisor this runner starts, read-only: the pinned copy, or this source tree's own file. */
+  get worker() {
+    return this.options.worker?.() ?? workerSource();
   }
   start(input: Parameters<ReviewRunner['start']>[0]) {
     const executable = this.options.executable?.() ?? runtimePath('codex');
     if (!executable) throw new Error('未找到官方 Codex 命令行，无法启动独立只读复核。');
-    const child = spawn(process.execPath, [fileURLToPath(new URL('./codex-cli-worker.ts', import.meta.url))], {
+    const child = spawn(process.execPath, [this.worker], {
       env: reviewEnvironment(this.options.env),
       stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
     });
