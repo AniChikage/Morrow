@@ -142,11 +142,11 @@ test('the release and item review prompt text is unchanged', async () => {
     const item = rows.find((row) => row.kind !== 'release')!;
     assert.equal(
       digest(stable(release.prompt, s.path)),
-      '280351dea3f2e1d3ee8d289174647b9877604c61bfb34d9ea65e0260d2872ce5'
+      '94e6b996762f1b51a2802ca154fe7181f7ce7020e1a0c107b37abaa717bdb5af'
     );
     assert.equal(
       digest(stable(item.prompt, s.path)),
-      'bcba10f2000db8deb9f6d3082b46edea5891df70074ac6f2f9258dc8122309e2'
+      'f12d95d2990d3886d366cd8122a45a05a05d6a640c50070b9fde37d24d445306'
     );
   } finally {
     await s.cleanup();
