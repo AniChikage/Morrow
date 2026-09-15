@@ -16,12 +16,14 @@ const runner = (maxBytes?: number) =>
     env: { ...process.env, MORROW_SECRET_GRANT: 'must-not-leak', CODEX_APP_TOOLS_PIPE_PATH: '/private/app.sock' },
     maxBytes,
   });
+/** These waits bound a spawn on a loaded machine, not the behaviour under test. */
+const slowHost = 20_000;
 /**
  * The pid of the CLI the fixture started. `writeFileSync` creates the file before it holds the pid,
  * so a test that only waits for the path can read `''`, and `process.kill(0, 0)` addresses this
  * process group instead of a dead CLI — it never throws. Waiting for the digits reads the real pid.
  */
-const ownedPid = (pidFile: string, timeoutMs = 5000) =>
+const ownedPid = (pidFile: string, timeoutMs = slowHost) =>
   until(() => {
     const text = existsSync(pidFile) ? readFileSync(pidFile, 'utf8').trim() : '';
     return /^[0-9]+$/.test(text) ? Number(text) : 0;
@@ -88,11 +90,11 @@ test('review cancellation stops the initialized owned CLI', async () => {
     observe: (o) => observations.push(o),
   });
   try {
-    const pid = await ownedPid(pidFile, 4000);
+    const pid = await ownedPid(pidFile, slowHost);
     execution.cancel();
     await execution.done;
     assert.equal(observations.at(-1)!.status, 'failed');
-    await until(() => gone(pid) && gone(-pid), 5000);
+    await until(() => gone(pid) && gone(-pid), slowHost);
   } finally {
     execution.cancel();
     await execution.done;
@@ -116,7 +118,7 @@ for (const mode of ['hang', 'initializing']) {
     try {
       // The deadline starts before CLI initialization. A missing PID is valid if it expired first.
       // This watchdog fails if the worker never finishes; cancellation happens only in cleanup.
-      await until(() => finished, 5000);
+      await until(() => finished, slowHost);
       assert.equal(observations.at(-1)!.status, 'failed');
       if (mode === 'initializing') {
         assert.equal(observations.at(-1)!.threadId, undefined);
