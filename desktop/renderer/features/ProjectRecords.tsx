@@ -75,6 +75,7 @@ const fields: Record<string, string> = {
   kind: '类型',
   status: '状态',
   nextStep: '下一步',
+  ownerChannelId: '负责频道',
   evidence: '证据',
   name: '名称',
   goal: '目标',
@@ -92,7 +93,13 @@ Object.assign(actions, {
 function asRecord(value: unknown): Record<string, unknown> {
   return value && typeof value === 'object' && !Array.isArray(value) ? (value as Record<string, unknown>) : {};
 }
-function fieldValue(field: string, value: unknown): string {
+function fieldValue(field: string, value: unknown, channels: FeatureProps['snapshot']['channels']): string {
+  if (field === 'ownerChannelId') {
+    if (value === undefined) return '未记录';
+    if (value == null || value === '') return '无人负责';
+    if (typeof value === 'string')
+      return channels.find((channel) => channel.id === value)?.name || `频道信息未载入（${value}）`;
+  }
   if (value == null || value === '') return '未设置';
   if (field === 'status' && typeof value === 'string') return statusLabel(value);
   if (field === 'kind' && typeof value === 'string') return kindLabel(value);
@@ -100,6 +107,35 @@ function fieldValue(field: string, value: unknown): string {
   if (Array.isArray(value))
     return value.map((item) => (typeof item === 'string' ? item : JSON.stringify(item))).join('\n') || '无';
   return typeof value === 'string' ? value : JSON.stringify(value, null, 2);
+}
+function itemChangeSummary(event: WorkspaceEvent, channels: FeatureProps['snapshot']['channels']): string {
+  if (!event.itemId || !['item.updated', 'feature.updated', 'item.assigned'].includes(event.action || '')) return '';
+  const before = asRecord(event.changes?.before),
+    after = asRecord(event.changes?.after);
+  // Missing old values are not proof of a change. In particular, older Agent
+  // records only stored after; leave their original description intact.
+  const changed = (key: string) => key in before && key in after && before[key] !== after[key];
+  const parts: string[] = [];
+  if (changed('status') && typeof before.status === 'string' && typeof after.status === 'string')
+    parts.push(`状态 ${statusLabel(before.status)} → ${statusLabel(after.status)}`);
+  for (const [key, label] of [
+    ['nextStep', '下一步已更新'],
+    ['summary', '说明已修改'],
+  ])
+    if (changed(key) && typeof before[key] === 'string' && typeof after[key] === 'string') parts.push(label);
+  const validOwner = (value: unknown) => value === null || typeof value === 'string';
+  if (
+    changed('ownerChannelId') &&
+    validOwner(before.ownerChannelId) &&
+    validOwner(after.ownerChannelId) &&
+    (before.ownerChannelId || null) !== (after.ownerChannelId || null)
+  ) {
+    const name = after.ownerChannelId
+      ? channels.find((channel) => channel.id === after.ownerChannelId)?.name || '频道信息未载入'
+      : '无人负责';
+    parts.push(`负责频道 → ${name}`);
+  }
+  return parts.join('、');
 }
 export function ProjectRecords({ projectId, itemId, ...props }: FeatureProps & { projectId: string; itemId?: string }) {
   const { snapshot, api, onNavigate } = props;
@@ -189,6 +225,7 @@ export function ProjectRecords({ projectId, itemId, ...props }: FeatureProps & {
           return <EventLog key={event.id} event={event} runtime={channel?.runtime || 'Agent'} compact={!itemId} />;
         const before = asRecord(event.changes?.before),
           after = asRecord(event.changes?.after);
+        const changeSummary = itemId ? itemChangeSummary(event, snapshot.channels) : '';
         const changedFields = Object.keys(fields).filter(
           (field) =>
             (field in before || field in after) && JSON.stringify(before[field]) !== JSON.stringify(after[field])
@@ -202,7 +239,9 @@ export function ProjectRecords({ projectId, itemId, ...props }: FeatureProps & {
               <time>{formatDate(event.createdAt)}</time>
             </header>
             <div className="audit-record-body">
-              {!itemId && event.text.length > 240 ? (
+              {changeSummary ? (
+                <p>{changeSummary}</p>
+              ) : !itemId && event.text.length > 240 ? (
                 <>
                   <p>{event.text.slice(0, 160)}…</p>
                   <details className="audit-changes">
@@ -234,11 +273,14 @@ export function ProjectRecords({ projectId, itemId, ...props }: FeatureProps & {
                     查看变更
                     <ChevronDown size={12} />
                   </summary>
+                  {changeSummary && <Markdown>{event.text}</Markdown>}
                   {changedFields.map((field) => (
                     <div className="audit-change" key={field}>
                       <h4>{fields[field]}</h4>
-                      {field in before && <pre className="audit-before">{fieldValue(field, before[field])}</pre>}
-                      <pre>{fieldValue(field, after[field])}</pre>
+                      {field in before && (
+                        <pre className="audit-before">{fieldValue(field, before[field], snapshot.channels)}</pre>
+                      )}
+                      <pre>{fieldValue(field, after[field], snapshot.channels)}</pre>
                     </div>
                   ))}
                 </details>

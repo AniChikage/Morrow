@@ -2,7 +2,8 @@
 import { readFileSync, readdirSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { afterEach, expect, it, vi } from 'vitest';
-import { cleanup, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, render, screen, waitFor, within } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import type { WorkspaceEvent } from '../../shared/types';
 import { ProjectRecords } from './ProjectRecords';
 import { event, featureProps, TestProviders } from './testFixtures';
@@ -81,3 +82,77 @@ it.each([undefined, 'finding-import'])(
     for (const row of events) expect(screen.getByText(row.text)).toBeTruthy();
   }
 );
+
+it.each(['item.updated', 'feature.updated'])(
+  'summarizes applied item changes while preserving the original description and full differences (%s)',
+  async (action) => {
+    const row = records([action])[0];
+    row.changes = {
+      before: { status: 'investigating', nextStep: '旧的下一步', summary: '旧说明', ownerChannelId: null },
+      after: { status: 'verified', nextStep: '新的下一步', summary: '新说明', ownerChannelId: 'channel-system' },
+    };
+    const original = structuredClone(row);
+    show([row], 'finding-import');
+    expect(await screen.findByText('状态 调查中 → 已验证、下一步已更新、说明已修改、负责频道 → 系统完善')).toBeTruthy();
+    const description = screen.getByText(row.text);
+    const details = description.closest('details')!;
+    expect(details.open).toBe(false);
+    await userEvent.setup().click(screen.getByText('查看变更'));
+    expect(details.open).toBe(true);
+    for (const value of ['旧的下一步', '新的下一步', '旧说明', '新说明', '无人负责', '系统完善'])
+      expect(within(details).getByText(value)).toBeTruthy();
+    expect(row).toEqual(original);
+  }
+);
+
+it.each([
+  ['only after', 'feature.updated', { after: { status: 'verified', nextStep: '当前下一步', summary: '当前说明' } }],
+  ['conflict', 'item.conflict', { before: { status: 'investigating' }, after: { status: 'verified' } }],
+  [
+    'unchanged',
+    'item.updated',
+    { before: { status: 'verified', summary: '相同' }, after: { status: 'verified', summary: '相同' } },
+  ],
+  ['invalid values', 'item.updated', { before: { status: {} }, after: { status: [] } }],
+  ['no snapshots', 'item.updated', undefined],
+  ['other fields', 'item.updated', { before: { title: '原标题' }, after: { title: '新标题' } }],
+] as const)('keeps the original item description when a change cannot be inferred (%s)', async (_, action, changes) => {
+  const row = { ...records([action])[0], changes };
+  show([row], 'finding-import');
+  expect((await screen.findByText(row.text)).closest('details')).toBeNull();
+  expect(screen.queryByText(/^状态 .* → /)).toBeNull();
+  expect(screen.queryByText('下一步已更新')).toBeNull();
+});
+
+it.each([
+  ['channel-system', null, '无人负责'],
+  [null, 'missing-channel', '频道信息未载入'],
+] as const)(
+  'names assignment changes without mistaking an unloaded channel for deletion',
+  async (before, after, name) => {
+    const row = records(['item.assigned'])[0];
+    row.changes = { before: { ownerChannelId: before }, after: { ownerChannelId: after } };
+    show([row], 'finding-import');
+    expect(await screen.findByText(`负责频道 → ${name}`)).toBeTruthy();
+    await userEvent.setup().click(screen.getByText('查看变更'));
+    if (after) expect(screen.getByText(`频道信息未载入（${after}）`)).toBeTruthy();
+  }
+);
+
+it('retains the identifying original description in the project-wide audit view', async () => {
+  const row = records(['item.updated'])[0];
+  row.changes = { before: { status: 'open' }, after: { status: 'verified' } };
+  show([row]);
+  expect((await screen.findByText(row.text)).closest('details')).toBeNull();
+  expect(screen.queryByText('状态 待处理 → 已验证')).toBeNull();
+});
+
+it('does not describe a missing owner field in conflict details as unassigned', async () => {
+  const row = records(['item.conflict'])[0];
+  row.changes = { before: { ownerChannelId: 'channel-system' }, after: {} };
+  show([row], 'finding-import');
+  await screen.findByText(row.text);
+  await userEvent.setup().click(screen.getByText('查看变更'));
+  expect(screen.getByText('未记录')).toBeTruthy();
+  expect(screen.queryByText('无人负责')).toBeNull();
+});
