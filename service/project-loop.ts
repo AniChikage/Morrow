@@ -1516,6 +1516,18 @@ export class ProjectWorkLoop {
       },
     });
   }
+  /**
+   * When a watch is polled again, or nothing at all: a watch that reached a terminal state and is
+   * not continuous is never polled again, and `poll` refuses it, so it must not keep a poll time the
+   * tick's `(status, nextPollAt)` ranges would hand back on every tick for the rest of the project's
+   * life. The field is left out rather than emptied — `''` compares before every timestamp, so it
+   * would fall inside every `nextPollAt<=?` range instead of outside all of them.
+   */
+  pollAgainAt(watch: FeedbackWatch, status: FeedbackWatch['status']): { nextPollAt?: string } {
+    return status !== 'watching' && watch.continuous === false
+      ? { nextPollAt: undefined }
+      : { nextPollAt: new Date(Date.now() + watch.intervalSeconds * 1000).toISOString() };
+  }
   async poll(id: string) {
     if (this.closed || this.inFlight.has(id)) return;
     const watch = this.store.get<FeedbackWatch>('loop_watches', id);
@@ -1524,7 +1536,7 @@ export class ProjectWorkLoop {
       this.store.put('loop_watches', {
         ...watch,
         status: 'expired',
-        nextPollAt: new Date(Date.now() + watch.intervalSeconds * 1000).toISOString(),
+        ...this.pollAgainAt(watch, 'expired'),
         updatedAt: now(),
       });
       this.signal(watch.channelId, id, '观察已到复查时间，证据仍不足时不要宣称有效；持续监测仍接收后续变化');
@@ -1544,7 +1556,7 @@ export class ProjectWorkLoop {
             ...current,
             missing: true,
             error: undefined,
-            nextPollAt: new Date(Date.now() + watch.intervalSeconds * 1000).toISOString(),
+            ...this.pollAgainAt(watch, current.status),
             updatedAt: now(),
           });
         return;
@@ -1597,6 +1609,7 @@ export class ProjectWorkLoop {
               (watch.condition === 'gte' ? value >= Number(watch.expected) : value <= Number(watch.expected));
       const current = this.store.get<FeedbackWatch>('loop_watches', id)!;
       if (current.status === 'cancelled') return;
+      const status = current.status === 'watching' ? (met ? 'triggered' : 'watching') : current.status;
       this.store.put('loop_watches', {
         ...current,
         lastValue: value,
@@ -1604,9 +1617,9 @@ export class ProjectWorkLoop {
         lastEvidenceId: evidenceId,
         error: undefined,
         missing: false,
-        status: current.status === 'watching' ? (met ? 'triggered' : 'watching') : current.status,
+        status,
         updatedAt: now(),
-        nextPollAt: new Date(Date.now() + watch.intervalSeconds * 1000).toISOString(),
+        ...this.pollAgainAt(watch, status),
       });
       if (watch.error) this.signal(watch.channelId, id, `反馈来源已恢复：${watch.title}`);
       if (current.status === 'watching' ? met : !!watch.lastDigest && changed)
@@ -1619,7 +1632,7 @@ export class ProjectWorkLoop {
           ...current,
           error: message,
           updatedAt: now(),
-          nextPollAt: new Date(Date.now() + watch.intervalSeconds * 1000).toISOString(),
+          ...this.pollAgainAt(watch, current.status),
         });
         if (current.error !== message) {
           this.audit(

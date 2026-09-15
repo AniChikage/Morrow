@@ -961,6 +961,17 @@ test('a scheduler tick selects only the rows that need work, through indexes rat
       store.put('loop_watches', { id, projectId: 'p', status, nextPollAt, deadline });
     // A row written before `status` existed stays pollable, exactly as the scan treated it.
     store.put('loop_watches', { id: 'no-status', projectId: 'p', nextPollAt: past, deadline: past });
+    // A terminal watch that is not continuous is never polled again and therefore carries no poll
+    // time: it falls outside every range. Emptying the field instead would put it inside all of
+    // them — `''` compares before every timestamp — which is why the row below is still due.
+    store.put('loop_watches', { id: 'closed-triggered', projectId: 'p', status: 'triggered', deadline: past });
+    store.put('loop_watches', {
+      id: 'emptied-triggered',
+      projectId: 'p',
+      status: 'triggered',
+      nextPollAt: '',
+      deadline: past,
+    });
     const dueWatches = `SELECT data FROM (
          SELECT rowid AS rid, data FROM loop_watches
            WHERE json_extract(data,'$.status')='watching'
@@ -974,7 +985,7 @@ test('a scheduler tick selects only the rows that need work, through indexes rat
     const now = new Date().toISOString();
     assert.deepEqual(
       (store.db.prepare(dueWatches).all(now, now, now) as any[]).map((row) => JSON.parse(row.data).id),
-      ['due-watching', 'deadline-watching', 'due-triggered', 'due-expired', 'no-status']
+      ['due-watching', 'deadline-watching', 'due-triggered', 'due-expired', 'no-status', 'emptied-triggered']
     );
     const watches = plan(dueWatches, now, now, now);
     assert.match(watches, /INDEX loop_watches_status_next/);

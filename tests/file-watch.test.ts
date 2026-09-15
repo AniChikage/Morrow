@@ -129,6 +129,43 @@ test('scheduled file polling respects enabled channels, intervals and cancellati
   }
 });
 
+test('a one-shot watch that reached its condition keeps no poll time for the tick to read', async () => {
+  const s = await startIsolated();
+  try {
+    const { call } = grantFor(s, { projectId: s.project.id, channelId: s.channel.id });
+    const file = join(s.path, 'metrics.json');
+    writeFileSync(file, '{"count":1}');
+    const w = await call('watch.create', { ...input(), continuous: false });
+    s.store.put('channels', { ...s.channel, status: 'running' });
+    s.store.put('controls', { id: s.channel.id, enabled: true });
+    const tick = async () => {
+      s.engine.loop.tick();
+      await Promise.all(s.engine.loop.pending);
+    };
+    const row = () => s.store.get<any>('loop_watches', w.id);
+    // The first sample is only the baseline; `changed` has nothing to compare against yet.
+    await tick();
+    assert.equal(row().status, 'watching');
+    assert.equal(typeof row().nextPollAt, 'string');
+    writeFileSync(file, '{"count":2}');
+    s.store.put('loop_watches', { ...row(), nextPollAt: new Date(0).toISOString() });
+    await tick();
+    assert.equal(row().status, 'triggered');
+    assert.equal(s.store.all('loop_evidence').length, 2);
+    // This watch is never polled again, so it carries no poll time at all. An empty string would
+    // not do: it compares before every timestamp, so the row would fall inside the tick's
+    // `nextPollAt<=?` range on every tick for the rest of the project's life.
+    assert.equal('nextPollAt' in row(), false);
+    const settled = row().updatedAt;
+    writeFileSync(file, '{"count":3}');
+    for (let attempt = 0; attempt < 3; attempt++) await tick();
+    assert.equal(s.store.all('loop_evidence').length, 2);
+    assert.equal(row().updatedAt, settled);
+  } finally {
+    await s.cleanup();
+  }
+});
+
 for (const existed of [false, true])
   test(`first file sample uses existence at registration (existed: ${existed})`, async () => {
     const s = await startIsolated();

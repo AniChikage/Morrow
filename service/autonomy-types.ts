@@ -48,7 +48,11 @@ export type FeedbackWatch = {
   continuous?: boolean;
   releaseId?: string;
   status: 'watching' | 'triggered' | 'expired' | 'cancelled';
-  nextPollAt: string;
+  /**
+   * When this watch is polled again. Absent once a watch that is not continuous reached a terminal
+   * state: it is never polled again, and the tick's `nextPollAt<=?` ranges must stop returning it.
+   */
+  nextPollAt?: string;
   lastDigest?: string;
   lastValue?: unknown;
   lastEvidenceId?: string;
