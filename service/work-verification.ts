@@ -8,7 +8,7 @@ import type { ProjectWorkLoop, Scope } from './project-loop.ts';
 import type { NativeSnapshot, NativeTransport } from './native-conversations.ts';
 import { nativeTurns } from './native-conversations.ts';
 import { now } from './store.ts';
-import { sourceVersion } from './source-version.ts';
+import { readSourceVersion, sourceVersion } from './source-version.ts';
 import { evidenceData } from './measurement.ts';
 import type { Verification, Finalization } from './verification-types.ts';
 
@@ -131,15 +131,19 @@ export class WorkVerification {
     const rows = all
       .filter((row) => selected.has(row.id))
       .map((row) => this.loop.store.get<Verification>('loop_verifications', row.id)!);
-    let digest = '';
-    if (rows.length)
-      try {
-        digest = sourceVersion(this.loop.store.get<Project>('projects', projectId)!.path).digest;
-      } catch {
-        /* Unreadable versions cannot pass. */
-      }
+    // This page is on the interface's 5-second poll, so the seal is read through the cache Git's own
+    // HEAD and porcelain status invalidate, never by hashing every file again on each request. An
+    // unreadable version cannot pass, and now says why instead of leaving the page silently empty.
+    let digest = '',
+      sourceReason = '';
+    if (rows.length) {
+      const reading = readSourceVersion(this.loop.store.get<Project>('projects', projectId)!.path);
+      if (reading.version) digest = reading.version.digest;
+      else sourceReason = reading.reason || '源版本不可读';
+    }
     return {
       verifications: rows.map(({ prompt, ...row }) => ({ ...row, current: this.materialCurrent(row, digest) })),
+      ...(sourceReason ? { sourceStale: true, sourceReason } : {}),
       // Invalidate cached UI pages after a project mutation or source change.
       revision:
         digest +

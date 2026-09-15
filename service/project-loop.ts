@@ -329,6 +329,9 @@ export class ProjectWorkLoop {
       releases,
       strategy,
       verifications,
+      // Why no verification can read as current right now, when the source version is unreadable at
+      // all. Previously swallowed, which left every row looking stale with nothing said about it.
+      ...(verificationPage.sourceStale ? { sourceStale: true, sourceReason: verificationPage.sourceReason } : {}),
       ...(verificationOptions.includeLatest
         ? {
             verificationHistory: {
