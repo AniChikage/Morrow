@@ -1592,7 +1592,7 @@ export class NativeConversations {
       this.engine.persistIO(active.run.id, 'final', final);
       const wasEnabled = this.engine.control(id).enabled;
       if (turn.status === 'completed') {
-        const report = extractReport(undefined, final);
+        const report = extractReport(undefined, final, active.run.executionOwner);
         active.run.reportStatus = report.status;
         active.run.reportError = report.error;
         try {

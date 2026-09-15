@@ -707,7 +707,7 @@ export class Engine {
                 : `CLI 执行失败（退出码 ${code ?? signal ?? 'unknown'}），请检查运行日志、登录和配额。`)
           );
         else {
-          const report = extractReport(finalValue, finalOutput);
+          const report = extractReport(finalValue, finalOutput, run.executionOwner);
           run.reportStatus = report.status;
           run.reportError = report.error;
           if (report.result) {
@@ -1085,7 +1085,7 @@ export class Engine {
           itemId: updated.id,
           actor: 'agent',
           action: old ? 'item.updated' : 'item.created',
-          text: `${old ? '更新' : '创建'}功能事项 #${updated.number}「${updated.title}」。`,
+          text: `${old ? '更新' : '创建'}事项 #${updated.number}`,
           before: old,
           after: updated,
         });

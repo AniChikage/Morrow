@@ -655,7 +655,7 @@ export async function startServer(
             itemId: item.id,
             actor: 'human',
             action: 'item.created',
-            text: `创建功能事项 #${item.number}「${item.title}」。`,
+            text: `创建事项 #${item.number}`,
             after: item,
           });
         });
@@ -816,7 +816,7 @@ export async function startServer(
             itemId: item.id,
             actor: 'human',
             action: 'item.updated',
-            text: `更新功能事项 #${item.number}「${updated.title}」。`,
+            text: `更新事项 #${item.number}`,
             before: item,
             after: updated,
           });

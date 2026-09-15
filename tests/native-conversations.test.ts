@@ -7,6 +7,7 @@ import { randomUUID } from 'node:crypto';
 import { connectionDetail, NativeConversations } from '../service/native-conversations.ts';
 import { applyDesktopPatches } from '../service/codex-desktop-transport.ts';
 import { importNativeImages, readNativeImage } from '../service/native-media.ts';
+import { extractReport } from '../service/reports.ts';
 import type { NativeTransport, NativeSnapshot, NativeWorkOptions } from '../service/native-conversations.ts';
 import { startIsolated, type IsolatedService } from './harness/service.ts';
 class FakeNative implements NativeTransport {
@@ -260,6 +261,36 @@ const completeWork = (s: any, text: string) =>
       items: [...turn.items, { id: randomUUID(), type: 'agentMessage', phase: 'final_answer', text }],
     })),
   });
+test('a follower turn ending on an ordinary wait says the board was not changed, never that a CLI ended', async () => {
+  const s = await setup();
+  try {
+    await s.native.bind(s.channel.id, s.transport.threadId);
+    await s.engine.action(s.channel.id, 'resume');
+    const run = s.store.all<any>('runs').find((row: any) => row.source === 'morrow-schedule');
+    completeWork(s, nextWork('wait', 60));
+    const finished = s.store.get<any>('runs', run.id);
+    assert.equal(finished.status, 'completed');
+    assert.equal(finished.reportStatus, 'missing');
+    assert.equal(finished.reportError, '本轮结束，未附看板报告，看板未改动。');
+    const completed = s.store
+      .all<any>('events')
+      .find((event: any) => event.runId === run.id && event.action === 'run.completed');
+    assert.equal(completed.text, '原生任务轮次正常结束。本轮结束，未附看板报告，看板未改动。');
+    // A CLI turn keeps its own wording, and a run row written before `executionOwner` existed is one.
+    for (const owner of ['cli', undefined] as const)
+      assert.equal(
+        extractReport(undefined, nextWork('wait', 60), owner).error,
+        'CLI 已结束，未提供看板报告；未自动修改功能事项。'
+      );
+    // A report that is present but unusable is reported per run kind as well.
+    assert.match(extractReport('not an object', '', 'codex-app').error, /^看板报告未通过验证：.+。看板未改动。$/);
+    assert.match(extractReport('not an object', '', 'cli').error, /^看板报告未通过验证：.+。未自动修改功能事项。$/);
+    assert.equal(extractReport(undefined, '```morrow-report\n{}\n', 'codex-app').error, '看板报告代码块未完整结束。');
+    assert.equal(s.transport.interruptions.length, 0);
+  } finally {
+    await s.cleanup();
+  }
+});
 test('scheduled native turns clear old pending wakes and retain feedback arriving before the final wait', async () => {
   const s = await setup();
   try {

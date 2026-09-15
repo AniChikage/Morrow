@@ -632,6 +632,9 @@ test('project board creation, provenance, optimistic edits and project audit are
       `/api/events?projectId=${s.project.id}&itemId=${item.id}&before=${history.cursor}`
     );
     assert.equal(first.events[0].action, 'item.created');
+    // An audit line names the item by its stable number; the board is not a feature-only board.
+    assert.equal(first.events[0].text, `创建事项 #${item.number}`);
+    assert.equal(history.events.at(-1).text, `更新事项 #${item.number}`);
     assert.equal(first.hasMore, false);
     await s.api('GET', `/api/events?projectId=${s.project.id}&itemId=${randomUUID()}`, undefined, 404);
     await s.api('GET', `/api/events?projectId=${s.project.id}&before=${randomUUID()}`, undefined, 404);
