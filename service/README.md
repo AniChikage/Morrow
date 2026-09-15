@@ -61,7 +61,7 @@ MORROW_HOME="$HOME/.local/share/morrow" npm start
 | `settings`、`usage_samples` | 全局设置（保留给自己的额度、额度未知时是否停止）与账户用量读数；运行记录里的 `usage` 保存本轮前后读数之差。 |
 | `upgrades` | 安装后的版本切换请求：目标 commit/整包指纹、回执给出的安装包路径、发起时的 `bootId`、阶段、阻塞工作与失败原因。每个目标指纹一条。 |
 
-所有表位于 `workspace.sqlite`。`runs/`、`native-images/` 和 `releases/` 保存相关私有文件。原生任务的权威历史由 Codex 管理，Morrow 的 SQLite 保存已同步的镜像和编排记录，不把自己的记录当成另一套原生会话。
+所有表位于 `workspace.sqlite`。`runs/`、`native-images/` 和 `releases/` 保存相关私有文件；`runtime/<整包指纹>/` 保存本次运行的 daemon 自己那份辅助脚本副本（见[升级与数据迁移](../docs/UPGRADING.md)的混版窗口一节），启动成功后其他指纹的副本会被删掉。原生任务的权威历史由 Codex 管理，Morrow 的 SQLite 保存已同步的镜像和编排记录，不把自己的记录当成另一套原生会话。
 
 迁移保持已有 ID 和历史，支持旧运行来源、协议标记与任务创建记录。历史证据摘要不因品牌改名重新计算。每个一次性回填带自己的 marker，跑过一次之后启动不再整表扫描；删掉某个 marker 会重放对应回填。备份应使用 SQLite 在线备份，或停止服务后复制完整数据目录及相关文件。
 

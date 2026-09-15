@@ -29,6 +29,7 @@ import { Store, now } from './store.ts';
 import { logError } from './log.ts';
 import { decodeLine, diagnoseFailure, invocation } from './runtimes.ts';
 import { projectTreeState } from './source-version.ts';
+import { pinHelpers } from './runtime-helpers.ts';
 import { extractReport } from './reports.ts';
 /** A Morrow-orchestrated turn, as opposed to native chat or a turn the App itself started. */
 const scheduledRun = (row: Run) => !row.source || ['morrow-schedule', 'nohuman-schedule'].includes(row.source);
@@ -87,6 +88,9 @@ export class Engine {
     this.loop.redact = (value) => this.redact(value);
     this.loop.usage = this.usage;
     this.loop.upgrade = this.upgrade;
+    // Pinned before anything can start a turn, so an install that replaces this bundle while the
+    // daemon keeps working cannot change the helper the daemon spawns.
+    this.loop.helpers = pinHelpers(home, this.upgrade.identity.fingerprint);
   }
   /**
    * Real work in progress right now, read from the engine, the native connection and the loop rather

@@ -39,6 +39,7 @@ import type { UpgradeRecord } from './upgrade.ts';
 import { eventHistory, runHistory, runOutput, queryID } from './event-history.ts';
 import { runLog } from './run-log.ts';
 import { discoverRuntimes } from './runtimes.ts';
+import { pruneHelpers } from './runtime-helpers.ts';
 import { NativeConversations } from './native-conversations.ts';
 import { NativeDesktopError } from './codex-desktop-transport.ts';
 import type { BridgeRestore, NativeTransport } from './native-conversations.ts';
@@ -884,6 +885,8 @@ export async function startServer(
   }
   engine.loop.baseURL = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
   engine.startScheduler();
+  // This boot is up and holds its own helper copies, so the copies of every other build can go.
+  pruneHelpers(home, engine.upgrade.identity.fingerprint);
   log('boot', {
     version: engine.upgrade.identity.version,
     commit: engine.upgrade.identity.commit.slice(0, 12),

@@ -17,7 +17,6 @@ import {
 } from 'node:fs';
 import { basename, join, relative, isAbsolute, resolve } from 'node:path';
 import { homedir } from 'node:os';
-import { fileURLToPath } from 'node:url';
 import { APIError, choice, integer, keys, object, string, itemKinds, itemStatuses } from './protocol.ts';
 import type { Channel, Control, Project, Run, WorkItem } from './protocol.ts';
 import type { Evidence, Learning, FeedbackWatch, Release, ReleaseScript, ProjectLoop } from './autonomy-types.ts';
@@ -32,6 +31,7 @@ import { isFingerprint } from './build-identity.ts';
 import type { UpgradeManager } from './upgrade.ts';
 import type { UsageMonitor } from './usage.ts';
 import type { ExecutionCapture } from './verification-types.ts';
+import { helperSources, type Helpers } from './runtime-helpers.ts';
 
 export type Scope = { id: string; projectId: string; channelId: string; runId: string; expiresAt: string };
 /**
@@ -220,6 +220,8 @@ export class ProjectWorkLoop {
   upgrade?: UpgradeManager;
   /** Attached by the engine so a sealed script's own output can never carry the desktop token. */
   redact: (text: string) => string = (text) => text;
+  /** Where this boot spawns its helper scripts from; the engine pins them to the running build. */
+  helpers: Helpers = helperSources();
   constructor(store: Store, home: string) {
     this.store = store;
     this.home = home;
@@ -332,7 +334,7 @@ export class ProjectWorkLoop {
     mkdirSync(directory, { recursive: true, mode: 0o700 });
     const path = join(directory, 'agent-context.json');
     writeFileSync(path, JSON.stringify({ url: `${this.baseURL}/api/agent`, token: secret }), { mode: 0o600 });
-    const command = [process.execPath, fileURLToPath(new URL('./agent-cli.ts', import.meta.url)), '--context', path]
+    const command = [process.execPath, this.helpers['agent-cli.ts'], '--context', path]
       .map((v) => "'" + v.replaceAll("'", "'\\''") + "'")
       .join(' ');
     // Only paths live in this launcher; the existing CLI still reads and validates the run grant.
