@@ -1036,11 +1036,15 @@ export class NativeConversations {
     const thread = listed.find((row) => row.id === threadId && sameFolder(row.cwd, project.path));
     if (!thread) throw new APIError(404, '原生任务不属于此项目目录或不存在');
     let snapshot: NativeSnapshot | undefined;
-    let syncError = '';
+    // The failure is carried as it was thrown, not as text: `recordError` is what maps it to the one
+    // sentence a person reads and keeps the original in `rawSyncError`, and `errorText` applied here
+    // first would have replaced every message with 「原生会话同步失败」. Wrapped so that a thrown
+    // falsy value still counts as a failure.
+    let readFailure: { error: unknown } | undefined;
     try {
       snapshot = await this.transport.readThread(threadId);
     } catch (error) {
-      syncError = errorText(error);
+      readFailure = { error };
     }
     const cwd = snapshot ? summary(snapshot).cwd : '';
     if (cwd && realpathSync(cwd) !== realpathSync(project.path)) throw new APIError(409, '原生任务目录与项目不一致');
@@ -1073,7 +1077,7 @@ export class NativeConversations {
       this.subscriptions.delete(before.threadId);
     }
     if (snapshot) this.ingest(snapshot);
-    if (syncError) this.recordError(threadId, syncError);
+    if (readFailure) this.recordError(threadId, readFailure.error);
     else
       try {
         await this.attach(threadId);

@@ -645,6 +645,30 @@ test('a failed native task sync tells the channel page the App is not running an
     await s.cleanup();
   }
 });
+test('a bind whose first read fails carries that failure, not a generic sentence', async () => {
+  const s = await setup();
+  try {
+    const raw = 'connect ECONNREFUSED /Users/yukun/.codex/ipc/ipc.sock';
+    Object.assign(s.transport, {
+      readThread: async () => {
+        throw new Error(raw);
+      },
+    });
+    // The App is unreachable, so nothing reads the task again after the binding is written: what the
+    // page shows is exactly what `bind` recorded.
+    s.transport.connected = false;
+    const bound = await s.api('POST', `/api/channels/${s.channel.id}/native/bind`, { threadId: s.transport.threadId });
+    const human = 'Codex App 未运行，打开后会自动重连';
+    assert.equal(bound.syncError, human);
+    assert.equal(bound.rawSyncError, raw);
+    const binding = s.store.get<any>('native_bindings', s.channel.id);
+    assert.equal(binding.threadId, s.transport.threadId);
+    assert.equal(binding.syncError, human);
+    assert.equal(binding.rawSyncError, raw);
+  } finally {
+    await s.cleanup();
+  }
+});
 test('native binding uses the same project task, persists full original messages, deduplicates sends and preserves sessions on settings edits', async () => {
   const s = await setup();
   try {
