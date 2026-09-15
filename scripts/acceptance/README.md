@@ -50,7 +50,7 @@ npm run acceptance -- run usagegap --mode live --run-id <id> --budget 3
 | `--wait-bind` | `10` | 等那个 App 任务出现并就绪的上限（每 3 秒查一次）。 |
 | `--turn-timeout` | `10` | 一轮真实运行的等待上限；超时先精确中断本轮 turn 再以退出码 1 结束。 |
 | `--approval-wait` | `30` | 走到 `approve`/`reject` 时在终端上等人给决定的上限；也用来等一个待确认的发布出现。 |
-| `--review-timeout` | `6` | 等独立复核落到终态的上限（官方 `codex exec` 有 5 分钟硬上限）。 |
+| `--review-timeout` | `9` | 等独立复核落到终态的上限。复核上限按类型分（事项 5 分钟、上线 8 分钟），官方 `codex exec` 的监工只在后面兜一道 15 分钟的天花板；缺省取**最大的那个上限加 1 分钟**，从 `reviewTimeoutSeconds` 读回来，上限改了它跟着改。 |
 | `--wall-clock` | `60` | 墙钟兜底。 |
 
 live 下 `--policy`、`--repeat` 与 `run all` 一律以退出码 2 被拒绝：干策略这件事的是真实模型，`config.policy` 记作 `live`，一次 live 运行只跑一个场景。

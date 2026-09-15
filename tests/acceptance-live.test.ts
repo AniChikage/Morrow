@@ -7,7 +7,15 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { defineScenario, invariant, projectBrief, releaseURL, statusURL } from '../scripts/acceptance/scenario.ts';
-import { prepareLive, productionDeps, runLive, stopExitCodes } from '../scripts/acceptance/live.ts';
+import {
+  liveDefaults,
+  liveSettings,
+  prepareLive,
+  productionDeps,
+  runLive,
+  stopExitCodes,
+} from '../scripts/acceptance/live.ts';
+import { reviewTimeoutSeconds } from '../service/work-verification.ts';
 import { computeMetrics, matchedName } from '../scripts/acceptance/metrics.ts';
 import { findingsSection } from '../scripts/acceptance/report.ts';
 import type { LiveDeps, LiveOptions, LiveResult } from '../scripts/acceptance/live.ts';
@@ -685,6 +693,19 @@ test('--budget 与 --advance-scale 的取值在编排之前就被拒绝', async 
     () => runLive(scene, { runId: 'probe-1', out, budget: 1, advanceScale: 2 }, fake().deps),
     /--advance-scale/
   );
+});
+
+/**
+ * 复核上限是按类型分的（事项 5 分钟、上线 8 分钟），runner 那道 `--review-timeout` 只是在它后面多等
+ * 一分钟。它曾经写死 6 分钟，于是一次上线复核还没到自己的上限，runner 就先放手记成没落终态。缺省从
+ * `reviewTimeoutSeconds` 读回来，上限再改一次也不会又跑到前面去；显式给的值仍然说了算。
+ */
+test('--review-timeout 的缺省是最大的那个复核上限加 1 分钟，显式给的值仍然说了算', () => {
+  const largestCapSeconds = Math.max(...Object.values(reviewTimeoutSeconds));
+  assert.equal(liveDefaults.reviewTimeoutMinutes * 60, largestCapSeconds + 60);
+  assert.equal(liveSettings({ runId: 'probe-1', budget: 1 }).reviewTimeoutMinutes, largestCapSeconds / 60 + 1);
+  assert.equal(liveSettings({ runId: 'probe-1', budget: 1, reviewTimeoutMinutes: 2 }).reviewTimeoutMinutes, 2);
+  assert.match(cli('help').stdout, new RegExp(`--review-timeout ${liveDefaults.reviewTimeoutMinutes}\\b`));
 });
 
 /* --------------------------------- prepare --------------------------------- */

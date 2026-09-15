@@ -446,7 +446,10 @@ export type LiveLimits = {
   turnTimeoutMs: number;
   /** 等人在终端上给出上线决定的上限；也用来等一个待确认的发布出现。 */
   approvalWaitMs: number;
-  /** 等独立复核落到终态的上限，略大于 `codex exec` 的 5 分钟硬上限。也用来等发布落到终态。 */
+  /**
+   * 等独立复核落到终态的上限，略大于最大的那个复核上限。上限是按复核类型分的（事项 5 分钟、上线 8
+   * 分钟），`codex exec` 的监工只在后面兜一道 15 分钟的天花板。也用来等发布落到终态。
+   */
   reviewTimeoutMs: number;
   /** 单个 `advance` 真实等待的上限。 */
   maxWaitMs: number;
@@ -1086,8 +1089,9 @@ async function liveGuide(runner: LiveRunner, text: string) {
 }
 
 /**
- * fixture 的 `verify` 自己驱动复核；live 下独立复核走真实 `codex exec`（只读、临时会话、5 分钟硬
- * 上限），runner 只在有排队的复核时等它落到终态。
+ * fixture 的 `verify` 自己驱动复核；live 下独立复核走真实 `codex exec`（只读、临时会话，上限按复核
+ * 类型分：事项 5 分钟、上线 8 分钟，监工只在后面兜一道 15 分钟的天花板），runner 只在有排队的复核时
+ * 等它落到终态。
  */
 async function liveVerify(runner: LiveRunner) {
   const pending = runner.session.pendingReviews();

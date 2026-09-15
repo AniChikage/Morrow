@@ -6,6 +6,7 @@ import { createInterface } from 'node:readline';
 import { fileURLToPath } from 'node:url';
 import { startReceiver } from '../../tests/harness/receiver.ts';
 import { grantFor } from '../../tests/harness/grant.ts';
+import { reviewTimeoutSeconds } from '../../service/work-verification.ts';
 import { computeMetrics } from './metrics.ts';
 import { findingsSection, liveNotice, metricsSection, scaleNote, writeMetrics } from './report.ts';
 import { projectBrief, readTree, releaseURL, statusURL, usageURL } from './scenario.ts';
@@ -102,6 +103,7 @@ export type LiveOptions = {
   turnTimeoutMinutes?: number;
   /** 等人在终端上给出上线决定的上限；也用来等一个待确认的发布出现。 */
   approvalWaitMinutes?: number;
+  /** 等独立复核落到终态的上限；缺省是最大的那个复核上限加 1 分钟，见 `liveDefaults`。 */
   reviewTimeoutMinutes?: number;
   wallClockMinutes?: number;
   /** 产物目录；缺省 `artifacts/acceptance/<run-id>`，必须是 `prepare` 建好的那一个。 */
@@ -120,7 +122,12 @@ export const liveDefaults = {
   turnTimeoutMinutes: 10,
   /** 人在终端上做上线确认要的时间；半小时，因为人要真的去读那份发布。 */
   approvalWaitMinutes: 30,
-  reviewTimeoutMinutes: 6,
+  /**
+   * 复核上限按类型分（`reviewTimeoutSeconds`：事项 5 分钟、上线 8 分钟），所以这里等的是**最大的那一个
+   * 加 1 分钟**（现在是 9 分钟），从源码读回来而不是写死一个数——上限改了这个缺省跟着改，不会再出现
+   * runner 比一次上线复核自己的上限先放手的情况。
+   */
+  reviewTimeoutMinutes: Math.max(...Object.values(reviewTimeoutSeconds)) / 60 + 1,
   wallClockMinutes: 60,
 };
 
