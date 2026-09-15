@@ -9,8 +9,10 @@ import {
   bundlePathFromModule,
   bundlePathFromResources,
   readBuildInfo,
+  unknownFingerprint,
   validBuildInfo,
 } from '../service/build-identity.ts';
+import { manualInstallSource } from '../service/upgrade.ts';
 import type { UpgradeRecord } from '../service/upgrade.ts';
 import { startInstalledFixture, startReleaseFixture } from './harness/release.ts';
 import type { ReleaseFixture } from './harness/release.ts';
@@ -264,6 +266,80 @@ test('the receipt fields reject an oversized, relative or non-absolute installed
     assert.deepEqual(upgrades(s), []);
     assert.equal(receipt({ installedBundle: bundlePath, buildFingerprint: installed }).buildFingerprint, installed);
     assert.equal(upgrades(s).length, 1);
+  } finally {
+    await cleanup();
+  }
+});
+
+test('a build installed with no release is noticed from the bundle itself and switches the same way', async () => {
+  const { s, bundlePath, identity, cleanup } = await startInstalledFixture();
+  const buildInfo = join(bundlePath, 'Contents', 'Resources', 'build-info.json');
+  const write = (value: unknown) => writeFileSync(buildInfo, JSON.stringify(value));
+  const info = (fingerprint: string, commit = targetCommit) => ({
+    scheme: 'morrow-bundle-v1',
+    commit,
+    version: '0.9.7',
+    dirty: false,
+    fingerprint,
+    files: 1,
+    bytes: 1,
+    builtAt: new Date().toISOString(),
+  });
+  try {
+    // Nothing on disk yet, and the build already running: neither is a switch.
+    assert.equal(s.engine.upgrade.considerInstalled(), undefined);
+    write(info(identity.fingerprint));
+    assert.equal(s.engine.upgrade.considerInstalled(), undefined);
+    write('not a build info');
+    assert.equal(s.engine.upgrade.considerInstalled(), undefined);
+    assert.deepEqual(upgrades(s), []);
+    // `npm run build:app && bash scripts/install-app.sh` replaced this daemon's own bundle.
+    write(info(installed));
+    const requested = s.engine.upgrade.considerInstalled()!;
+    assert.deepEqual(
+      {
+        phase: requested.phase,
+        releaseId: requested.releaseId,
+        target: requested.targetFingerprint,
+        commit: requested.targetCommit,
+        bundle: requested.installedBundle,
+        boot: requested.fromBootId,
+      },
+      {
+        phase: 'pending',
+        releaseId: manualInstallSource,
+        target: installed,
+        commit: targetCommit,
+        bundle: bundlePath,
+        boot: identity.bootId,
+      }
+    );
+    // One request per target: a second look changes nothing, and the same is true once the record
+    // has been blocked, so nothing relaunches in a loop.
+    assert.equal(s.engine.upgrade.considerInstalled(), undefined);
+    s.engine.upgrade.save({ ...requested, phase: 'blocked', error: '测试置为失败' });
+    assert.equal(s.engine.upgrade.considerInstalled(), undefined);
+    assert.equal(upgrades(s).length, 1);
+    // The tick reads the bundle at most once a minute, not on every one-second pass.
+    s.engine.upgrade.installedCheckedAt = 0;
+    write(info('e'.repeat(64)));
+    s.engine.upgrade.tick();
+    assert.equal(upgrades(s).length, 2);
+    write(info('f'.repeat(64)));
+    s.engine.upgrade.tick();
+    assert.equal(upgrades(s).length, 2);
+  } finally {
+    await cleanup();
+  }
+});
+
+test('a development run never requests a switch from whatever bundle happens to be on disk', async () => {
+  const { s, cleanup } = await startInstalledFixture({ fingerprint: unknownFingerprint });
+  try {
+    assert.equal(s.engine.upgrade.considerInstalled(), undefined);
+    s.engine.upgrade.installedCheckedAt = 0;
+    s.engine.upgrade.tick();
+    assert.deepEqual(upgrades(s), []);
   } finally {
     await cleanup();
   }

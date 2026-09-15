@@ -115,18 +115,24 @@ export class UpgradeHandover {
     if (record.phase === 'blocked' && !manual) return;
     const body: UpgradeHandshake = { fromBootId: state.identity.bootId, targetFingerprint: record.targetFingerprint };
     // Identity: the same data directory, this app's own bundle, and one stable boot of one daemon.
-    if (!this.deps.bundlePath || state.identity.bundlePath !== this.deps.bundlePath) {
-      this.once(record.id, '待切换的服务不是本应用所在的安装包，已停止自动切换。');
+    if (!this.deps.bundlePath) {
+      // A development run has no bundle of its own. It never takes over — and it must not block the
+      // record either: the installed app is the one that should finish this switch.
+      this.note('本应用不是安装包运行，不参与自动切换。');
+      return;
+    }
+    if (state.identity.bundlePath !== this.deps.bundlePath) {
+      await this.reportOnce(`${record.id}:bundle`, body, '待切换的服务不是本应用所在的安装包，已停止自动切换。');
       return;
     }
     if (state.identity.dataDirectory !== this.deps.dataDirectory) {
-      this.once(record.id, '待切换的服务使用了其他数据目录，已停止自动切换。');
+      await this.reportOnce(`${record.id}:data`, body, '待切换的服务使用了其他数据目录，已停止自动切换。');
       return;
     }
     if (this.bootId && this.bootId !== state.identity.bootId) {
       // A different daemon answers now: start over rather than hand over to an unknown process.
       this.bootId = state.identity.bootId;
-      this.once(`${record.id}:boot`, '本机服务已更换启动实例，重新核对后再切换。');
+      await this.reportOnce(`${record.id}:boot`, body, '本机服务已更换启动实例，重新核对后再切换。');
       return;
     }
     this.bootId = state.identity.bootId;
@@ -170,10 +176,17 @@ export class UpgradeHandover {
       await this.report(body, `切换未完成：${message}`);
     }
   }
-  private once(key: string, message: string) {
+  /**
+   * A reason this app can never complete the switch, written onto the daemon's own record and not
+   * only into this app's log. A record left in `draining` refuses every entry point that starts
+   * work with a 409 and makes the scheduler park each channel on every tick, with nothing left to
+   * move it along; `blocked` releases those and lets the interface show why and offer a retry.
+   * Reported once per reason, so a five-second poll does not repeat it.
+   */
+  private async reportOnce(key: string, body: UpgradeHandshake, reason: string) {
     if (this.reported.has(key)) return;
     this.reported.add(key);
-    this.note(message);
+    await this.report(body, reason);
   }
   /** The daemon's own child exit, or, for an adopted daemon, its lock release and health going offline. */
   private async waitForExit(childExit?: Promise<void>): Promise<boolean> {

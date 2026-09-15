@@ -30,6 +30,18 @@ bash scripts/compact-db.sh /某个/副本  # 指定目录，例如一份拷贝
 
 重新运行 `npm run build:app` 和 `bash scripts/install-app.sh`。安装器先校验完整应用，在临时目录保留旧包用于失败回退，成功后删除该副本；不会持续积累时间戳版本。退出并重新打开 Morrow 界面可加载新界面与图标。
 
-安装本身不重启正在工作的 daemon。仅界面或文档更新不需要重启服务；若本次包含服务修复，安排在 Morrow 管理的工作结束或暂停后切换。不要为了刷新界面而终止 Codex App 的原生任务。
+安装本身不重启正在工作的 daemon，但**不需要手动 `pkill`**：daemon 每 60 秒重读自己所在安装包里的 `Contents/Resources/build-info.json`，发现磁盘上的整包指纹与自己正在运行的不一致，就登记一条待切换记录（`releaseId` 记为 `manual-install`），随后走与 `local-script` 发布完全相同的流程——等当前工作真正结束（不打断任何轮次）、本机 Electron 核对身份后接手、daemon 以退出码 75 让位、应用重开并启动新 daemon。开发检出没有 `.app` 祖先、指纹为 `unknown`，因此永不触发；重新安装同一版本也不会触发。
+
+界面上的「立即重启」是同一次握手的提前发起：仍有工作在进行时返回 409 并列出阻塞项。
+
+### 手动切换（兜底）
+
+自动切换被判为失败（记录停在 `blocked` 并带原因，例如磁盘上的版本与目标不符、数据目录不同、界面所在安装包不是 daemon 所在的那个）时，按下面的顺序自己切换：
+
+1. 在 Morrow 界面暂停该项目的全部频道，确认没有进行中的原生轮次、排队的独立复核和进行中的发布。
+2. 界面上先试一次「立即重启」——失败的记录支持在同一次启动内重试。
+3. 仍不行时退出 Morrow 界面，停止 daemon：先 `bash scripts/login-service.sh uninstall` 撤销登录启动项（如装过），再结束持有数据目录的那个进程（`daemon.lock` 里的 `pid`）。不要终止 Codex App，也不要终止它的原生任务。
+4. 确认 `daemon.lock` 已经消失，再打开新装的 Morrow.app；新 daemon 启动时会对账：目标指纹已在运行记 `applied`，仍是旧指纹记 `blocked` 并保留原因。
+5. `GET /api/upgrade`（或界面的版本提示）确认运行中的指纹已是新版本。
 
 清理旧包前检查后台服务、Codex 启动器和登录启动项是否仍引用其路径。`NoHuman.app` 若是指向 `Morrow.app` 的兼容符号链接，本身不占用另一份应用的空间；仍被使用时应保留。

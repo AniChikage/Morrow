@@ -3,7 +3,7 @@ import { APIError, keys, string } from './protocol.ts';
 import { now } from './store.ts';
 import { log } from './log.ts';
 import type { Store } from './store.ts';
-import { buildIdentity, isCommit, isFingerprint, unknownFingerprint } from './build-identity.ts';
+import { buildIdentity, isCommit, isFingerprint, readBuildInfo, unknownFingerprint } from './build-identity.ts';
 import type { BuildIdentity } from './build-identity.ts';
 import type { Release } from './autonomy-types.ts';
 
@@ -13,6 +13,10 @@ export const upgradeExitCode = 75;
 export const upgradeReminderMs = 10 * 60 * 1000;
 /** How often the blockers kept on the record are refreshed once the reminder deadline has passed. */
 const reminderRefreshMs = 30 * 1000;
+/** How often the bundle on disk is re-read, so a manual install is noticed without a receipt. */
+const installedCheckMs = 60 * 1000;
+/** The `releaseId` of a request nobody published: a build copied over this daemon's own bundle. */
+export const manualInstallSource = 'manual-install';
 
 export type UpgradePhase = 'pending' | 'draining' | 'exiting' | 'blocked' | 'applied';
 /** One piece of real work that keeps the switch waiting. Nothing here is ever interrupted. */
@@ -83,6 +87,8 @@ export class UpgradeManager {
   beginExit?: (record: UpgradeRecord) => void;
   /** Set the moment this daemon decided to leave, before the phase is written. */
   exiting = false;
+  /** When the bundle on disk was last re-read; the tick runs once a second and this once a minute. */
+  installedCheckedAt = 0;
   constructor(store: Store, dataDirectory: string, identity?: BuildIdentity) {
     this.store = store;
     this.identity = { ...(identity ?? buildIdentity()), dataDirectory };
@@ -145,6 +151,10 @@ export class UpgradeManager {
    */
   tick() {
     if (this.exiting) return;
+    if (Date.now() - this.installedCheckedAt >= installedCheckMs) {
+      this.installedCheckedAt = Date.now();
+      this.considerInstalled();
+    }
     let row = this.record();
     if (!row) return;
     if (row.phase === 'pending') row = this.save({ ...row, phase: 'draining' });
@@ -273,20 +283,56 @@ export class UpgradeManager {
     // A dev run has no bundle and no known fingerprint, so it can never be the installed target.
     if (!this.identity.bundlePath || this.identity.fingerprint === unknownFingerprint) return undefined;
     if (!samePath(installedBundle, this.identity.bundlePath)) return undefined;
-    const existing = this.store.get<UpgradeRecord>('upgrades', targetFingerprint);
-    if (existing) return undefined;
-    const base = {
-      id: targetFingerprint,
+    return this.request({
       releaseId: release.id,
-      targetCommit: isCommit(receipt.commit) ? receipt.commit : unknownFingerprint,
-      targetFingerprint,
       installedBundle,
+      targetFingerprint,
+      targetCommit: isCommit(receipt.commit) ? receipt.commit : unknownFingerprint,
+    });
+  }
+  /**
+   * A build installed without a Morrow release leaves no receipt, so nothing recorded the intent to
+   * switch: `npm run build:app && bash scripts/install-app.sh` replaced this daemon's own bundle and
+   * the daemon kept running the old code until somebody killed the process. Re-reading the bundle's
+   * own `build-info.json` once a minute notices it, and from there it is the same request, draining,
+   * exit code 75 and relaunch a published install goes through.
+   *
+   * It stays silent in the two cases where there is nothing to do: a development run, which has no
+   * bundle and an unknown fingerprint, and the ordinary case where the bundle on disk is the build
+   * already running. A target that already has a record — including one `recover()` marked
+   * `blocked` — is not requested again, so nothing loops.
+   */
+  considerInstalled(): UpgradeRecord | undefined {
+    if (!this.identity.bundlePath || this.identity.fingerprint === unknownFingerprint) return undefined;
+    const info = readBuildInfo(this.identity.bundlePath);
+    if (!info || info.fingerprint === this.identity.fingerprint) return undefined;
+    return this.request({
+      releaseId: manualInstallSource,
+      installedBundle: this.identity.bundlePath,
+      targetFingerprint: info.fingerprint,
+      targetCommit: info.commit,
+    });
+  }
+  /** The persisted request one newly installed build creates, shared by both ways of noticing it. */
+  private request(target: {
+    releaseId: string;
+    installedBundle: string;
+    targetFingerprint: string;
+    targetCommit: string;
+  }): UpgradeRecord | undefined {
+    if (this.store.get<UpgradeRecord>('upgrades', target.targetFingerprint)) return undefined;
+    const base = {
+      id: target.targetFingerprint,
+      releaseId: target.releaseId,
+      targetCommit: target.targetCommit,
+      targetFingerprint: target.targetFingerprint,
+      installedBundle: target.installedBundle,
       fromBootId: this.identity.bootId,
       requestedAt: now(),
       updatedAt: now(),
     };
     // The same build reinstalled over itself is already satisfied; nothing restarts.
-    if (targetFingerprint === this.identity.fingerprint) {
+    if (target.targetFingerprint === this.identity.fingerprint) {
       this.save({ ...base, phase: 'applied', appliedAt: now() });
       return undefined;
     }
