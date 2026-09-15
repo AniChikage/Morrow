@@ -284,6 +284,41 @@ test('scheduled native turns clear old pending wakes and retain feedback arrivin
     await s.cleanup();
   }
 });
+test('a scheduled native turn starts from the channel as it is after the App sync, not as it was before', async () => {
+  const s = await setup();
+  try {
+    await s.native.bind(s.channel.id, s.transport.threadId);
+    const read = s.transport.readThread.bind(s.transport);
+    let edited = false;
+    Object.assign(s.transport, {
+      readThread: async (threadId: string) => {
+        // Stands for anything that edits this channel while the App is still answering: a PATCH
+        // from the interface, guidance accepted by the ingest of this very snapshot, or feedback.
+        if (!edited) {
+          edited = true;
+          s.store.put('channels', {
+            ...s.store.get<any>('channels', s.channel.id),
+            goal: '同步期间改过的目标',
+            pendingWake: { reason: '同步期间到达的反馈', at: new Date().toISOString() },
+          });
+        }
+        return read(threadId);
+      },
+    });
+    await s.engine.action(s.channel.id, 'resume');
+    const channel = s.store.get<any>('channels', s.channel.id);
+    assert.equal(channel.status, 'running');
+    assert.equal(channel.goal, '同步期间改过的目标');
+    // The wake arrived after this turn's prompt was decided, so it is still there for the next one.
+    assert.equal(channel.pendingWake?.reason, '同步期间到达的反馈');
+    const run = s.store.all<any>('runs').find((row) => row.source === 'morrow-schedule');
+    assert.equal(run.workDirection, '同步期间改过的目标');
+    assert.equal(s.transport.sent.length, 1);
+    assert.match(s.transport.sent[0].text, /同步期间改过的目标/);
+  } finally {
+    await s.cleanup();
+  }
+});
 test('a reconnected shared projection with a reset counter finishes the same native run and preserves its history', async () => {
   const s = await setup();
   try {

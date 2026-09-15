@@ -1333,7 +1333,7 @@ export class NativeConversations {
     return result;
   }
   async startScheduled(id: string, scheduled: boolean) {
-    const { channel, project } = this.channel(id);
+    const { channel: opening, project } = this.channel(id);
     const binding = this.bound(id);
     if (process.env.MORROW_TEST_MODE !== '1' && legacyBridgeRunning(this.engine.home))
       throw new APIError(409, '旧转接仍在运行；请在当前任务结束后重开 Codex App，再开始自动工作。');
@@ -1341,6 +1341,10 @@ export class NativeConversations {
     this.starting.add(id);
     try {
       const snapshot = await this.sync(binding.threadId);
+      // `sync` awaits the App, and ingesting that very snapshot — or a PATCH, or feedback arriving —
+      // can edit this channel meanwhile. Everything below therefore reads the row as it is now and
+      // writes back only the fields that starting a turn owns.
+      const channel = this.store.get<Channel>('channels', id)!;
       if (activeTurn(snapshot.state) || snapshot.state.threadRuntimeStatus?.type === 'active') {
         if (scheduled) {
           this.store.put('channels', {
@@ -1421,7 +1425,9 @@ export class NativeConversations {
         lastRunAt: run.startedAt,
         nextRunAt: '',
         usageWait: undefined,
-        pendingWake: undefined,
+        // The wake this turn consumes is the one it read as it began. Feedback that arrived while
+        // the App was syncing is not in this prompt, so it stays for the next turn to answer.
+        ...(channel.pendingWake?.at === opening.pendingWake?.at ? { pendingWake: undefined } : {}),
       });
       const receipt = await this.send(id, prompt, randomUUID(), 'schedule', run.id);
       const active = this.scheduled.get(id);
