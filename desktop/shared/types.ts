@@ -364,12 +364,6 @@ export interface RunOutputPage {
   hasMore: boolean;
   cursor?: string;
 }
-export interface NativeSessionTarget {
-  projectPath: string;
-  runtime: RuntimeID;
-  executable: string;
-  sessionId: string;
-}
 export interface NativeConnectionStatus {
   available: boolean;
   connected: boolean;

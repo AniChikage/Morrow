@@ -12,11 +12,11 @@ import './project-work.css';
 
 export const releaseLabels: Record<Release['status'], string> = {
   awaiting_approval: '待确认上线',
-  approved: '已确认上线',
+  approved: '已确认，等待上线',
   publishing: '正在上线',
   published: '已上线',
   rejected: '暂不上线',
-  unknown: '结局未知',
+  unknown: '上线结果待核对',
   failed: '上线失败',
 };
 type WorkPageState = {
@@ -226,8 +226,8 @@ export const verificationLabels = {
   queued: '等待独立复核',
   running: '正在独立复核',
   passed: '独立复核通过',
-  failed: '复核发现问题',
-  unknown: '复核尚不能判断',
+  failed: '复核未通过',
+  unknown: '复核结果未知',
 };
 export type VerificationRow = NonNullable<ProjectLoop['verifications']>[number];
 /**

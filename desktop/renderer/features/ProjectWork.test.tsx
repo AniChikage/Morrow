@@ -300,7 +300,7 @@ describe('AI work and release review', () => {
         <FeatureWork api={f.api} projectId="project-atlas" itemId="finding-import" />
       </TestProviders>
     );
-    expect(await screen.findByText('复核发现问题')).not.toBeNull();
+    expect(await screen.findByText('复核未通过')).not.toBeNull();
     expect(screen.getByText('169 小时的数据被错误计入 7 天', { exact: false })).not.toBeNull();
     expect(screen.queryByRole('button', { name: /确认/ })).toBeNull();
     f.data.verifications[0] = { ...f.data.verifications[0], status: 'passed', current: false };
@@ -999,6 +999,27 @@ describe('AI work and release review', () => {
     expect(screen.getByText('背景与预期收益', { selector: 'summary' }).closest('details')?.open).toBe(false);
     expect(f.reviewRelease).not.toHaveBeenCalled();
   });
+  it('names a review that could not conclude an unknown result rather than an unfinished one', async () => {
+    const f = fixture();
+    f.data.strategy = { understanding: [], decisions: [], counts: { understanding: 0, decisions: 0 } };
+    f.data.verifications = [{ ...historyRow('inconclusive'), status: 'unknown', current: true }];
+    render(<ProjectThinking api={f.api} projectId="project-atlas" onNavigate={f.props.onNavigate} />, {
+      wrapper: TestProviders,
+    });
+    expect(await screen.findByText('复核结果未知')).not.toBeNull();
+    expect(screen.queryByText('复核尚不能判断')).toBeNull();
+  });
+  it('names an approved release as waiting rather than as already out', async () => {
+    const f = fixture();
+    f.release.status = 'approved';
+    render(
+      <TestProviders>
+        <ProjectReleases {...f.props} projectId="project-atlas" />
+      </TestProviders>
+    );
+    expect(screen.getAllByText('已确认，等待上线').length).toBeGreaterThan(0);
+    expect(screen.queryByText('已上线')).toBeNull();
+  });
   it('returns a concrete revision to the agent with feedback without approving it', async () => {
     const f = fixture();
     render(
@@ -1022,6 +1043,8 @@ describe('AI work and release review', () => {
       </TestProviders>
     );
     const user = userEvent.setup();
+    // 结局未知 read as a verdict; the label says the receipt still has to be checked.
+    expect(screen.getAllByText('上线结果待核对').length).toBeGreaterThan(0);
     await user.click(screen.getByRole('button', { name: /导入失败恢复/ }));
     expect(screen.queryByRole('button', { name: '确认这个版本上线' })).toBeNull();
     await user.click(screen.getByRole('button', { name: '核对上线结果' }));

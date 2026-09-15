@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { codexAppLink } from './codex-link';
-import { nativeHistoryInput, nativeMessageInput, nativeResponseInput } from './validation';
+import { nativeHistoryInput, nativeMessageInput } from './validation';
 
 describe('native Codex conversation bridge', () => {
   it('opens the exact native thread without accepting arbitrary schemes or paths', () => {
@@ -24,13 +24,11 @@ describe('native Codex conversation bridge', () => {
     expect(() => nativeMessageInput({ text: ' ', requestId: 'request-123' })).toThrow();
     expect(() => nativeMessageInput({ text, requestId: 'request-123', model: 'override' })).toThrow();
   });
-  it('bounds history and rejects malformed native responses', () => {
+  it('bounds native history requests', () => {
     expect(nativeHistoryInput({ before: 'native:turn:item', limit: 200 })).toEqual({
       before: 'native:turn:item',
       limit: 200,
     });
     expect(() => nativeHistoryInput({ limit: 201 })).toThrow();
-    expect(() => nativeResponseInput({ text: 'x'.repeat(65536) })).toThrow();
-    expect(nativeResponseInput({ decision: 'decline' })).toEqual({ decision: 'decline' });
   });
 });

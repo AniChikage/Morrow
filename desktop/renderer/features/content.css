@@ -1737,13 +1737,6 @@
   padding: 0 var(--space-2);
   font-size: var(--text-xs);
 }
-.native-conversation-compact .native-conversation-bar {
-  min-height: 30px;
-}
-.native-conversation-compact .native-thread-name {
-  display: none;
-}
-
 .project-next {
   display: flex;
   align-items: center;

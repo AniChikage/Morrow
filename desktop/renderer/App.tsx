@@ -14,9 +14,7 @@ import {
   ChevronDown,
   ArrowUpRight,
   RefreshCw,
-  CircleHelp,
   CircleDashed,
-  Command,
   FolderPlus,
   AlertCircle,
 } from 'lucide-react';

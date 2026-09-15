@@ -18,7 +18,7 @@ import type {
 import { usageWindows } from '../shared/types';
 
 const runtimes = ['codex'] as const;
-export const itemStatuses = ['open', 'investigating', 'verified', 'resolved', 'blocked'];
+const itemStatuses = ['open', 'investigating', 'verified', 'resolved', 'blocked'];
 export function record(value: unknown, allowed: string[]): Record<string, unknown> {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('请求必须是对象。');
   const data = value as Record<string, unknown>;
@@ -39,7 +39,7 @@ export function choice<T extends string>(value: unknown, allowed: readonly T[]):
   if (typeof value !== 'string' || !allowed.includes(value as T)) throw new Error('选项无效。');
   return value as T;
 }
-export function integer(value: unknown, min: number, max: number): number {
+function integer(value: unknown, min: number, max: number): number {
   if (!Number.isInteger(value) || Number(value) < min || Number(value) > max)
     throw new Error(`数值必须在 ${min}–${max} 之间。`);
   return Number(value);
@@ -211,17 +211,6 @@ export function nativeHistoryInput(value: unknown): NativeHistoryQuery {
     ...(data.before !== undefined ? { before: text(data.before, '历史游标', 2048) } : {}),
     ...(data.limit !== undefined ? { limit: integer(data.limit, 1, 200) } : {}),
   };
-}
-export function nativeResponseInput(value: unknown): unknown {
-  if (!value || typeof value !== 'object') throw new Error('原生请求回复格式无效。');
-  let serialized: string;
-  try {
-    serialized = JSON.stringify(value);
-  } catch {
-    throw new Error('原生请求回复格式无效。');
-  }
-  if (serialized.length > 65536) throw new Error('原生请求回复过长。');
-  return JSON.parse(serialized);
 }
 export function externalURL(value: unknown): string {
   const raw = text(value, '链接', 8192);
