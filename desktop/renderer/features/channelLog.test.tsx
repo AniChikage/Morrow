@@ -371,20 +371,22 @@ const connectedConversation = (patch: Partial<NativeConversation> = {}): NativeC
   ...patch,
 });
 
-it('uses the human status detail instead of raw or historical task sync errors', async () => {
-  const { props, api } = featureProps();
+it.each([
+  ['Codex App 没有响应，稍后会重试', 'Codex App 没有响应，稍后会重试'],
+  ['connect ECONNREFUSED /Users/test/.codex/ipc/ipc.sock', 'App 连接暂时不可用，请在运行时页重新检测。'],
+])('preserves human sync errors and replaces raw sync errors: %s', async (syncError, expected) => {
+  const { props } = featureProps();
   props.snapshot.projects[0].isDemo = false;
-  const raw = 'connect ECONNREFUSED /Users/test/.codex/ipc/ipc.sock';
-  const detail = 'Codex App 未运行，打开后会自动重连';
+  const detail = '已连接 Codex App。请在 App 创建并打开同一项目的任务。';
   vi.mocked(props.api.getNativeConversation).mockResolvedValue(
     connectedConversation({
-      status: { ...nativeStatus, available: true, connected: false, detail, rawDetail: raw },
-      syncError: raw,
-      rawSyncError: raw,
+      status: { ...nativeStatus, available: true, connected: false, detail },
+      syncError,
     })
   );
   render(<ChannelView {...props} id="channel-system" />, { wrapper: TestProviders });
-  expect((await screen.findByRole('alert')).textContent).toContain(detail);
+  expect((await screen.findByRole('alert')).textContent).toContain(expected);
+  expect(screen.queryByText(detail)).toBeNull();
   expect(screen.queryByText(/ECONNREFUSED|ipc\.sock/)).toBeNull();
 });
 
@@ -402,12 +404,15 @@ it.each(['connect ECONNREFUSED /Users/test/.codex/ipc/ipc.sock', 'EAI_AGAIN', '�
   }
 );
 
-it('keeps a failed conversation request out of the channel hint', async () => {
+it.each([
+  ['connect ECONNREFUSED /tmp/service.sock', 'App 连接暂时不可用，请在运行时页重新检测。'],
+  ['Morrow 正在切换版本，请稍后重试。', 'Morrow 正在切换版本，请稍后重试。'],
+])('preserves human request errors and replaces raw request errors: %s', async (message, expected) => {
   const { props, api } = featureProps();
   props.snapshot.projects[0].isDemo = false;
-  api.getNativeConversation.mockRejectedValue(new Error('connect ECONNREFUSED /tmp/service.sock'));
+  api.getNativeConversation.mockRejectedValue(new Error(message));
   render(<ChannelView {...props} id="channel-system" />, { wrapper: TestProviders });
-  expect((await screen.findByRole('alert')).textContent).toContain('App 连接暂时不可用，请在运行时页重新检测。');
+  expect((await screen.findByRole('alert')).textContent).toContain(expected);
   expect(screen.queryByText(/ECONNREFUSED|service\.sock/)).toBeNull();
 });
 

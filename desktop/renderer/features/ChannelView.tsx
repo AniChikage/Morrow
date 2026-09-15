@@ -12,7 +12,7 @@ import type {
 import type { FeatureProps } from './types';
 import { Button, Dropdown, DropdownItem, EmptyState, Markdown } from '../components/ui';
 import { mergeById, replaceIfChanged } from '../components/collections';
-import { connectionDetail, connectionFallback } from '../components/connection-detail';
+import { connectionDetail } from '../components/connection-detail';
 import {
   channelStatusLabel,
   durationSeconds,
@@ -370,11 +370,15 @@ export function ChannelView(props: FeatureProps & { id: string }) {
   const unloaded =
     native && !!conversation?.threadId && conversation.status.available && conversation.status.readyThreadCount === 0;
   const nativeProblem = nativeError
-    ? connectionFallback
-    : native &&
-        conversation &&
-        (!conversation.status.available || conversation.syncError || !conversation.status.connected)
-      ? connectionDetail(conversation.status.detail)
+    ? connectionDetail(nativeError)
+    : native && conversation
+      ? !conversation.status.available
+        ? connectionDetail(conversation.status.detail)
+        : conversation.syncError
+          ? connectionDetail(conversation.syncError)
+          : !conversation.status.connected
+            ? connectionDetail(conversation.status.detail)
+            : ''
       : '';
   const unavailable = demo
     ? '示例频道不能回答'
