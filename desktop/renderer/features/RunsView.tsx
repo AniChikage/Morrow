@@ -118,7 +118,7 @@ export function RunHistory({
         <EmptyState
           icon={<History />}
           title={statusFilter === 'all' ? '还没有运行记录' : '没有符合条件的运行'}
-          description={emptyDescription || '持续跟踪或运行一次后，本轮输入、输出、会话与看板报告都会保存在这里。'}
+          description={emptyDescription || '持续跟踪或运行一次后，本轮输入、输出、任务或会话与看板报告都会保存在这里。'}
         />
       )}
       {merged.map((run) => {
@@ -343,11 +343,11 @@ function RunInspector({ run, ...props }: FeatureProps & { run: Run }) {
       </div>
       {run.sessionId && (
         <div className="run-native-session">
-          <span>原生会话</span>
+          <span>{nativeRun(value) ? 'App 任务' : '原生会话'}</span>
           <code>{run.sessionId}</code>
           <Button
             variant="ghost"
-            aria-label="复制原生会话 ID"
+            aria-label={nativeRun(value) ? '复制 App 任务 ID' : '复制原生会话 ID'}
             onClick={() =>
               void navigator.clipboard
                 .writeText(run.sessionId)
@@ -358,7 +358,7 @@ function RunInspector({ run, ...props }: FeatureProps & { run: Run }) {
             <Copy size={12} />
             {copied ? '已复制' : '复制'}
           </Button>
-          {value.resumedFromSessionId && <small>沿用已有会话</small>}
+          {value.resumedFromSessionId && <small>{nativeRun(value) ? '沿用已有任务' : '沿用已有会话'}</small>}
         </div>
       )}
       <TabRow

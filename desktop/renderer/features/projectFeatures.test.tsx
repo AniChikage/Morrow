@@ -507,6 +507,7 @@ describe('channels are execution sources, not separate boards', () => {
     expect(screen.queryByRole('button', { name: '在原生 CLI 中继续' })).toBeNull();
     await userEvent.setup().click(screen.getByRole('button', { name: '项目属性' }));
     const button = screen.getByRole('button', { name: '在 Codex App 中继续此项目' });
+    expect(button.getAttribute('title')).toBe('打开此项目的 App 任务；尚未关联时打开 App 新建任务。');
     expect((button as HTMLButtonElement).disabled).toBe(false);
     await userEvent.setup().click(button);
     expect(api.openNativeApp).toHaveBeenCalledWith('channel-system');

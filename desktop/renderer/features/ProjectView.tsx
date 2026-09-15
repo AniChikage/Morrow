@@ -491,12 +491,12 @@ export function ProjectView(props: FeatureProps & { id: string }) {
             aria-label="在 Codex App 中继续此项目"
             title={
               project.isDemo
-                ? '示例项目不会打开原生对话。'
+                ? '示例项目不会打开 App 任务。'
                 : codexChannel
-                  ? '打开此项目的原生会话；尚未关联时打开 App 新建对话。'
+                  ? '打开此项目的 App 任务；尚未关联时打开 App 新建任务。'
                   : legacyChannels.length
-                    ? '旧频道使用的运行时已停止支持；新建 Codex 频道后可打开原生对话。'
-                    : '创建 Codex 频道后可打开原生对话。'
+                    ? '旧频道使用的运行时已停止支持；新建 Codex 频道后可打开 App 任务。'
+                    : '创建 Codex 频道后可打开 App 任务。'
             }
             disabled={busy || project.isDemo || !codexChannel}
             onClick={() => codexChannel && void onMutate(() => api.openNativeApp(codexChannel.id))}

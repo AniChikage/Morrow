@@ -116,6 +116,7 @@ test('Codex reports the live App connection and bundle version separately from t
   await userEvent.setup().click(row);
   const details = within(screen.getByRole('region', { name: 'Codex 详情' }));
   expect(details.getByText('原生会话连接已建立')).toBeTruthy();
+  expect(details.getByText(/绑定 Codex App 的同一条任务/)).toBeTruthy();
   expect(details.getByText('app-server/7')).toBeTruthy();
   expect(details.getByText(installed.version)).toBeTruthy();
   expect(details.getByText(installed.path)).toBeTruthy();

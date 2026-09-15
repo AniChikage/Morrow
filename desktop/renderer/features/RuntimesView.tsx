@@ -463,7 +463,7 @@ export function RuntimesView({
                               )}
                               <dt>对话执行</dt>
                               <dd>
-                                绑定 Codex App 的同一条会话，直接同步消息、回复和运行活动。账号、模型、工具和权限由 App
+                                绑定 Codex App 的同一条任务，直接同步消息、回复和运行活动。账号、模型、工具和权限由 App
                                 管理。
                               </dd>
                             </>

@@ -229,6 +229,32 @@ it('keeps CLI completion separate from report validation and displays exact inpu
 });
 
 it.each([
+  [{ executionOwner: 'codex-app', permission: 'workspace-write' }, 'App 任务', '沿用已有任务'],
+  [{ permission: 'native' }, 'App 任务', '沿用已有任务'],
+  [{ permission: 'workspace-write' }, '原生会话', '沿用已有会话'],
+] as const)('names App tasks separately from CLI sessions and copies the same ID (%j)', async (patch, label, reuse) => {
+  const { props } = featureProps();
+  const user = userEvent.setup();
+  const current = run('session-label', {
+    ...patch,
+    sessionId: 'exact-session-id',
+    resumedFromSessionId: 'exact-session-id',
+  });
+  props.snapshot.runs = [current];
+  vi.mocked(props.api.getRuns).mockResolvedValue({ runs: [current], hasMore: false });
+  vi.mocked(props.api.getRun).mockResolvedValue({ run: current, prompt: '', finalOutput: '' });
+  render(<RunsView {...props} />, { wrapper: TestProviders });
+  await user.click(headings()[0]);
+  expect(await screen.findByText(label)).toBeTruthy();
+  expect(screen.getByText(reuse)).toBeTruthy();
+  await user.click(screen.getByRole('button', { name: `复制${label === 'App 任务' ? ' App 任务' : label} ID` }));
+  expect(await navigator.clipboard.readText()).toBe(current.sessionId);
+  expect(
+    screen.getByRole('button', { name: `复制${label === 'App 任务' ? ' App 任务' : label} ID` }).textContent
+  ).toContain('已复制');
+});
+
+it.each([
   ['missing', '本轮结束，未附看板报告，看板未改动。', 'subtle'],
   ['invalid', '看板报告未通过验证：格式错误。看板未改动。', 'run-report-warning'],
   ['conflict', '报告中的事项已被更新，看板未改动。', 'run-report-warning'],
