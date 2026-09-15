@@ -2,7 +2,8 @@ import { DatabaseSync } from 'node:sqlite';
 import { randomUUID } from 'node:crypto';
 import { chmodSync, readFileSync, statSync } from 'node:fs';
 import { dirname, join } from 'node:path';
-import type { Channel, Event, EventDetail, Project, Run, RunIO, WorkItem } from './protocol.ts';
+import { appResumeSummary } from './protocol.ts';
+import type { AppResumeRecord, Channel, Event, EventDetail, Project, Run, RunIO, WorkItem } from './protocol.ts';
 export const now = () => new Date().toISOString();
 /** A Morrow-orchestrated turn, as opposed to native chat or a turn the App itself started. */
 const scheduledSource =
@@ -534,10 +535,17 @@ export class Store {
         ...project,
         briefRevision: project.briefRevision || 0,
       })),
-      channels: this.all<Channel>('channels').map((channel) => ({
-        ...channel,
-        autonomyEnabled: !!this.get<any>('controls', channel.id)?.enabled,
-      })),
+      channels: this.all<Channel>('channels').map((channel) => {
+        // One line and one expandable reason per channel; the ids stay in the record itself.
+        const resume = this.db
+          .prepare("SELECT data FROM app_resumes WHERE json_extract(data,'$.channelId')=? ORDER BY rowid DESC LIMIT 1")
+          .get(channel.id) as { data: string } | undefined;
+        return {
+          ...channel,
+          autonomyEnabled: !!this.get<any>('controls', channel.id)?.enabled,
+          ...(resume ? { appResume: appResumeSummary(JSON.parse(resume.data) as AppResumeRecord) } : {}),
+        };
+      }),
       items: this.all<WorkItem>('items'),
       runs: this.recent<Run>('runs', 500),
       events: this.recent<Event>('events', 1500),

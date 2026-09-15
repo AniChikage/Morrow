@@ -12,6 +12,7 @@ const key = (threadId: string, turnId: string) =>
 const turnId = (turn: any) => String(turn?.turnId || turn?.id || '');
 const marked = (turn: any) => turn?.params?.turnTrigger === resumeMarker;
 const ended = (turn: any) => !['inProgress', 'running'].includes(String(turn?.status || ''));
+const isUserItem = (item: any) => item?.type === 'userMessage' || item?.type === 'steeringUserMessage';
 /**
  * Exclusions that no later snapshot can undo: the task's own turn order already says the relation is
  * ambiguous or belongs to someone else. A record carrying one of these never links or resumes again.
@@ -27,13 +28,14 @@ const settled = [
 const appendReasons = (existing: string[], added: string[]) => [...new Set([...existing, ...added])];
 
 /**
- * #32, first step: the durable record of what the user asked for, and read-only recognition of a
- * turn the Codex App continued by itself after an interruption.
+ * Phase one of #32: bounded recovery after the Codex App continues an interrupted turn on its own.
  *
  * Nothing here touches the App. The interrupted turn keeps its `interrupted` status and its grant
  * stays refused; the App's own continuation is only observed, never rewritten into the scheduled run
- * and never sent to. Any human action closes a candidate still under observation. Turning a
- * native-interrupt pause back into an ordinary wait is the second step and is not done here.
+ * and never sent to. When that continuation completes and the user's intent is provably unchanged,
+ * the native-interrupt pause becomes an ordinary wait and the scheduler decides when to run — with
+ * every existing gate (budget, project serialization, review, working tree, upgrade drain) still in
+ * force, and a brand-new grant for the next turn.
  */
 export class AppResumeTracker {
   store: Store;
@@ -152,18 +154,27 @@ export class AppResumeTracker {
   }
   /**
    * Reads the bound task's own turn order and decides, for every record still open on this task,
-   * whether one App-started turn continues the interrupted one. Read-only with respect to the
-   * native task: no message, resend or interrupt is ever issued from here, and nothing about the
-   * channel's own state changes.
+   * whether one App-started turn continues the interrupted one — and, once that turn has completed,
+   * whether the conditions for returning to ordinary scheduling all hold. Read-only with respect to
+   * the native task: no message, resend or interrupt is ever issued from here.
    *
    * `turns` is the task's turn list in task order and `complete` says whether the history is whole;
    * both are computed by the caller that already read the snapshot.
    */
   observe(threadId: string, turns: any[], complete: boolean) {
-    for (const record of this.store
-      .all<AppResumeRecord>('app_resumes')
-      .filter((row) => row.threadId === threadId && ['observing', 'unconfirmed', 'linked'].includes(row.status)))
+    // Selected on the task index rather than by filtering the whole table: this runs on every
+    // native snapshot the service ingests.
+    for (const record of this.onThread(threadId).filter((row) =>
+      ['observing', 'unconfirmed', 'linked'].includes(row.status)
+    ))
       this.step(record, turns, complete);
+  }
+  /** Every record about one native task, in the order they were written. */
+  private onThread(threadId: string): AppResumeRecord[] {
+    return this.store.db
+      .prepare("SELECT data FROM app_resumes WHERE json_extract(data,'$.threadId')=? ORDER BY rowid")
+      .all(threadId)
+      .map((row: any) => JSON.parse(row.data) as AppResumeRecord);
   }
   private write(record: AppResumeRecord, fields: Partial<AppResumeRecord>) {
     const next = { ...record, ...fields, updatedAt: now() };
@@ -194,9 +205,7 @@ export class AppResumeTracker {
     const candidateTurnId = turnId(candidate);
     if (!candidateTurnId) return this.keep(record, ['resume-turn-unidentified']);
     if (
-      this.store
-        .all<AppResumeRecord>('app_resumes')
-        .some((row) => row.id !== record.id && row.resumeNativeTurnId === candidateTurnId)
+      this.onThread(record.threadId).some((row) => row.id !== record.id && row.resumeNativeTurnId === candidateTurnId)
     )
       return this.keep(record, ['resume-turn-claimed']);
     const run = this.runOf(record.channelId, candidateTurnId);
@@ -241,9 +250,9 @@ export class AppResumeTracker {
         [candidate.status === 'interrupted' ? 'resume-turn-interrupted' : 'resume-turn-failed'],
         'kept-paused'
       );
-    // Step one stops here: the relation is recorded, the interrupted run keeps its status and the
-    // channel stays paused. Turning that pause back into an ordinary wait is the second step.
-    void linked;
+    // Anything a person typed from the interruption onwards, including steering inside the App's own
+    // turn, is newer guidance than the plan this record would restore.
+    this.restore(linked, turns.slice(originalIndex + 1));
   }
   private runOf(channelId: string, nativeTurnId: string): Run | undefined {
     const row = this.store.db
@@ -252,5 +261,78 @@ export class AppResumeTracker {
       )
       .get(channelId, nativeTurnId) as { data: string } | undefined;
     return row ? (JSON.parse(row.data) as Run) : undefined;
+  }
+  /**
+   * Turns the native-interrupt pause into an ordinary wait, once. Nothing about the finished App
+   * turn is trusted as work already checked: the next scheduled turn gets its own grant and has to
+   * read the native history, the files and the board itself before deciding anything.
+   */
+  private restore(record: AppResumeRecord, later: any[]) {
+    // `later` is the continuation turn and everything after it, in task order.
+    const channel = this.store.get<Channel>('channels', record.channelId);
+    if (!channel) return;
+    const project = this.store.get<Project>('projects', record.projectId);
+    const intent = this.intent(record.channelId);
+    const reasons: string[] = [];
+    if (!record.intent.autonomyEnabled) reasons.push('autonomy-was-off');
+    if (record.pauseCause !== 'native-interrupt') reasons.push('human-pause');
+    if (intent.generation !== record.intent.generation) reasons.push('intent-generation-changed');
+    if (channel.goal !== record.intent.workDirection) reasons.push('direction-changed');
+    if ((project?.briefRevision || 0) !== record.intent.briefRevision) reasons.push('brief-changed');
+    if (channel.permission !== record.intent.permission) reasons.push('permission-changed');
+    if (channel.work?.awaitingReply) reasons.push('question-awaiting-reply');
+    // A person steering the task during or after the App's continuation is the newer instruction;
+    // the next step is theirs to give, not ours to schedule.
+    if (later.some((turn) => (turn.items || []).some(isUserItem))) reasons.push('later-guidance');
+    if (
+      this.store
+        .all<{ threadId: string; status: string; type: string }>('native_requests')
+        .some(
+          (row) =>
+            row.threadId === record.threadId && row.status === 'pending' && ['userInput', 'mcp'].includes(row.type)
+        )
+    )
+      reasons.push('native-question-pending');
+    if (reasons.length) {
+      this.keep(record, reasons, 'kept-paused');
+      return;
+    }
+    this.store.transaction(() => {
+      // Re-read inside the transaction: a human pause that lands between the checks above and this
+      // write must win, and a terminal state processed twice must apply at most once.
+      const fresh = this.store.get<AppResumeRecord>('app_resumes', record.id);
+      if (!fresh || fresh.appliedAt || fresh.status !== 'linked') return;
+      const live = this.intent(record.channelId);
+      const current = this.store.get<Channel>('channels', record.channelId);
+      if (live.generation !== record.intent.generation) {
+        this.keep(fresh, ['intent-generation-changed'], 'kept-paused');
+        return;
+      }
+      if (!current || current.status !== 'paused' || this.engine.control(record.channelId).enabled) {
+        this.keep(fresh, ['channel-no-longer-paused'], 'kept-paused');
+        return;
+      }
+      this.engine.setControl(record.channelId, { enabled: true });
+      this.store.put('channels', {
+        ...current,
+        status: 'waiting',
+        nextRunAt: new Date(Date.now() + 5000).toISOString(),
+      });
+      this.write(fresh, { status: 'resumed', appliedAt: now() });
+      this.engine.audit({
+        projectId: record.projectId,
+        channelId: record.channelId,
+        runId: record.originalRunId,
+        actor: 'system',
+        action: 'channel.app-resume-restored',
+        text: 'App 续跑完成，下一轮核对其工作；已恢复为普通等待，由调度器决定何时运行。',
+        after: {
+          originalRunId: record.originalRunId,
+          resumeRunId: record.resumeRunId,
+          resumeNativeTurnId: record.resumeNativeTurnId,
+          relation: 'inferred-sequence',
+        },
+      });
+    });
   }
 }

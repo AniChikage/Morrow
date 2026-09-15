@@ -171,7 +171,12 @@ async function callWith(grant: { url: string; token: string }, operation: string
   });
   return { status: response.status, body: await response.json() };
 }
-test('one marked continuation of a single interrupted turn is recorded as an inferred relation, and changes nothing else', async () => {
+/** Lets the channel's next wait fall due without touching the user's own intent. */
+function dueNow(s: Fixture) {
+  s.store.put('channels', { ...channelRow(s), nextRunAt: new Date(Date.now() - 1000).toISOString() });
+}
+
+test('one marked continuation of a single interrupted turn restores ordinary waiting only, and the next turn gets its own grant', async () => {
   const s = await setup();
   try {
     const run = await orchestratedTurn(s);
@@ -180,6 +185,7 @@ test('one marked continuation of a single interrupted turn is recorded as an inf
     assert.equal(intent.threadId, s.transport.threadId);
     assert.equal(intent.workDirection, s.channel.goal);
     assert.equal(intent.generation, s.engine.appResume.intent(s.channel.id).generation);
+    const originalGrant = grantOf(s, run.id);
     s.transport.finish(run.nativeTurnId, 'interrupted');
     await until(() => s.store.get<Run>('runs', run.id)!.status === 'interrupted');
     // The interrupted turn is final: it keeps its own status, report state and channel pause.
@@ -194,41 +200,48 @@ test('one marked continuation of a single interrupted turn is recorded as an inf
     assert.equal(observed.originalNativeTurnId, run.nativeTurnId);
     // The App continues by itself and completes.
     const resume = s.transport.resume('completed');
-    await until(() => record(s).status === 'linked');
+    await until(() => record(s).status === 'resumed');
     const linked = record(s);
     assert.equal(linked.relation, 'inferred-sequence');
     assert.equal(linked.marker, 'resume_interrupted_task');
     assert.equal(linked.resumeNativeTurnId, resume.turnId);
     assert.equal(linked.originalRunId, run.id);
     assert.ok(linked.basis.includes('adjacent-turn-order'));
-    assert.ok(linked.basis.includes('complete-native-history'));
     // Two runs, kept apart: the App's turn keeps its own native-app origin and terminal state.
     const resumeRun = s.store.get<Run>('runs', linked.resumeRunId!)!;
     assert.equal(resumeRun.source, 'native-app');
     assert.equal(resumeRun.status, 'completed');
-    assert.notEqual(resumeRun.id, run.id);
+    assert.equal(resumeRun.id !== run.id, true);
     assert.equal(s.store.get<Run>('runs', run.id)!.status, 'interrupted');
     assert.equal(s.store.get<Run>('runs', run.id)!.summary, interrupted.summary);
-    // This step only records the relation: nothing is sent, interrupted or rescheduled.
-    assert.equal(channelRow(s).status, 'paused');
-    assert.equal(channelRow(s).nextRunAt, '');
-    assert.equal(s.engine.control(s.channel.id).enabled, false);
+    // Only ordinary waiting is restored; nothing is sent and the scheduler decides when to run.
+    assert.equal(channelRow(s).status, 'waiting');
+    assert.equal(s.engine.control(s.channel.id).enabled, true);
     assert.equal(s.transport.sent.length, 1);
     assert.equal(s.transport.interruptions.length, 0);
-    const audits = s.store.all<any>('events').filter((event) => event.action === 'channel.app-resume-linked');
-    assert.equal(audits.length, 1);
-    assert.match(audits[0].text, /按任务内轮次顺序推断/);
-    // Reading the same task again neither repeats the record nor the audit line.
-    for (let attempt = 0; attempt < 3; attempt++) s.transport.emit();
-    await s.native.sync(s.transport.threadId);
-    assert.equal(records(s).length, 1);
-    assert.equal(s.store.all<any>('events').filter((event) => event.action === 'channel.app-resume-linked').length, 1);
+    const restored = s.store.all<any>('events').filter((event) => event.action === 'channel.app-resume-restored');
+    assert.equal(restored.length, 1);
+    assert.match(restored[0].text, /App 续跑完成，下一轮核对其工作/);
+    assert.equal(s.store.snapshot([]).channels[0].appResume!.state, 'resumed');
+    // The next normal turn mints its own grant; the interrupted turn's grant stays refused.
+    dueNow(s);
+    s.engine.tick();
+    const next = await until(() =>
+      s.store
+        .all<Run>('runs')
+        .find((row) => row.source === 'morrow-schedule' && row.status === 'running' && row.id !== run.id)
+    );
+    const nextGrant = grantOf(s, next.id);
+    assert.notEqual(nextGrant.token, originalGrant.token);
+    assert.equal((await callWith(nextGrant, 'context')).status, 200);
+    assert.equal((await callWith(originalGrant, 'context')).status, 409);
+    assert.equal(next.workIntent!.generation, intent.generation);
   } finally {
     await s.cleanup();
   }
 });
 
-test('an unmarked turn, another task, a non-orchestrated predecessor, an incomplete history and several candidates never link', async () => {
+test('an unmarked turn, another task, a non-orchestrated predecessor, an incomplete history and several candidates never link or resume', async () => {
   const s = await setup();
   try {
     const run = await orchestratedTurn(s);
@@ -276,13 +289,12 @@ test('an unmarked turn, another task, a non-orchestrated predecessor, an incompl
     partial.transport.resume('completed');
     await until(() => record(partial).exclusions.includes('native-history-incomplete'));
     assert.equal(record(partial).status, 'unconfirmed');
-    assert.equal(record(partial).resumeRunId, undefined);
     assert.equal(channelRow(partial).status, 'paused');
     // The same task read whole afterwards resolves the same turns.
     partial.transport.complete = true;
     partial.transport.emit();
-    await until(() => record(partial).status === 'linked');
-    assert.equal(channelRow(partial).status, 'paused');
+    await until(() => record(partial).status === 'resumed');
+    assert.equal(channelRow(partial).status, 'waiting');
   } finally {
     await partial.cleanup();
   }
@@ -345,6 +357,7 @@ test('an unmarked turn, another task, a non-orchestrated predecessor, an incompl
     await other.cleanup();
   }
 });
+
 test('a human pause wins before the interruption, after the candidate and around terminal processing, and a restart replays no send', async () => {
   const before = await setup();
   try {
@@ -415,7 +428,8 @@ test('a human pause wins before the interruption, after the candidate and around
     await restart.cleanup();
   }
 });
-test('new guidance, a rebind, a direction, brief or permission change and a manual single run all close the candidate', async () => {
+
+test('new guidance, a rebind, a permission or direction change, automatic work already off and a manual single run all invalidate the candidate', async () => {
   const guidance = await setup();
   try {
     const run = await orchestratedTurn(guidance);
@@ -430,6 +444,44 @@ test('new guidance, a rebind, a direction, brief or permission change and a manu
     assert.equal(guidance.engine.control(guidance.channel.id).enabled, false);
   } finally {
     await guidance.cleanup();
+  }
+  // Guidance that arrived inside the task after the App finished is the newer instruction.
+  const later = await setup();
+  try {
+    const run = await orchestratedTurn(later);
+    later.transport.finish(run.nativeTurnId, 'interrupted');
+    await until(() => record(later).status === 'observing');
+    later.transport.resume('completed', false);
+    later.transport.append(chatTemplate, { status: 'completed' });
+    await until(() => record(later).exclusions.includes('later-guidance'));
+    assert.equal(record(later).status, 'kept-paused');
+    assert.equal(channelRow(later).status, 'paused');
+  } finally {
+    await later.cleanup();
+  }
+  // Steering typed into the App's own continuation turn counts as guidance too.
+  const steered = await setup();
+  try {
+    const run = await orchestratedTurn(steered);
+    steered.transport.finish(run.nativeTurnId, 'interrupted');
+    await until(() => record(steered).status === 'observing');
+    const resume = steered.transport.resume('completed', false);
+    resume.items = [
+      ...resume.items,
+      {
+        id: randomUUID(),
+        type: 'steeringUserMessage',
+        status: 'accepted',
+        content: [{ type: 'text', text: '先停一下' }],
+      },
+    ];
+    steered.transport.emit();
+    await until(() => record(steered).exclusions.includes('later-guidance'));
+    assert.equal(record(steered).status, 'kept-paused');
+    assert.equal(channelRow(steered).status, 'paused');
+    assert.equal(steered.engine.control(steered.channel.id).enabled, false);
+  } finally {
+    await steered.cleanup();
   }
   // A changed work direction, project brief or permission is the user's own new intent.
   for (const change of ['direction', 'brief', 'permission'] as const) {
@@ -479,16 +531,16 @@ test('new guidance, a rebind, a direction, brief or permission change and a manu
     manual.transport.finish(run.nativeTurnId, 'interrupted');
     await until(() => record(manual).status === 'observing');
     manual.transport.resume('completed');
-    await until(() => record(manual).status === 'linked');
-    // The relation is still a fact worth recording; the saved intent is what says nothing may resume.
-    assert.equal(record(manual).intent.autonomyEnabled, false);
+    await until(() => record(manual).status === 'kept-paused');
+    assert.ok(record(manual).exclusions.includes('autonomy-was-off'));
     assert.equal(channelRow(manual).status, 'paused');
     assert.equal(manual.engine.control(manual.channel.id).enabled, false);
   } finally {
     await manual.cleanup();
   }
 });
-test('a continuation that fails or is interrupted keeps the failure and the observation', async () => {
+
+test('a continuation that fails or is interrupted keeps the failure and the observation without resuming', async () => {
   for (const status of ['interrupted', 'failed'] as const) {
     const s = await setup();
     try {
@@ -515,7 +567,65 @@ test('a continuation that fails or is interrupted keeps the failure and the obse
     }
   }
 });
-test("the interrupted turn's grant and request ids stay refused, and the App's report stays native history", async () => {
+
+test('repeated, out-of-order and reconnect-completed history apply the recovery at most once, and history with no intent snapshot starts nothing', async () => {
+  const s = await setup();
+  try {
+    const run = await orchestratedTurn(s);
+    s.transport.finish(run.nativeTurnId, 'interrupted');
+    await until(() => record(s).status === 'observing');
+    const resume = s.transport.resume('completed');
+    await until(() => record(s).status === 'resumed');
+    const appliedAt = record(s).appliedAt;
+    const waiting = channelRow(s).nextRunAt;
+    // The same terminal state published again, and a whole-history reconnect, change nothing.
+    for (let attempt = 0; attempt < 3; attempt++) s.transport.emit();
+    await s.native.sync(s.transport.threadId);
+    s.transport.complete = false;
+    s.transport.emit();
+    s.transport.complete = true;
+    s.transport.emit();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    assert.equal(records(s).filter((row) => row.status === 'resumed').length, 1);
+    assert.equal(record(s).appliedAt, appliedAt);
+    assert.equal(channelRow(s).nextRunAt, waiting);
+    assert.equal(
+      s.store.all<any>('events').filter((event) => event.action === 'channel.app-resume-restored').length,
+      1
+    );
+    assert.equal(s.store.all<any>('events').filter((event) => event.action === 'channel.app-resume-linked').length, 1);
+    assert.equal(s.transport.sent.length, 1);
+    assert.equal(record(s).resumeNativeTurnId, resume.turnId);
+    // A person pausing after the recovery is the last word, and the replayed state cannot undo it.
+    await s.engine.action(s.channel.id, 'pause');
+    s.transport.emit();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    assert.equal(channelRow(s).status, 'paused');
+    assert.equal(s.engine.control(s.channel.id).enabled, false);
+    assert.equal(record(s).appliedAt, appliedAt);
+  } finally {
+    await s.cleanup();
+  }
+  // An interrupted turn with no intent snapshot is the shape of older rows: observed, never revived.
+  const historical = await setup();
+  try {
+    const run = await orchestratedTurn(historical);
+    historical.store.put('runs', { ...historical.store.get<Run>('runs', run.id)!, workIntent: undefined });
+    delete (historical.native as any).scheduled.get(historical.channel.id).run.workIntent;
+    historical.transport.finish(run.nativeTurnId, 'interrupted');
+    await until(() => historical.store.get<Run>('runs', run.id)!.status === 'interrupted');
+    historical.transport.resume('completed');
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    assert.equal(records(historical).length, 0);
+    assert.equal(channelRow(historical).status, 'paused');
+    assert.equal(historical.engine.control(historical.channel.id).enabled, false);
+    assert.equal(historical.store.snapshot([]).channels[0].appResume, undefined);
+  } finally {
+    await historical.cleanup();
+  }
+});
+
+test("the interrupted turn's grant and request ids stay refused, and the App's report never reaches the board by itself", async () => {
   const s = await setup();
   try {
     const run = await orchestratedTurn(s);
@@ -532,7 +642,7 @@ test("the interrupted turn's grant and request ids stay refused, and the App's r
     }
     const items = s.store.all<any>('items').length;
     s.transport.resume('completed');
-    await until(() => record(s).status === 'linked');
+    await until(() => record(s).status === 'resumed');
     // The App's own turn stays native history: no board change, no report of its own.
     assert.equal(s.store.all<any>('items').length, items);
     const resumeRun = s.store.get<Run>('runs', record(s).resumeRunId!)!;
@@ -543,22 +653,111 @@ test("the interrupted turn's grant and request ids stay refused, and the App's r
     await s.cleanup();
   }
 });
-test('an interrupted turn with no intent snapshot is left exactly as it is', async () => {
-  const s = await setup();
+
+test('the restored wait still passes through the budget, review, upgrade-drain and working-tree gates', async () => {
+  // Budget: the restored wait is an ordinary wait, so the daily cap still parks the channel.
+  const budget = await setup();
   try {
-    const run = await orchestratedTurn(s);
-    // The shape of rows written before the intent snapshot existed: no record, no recovery, ever.
-    s.store.put('runs', { ...s.store.get<Run>('runs', run.id)!, workIntent: undefined });
-    delete (s.native as any).scheduled.get(s.channel.id).run.workIntent;
-    s.transport.finish(run.nativeTurnId, 'interrupted');
-    await until(() => s.store.get<Run>('runs', run.id)!.status === 'interrupted');
-    s.transport.resume('completed');
-    await until(() => s.store.all<Run>('runs').some((row) => row.source === 'native-app'));
-    assert.equal(records(s).length, 0);
-    assert.equal(channelRow(s).status, 'paused');
-    assert.equal(s.engine.control(s.channel.id).enabled, false);
+    const run = await orchestratedTurn(budget);
+    await budget.api('PATCH', `/api/channels/${budget.channel.id}`, { maxRunsPerDay: 1 });
+    budget.transport.finish(run.nativeTurnId, 'interrupted');
+    await until(() => record(budget).status === 'observing');
+    // The direction and permission are untouched, so only the budget is in the way.
+    budget.transport.resume('completed');
+    await until(() => record(budget).status === 'resumed');
+    dueNow(budget);
+    budget.engine.tick();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    assert.equal(budget.transport.sent.length, 1);
+    assert.equal(channelRow(budget).status, 'waiting');
+    assert.ok(
+      budget.store.all<any>('events').some((event) => /已达到每日预算/.test(event.text)),
+      '预算门禁应写下等待原因'
+    );
   } finally {
-    await s.cleanup();
+    await budget.cleanup();
+  }
+  // A queued review owns the frozen source, and a pending version switch drains first.
+  const gated = await setup();
+  try {
+    const run = await orchestratedTurn(gated);
+    gated.transport.finish(run.nativeTurnId, 'interrupted');
+    await until(() => record(gated).status === 'observing');
+    gated.transport.resume('completed');
+    await until(() => record(gated).status === 'resumed');
+    gated.store.put('loop_verifications', {
+      id: randomUUID(),
+      projectId: gated.project.id,
+      channelId: gated.channel.id,
+      runId: run.id,
+      status: 'queued',
+      startedAt: new Date().toISOString(),
+    });
+    dueNow(gated);
+    gated.engine.tick();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    assert.equal(gated.transport.sent.length, 1);
+    assert.equal(channelRow(gated).status, 'waiting');
+    gated.store.db.exec('DELETE FROM loop_verifications');
+    // A newly installed version drains first: the restored wait parks again instead of starting.
+    gated.store.put('upgrades', {
+      id: 'app-resume-upgrade',
+      targetCommit: 'a'.repeat(40),
+      targetFingerprint: 'app-resume-upgrade',
+      fromBootId: gated.engine.upgrade.identity.bootId,
+      phase: 'pending',
+      requestedAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    });
+    dueNow(gated);
+    gated.engine.tick();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    assert.equal(gated.transport.sent.length, 1);
+    assert.equal(channelRow(gated).status, 'waiting');
+    assert.ok(
+      gated.store.all<any>('events').some((event) => /新版本已安装/.test(event.text)),
+      '升级排空应写下等待原因'
+    );
+  } finally {
+    await gated.cleanup();
+  }
+  // Another channel's uncommitted changes in the one shared working tree still block the start.
+  const tree = await setup();
+  try {
+    git(tree.path, 'init', '-q');
+    git(tree.path, 'config', 'user.email', 'fixture@example.com');
+    git(tree.path, 'config', 'user.name', 'Morrow Fixture');
+    git(tree.path, 'config', 'commit.gpgsign', 'false');
+    writeFileSync(join(tree.path, 'baseline.txt'), '基线\n');
+    git(tree.path, 'add', '-A');
+    git(tree.path, 'commit', '-q', '-m', 'fixture baseline');
+    const run = await orchestratedTurn(tree);
+    tree.transport.finish(run.nativeTurnId, 'interrupted');
+    await until(() => record(tree).status === 'observing');
+    tree.transport.resume('completed');
+    await until(() => record(tree).status === 'resumed');
+    const other = await tree.api(
+      'POST',
+      '/api/channels',
+      { projectId: tree.project.id, name: '另一条方向', goal: '另一条方向的持续职责', runtime: 'codex' },
+      201
+    );
+    tree.store.put('runs', {
+      ...tree.store.get<Run>('runs', run.id)!,
+      id: randomUUID(),
+      channelId: other.id,
+      source: 'morrow-schedule',
+      status: 'completed',
+      treeState: { dirty: true, files: ['work.txt'] },
+    });
+    writeFileSync(join(tree.path, 'work.txt'), '另一条方向未提交的改动');
+    dueNow(tree);
+    tree.engine.tick();
+    await new Promise((resolve) => setTimeout(resolve, 80));
+    assert.equal(tree.transport.sent.length, 1);
+    assert.equal(channelRow(tree).status, 'waiting');
+  } finally {
+    await tree.cleanup();
   }
 });
 

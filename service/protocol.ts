@@ -93,6 +93,8 @@ export type Channel = {
   pendingWake?: { reason: string; at: string };
   promptCharter?: PromptCharter;
   autonomyEnabled?: boolean;
+  /** Added by the polled snapshot only: the current App-resume observation, when there is one. */
+  appResume?: AppResumeSummary;
   id: string;
   projectId: string;
   name: string;
@@ -203,6 +205,29 @@ export type AppResumeRecord = {
   createdAt: string;
   updatedAt: string;
 };
+/** What a channel page shows: the current state and one expandable reason; ids stay in the record. */
+export type AppResumeSummary = {
+  state: AppResumeRecord['status'];
+  /** One sentence naming the current state and why. */
+  reason: string;
+  recordId: string;
+};
+const appResumeReasons: Record<AppResumeRecord['status'], string> = {
+  observing: '原生中断后已暂停，正在观察 Codex App 是否自行续跑',
+  unconfirmed: '原生记录不足以确认续跑关联，保持暂停',
+  linked: '已推断 App 正在续跑本频道被中断的那一轮，等待它结束',
+  resumed: 'App 续跑完成，下一轮核对其工作',
+  'kept-paused': '未满足恢复条件，保持暂停',
+};
+/** The one line and expandable reason a channel page shows for an App-resume record. */
+export function appResumeSummary(record: AppResumeRecord): AppResumeSummary {
+  const why = record.status === 'observing' || record.status === 'linked' ? record.basis : record.exclusions;
+  return {
+    state: record.status,
+    reason: `${appResumeReasons[record.status]}${why.length ? `（依据：${why.join('、')}）` : ''}`,
+    recordId: record.id,
+  };
+}
 export type Run = {
   workDirection?: string;
   /** The user's autonomous-work intent as this turn began; absent on turns written before it existed. */

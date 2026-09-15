@@ -1,7 +1,14 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Hash, MoreHorizontal, Play } from 'lucide-react';
 import { isLegacyRuntime } from '../../shared/types';
-import type { NativeConversation, NativeThreadSummary, ProjectUsage, Run, RunDetails } from '../../shared/types';
+import type {
+  Channel,
+  NativeConversation,
+  NativeThreadSummary,
+  ProjectUsage,
+  Run,
+  RunDetails,
+} from '../../shared/types';
 import type { FeatureProps } from './types';
 import { Button, Dropdown, DropdownItem, EmptyState, Markdown } from '../components/ui';
 import { channelStatusLabel, formatDate, runtimeLabel, usageWindowLabel } from '../components/format';
@@ -26,6 +33,14 @@ const mergeRuns = (old: Run[], next: Run[]) =>
   [...new Map([...old, ...next].map((run) => [run.id, run])).values()].sort((a, b) =>
     b.startedAt.localeCompare(a.startedAt)
   );
+/** One short line per App-resume state; the reason itself is the expanded body. */
+const appResumeLabel: Record<NonNullable<Channel['appResume']>['state'], string> = {
+  observing: 'App 续跑：观察中',
+  unconfirmed: 'App 续跑：关联未确认',
+  linked: 'App 续跑：进行中',
+  resumed: 'App 续跑：已恢复等待',
+  'kept-paused': 'App 续跑：保持暂停',
+};
 const stateLabel = (value: string) =>
   ({
     continue: '继续推进',
@@ -459,6 +474,12 @@ export function ChannelView(props: FeatureProps & { id: string }) {
               收起
             </Button>
           </section>
+        )}
+        {channel.appResume && (
+          <details className="channel-app-resume">
+            <summary>{appResumeLabel[channel.appResume.state]}</summary>
+            <p>{channel.appResume.reason}</p>
+          </details>
         )}
         {!channel.work?.awaitingReply && channel.work && (
           <div className="channel-next-step">

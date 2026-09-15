@@ -139,10 +139,21 @@ export interface PromptCharter {
   sentAt: string;
   turnsSince: number;
 }
+/**
+ * What the channel page shows about an interrupted turn the Codex App continued on its own: the
+ * current state and one expandable reason. The record's ids stay in the work-log detail.
+ */
+export interface AppResumeSummary {
+  state: 'observing' | 'unconfirmed' | 'linked' | 'resumed' | 'kept-paused';
+  reason: string;
+  recordId: string;
+}
 export interface Channel {
   work?: ChannelWork;
   promptCharter?: PromptCharter;
   autonomyEnabled?: boolean;
+  /** Present only while there is an App-resume observation on this channel. */
+  appResume?: AppResumeSummary;
   id: string;
   projectId: string;
   name: string;

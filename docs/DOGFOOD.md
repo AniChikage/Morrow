@@ -5,6 +5,7 @@
 - 作者在 Codex App 创建并加载本工作树的任务，再在 Morrow 关联。Morrow 通过 App follower 继续同一任务；账号、模型、权限和工具由 App 管理。
 - 自动维护目标是独立工作树 `/Users/yukun/Documents/bytedance/Morrow-agent`，分支 `agent/work`。运行中的安装版是 `~/Applications/Morrow.app`，数据在 `~/Library/Application Support/Morrow`；自动开发不修改这些位置。
 - 安装版服务源码位于 App Resources 下，独立于被修改的工作树。隔离服务测试通过 `tests/harness` 使用临时项目、临时数据目录、随机端口及假 CLI，并在结束时清理。
+- 运行期间不要把已绑定的任务留在 Codex App 前台。前台任务会被 App 自己续跑或重放，Morrow 只能事后观察：原轮次仍是 interrupted，接续要等它结束并核对（见 `docs/APP-RESUME-PROPOSAL.md`）。要在 App 里看这个任务时，先在 Morrow 暂停该频道。
 - 当前原生接入是 follower，不恢复历史启动转接，不修改 Codex App 设置。新的工作树功能通过本地测试后仍需独立复核及发布确认；不得把源码完成写成安装版已经生效。
 
 ## 分支与发布
