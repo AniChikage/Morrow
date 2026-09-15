@@ -119,16 +119,23 @@ function LogEntry({
         <span>{!run.finishedAt ? '尚未结束' : duration === undefined ? '时长未记录' : `${duration} 秒`}</span>
         <span>{runUsage(run)}</span>
       </header>
-      <h3>{work?.focus || log?.direction || (log ? '未记录本轮关注点' : '本轮摘要尚未载入')}</h3>
-      <p className="log-summary">
-        {questionAbove
-          ? '需要回答 · 问题见上方'
-          : work
-            ? `${stateLabel(work.state)} · ${questionExcerpt(work.nextStep, 100)}`
-            : log
-              ? '结论未记录'
-              : '摘要尚未载入，可展开查看原话。'}
-      </p>
+      {!log && !work ? (
+        <div className="log-summary-loading" role="status" aria-label="本轮摘要尚未载入">
+          <div className="skeleton-line" aria-hidden="true" />
+          <div className="skeleton-line" aria-hidden="true" />
+        </div>
+      ) : (
+        <>
+          <h3>{work?.focus || log?.direction || '未记录本轮关注点'}</h3>
+          <p className="log-summary">
+            {questionAbove
+              ? '需要回答 · 问题见上方'
+              : work
+                ? `${stateLabel(work.state)} · ${questionExcerpt(work.nextStep, 100)}`
+                : '结论未记录'}
+          </p>
+        </>
+      )}
       <details className="log-work-details">
         <summary className={primaryAction ? 'log-primary-action' : undefined}>
           {primaryAction ? '查看最新轮次' : '本轮详情'}
@@ -411,21 +418,24 @@ export function ChannelView(props: FeatureProps & { id: string }) {
     appRequests.length > 0 ||
     !!usageGate;
   const needsLink = native && !!conversation && !conversation.threadId;
-  const primary = needsLink
-    ? 'link'
-    : nativeError || (native && conversation && !ready(conversation))
-      ? 'open'
-      : channel.work?.awaitingReply
-        ? 'answer'
-        : pendingReleases.length
-          ? 'release'
-          : blocked.length
-            ? 'blocked'
-            : paused && !legacy
-              ? 'resume'
-              : runs.length
-                ? 'latest'
-                : 'none';
+  const primary =
+    native && !conversation && !nativeError
+      ? 'loading'
+      : needsLink
+        ? 'link'
+        : nativeError || (native && conversation && !ready(conversation))
+          ? 'open'
+          : channel.work?.awaitingReply
+            ? 'answer'
+            : pendingReleases.length
+              ? 'release'
+              : blocked.length
+                ? 'blocked'
+                : paused && !legacy
+                  ? 'resume'
+                  : runs.length
+                    ? 'latest'
+                    : 'none';
   const openApp = () => void onMutate(() => api.openNativeApp(id));
   const status = unloaded
     ? '任务未就绪'
@@ -452,6 +462,7 @@ export function ChannelView(props: FeatureProps & { id: string }) {
           </div>
           <div className="channel-actions">
             {/* Until the section is open this is the page's one action; inside it, the step takes over. */}
+            {primary === 'loading' && <Button disabled>正在检测 App 连接…</Button>}
             {primary === 'link' && (
               <Button variant={linkOpen ? 'secondary' : 'primary'} disabled={busy} onClick={() => setLinkOpen(true)}>
                 关联 App 任务

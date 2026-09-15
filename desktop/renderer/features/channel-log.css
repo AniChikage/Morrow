@@ -220,6 +220,14 @@
 .log-summary {
   color: var(--muted);
 }
+.log-summary-loading {
+  display: grid;
+  gap: var(--space-2);
+  margin: var(--space-3) 0;
+}
+.log-summary-loading .skeleton-line {
+  height: var(--space-3);
+}
 .log-work-details > summary {
   width: fit-content;
   padding: var(--space-1) 0;
