@@ -14,6 +14,15 @@ const itemStatuses = ['open', 'investigating', 'verified', 'resolved', 'blocked'
 function evidenceMarkdown(value: string) {
   return value.replace(/(^|\s)(https?:\/\/[^\s<>]+)(?=\s|$)/g, '$1<$2>');
 }
+function evidencePresentation(value: string) {
+  const reference = /^\[([0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12})\][ \t]+/i.exec(value);
+  if (!reference) return { text: value };
+  const body = value.slice(reference[0].length);
+  const sourceAt = body.lastIndexOf('\n来源：');
+  const summary = sourceAt < 0 ? body : body.slice(0, sourceAt);
+  const source = sourceAt < 0 ? '' : body.slice(sourceAt + 4).trim();
+  return { id: reference[1], text: source && summary.includes(source) ? summary : body };
+}
 export function FindingView(props: FeatureProps & { id: string }) {
   const { id, snapshot, api, busy, onMutate, onNavigate, onEditFeature } = props;
   const [propertiesOpen, setPropertiesOpen] = useState(false);
@@ -104,15 +113,18 @@ export function FindingView(props: FeatureProps & { id: string }) {
                 证据 <span>{item.evidence.length}</span>
               </summary>
               {item.evidence.length ? (
-                <ol className="evidence-list">
-                  {item.evidence.map((evidence, index) => (
-                    <li key={`${index}-${evidence.slice(0, 24)}`}>
-                      <div className="evidence-index">{String(index + 1).padStart(2, '0')}</div>
-                      <div className="evidence-body">
-                        <Markdown>{evidenceMarkdown(evidence)}</Markdown>
-                      </div>
-                    </li>
-                  ))}
+                <ol className="evidence-list" aria-label="事项证据">
+                  {item.evidence.map((evidence, index) => {
+                    const display = evidencePresentation(evidence);
+                    return (
+                      <li key={`${index}-${evidence.slice(0, 24)}`} title={display.id}>
+                        <div className="evidence-index">{String(index + 1).padStart(2, '0')}</div>
+                        <div className="evidence-body">
+                          <Markdown>{evidenceMarkdown(display.text)}</Markdown>
+                        </div>
+                      </li>
+                    );
+                  })}
                 </ol>
               ) : (
                 <p className="subtle">尚未附带证据，需要继续验证。</p>
