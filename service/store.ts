@@ -8,6 +8,72 @@ export const now = () => new Date().toISOString();
 /** A Morrow-orchestrated turn, as opposed to native chat or a turn the App itself started. */
 const scheduledSource =
   "(json_extract(data,'$.source') IS NULL OR json_extract(data,'$.source') IN ('morrow-schedule','nohuman-schedule'))";
+/**
+ * Every table in `workspace.sqlite`, in creation order. One list: the constructor creates exactly
+ * these, `table()` accepts exactly these as an interpolated table name, and nothing else reaches
+ * SQL. Adding a table here is all it takes; removing one needs a migration, because the rows stay.
+ */
+export const TABLES = [
+  'projects',
+  'channels',
+  'items',
+  'runs',
+  'events',
+  'knowledge',
+  'results',
+  'controls',
+  'run_io',
+  'run_io_pending',
+  'migrations',
+  'loop_grants',
+  'loop_calls',
+  'loop_evidence',
+  'loop_learning',
+  'loop_watches',
+  'loop_waits',
+  'loop_releases',
+  'strategy_understanding',
+  'strategy_decisions',
+  'strategy_revisions',
+  'strategy_runs',
+  'strategy_signals',
+  'loop_executions',
+  'loop_verifications',
+  'loop_verification_events',
+  'loop_finalizations',
+  'native_bindings',
+  'native_threads',
+  'native_items',
+  'native_events',
+  'native_requests',
+  'native_outbox',
+  'native_turns',
+  'native_attachments',
+  'project_brief_revisions',
+  'usage_samples',
+  'settings',
+  'upgrades',
+  'channel_intents',
+  'app_resumes',
+] as const;
+/** The tables holding project-scoped rows, which get an index on `$.projectId`. A subset of `TABLES`. */
+export const PROJECT_TABLES = [
+  'loop_evidence',
+  'loop_learning',
+  'loop_watches',
+  'loop_releases',
+  'strategy_understanding',
+  'strategy_decisions',
+  'strategy_revisions',
+  'strategy_runs',
+  'strategy_signals',
+  'loop_executions',
+  'loop_verifications',
+  'loop_verification_events',
+  'loop_finalizations',
+  'project_brief_revisions',
+  'usage_samples',
+] as const;
 export class Store {
   db: DatabaseSync;
   transactionDepth = 0;
@@ -33,49 +99,7 @@ export class Store {
     this.db.exec(
       'PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000; PRAGMA synchronous=NORMAL; PRAGMA journal_size_limit=33554432;'
     );
-    for (const table of [
-      'projects',
-      'channels',
-      'items',
-      'runs',
-      'events',
-      'knowledge',
-      'results',
-      'controls',
-      'run_io',
-      'run_io_pending',
-      'migrations',
-      'loop_grants',
-      'loop_calls',
-      'loop_evidence',
-      'loop_learning',
-      'loop_watches',
-      'loop_waits',
-      'loop_releases',
-      'strategy_understanding',
-      'strategy_decisions',
-      'strategy_revisions',
-      'strategy_runs',
-      'strategy_signals',
-      'loop_executions',
-      'loop_verifications',
-      'loop_verification_events',
-      'loop_finalizations',
-      'native_bindings',
-      'native_threads',
-      'native_items',
-      'native_events',
-      'native_requests',
-      'native_outbox',
-      'native_turns',
-      'native_attachments',
-      'project_brief_revisions',
-      'usage_samples',
-      'settings',
-      'upgrades',
-      'channel_intents',
-      'app_resumes',
-    ])
+    for (const table of TABLES)
       this.db.exec(`CREATE TABLE IF NOT EXISTS ${table} (id TEXT PRIMARY KEY, data TEXT NOT NULL)`);
     this.db.exec(
       "CREATE INDEX IF NOT EXISTS events_channel ON events(json_extract(data,'$.channelId')); CREATE INDEX IF NOT EXISTS events_run ON events(json_extract(data,'$.runId')); CREATE INDEX IF NOT EXISTS runs_channel ON runs(json_extract(data,'$.channelId')); CREATE INDEX IF NOT EXISTS knowledge_project ON knowledge(json_extract(data,'$.projectId'));"
@@ -95,23 +119,7 @@ export class Store {
       "CREATE INDEX IF NOT EXISTS app_resumes_channel ON app_resumes(json_extract(data,'$.channelId')); CREATE INDEX IF NOT EXISTS app_resumes_thread ON app_resumes(json_extract(data,'$.threadId')); CREATE INDEX IF NOT EXISTS runs_native_turn ON runs(json_extract(data,'$.nativeTurnId'));"
     );
     this.migrate(dirname(path));
-    for (const table of [
-      'loop_evidence',
-      'loop_learning',
-      'loop_watches',
-      'loop_releases',
-      'strategy_understanding',
-      'strategy_decisions',
-      'strategy_revisions',
-      'strategy_runs',
-      'strategy_signals',
-      'loop_executions',
-      'loop_verifications',
-      'loop_verification_events',
-      'loop_finalizations',
-      'project_brief_revisions',
-      'usage_samples',
-    ])
+    for (const table of PROJECT_TABLES)
       this.db.exec(`CREATE INDEX IF NOT EXISTS ${table}_project ON ${table}(json_extract(data,'$.projectId'))`);
     // Built after `migrate` pruned the journal, not before: the only reader walks one thread's rows
     // forward from its checkpoint revision, and indexing a pruned table is far cheaper.
@@ -521,52 +529,7 @@ export class Store {
     return row;
   }
   table(t: string) {
-    if (
-      ![
-        'projects',
-        'channels',
-        'items',
-        'runs',
-        'events',
-        'knowledge',
-        'results',
-        'controls',
-        'run_io',
-        'run_io_pending',
-        'migrations',
-        'loop_grants',
-        'loop_calls',
-        'loop_evidence',
-        'loop_learning',
-        'loop_watches',
-        'loop_waits',
-        'loop_releases',
-        'strategy_understanding',
-        'strategy_decisions',
-        'strategy_revisions',
-        'strategy_runs',
-        'strategy_signals',
-        'loop_executions',
-        'loop_verifications',
-        'loop_verification_events',
-        'loop_finalizations',
-        'native_bindings',
-        'native_threads',
-        'native_items',
-        'native_events',
-        'native_requests',
-        'native_outbox',
-        'native_turns',
-        'native_attachments',
-        'project_brief_revisions',
-        'usage_samples',
-        'settings',
-        'upgrades',
-        'channel_intents',
-        'app_resumes',
-      ].includes(t)
-    )
-      throw new Error('Unknown table');
+    if (!(TABLES as readonly string[]).includes(t)) throw new Error('Unknown table');
     return t;
   }
   /** The next number for `key`, read from storage the first time and counted in memory after. */
