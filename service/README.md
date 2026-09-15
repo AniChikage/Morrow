@@ -126,7 +126,7 @@ MORROW_HOME="$HOME/.local/share/morrow" npm start
 
 ## 工作接口与发布确认
 
-自动 Codex 轮次获得 `agent-cli.ts --context …` 入口，使用短期、限定项目/频道/运行的凭据调用 `/api/agent`。该凭据不能访问桌面人工审阅接口；桌面 token 不写入提示。使用 `--operation context` 获取当前项目数据，`--operation contract` 获取各操作的字段约定、发布适配说明、工作原则与原生能力清单（两者都是只读，无需 `--request-id`）；写操作必须携带 `--request-id`，重试保持相同 ID 和内容，`--input -` 支持从 stdin 读取 JSON。写操作只回执关键字段：`evidence.capture`/`evidence.record` 返回来源、摘要与 `bytes` 而不回放内容（全文用 `evidence.read`），`feature.upsert` 返回编号、版本、状态与复核 ID。
+自动 Codex 轮次获得 `agent-cli.ts --context …` 入口，使用短期、限定项目/频道/运行的凭据调用 `/api/agent`。该凭据不能访问桌面人工审阅接口；桌面 token 不写入提示。使用 `--operation context` 获取当前项目数据，`--operation contract` 获取各操作的字段约定、发布适配说明、工作原则与原生能力清单（两者都是只读，无需 `--request-id`）；写操作必须携带 `--request-id`，重试保持相同 ID 和内容，`--input -` 支持从 stdin 读取 JSON。写操作只回执关键字段：`evidence.capture`/`evidence.record` 返回来源、摘要与 `bytes` 而不回放内容（全文用 `evidence.read`），`feature.upsert` 返回编号、版本、状态与复核 ID。工作接口的事项写入在审计行的 `changes` 里同时记录写入前的 `before` 与实际存入的 `after`（`feature.updated`、接手/交回的 `item.claimed`/`item.released`、复核通过后自动完成的 `feature.completed`；新建的 `feature.created` 只有 `after`；被工作接口拒绝的写入，包括 revision 冲突，整条回滚且不留审计行），事项历史据此说明本次改了哪些字段；本次构建之前写下的旧审计行只有 `after`，不做回填。
 
 `release.propose` 要求关联事项、具体改动、预期收益、检查证据、影响、回退和观察计划，并封存项目内的产物文件及审阅摘要。当前产物上限为 8 MiB，大型发布可以提交不可变的部署清单。
 

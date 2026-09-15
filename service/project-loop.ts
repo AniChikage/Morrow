@@ -302,6 +302,7 @@ export class ProjectWorkLoop {
       finalizations: this.verification.finalizations(projectId, itemId),
     };
   }
+  /** An audit row that only says what the write produced. `auditChange` also records what it replaced. */
   audit(
     scope: Pick<Scope, 'projectId' | 'channelId' | 'runId'>,
     action: string,
@@ -310,12 +311,34 @@ export class ProjectWorkLoop {
     changes?: unknown,
     actor: 'agent' | 'system' | 'human' = 'agent'
   ) {
+    this.auditChange(scope, action, summary, itemId, changes ? { after: changes } : undefined, actor);
+  }
+  /**
+   * The same row, stating the item's previous state as well: `before` is the row as it stood before
+   * the write, `after` the row actually stored. Item history can only name the fields that moved
+   * when it has both sides; a row with `after` alone (every row written before this build, and every
+   * creation, which has no before) keeps describing itself in its own text. An "after" payload may
+   * itself carry `before`/`after` keys, so the two shapes are two methods rather than one sniffed
+   * argument. Not emitted at all when neither side is given, exactly as before.
+   */
+  auditChange(
+    scope: Pick<Scope, 'projectId' | 'channelId' | 'runId'>,
+    action: string,
+    summary: string,
+    itemId?: string,
+    changes?: { before?: unknown; after?: unknown },
+    actor: 'agent' | 'system' | 'human' = 'agent'
+  ) {
+    const recorded = {
+      ...(changes?.before !== undefined ? { before: changes.before } : {}),
+      ...(changes?.after !== undefined ? { after: changes.after } : {}),
+    };
     this.store.event(scope.channelId, scope.runId, 'system', summary, undefined, {
       projectId: scope.projectId,
       itemId,
       actor,
       action,
-      ...(changes ? { changes: { after: changes } } : {}),
+      ...(Object.keys(recorded).length ? { changes: recorded } : {}),
     });
   }
   prepare(run: Run): string {
@@ -412,12 +435,14 @@ export class ProjectWorkLoop {
     this.requireOwner(scope, item);
     const next = status === 'resolved' ? undefined : item.ownerChannelId || scope.channelId;
     if (next !== item.ownerChannelId)
-      this.audit(
+      this.auditChange(
         scope,
         next ? 'item.claimed' : 'item.released',
         next ? `#${item.number}「${item.title}」由本频道负责` : `#${item.number}「${item.title}」已解决，交回无人负责`,
         item.id,
-        { ownerChannelId: next ?? null },
+        // Responsibility as it stood and as it stands, the same two sides the human assignment route
+        // records; `item` is the row before this write, so its owner is the previous one.
+        { before: { ownerChannelId: item.ownerChannelId ?? null }, after: { ownerChannelId: next ?? null } },
         // Morrow assigns responsibility as a consequence of the write; the write itself is audited
         // separately as the agent's, and a human assignment is audited as the human's.
         'system'
@@ -690,12 +715,15 @@ export class ProjectWorkLoop {
         if (responsible) item.ownerChannelId = responsible;
         else delete item.ownerChannelId;
         this.store.put('items', item);
-        this.audit(
+        this.auditChange(
           scope,
           old ? 'feature.updated' : 'feature.created',
           `${old ? '更新' : '建立'} #${item.number}「${item.title}」`,
           item.id,
-          item
+          // `old` is read from storage and nothing here writes into it (`item` is built field by
+          // field, never spread over it), so it is still the row this write replaced; `item` is the
+          // row just stored, ownership and any deferred status included. A creation has no before.
+          { ...(old ? { before: old } : {}), after: item }
         );
         // A receipt, not a copy of the board: the turn wrote these fields and reads the rest back
         // through `context`. The verification ids are what decides whether the change is complete.

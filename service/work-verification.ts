@@ -775,12 +775,15 @@ export class WorkVerification {
               ownerChannelId: this.loop.owner(scope, item, status),
             };
             this.loop.store.put('items', updated);
-            this.loop.audit(
+            this.loop.auditChange(
               scope,
               'feature.completed',
               `复核通过，自动完成 #${item.number}「${item.title}」`,
               item.id,
-              { verificationId, revision: updated.revision },
+              // `item` is the row the deferred request was held against — read here, never written
+              // into — and `updated` is the row just stored, so item history can name the status
+              // this completion moved. The review behind it stays on the `finalization.*` row below.
+              { before: item, after: updated },
               'system'
             );
           }

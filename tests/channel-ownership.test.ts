@@ -167,12 +167,22 @@ test('a resolved item is released, a blocked one keeps its owner, and the other 
     const released = s.audits(created.id, 'item.released');
     assert.equal(released.length, 1);
     assert.equal(released[0].actor, 'system');
+    assert.deepEqual(released[0].changes, {
+      before: { ownerChannelId: s.channel.id },
+      after: { ownerChannelId: null },
+    });
     // Released work is open again: the other channel can pick it up and becomes responsible.
     const taken = await s.b.call(
       'feature.upsert',
       s.feature({ id: created.id, revision: s.item(created.id).revision, status: 'investigating' })
     );
     assert.equal(taken.ownerChannelId, s.other.id);
+    // An update that takes an unowned item records the responsibility it replaced as well, so the
+    // item's history reads the change and not just the result.
+    assert.deepEqual(s.audits(created.id, 'item.claimed').at(-1)!.changes, {
+      before: { ownerChannelId: null },
+      after: { ownerChannelId: s.other.id },
+    });
   } finally {
     await s.cleanup();
   }

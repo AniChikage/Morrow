@@ -553,3 +553,87 @@ test('the native command-line tool reads its scoped context and accepts JSON ove
     await s.cleanup();
   }
 });
+test('every agent item write audits the row it replaced, and a write that loses the revision race audits nothing', async () => {
+  const s = await setup();
+  try {
+    const audits = (itemId: string, action: string) =>
+      s.store.all<any>('events').filter((row) => row.itemId === itemId && row.action === action);
+    const stored = (itemId: string) => s.store.get<any>('items', itemId);
+    const input = {
+      title: '另一条待推进事项',
+      summary: '记录当前理解',
+      kind: 'issue',
+      status: 'investigating',
+      evidenceIds: [] as string[],
+      nextStep: '先记录现状',
+    };
+    const item = await s.call('feature.upsert', input);
+    // A creation has no previous state, so the row says only what was stored.
+    const created = audits(item.id, 'feature.created');
+    assert.equal(created.length, 1);
+    assert.deepEqual(Object.keys(created[0].changes), ['after']);
+    assert.deepEqual(created[0].changes.after, stored(item.id));
+    // Claiming an item states the responsibility it replaced as well, the same two sides the human
+    // assignment route records.
+    assert.deepEqual(audits(item.id, 'item.claimed')[0].changes, {
+      before: { ownerChannelId: null },
+      after: { ownerChannelId: s.channel.id },
+    });
+    // A plain update: the row as it stood, and the row actually stored.
+    const opened = stored(item.id);
+    await s.call('feature.upsert', {
+      ...input,
+      id: item.id,
+      revision: opened.revision,
+      status: 'blocked',
+      summary: '等待用户答复后继续',
+      nextStep: '等待用户答复',
+    });
+    const blocked = audits(item.id, 'feature.updated').at(-1)!;
+    assert.deepEqual(blocked.changes.before, opened);
+    assert.deepEqual(blocked.changes.after, stored(item.id));
+    assert.deepEqual([blocked.changes.before.status, blocked.changes.after.status], ['investigating', 'blocked']);
+    assert.notEqual(blocked.changes.before.summary, blocked.changes.after.summary);
+    assert.notEqual(blocked.changes.before.nextStep, blocked.changes.after.nextStep);
+    // A completion the review has not reached yet keeps the item open, and is applied later by the
+    // review that passes. Both writes audit the row they replaced, including the deferred one.
+    const material = await s.call('evidence.capture', { itemId: item.id, summary: '隔离测试日志', path: 'checks.log' });
+    const linked = stored(item.id);
+    const completion = await s.call('feature.upsert', {
+      ...input,
+      id: item.id,
+      revision: linked.revision,
+      status: 'verified',
+      evidenceIds: [material.id],
+      nextStep: '等待独立复核',
+    });
+    assert.equal(completion.pendingVerification, true);
+    const requested = audits(item.id, 'feature.updated').at(-1)!;
+    assert.deepEqual(requested.changes.before, linked);
+    assert.deepEqual(requested.changes.after, stored(item.id));
+    const held = stored(item.id);
+    await s.engine.loop.verification.start(completion.verificationId);
+    assert.equal(s.store.get<any>('loop_finalizations', completion.finalizationId).status, 'applied');
+    const completed = audits(item.id, 'feature.completed');
+    assert.equal(completed.length, 1);
+    assert.deepEqual(completed[0].changes.before, held);
+    assert.deepEqual(completed[0].changes.after, stored(item.id));
+    assert.deepEqual(
+      [completed[0].changes.before.status, completed[0].changes.after.status],
+      ['investigating', 'verified']
+    );
+    // A write that lost the revision race stores nothing, so it must not claim a change either.
+    const rows = audits(item.id, 'feature.updated').length;
+    const current = stored(item.id);
+    await s.call(
+      'feature.upsert',
+      { ...input, id: item.id, revision: current.revision - 1, summary: '落后一个版本的写入' },
+      randomUUID(),
+      409
+    );
+    assert.equal(audits(item.id, 'feature.updated').length, rows);
+    assert.deepEqual(stored(item.id), current);
+  } finally {
+    await s.cleanup();
+  }
+});
