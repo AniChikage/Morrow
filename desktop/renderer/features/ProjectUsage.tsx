@@ -69,8 +69,14 @@ export function ProjectUsageSection({
           {reading ? (
             reading.windows.map((entry) => (
               <p className="usage-row" key={entry.name}>
-                {usageWindowLabel(entry.name)} · 已用 {entry.usedPercent}% ·{' '}
-                {entry.resetsAt ? `重置 ${formatResetTime(entry.resetsAt)}` : '重置时间未知'}
+                {usageWindowLabel(entry.name)} · 已用 <span className="mono">{entry.usedPercent}%</span> ·{' '}
+                {entry.resetsAt ? (
+                  <>
+                    重置 <span className="mono">{formatResetTime(entry.resetsAt)}</span>
+                  </>
+                ) : (
+                  '重置时间未知'
+                )}
               </p>
             ))
           ) : (
@@ -84,7 +90,8 @@ export function ProjectUsageSection({
           )}
           {usage?.reserve && (
             <p className="usage-row subtle">
-              保留线 · {usageWindowLabel(usage.reserve.window)}窗口保留 {usage.reserve.keepPercent}%
+              保留线 · {usageWindowLabel(usage.reserve.window)}窗口保留{' '}
+              <span className="mono">{usage.reserve.keepPercent}%</span>
             </p>
           )}
           {usage?.budget && usage.project && (
@@ -92,8 +99,10 @@ export function ProjectUsageSection({
               className="usage-row"
               title={`自 ${formatResetTime(usage.project.windowStart)} 起归因到本项目的 ${usage.project.runs} 轮`}
             >
-              本项目 · {usageWindowLabel(usage.budget.window)} · 估算已用 {usage.project.usedPercent}%，上限{' '}
-              {usage.budget.limitPercent}%（{usage.project.runs} 轮）
+              本项目 · {usageWindowLabel(usage.budget.window)} · 估算已用{' '}
+              <span className="mono">{usage.project.usedPercent}%</span>，上限{' '}
+              <span className="mono">{usage.budget.limitPercent}%</span>（
+              <span className="mono">{usage.project.runs}</span> 轮）
             </p>
           )}
           {usage?.gate.blocked && !usage.gate.pending && <p className="usage-row subtle">{usage.gate.message}</p>}

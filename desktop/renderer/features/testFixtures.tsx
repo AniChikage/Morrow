@@ -205,6 +205,12 @@ export const nativeStatus = {
   detail: 'Codex App 未连接',
   capabilities: { list: false, read: false, send: false, create: false, interrupt: false, respond: false },
 };
+/**
+ * Matches the element whose whole sentence is `text`, nested spans included: a usage row keeps its
+ * numbers in monospace spans of their own, so the row's own text nodes are not the whole sentence.
+ */
+export const sentence = (text: string) => (_content: string, element: Element | null) =>
+  element?.textContent === text && !Array.from(element.children).some((child) => child.textContent === text);
 export function TestProviders({ children }: { children: ReactNode }) {
   return <Tooltip.Provider delayDuration={0}>{children}</Tooltip.Provider>;
 }

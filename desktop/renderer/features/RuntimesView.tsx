@@ -192,12 +192,19 @@ function AppChecklist({
           <b>账户用量</b>
           {native.usage?.reading && !native.usage.stale ? (
             <span>
-              {native.usage.reading.windows
-                .map(
-                  (entry) =>
-                    `${usageWindowLabel(entry.name)} 已用 ${entry.usedPercent}%，${entry.resetsAt ? `重置 ${formatResetTime(entry.resetsAt)}` : '重置时间未知'}`
-                )
-                .join('；')}
+              {native.usage.reading.windows.map((entry, index) => (
+                <span key={entry.name}>
+                  {index > 0 ? '；' : ''}
+                  {usageWindowLabel(entry.name)} 已用 <span className="mono">{entry.usedPercent}%</span>，
+                  {entry.resetsAt ? (
+                    <>
+                      重置 <span className="mono">{formatResetTime(entry.resetsAt)}</span>
+                    </>
+                  ) : (
+                    '重置时间未知'
+                  )}
+                </span>
+              ))}
             </span>
           ) : (
             <>

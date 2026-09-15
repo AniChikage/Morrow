@@ -5,7 +5,7 @@ import userEvent from '@testing-library/user-event';
 import { ProjectView } from './ProjectView';
 import { ChannelView } from './ChannelView';
 import { channelStatusLabel, formatResetTime } from '../components/format';
-import { featureProps, TestProviders, timestamp } from './testFixtures';
+import { featureProps, sentence, TestProviders, timestamp } from './testFixtures';
 import type { ProjectUsage, UsageReading } from '../../shared/types';
 
 beforeEach(() => {
@@ -43,10 +43,12 @@ describe('the project inspector shows the account reading and edits the project 
     render(<ProjectView {...props} id="project-other" />, { wrapper: TestProviders });
     await userEvent.setup().click(screen.getByRole('button', { name: '项目属性' }));
     const section = within(await screen.findByRole('region', { name: '额度' }));
-    expect(await section.findByText(`5 小时 · 已用 42% · 重置 ${formatResetTime(resetsAt)}`)).toBeTruthy();
-    expect(section.getByText('每周 · 已用 10% · 重置时间未知')).toBeTruthy();
-    expect(section.getByText('保留线 · 5 小时窗口保留 10%')).toBeTruthy();
-    expect(section.getByText('本项目 · 每周 · 估算已用 12.5%，上限 30%（3 轮）')).toBeTruthy();
+    expect(await section.findByText(sentence(`5 小时 · 已用 42% · 重置 ${formatResetTime(resetsAt)}`))).toBeTruthy();
+    expect(section.getByText(sentence('每周 · 已用 10% · 重置时间未知'))).toBeTruthy();
+    expect(section.getByText(sentence('保留线 · 5 小时窗口保留 10%'))).toBeTruthy();
+    expect(section.getByText(sentence('本项目 · 每周 · 估算已用 12.5%，上限 30%（3 轮）'))).toBeTruthy();
+    // Each number is monospace, so a column of readings lines up instead of drifting.
+    expect(section.getByText('42%').className).toContain('mono');
     expect(section.queryByText('额度未知')).toBeNull();
     expect(api.getProjectUsage).toHaveBeenCalledWith('project-other');
     const windowSelect = section.getByRole('combobox', { name: '额度窗口' }) as HTMLSelectElement;

@@ -3,7 +3,7 @@ import { afterEach, expect, test, vi } from 'vitest';
 import { act, cleanup, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { RuntimesView } from './RuntimesView';
-import { featureProps, snapshot } from './testFixtures';
+import { featureProps, sentence, snapshot } from './testFixtures';
 import { formatResetTime } from '../components/format';
 import { previewAPI } from '../state/preview';
 import type { ConnectionInfo, NativeConnectionStatus, Runtime } from '../../shared/types';
@@ -322,10 +322,11 @@ test('entering the page and manual detection request fresh usage and display lat
       })
     );
   render(<RuntimesView {...props} />);
-  await screen.findByText('每周 已用 37%，重置时间未知');
+  await screen.findByText(sentence('每周 已用 37%，重置时间未知'));
+  expect(screen.getByText('37%').className).toContain('mono');
   expect(api.getNativeStatus).toHaveBeenNthCalledWith(1, true);
   await userEvent.setup().click(screen.getByRole('button', { name: '重新检测' }));
-  await screen.findByText('每周 已用 41%，重置时间未知');
+  await screen.findByText(sentence('每周 已用 41%，重置时间未知'));
   expect(api.refreshRuntimes).toHaveBeenCalledOnce();
   expect(api.getNativeStatus).toHaveBeenNthCalledWith(2, true);
   await userEvent.setup().click(screen.getByRole('button', { name: '重新检测' }));
@@ -356,7 +357,7 @@ test('a delayed usage response from a previous host cannot overwrite the current
   const view = render(<RuntimesView {...props} />);
   await waitFor(() => expect(api.getNativeStatus).toHaveBeenCalledOnce());
   view.rerender(<RuntimesView {...props} connection={remote} />);
-  await screen.findByText('每周 已用 22%，重置时间未知');
+  await screen.findByText(sentence('每周 已用 22%，重置时间未知'));
   await act(async () => {
     resolveOld(
       status({
@@ -369,7 +370,7 @@ test('a delayed usage response from a previous host cannot overwrite the current
     );
   });
   await waitFor(() => expect(screen.getByLabelText('账户用量').textContent).toContain('22%'));
-  expect(screen.queryByText('每周 已用 99%，重置时间未知')).toBeNull();
+  expect(screen.queryByText(sentence('每周 已用 99%，重置时间未知'))).toBeNull();
 });
 
 test('keeps the next step visible and highlights one action while diagnostics remain optional', async () => {
