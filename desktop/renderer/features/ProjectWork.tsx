@@ -318,6 +318,11 @@ function EvidenceReferences({ ids, data }: { ids: string[]; data?: ProjectLoop }
     </div>
   );
 }
+/** Why every review reads as unknown right now: the project's own source version cannot be read. */
+function SourceNotice({ data }: { data?: ProjectLoop }) {
+  if (!data?.sourceStale) return null;
+  return <p className="work-source">源码版本暂时读不到：{data.sourceReason || '源版本不可读'}，复核状态按未知显示。</p>;
+}
 const verificationLabels = {
   queued: '等待独立复核',
   running: '正在独立复核',
@@ -863,6 +868,7 @@ export function ProjectThinking({
             onChannel={() => onNavigate({ kind: 'channel', id: row.channelId })}
           />
         ))}
+        <SourceNotice data={data} />
         <VerificationRecords
           data={data}
           compact
@@ -1130,6 +1136,7 @@ export function ProjectReleases(props: FeatureProps & { projectId: string }) {
             </p>
           )}
         </section>
+        <SourceNotice data={data} />
         {!!row.releaseVerificationId && (
           <p className="work-source">
             上线级复核：

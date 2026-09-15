@@ -1133,6 +1133,33 @@ describe('AI work and release review', () => {
     expect(await screen.findByText('上线级')).not.toBeNull();
     expect(screen.getByText('候选版本的检查与各事项改动一致', { exact: false })).not.toBeNull();
   });
+  it('says why review status reads as unknown while the source version cannot be read', async () => {
+    const f = fixture();
+    f.data.strategy = { understanding: [], decisions: [], counts: { understanding: 0, decisions: 0 } };
+    f.data.verifications = [historyRow('recent')];
+    const notice = '源码版本暂时读不到：工作目录暂时不可读，复核状态按未知显示。';
+    render(<ProjectThinking api={f.api} projectId="project-atlas" onNavigate={f.props.onNavigate} />, {
+      wrapper: TestProviders,
+    });
+    // Nothing is said while the source version reads normally.
+    expect(await screen.findByRole('region', { name: '最近复核' })).not.toBeNull();
+    expect(screen.queryByText(notice)).toBeNull();
+    cleanup();
+    f.data.sourceStale = true;
+    f.data.sourceReason = '工作目录暂时不可读';
+    render(<ProjectThinking api={f.api} projectId="project-atlas" onNavigate={f.props.onNavigate} />, {
+      wrapper: TestProviders,
+    });
+    expect(await screen.findByText(notice)).not.toBeNull();
+    cleanup();
+    render(
+      <TestProviders>
+        <ProjectReleases {...f.props} projectId="project-atlas" />
+      </TestProviders>
+    );
+    await userEvent.setup().click(screen.getByRole('button', { name: /导入失败恢复/ }));
+    expect(await screen.findByText(notice)).not.toBeNull();
+  });
   it('requires every cited check to remain reviewable before approval', async () => {
     const f = fixture();
     f.data.evidence = [];

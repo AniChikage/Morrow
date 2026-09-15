@@ -8,9 +8,8 @@ export type ChannelWork = {
   updatedAt: string;
   awaitingReply: boolean;
 };
-import type { ProjectLoop, Release, ReleaseScript } from '../../service/autonomy-types';
+import type { ProjectLoop as ServiceProjectLoop, Release, ReleaseScript } from '../../service/autonomy-types';
 export type {
-  ProjectLoop,
   Release,
   ReleaseTarget,
   ReleaseScript,
@@ -18,6 +17,12 @@ export type {
   Learning,
   FeedbackWatch,
 } from '../../service/autonomy-types';
+/**
+ * The work page as `GET /api/projects/:id/work` sends it. `service/project-loop.ts` adds the two
+ * source fields when the project's source version cannot be read at all — which is why no
+ * verification can read as current — and `service/autonomy-types.ts` does not declare them.
+ */
+export type ProjectLoop = ServiceProjectLoop & { sourceStale?: boolean; sourceReason?: string };
 export type { Understanding, StrategyDecision, DecisionView, StrategyView } from '../../service/strategy-types';
 export type { UpgradeBlocker, UpgradePhase, UpgradeRecord, UpgradeState } from '../../service/upgrade';
 /** Both handshake routes carry the boot they were issued for and the version they mean. */
