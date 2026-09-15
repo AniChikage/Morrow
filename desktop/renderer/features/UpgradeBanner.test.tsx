@@ -55,7 +55,9 @@ function banner(value?: UpgradeState) {
   return { api, onRefresh, onMutate, snapshot };
 }
 
-const text = () => screen.getByRole('status').textContent || '';
+/** A stopped switch is announced as an alert; everything else is progress. */
+const line = () => screen.queryByRole('status') ?? screen.getByRole('alert');
+const text = () => line().textContent || '';
 const button = (name: string) => screen.getByRole('button', { name }) as HTMLButtonElement;
 
 describe('the installed-version banner', () => {
@@ -65,6 +67,7 @@ describe('the installed-version banner', () => {
   it('says nothing at all when no new version is installed', () => {
     banner();
     expect(screen.queryByRole('status')).toBeNull();
+    expect(screen.queryByRole('alert')).toBeNull();
   });
 
   it('names how many pieces of work are still running, lists them on request, and cannot restart yet', async () => {
@@ -74,10 +77,13 @@ describe('the installed-version banner', () => {
     ];
     const { api } = banner(state(blockers));
     expect(text()).toContain('新版本已安装，等待 2 项工作结束');
-    expect(text()).toContain('工作结束后自动切换，不会中断当前工作');
+    expect(screen.getByRole('status')).toBe(line()); // Still waiting is progress, not an alert.
     const restart = button('立即重启');
     expect(restart.disabled).toBe(true);
-    expect(restart.getAttribute('title')).toBe('有工作正在进行，不会被中断');
+    // A disabled button cannot show a tooltip, so the reason is on the page and named by the button.
+    expect(restart.getAttribute('title')).toBeNull();
+    const reason = document.getElementById(restart.getAttribute('aria-describedby') || '');
+    expect(reason?.textContent).toBe('有工作正在进行，不会被中断；工作结束后自动切换');
     expect(screen.queryByLabelText('阻塞切换的工作')).toBeNull();
     await userEvent.click(button('查看阻塞工作'));
     const list = screen.getByLabelText('阻塞切换的工作');
@@ -126,6 +132,9 @@ describe('the installed-version banner', () => {
       state([], { phase: 'blocked', error: '等待旧服务退出超时，已停止切换；当前版本继续运行，可稍后重试。' })
     );
     expect(text()).toContain('切换未完成（已停止）：等待旧服务退出超时');
+    // A switch that stopped needs saying now, not on the reader's next pass through the page.
+    expect(screen.getByRole('alert')).toBe(line());
+    expect(screen.queryByRole('status')).toBeNull();
     expect(text()).not.toMatch(/pkill|kill|终止进程/);
     await userEvent.click(button('重新检查'));
     expect(onRefresh).toHaveBeenCalledTimes(1);

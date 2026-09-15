@@ -1,4 +1,4 @@
-import { useEffect, useState, type ReactNode } from 'react';
+import { useEffect, useState, type CSSProperties, type ReactNode } from 'react';
 import {
   ArrowUpRight,
   CheckCheck,
@@ -16,7 +16,16 @@ import {
 import { isLegacyRuntime } from '../../shared/types';
 import type { Channel, ProjectUsage, WorkItem } from '../../shared/types';
 import type { FeatureProps } from './types';
-import { Button, EmptyState, IconButton, Markdown, PropertyPanel, StatusIcon } from '../components/ui';
+import {
+  Button,
+  EmptyState,
+  IconButton,
+  Markdown,
+  PropertyPanel,
+  StatusIcon,
+  TabRow,
+  tabPanel,
+} from '../components/ui';
 import { formatDate, kindLabel, statusLabel } from '../components/format';
 import { readPreference, writePreference } from '../state/preferences';
 import {
@@ -33,6 +42,12 @@ import { ProjectUsageSection } from './ProjectUsage';
 import { questionExcerpt } from './ChannelQuestion';
 import './content.css';
 
+/**
+ * What the wrapper that carries `role="tabpanel"` has to be for the page to look the same: the flex
+ * item its content used to be, and a flex column for the scroll area inside it. Structure only — no
+ * colour, no size — so it stays out of the stylesheets.
+ */
+const panelLayout: CSSProperties = { display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0 };
 const statusOrder = ['open', 'investigating', 'blocked', 'verified', 'resolved'];
 interface ProjectPreferences {
   layout: 'list' | 'board';
@@ -58,6 +73,7 @@ export function ProjectView(props: FeatureProps & { id: string }) {
   const channels = snapshot.channels.filter((channel) => channel.projectId === id);
   const allItems = snapshot.items.filter((item) => featureProjectId(item, snapshot.channels) === id);
   const [tab, setTab] = useState<'items' | 'brief' | 'thinking' | 'records' | 'releases'>('items');
+  const tabScope = `project-content-${id}`;
   const [query, setQuery] = useState('');
   const [propertiesOpen, setPropertiesOpen] = useState(false);
   const [filtersOpen, setFiltersOpen] = useState(false);
@@ -228,53 +244,38 @@ export function ProjectView(props: FeatureProps & { id: string }) {
     <div className="feature-layout">
       <main className="feature-main">
         <div className="feature-toolbar project-feature-toolbar">
-          <div className="feature-tabs" role="tablist" aria-label="项目内容">
-            <button
-              role="tab"
-              aria-selected={tab === 'items'}
-              className={tab === 'items' ? 'active' : ''}
-              onClick={() => setTab('items')}
-            >
-              {/* The count has to be what the board actually shows; resolved items count in their own section. */}
-              看板 <span>{currentItems.length}</span>
-            </button>
-            <button
-              role="tab"
-              aria-selected={tab === 'brief'}
-              className={tab === 'brief' ? 'active' : ''}
-              onClick={() => setTab('brief')}
-            >
-              项目说明
-            </button>
-            <button
-              role="tab"
-              aria-selected={tab === 'thinking'}
-              className={tab === 'thinking' ? 'active' : ''}
-              onClick={() => setTab('thinking')}
-            >
-              当前判断
-            </button>
-            <button
-              role="tab"
-              aria-selected={tab === 'records'}
-              className={tab === 'records' ? 'active' : ''}
-              onClick={() => setTab('records')}
-            >
-              全部记录
-            </button>
-            <button
-              role="tab"
-              aria-selected={tab === 'releases'}
-              className={tab === 'releases' ? 'active' : ''}
-              onClick={() => setTab('releases')}
-            >
-              上线确认{' '}
-              <span>
-                {(snapshot.releases || []).filter((r) => r.projectId === id && r.status === 'awaiting_approval')
-                  .length || ''}
-              </span>
-            </button>
-          </div>
+          <TabRow
+            label="项目内容"
+            scope={tabScope}
+            active={tab}
+            onSelect={setTab}
+            tabs={[
+              {
+                key: 'items',
+                // The count has to be what the board shows; resolved items count in their own section.
+                content: (
+                  <>
+                    看板 <span>{currentItems.length}</span>
+                  </>
+                ),
+              },
+              { key: 'brief', content: '项目说明' },
+              { key: 'thinking', content: '当前判断' },
+              { key: 'records', content: '全部记录' },
+              {
+                key: 'releases',
+                content: (
+                  <>
+                    上线确认{' '}
+                    <span>
+                      {(snapshot.releases || []).filter((r) => r.projectId === id && r.status === 'awaiting_approval')
+                        .length || ''}
+                    </span>
+                  </>
+                ),
+              },
+            ]}
+          />
           <div className="feature-toolbar-spacer" />
           {tab === 'items' && (
             <>
@@ -300,175 +301,183 @@ export function ProjectView(props: FeatureProps & { id: string }) {
             项目属性
           </Button>
         </div>
-        {tab === 'items' && filtersOpen && (
-          <section className="project-filters" aria-label="看板筛选">
-            <label className="feature-search">
-              <Search size={14} />
-              <input
-                aria-label="搜索事项和证据"
-                value={query}
-                onChange={(event) => setQuery(event.target.value)}
-                placeholder="搜索…"
-              />
-              {query && (
-                <button aria-label="清除搜索" onClick={() => setQuery('')}>
-                  <X size={12} />
-                </button>
-              )}
-            </label>
-            <select
-              aria-label="状态筛选"
-              value={preferences.status}
-              onChange={(event) => changePreferences({ status: event.target.value })}
-            >
-              {preferences.status !== 'all' && !statusOrder.includes(preferences.status) && (
-                <option value={preferences.status}>原状态筛选已不可用</option>
-              )}
-              {['all', ...statusOrder].map((status) => (
-                <option key={status} value={status}>
-                  {status === 'all' ? '所有状态' : statusLabel(status)}
-                </option>
-              ))}
-            </select>
-            <select
-              aria-label="来源频道筛选"
-              value={preferences.channel}
-              onChange={(event) => changePreferences({ channel: event.target.value })}
-            >
-              {!['all', 'manual'].includes(preferences.channel) &&
-                !channels.some((channel) => channel.id === preferences.channel) && (
-                  <option value={preferences.channel}>原频道筛选已不可用</option>
-                )}
-              <option value="all">所有来源</option>
-              <option value="manual">手动创建</option>
-              {channels.map((channel) => (
-                <option key={channel.id} value={channel.id}>
-                  {channel.name}
-                </option>
-              ))}
-            </select>
-            {filtered && (
-              <Button variant="ghost" onClick={clearFilters}>
-                清除筛选
-              </Button>
-            )}
-          </section>
-        )}
-        {tab === 'items' && (
-          <section className="project-next" aria-label="项目下一步">
-            <div>
-              <p className="project-goal-summary" title={project.goal}>
-                {project.goal}
-              </p>
-              <p>{next.text}</p>
-            </div>
-            <Button variant="primary" disabled={busy} onClick={next.action}>
-              {next.label}
-            </Button>
-          </section>
-        )}
-        {tab === 'brief' ? (
-          <ProjectBrief key={id} api={api} project={project} busy={busy} onMutate={onMutate} />
-        ) : tab === 'thinking' ? (
-          <ProjectThinking api={api} projectId={id} onNavigate={onNavigate} isDemo={project.isDemo} />
-        ) : tab === 'releases' ? (
-          <ProjectReleases {...props} key={id} projectId={id} />
-        ) : tab === 'records' ? (
-          <div className="feature-scroll">
-            <ProjectRecords {...props} projectId={id} />
-          </div>
-        ) : !items.length ? (
-          <div className="feature-empty">
-            <EmptyState
-              icon={<CheckCheck />}
-              title={filtered ? '没有符合条件的事项' : '还没有项目事项'}
-              description={
-                filtered
-                  ? '调整状态、来源频道或关键词，查看其他事项。'
-                  : 'Codex 会根据项目目标自动建立和跟踪事项，你可以进入频道指导它。'
-              }
-              action={
-                filtered && !filtersOpen ? (
-                  <Button variant="ghost" onClick={clearFilters}>
-                    清除筛选
-                  </Button>
-                ) : undefined
-              }
-            />
-          </div>
-        ) : preferences.layout === 'list' ? (
-          <div className="feature-scroll task-list">
-            {!currentItems.length && <p className="project-board-empty">当前没有未解决事项，历史记录保留在下方。</p>}
-            {statusOrder
-              .filter((status) => currentItems.some((item) => item.status === status))
-              .map((status) => (
-                <section className="task-group" key={status}>
-                  <button
-                    className="task-group-heading"
-                    aria-expanded={!collapsed.has(status)}
-                    onClick={() =>
-                      setCollapsed((previous) => {
-                        const next = new Set(previous);
-                        if (next.has(status)) next.delete(status);
-                        else next.add(status);
-                        return next;
-                      })
-                    }
-                  >
-                    {collapsed.has(status) ? <ChevronRight size={12} /> : <ChevronDown size={12} />}
-                    <StatusIcon status={status} />
-                    <span>{statusLabel(status)}</span>
-                    <span className="subtle">{currentItems.filter((item) => item.status === status).length}</span>
+        {/* The wrapper takes the place of the content it holds in this flex column, so the panel the
+            tabs name is a real element and nothing about the layout changes. */}
+        <div {...tabPanel(tabScope, tab)} style={panelLayout}>
+          {tab === 'items' && filtersOpen && (
+            <section className="project-filters" aria-label="看板筛选">
+              <label className="feature-search">
+                <Search size={14} />
+                <input
+                  aria-label="搜索事项和证据"
+                  value={query}
+                  onChange={(event) => setQuery(event.target.value)}
+                  placeholder="搜索…"
+                />
+                {query && (
+                  <button aria-label="清除搜索" onClick={() => setQuery('')}>
+                    <X size={12} />
                   </button>
-                  {!collapsed.has(status) &&
-                    currentItems
-                      .filter((item) => item.status === status)
-                      .map((item) => (
-                        <FindingRow key={item.id} item={item} channels={channels} onClick={() => openItem(item)} />
-                      ))}
-                </section>
-              ))}
-            {history}
-          </div>
-        ) : (
-          <div className="feature-scroll board-scroll">
-            {!currentItems.length && <p className="project-board-empty">当前没有未解决事项，历史记录保留在下方。</p>}
-            <div className="finding-board current-board">
+                )}
+              </label>
+              <select
+                aria-label="状态筛选"
+                value={preferences.status}
+                onChange={(event) => changePreferences({ status: event.target.value })}
+              >
+                {preferences.status !== 'all' && !statusOrder.includes(preferences.status) && (
+                  <option value={preferences.status}>原状态筛选已不可用</option>
+                )}
+                {['all', ...statusOrder].map((status) => (
+                  <option key={status} value={status}>
+                    {status === 'all' ? '所有状态' : statusLabel(status)}
+                  </option>
+                ))}
+              </select>
+              <select
+                aria-label="来源频道筛选"
+                value={preferences.channel}
+                onChange={(event) => changePreferences({ channel: event.target.value })}
+              >
+                {!['all', 'manual'].includes(preferences.channel) &&
+                  !channels.some((channel) => channel.id === preferences.channel) && (
+                    <option value={preferences.channel}>原频道筛选已不可用</option>
+                  )}
+                <option value="all">所有来源</option>
+                <option value="manual">手动创建</option>
+                {channels.map((channel) => (
+                  <option key={channel.id} value={channel.id}>
+                    {channel.name}
+                  </option>
+                ))}
+              </select>
+              {filtered && (
+                <Button variant="ghost" onClick={clearFilters}>
+                  清除筛选
+                </Button>
+              )}
+            </section>
+          )}
+          {tab === 'items' && (
+            <section className="project-next" aria-label="项目下一步">
+              <div>
+                <p className="project-goal-summary" title={project.goal}>
+                  {project.goal}
+                </p>
+                <p>{next.text}</p>
+              </div>
+              <Button variant="primary" disabled={busy} onClick={next.action}>
+                {next.label}
+              </Button>
+            </section>
+          )}
+          {tab === 'brief' ? (
+            <ProjectBrief key={id} api={api} project={project} busy={busy} onMutate={onMutate} />
+          ) : tab === 'thinking' ? (
+            <ProjectThinking api={api} projectId={id} onNavigate={onNavigate} isDemo={project.isDemo} />
+          ) : tab === 'releases' ? (
+            <ProjectReleases {...props} key={id} projectId={id} />
+          ) : tab === 'records' ? (
+            <div className="feature-scroll">
+              <ProjectRecords {...props} projectId={id} />
+            </div>
+          ) : !items.length ? (
+            <div className="feature-empty">
+              <EmptyState
+                icon={<CheckCheck />}
+                title={filtered ? '没有符合条件的事项' : '还没有项目事项'}
+                description={
+                  filtered
+                    ? '调整状态、来源频道或关键词，查看其他事项。'
+                    : 'Codex 会根据项目目标自动建立和跟踪事项，你可以进入频道指导它。'
+                }
+                action={
+                  filtered && !filtersOpen ? (
+                    <Button variant="ghost" onClick={clearFilters}>
+                      清除筛选
+                    </Button>
+                  ) : undefined
+                }
+              />
+            </div>
+          ) : preferences.layout === 'list' ? (
+            <div className="feature-scroll task-list">
+              {!currentItems.length && <p className="project-board-empty">当前没有未解决事项，历史记录保留在下方。</p>}
               {statusOrder
                 .filter((status) => currentItems.some((item) => item.status === status))
                 .map((status) => (
-                  <section className="board-column" key={status}>
-                    <h3>
+                  <section className="task-group" key={status}>
+                    <button
+                      className="task-group-heading"
+                      aria-expanded={!collapsed.has(status)}
+                      onClick={() =>
+                        setCollapsed((previous) => {
+                          const next = new Set(previous);
+                          if (next.has(status)) next.delete(status);
+                          else next.add(status);
+                          return next;
+                        })
+                      }
+                    >
+                      {collapsed.has(status) ? <ChevronRight size={12} /> : <ChevronDown size={12} />}
                       <StatusIcon status={status} />
-                      {statusLabel(status)} <span>{currentItems.filter((item) => item.status === status).length}</span>
-                    </h3>
-                    {currentItems
-                      .filter((item) => item.status === status)
-                      .map((item) => (
-                        <button className="board-card" key={item.id} onClick={() => openItem(item)}>
-                          <span className="board-card-type">
-                            {kindLabel(item.kind)} <span>{featureNumber(item)}</span>
-                          </span>
-                          <strong>{item.title}</strong>
-                          <span className="board-card-meta">
-                            <span className="feature-source-tag" title={`来源：${featureSourceLabel(item, channels)}`}>
-                              {item.channelId ? '# ' : ''}
-                              {featureSourceLabel(item, channels)}
-                            </span>
-                            <FeatureOwnerTag item={item} channels={channels} />
-                            <span>
-                              <Link2 size={12} />
-                              {item.evidence.length}
-                            </span>
-                          </span>
-                        </button>
-                      ))}
+                      <span>{statusLabel(status)}</span>
+                      <span className="subtle">{currentItems.filter((item) => item.status === status).length}</span>
+                    </button>
+                    {!collapsed.has(status) &&
+                      currentItems
+                        .filter((item) => item.status === status)
+                        .map((item) => (
+                          <FindingRow key={item.id} item={item} channels={channels} onClick={() => openItem(item)} />
+                        ))}
                   </section>
                 ))}
+              {history}
             </div>
-            {history}
-          </div>
-        )}
+          ) : (
+            <div className="feature-scroll board-scroll">
+              {!currentItems.length && <p className="project-board-empty">当前没有未解决事项，历史记录保留在下方。</p>}
+              <div className="finding-board current-board">
+                {statusOrder
+                  .filter((status) => currentItems.some((item) => item.status === status))
+                  .map((status) => (
+                    <section className="board-column" key={status}>
+                      <h3>
+                        <StatusIcon status={status} />
+                        {statusLabel(status)}{' '}
+                        <span>{currentItems.filter((item) => item.status === status).length}</span>
+                      </h3>
+                      {currentItems
+                        .filter((item) => item.status === status)
+                        .map((item) => (
+                          <button className="board-card" key={item.id} onClick={() => openItem(item)}>
+                            <span className="board-card-type">
+                              {kindLabel(item.kind)} <span>{featureNumber(item)}</span>
+                            </span>
+                            <strong>{item.title}</strong>
+                            <span className="board-card-meta">
+                              <span
+                                className="feature-source-tag"
+                                title={`来源：${featureSourceLabel(item, channels)}`}
+                              >
+                                {item.channelId ? '# ' : ''}
+                                {featureSourceLabel(item, channels)}
+                              </span>
+                              <FeatureOwnerTag item={item} channels={channels} />
+                              <span>
+                                <Link2 size={12} />
+                                {item.evidence.length}
+                              </span>
+                            </span>
+                          </button>
+                        ))}
+                    </section>
+                  ))}
+              </div>
+              {history}
+            </div>
+          )}
+        </div>
       </main>
       {propertiesOpen && (
         <PropertyPanel>

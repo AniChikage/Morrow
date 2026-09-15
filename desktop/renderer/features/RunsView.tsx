@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { ArrowUpRight, ChevronDown, Clock3, Copy, History, LoaderCircle, Terminal } from 'lucide-react';
 import type { Run, RunDetails, RunOutputChunk, RunsQuery, WorkspaceEvent } from '../../shared/types';
 import type { FeatureProps } from './types';
-import { Button, EmptyState, Markdown, StatusLabel } from '../components/ui';
+import { Button, EmptyState, Markdown, StatusLabel, TabRow, tabPanel } from '../components/ui';
 import { formatDate, nativeRun, runTime, runtimeLabel, shortId } from '../components/format';
 import { mergeById } from '../components/collections';
 import { usePagedHistory } from '../components/history';
@@ -268,6 +268,7 @@ function RunInspector({ run, ...props }: FeatureProps & { run: Run }) {
     ).values(),
   ].sort((a, b) => a.createdAt.localeCompare(b.createdAt) || (a.detail?.sequence ?? 0) - (b.detail?.sequence ?? 0));
   const visibleChunks = chunks.filter((chunk) => ['stdout', 'stderr', 'final'].includes(chunk.stream));
+  const tabScope = `run-detail-${run.id}`;
   const tabs = [
     ['activity', '执行动态'],
     ['input', '本轮输入'],
@@ -356,20 +357,15 @@ function RunInspector({ run, ...props }: FeatureProps & { run: Run }) {
           {value.resumedFromSessionId && <small>沿用已有会话</small>}
         </div>
       )}
-      <div className="feature-tabs run-detail-tabs" role="tablist" aria-label="运行详情">
-        {tabs.map(([key, label]) => (
-          <button
-            key={key}
-            role="tab"
-            aria-selected={tab === key}
-            className={tab === key ? 'active' : ''}
-            onClick={() => setTab(key)}
-          >
-            {label}
-          </button>
-        ))}
-      </div>
-      <div className="run-detail-content">
+      <TabRow
+        label="运行详情"
+        className="run-detail-tabs"
+        scope={tabScope}
+        active={tab}
+        onSelect={setTab}
+        tabs={tabs.map(([key, label]) => ({ key, content: label }))}
+      />
+      <div className="run-detail-content" {...tabPanel(tabScope, tab)}>
         {tab === 'activity' && (
           <>
             {eventError && (

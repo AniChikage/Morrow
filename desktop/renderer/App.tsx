@@ -260,7 +260,12 @@ export default function App() {
           {navigation.tabs.map((tab) => {
             const r = tab.history[tab.index];
             return (
-              <div className={`resource-tab ${tab.id === navigation.activeId ? 'active' : ''}`} key={tab.id}>
+              // Only the tab itself may be a `tab` in this list; the close button is its sibling.
+              <div
+                role="presentation"
+                className={`resource-tab ${tab.id === navigation.activeId ? 'active' : ''}`}
+                key={tab.id}
+              >
                 <button
                   role="tab"
                   aria-selected={tab.id === navigation.activeId}

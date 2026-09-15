@@ -198,6 +198,26 @@ it('runs every window shortcut: search, new project, settings, the sidebar, tab 
   expect(selectedTab()).toBe('系统完善');
 });
 
+it('keeps the tab strip a list of tabs, with each close button beside its tab rather than inside it', async () => {
+  const user = userEvent.setup();
+  getState.mockResolvedValue({ ...state(), channels: [channel('channel-system', '系统完善')] });
+  await loaded();
+  await started('Atlas');
+  await user.click(screen.getByRole('button', { name: '系统完善' }));
+  await user.click(screen.getByRole('button', { name: 'Atlas 的看板' }));
+  expect(openTabs()).toEqual(['系统完善', 'Atlas']);
+  const strip = tabStrip();
+  // The tablist owns tabs only: each close button is a sibling inside a wrapper that is not a tab.
+  expect(within(strip).getAllByRole('tab')).toHaveLength(2);
+  const tab = within(strip).getByRole('tab', { name: 'Atlas' });
+  const close = within(strip).getByRole('button', { name: '关闭 Atlas' });
+  expect(tab.contains(close)).toBe(false);
+  expect(close.parentElement).toBe(tab.parentElement);
+  expect(tab.parentElement?.getAttribute('role')).toBe('presentation');
+  await user.click(close);
+  expect(openTabs()).toEqual(['系统完善']);
+});
+
 it('remembers a navigation width set by dragging the divider, within its own bounds', async () => {
   await loaded();
   const divider = screen.getByRole('separator', { name: '调整导航栏宽度' });

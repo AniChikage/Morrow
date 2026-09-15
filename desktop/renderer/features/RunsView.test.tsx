@@ -56,9 +56,19 @@ it('labels unavailable native timestamps truthfully for completed App turns and 
   expect(screen.getByText('开始 原生时间未提供')).toBeTruthy();
   expect(screen.getByText('结束 原生时间未提供')).toBeTruthy();
   expect(screen.queryByText(/尚未结束|尚未运行/)).toBeNull();
+  // Every run-detail tab names the one panel below it, which in turn names the tab that is selected.
+  const panel = screen.getByRole('tabpanel');
+  expect(screen.getAllByRole('tab').every((tab) => tab.getAttribute('aria-controls') === panel.id)).toBe(true);
+  expect(screen.getAllByRole('tab').map((tab) => tab.getAttribute('tabindex'))).toEqual(['0', '-1', '-1', '-1']);
   await user.click(screen.getByRole('tab', { name: '本轮输入' }));
   expect(await screen.findByText('原生 App 对话中记录的本轮输入。')).toBeTruthy();
   expect(screen.getByText('App 中的原始输入')).toBeTruthy();
+  expect(screen.getByRole('tabpanel').getAttribute('aria-labelledby')).toBe(
+    screen.getByRole('tab', { name: '本轮输入' }).id
+  );
+  screen.getByRole('tab', { name: '本轮输入' }).focus();
+  await user.keyboard('{ArrowRight}');
+  expect(screen.getByRole('tab', { name: '原始输出' }).getAttribute('aria-selected')).toBe('true');
 });
 
 it('loads durable history beyond the snapshot, merges pages in newest-first order and keeps live snapshot state', async () => {

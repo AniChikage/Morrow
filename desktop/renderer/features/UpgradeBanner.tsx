@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useId, useState } from 'react';
 import { Button } from '../components/ui';
 import { upgradeView } from './upgradeState';
 import type { DesktopAPI, Snapshot } from '../../shared/types';
@@ -31,6 +31,7 @@ export function UpgradeBanner({
   onRefresh: () => void;
 }) {
   const view = upgradeView(snapshot);
+  const restartReason = useId();
   const [openBlockers, setOpenBlockers] = useState(false);
   const [dismissed, setDismissed] = useState(() => {
     try {
@@ -53,7 +54,8 @@ export function UpgradeBanner({
   };
   const version = [state.identity.version, record.targetCommit.slice(0, 12)].filter(Boolean).join(' · ');
   return (
-    <div className={`upgrade-banner upgrade-${kind}`} role="status">
+    // A switch that stopped is the one outcome worth interrupting for; the rest is progress.
+    <div className={`upgrade-banner upgrade-${kind}`} role={kind === 'blocked' ? 'alert' : 'status'}>
       <span className="upgrade-banner-text">
         {kind === 'waiting' && `新版本已安装，等待 ${blockers.length} 项工作结束`}
         {kind === 'ready' && '新版本已安装，即将自动切换'}
@@ -67,10 +69,13 @@ export function UpgradeBanner({
           <Button variant="ghost" aria-expanded={openBlockers} onClick={() => setOpenBlockers((value) => !value)}>
             {openBlockers ? '收起阻塞工作' : '查看阻塞工作'}
           </Button>
-          <Button variant="ghost" disabled title="有工作正在进行，不会被中断">
+          {/* A disabled button's `title` is unreadable, so the reason stands next to it and is named. */}
+          <Button variant="ghost" disabled aria-describedby={restartReason}>
             立即重启
           </Button>
-          <span className="subtle">工作结束后自动切换，不会中断当前工作</span>
+          <span className="subtle" id={restartReason}>
+            有工作正在进行，不会被中断；工作结束后自动切换
+          </span>
         </>
       )}
       {kind === 'ready' && (
