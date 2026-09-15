@@ -1067,6 +1067,66 @@ test('start-up backfills run once and the native journal keeps only what checkpo
   }
 });
 
+test('run output and event ordinals are counted once per run, not once per append', () => {
+  const home = mkdtempSync(join(tmpdir(), 'morrow-sequence-'));
+  const path = join(home, 'workspace.sqlite');
+  let store = new Store(path);
+  try {
+    const runId = randomUUID(),
+      channelId = randomUUID();
+    const statements: string[] = [];
+    const prepare = store.db.prepare.bind(store.db);
+    store.db.prepare = ((sql: string) => {
+      statements.push(sql);
+      return prepare(sql);
+    }) as typeof store.db.prepare;
+    for (let index = 0; index < 200; index++) {
+      store.io(runId, 'stdout', `chunk ${index}\n`);
+      store.event(
+        channelId,
+        runId,
+        'system',
+        `line ${index}`,
+        index % 2 ? { type: 'tool_use', tool: 'Read' } : undefined
+      );
+    }
+    store.db.prepare = prepare;
+    // One read of the stored ordinal each, instead of one per append over every row already written.
+    assert.equal(statements.filter((sql) => sql.includes('MAX(CAST(json_extract')).length, 1);
+    assert.equal(statements.filter((sql) => sql.startsWith('SELECT COUNT(*)')).length, 1);
+    const chunks = store.ioPage(runId, undefined, 400).chunks;
+    assert.deepEqual(
+      chunks.map((chunk) => chunk.sequence),
+      chunks.map((_, index) => index + 1)
+    );
+    // The detail ordinal still counts every event of the run, including the ones without a detail.
+    const details = store.all<any>('events').filter((row) => row.detail);
+    assert.deepEqual(
+      details.map((row) => row.detail.sequence),
+      details.map((_, index) => index * 2 + 2)
+    );
+    // A transaction that rolled back numbered nothing; the next append takes that number.
+    assert.throws(() =>
+      store.transaction(() => {
+        store.io(runId, 'stdout', 'rolled back');
+        throw new Error('rolled back');
+      })
+    );
+    assert.equal(store.io(runId, 'stdout', 'after rollback').sequence, 201);
+    store.close();
+    // A restarted daemon continues from what is stored rather than from an empty counter.
+    store = new Store(path);
+    assert.equal(store.io(runId, 'stdout', 'after restart').sequence, 202);
+    assert.equal(
+      store.event(channelId, runId, 'tool', 'after restart', { type: 'tool_use', tool: 'Read' }).detail?.sequence,
+      201
+    );
+  } finally {
+    store.close();
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
 test('incremental raw output cursors never revise prior chunks, lose suffixes or expose pending token prefixes', () => {
   const home = mkdtempSync(join(tmpdir(), 'morrow-output-cursors-'));
   const path = join(home, 'workspace.sqlite');

@@ -11,6 +11,19 @@ const scheduledSource =
 export class Store {
   db: DatabaseSync;
   transactionDepth = 0;
+  /**
+   * The next sequence number for a run's output chunks, and for a run's events in one channel.
+   * Both used to be counted in SQL before every single append, so writing n chunks read O(n²)
+   * rows; a long native turn writes thousands. The number is taken from storage once per key and
+   * then kept here, which is sound because one daemon owns a data directory at a time.
+   *
+   * Bounded like a cache — the least recently used key goes rather than growing without end, and a
+   * dropped key costs one indexed read. A rolled-back transaction drops every key, so a number
+   * that was never committed is counted again instead of leaving a hole.
+   */
+  ioSequence = new Map<string, number>();
+  eventSequence = new Map<string, number>();
+  sequenceLimit = 256;
   constructor(path: string) {
     this.db = new DatabaseSync(path);
     chmodSync(path, 0o600);
@@ -512,6 +525,14 @@ export class Store {
       throw new Error('Unknown table');
     return t;
   }
+  /** The next number for `key`, read from storage the first time and counted in memory after. */
+  nextSequence(counters: Map<string, number>, key: string, stored: () => number): number {
+    const next = counters.get(key) ?? stored() + 1;
+    counters.delete(key);
+    if (counters.size >= this.sequenceLimit) counters.delete(counters.keys().next().value!);
+    counters.set(key, next + 1);
+    return next;
+  }
   transaction<T>(fn: () => T): T {
     const depth = this.transactionDepth++;
     const savepoint = `nested_${depth}`;
@@ -523,6 +544,9 @@ export class Store {
     } catch (e) {
       this.db.exec(depth ? `ROLLBACK TO ${savepoint}` : 'ROLLBACK');
       if (depth) this.db.exec(`RELEASE ${savepoint}`);
+      // Whatever this transaction numbered is gone; count from storage again rather than skip it.
+      this.ioSequence.clear();
+      this.eventSequence.clear();
       throw e;
     } finally {
       this.transactionDepth--;
@@ -536,17 +560,20 @@ export class Store {
     detail?: EventDetail,
     metadata: Partial<Pick<Event, 'projectId' | 'itemId' | 'actor' | 'action' | 'changes'>> = {}
   ): Event {
-    const sequence = detail
-      ? Number(
-          (
-            this.db
-              .prepare(
-                "SELECT COUNT(*) AS count FROM events WHERE json_extract(data,'$.runId')=? AND json_extract(data,'$.channelId')=?"
-              )
-              .get(runId, channelId) as any
-          ).count
-        ) + 1
-      : undefined;
+    // This event's 1-based ordinal among the run's events in this channel, which is what a detail
+    // row carries so that equal timestamps still order. Counted for every event, stored only on
+    // the ones that have a detail, exactly as counting the rows again each time used to.
+    const sequence = this.nextSequence(this.eventSequence, `${runId}\0${channelId}`, () =>
+      Number(
+        (
+          this.db
+            .prepare(
+              "SELECT COUNT(*) AS count FROM events WHERE json_extract(data,'$.runId')=? AND json_extract(data,'$.channelId')=?"
+            )
+            .get(runId, channelId) as any
+        ).count
+      )
+    );
     return this.put('events', {
       id: randomUUID(),
       projectId: metadata.projectId || this.get<Channel>('channels', channelId)?.projectId || '',
@@ -619,11 +646,17 @@ export class Store {
     return { runs, hasMore: rows.length > query.limit, ...(cursor ? { cursor } : {}) };
   }
   io(runId: string, stream: RunIO['stream'], text: string): RunIO {
-    const sequence =
+    const sequence = this.nextSequence(this.ioSequence, runId, () =>
       Number(
-        (this.db.prepare("SELECT COUNT(*) AS count FROM run_io WHERE json_extract(data,'$.runId')=?").get(runId) as any)
-          .count
-      ) + 1;
+        (
+          this.db
+            .prepare(
+              "SELECT COALESCE(MAX(CAST(json_extract(data,'$.sequence') AS INTEGER)),0) AS n FROM run_io WHERE json_extract(data,'$.runId')=?"
+            )
+            .get(runId) as any
+        ).n
+      )
+    );
     return this.put('run_io', { id: randomUUID(), runId, stream, text, createdAt: now(), sequence });
   }
   ioStream(runId: string, stream: RunIO['stream'], text: string, secret: string, final = false): RunIO | undefined {
