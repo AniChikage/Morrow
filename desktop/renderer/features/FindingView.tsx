@@ -18,10 +18,11 @@ function evidencePresentation(value: string) {
   const reference = /^\[([0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12})\][ \t]+/i.exec(value);
   if (!reference) return { text: value };
   const body = value.slice(reference[0].length);
-  const sourceAt = body.lastIndexOf('\n来源：');
-  const summary = sourceAt < 0 ? body : body.slice(0, sourceAt);
-  const source = sourceAt < 0 ? '' : body.slice(sourceAt + 4).trim();
-  return { id: reference[1], text: source && summary.includes(source) ? summary : body };
+  // The stored text has no escaping: multiline summaries or commands can contain
+  // their own 来源： lines. Only deduplicate the unambiguous two-line form.
+  const lines = body.split(/\r?\n/);
+  const source = lines.length === 2 && lines[1].startsWith('来源：') ? lines[1].slice(3) : '';
+  return { id: reference[1], text: source && lines[0].includes(source) ? lines[0] : body };
 }
 export function FindingView(props: FeatureProps & { id: string }) {
   const { id, snapshot, api, busy, onMutate, onNavigate, onEditFeature } = props;

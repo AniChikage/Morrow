@@ -10,6 +10,23 @@ import { featureProps, TestProviders, timestamp } from './testFixtures';
 afterEach(cleanup);
 
 it.each([
+  "cat <<'来源：EOF'\n" + 'x'.repeat(200) + '\n来源：EOF',
+  "cat <<'DONE'\n" + '内容'.repeat(100) + '\n来源：命令正文\nDONE',
+])('preserves complete multiline commands containing source-like delimiters (%s)', async (command) => {
+  const { props } = featureProps();
+  const id = '7e9c4894-504f-4c4a-9d92-e11accf76c82';
+  const summary = `原生命令 · 退出码 0 · ${command.slice(0, 160)}`;
+  const original = `[${id}] ${summary}\n来源：${command}`;
+  props.snapshot.items[0].evidence = [original];
+  render(<FindingView {...props} id="finding-import" />, { wrapper: TestProviders });
+  await userEvent.setup().click(screen.getByText('证据', { selector: 'summary' }));
+  const row = within(screen.getByRole('list', { name: '事项证据' })).getByRole('listitem');
+  expect(row.title).toBe(id);
+  expect(row.textContent).toContain(command);
+  expect(props.snapshot.items[0].evidence).toEqual([original]);
+});
+
+it.each([
   ['execution', '原生命令 · 退出码 0 · node scripts/prompt-size.ts', 'node scripts/prompt-size.ts', true],
   ['file', '边界核对日志', '/tmp/project/checks.log', false],
   ['file', '读取 /tmp/project/checks.log 后核对边界', '/tmp/project/checks.log', true],
