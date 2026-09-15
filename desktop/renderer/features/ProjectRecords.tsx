@@ -63,6 +63,7 @@ const actions: Record<string, string> = {
   'native.creation-requested': '请求创建 App 任务',
   'native.creation-failed': '创建 App 任务失败',
   'native.interrupt': '请求停止 App 当前轮次',
+  'native.compacted': '压缩任务上下文',
   'native.responded': '提交 App 审批或答复',
   'native.background-restored': '恢复 App 原始启动设置',
   'native.background-configured': '配置旧转接设置',
