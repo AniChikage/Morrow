@@ -9,13 +9,40 @@ import { applyDesktopPatches } from '../service/codex-desktop-transport.ts';
 import { importNativeImages, readNativeImage } from '../service/native-media.ts';
 import { extractReport } from '../service/reports.ts';
 import type { NativeTransport, NativeSnapshot, NativeWorkOptions } from '../service/native-conversations.ts';
-import { startIsolated, type IsolatedService } from './harness/service.ts';
+import { setLogSink } from '../service/log.ts';
+import { startIsolated, stopScheduler, type IsolatedService } from './harness/service.ts';
+/** A real context window the App reports today; a share of it is one context reading. */
+const contextWindow = 828400;
+const contextUsed = (share: number) => Math.round(contextWindow * share);
+const context = (share: number) => ({
+  latestTokenUsageInfo: {
+    total: { totalTokens: contextUsed(share) },
+    last: {
+      totalTokens: contextUsed(share),
+      inputTokens: 1,
+      cachedInputTokens: 0,
+      cacheWriteInputTokens: 0,
+      outputTokens: 1,
+      reasoningOutputTokens: 0,
+    },
+    modelContextWindow: contextWindow,
+  },
+});
+/** One finished compaction as the App records it inside a turn of its own. */
+const compactionTurn = (source = 'manual') => ({
+  turnId: randomUUID(),
+  status: 'completed',
+  items: [{ id: randomUUID(), type: 'contextCompaction', completed: true, source }],
+});
 class FakeNative implements NativeTransport {
   connected = true;
   cwd = '';
   threadId = randomUUID();
   sent: Array<{ text: string; id?: string; images?: Array<{ path: string }>; workOptions?: NativeWorkOptions }> = [];
   interruptions: string[] = [];
+  compactions: string[] = [];
+  /** `reject` refuses the compaction request; `hang` accepts it and never finishes it. */
+  compactFailure: 'reject' | 'hang' | undefined;
   answers: any[] = [];
   failure = false;
   definitiveFailure = false;
@@ -97,6 +124,28 @@ class FakeNative implements NativeTransport {
   }
   async interrupt(id: string, turnId: string) {
     this.interruptions.push(turnId);
+    return { ok: true };
+  }
+  /**
+   * The App's own compaction: it runs `thread/compact/start` itself, so the result arrives as an
+   * idle task with a completed `contextCompaction` item and a smaller context reading.
+   */
+  async compact(id: string) {
+    this.compactions.push(id);
+    if (this.compactFailure === 'reject') throw new Error(`connect ECONNREFUSED ${join(this.cwd, 'ipc/ipc.sock')}`);
+    if (this.compactFailure === 'hang') {
+      this.emit({ threadRuntimeStatus: { type: 'active' } });
+      return { ok: true };
+    }
+    const info = this.snapshot.state.latestTokenUsageInfo;
+    this.emit({
+      threadRuntimeStatus: { type: 'idle' },
+      latestTokenUsageInfo: {
+        ...info,
+        last: { ...info?.last, totalTokens: Math.round((info?.modelContextWindow ?? 0) * 0.1) },
+      },
+      turns: [...this.snapshot.state.turns, compactionTurn()],
+    });
     return { ok: true };
   }
   async respond(id: string, requestId: string | number, kind: any, response: unknown) {
@@ -1399,6 +1448,175 @@ test('follower status reports actual associations and the retired setup endpoint
     assert.equal(s.store.get<any>('migrations', 'codex-background-bridge'), undefined);
     assert.equal(s.native.binding(s.channel.id)?.threadId, s.transport.threadId);
     assert.equal(s.transport.sent.length, 0);
+  } finally {
+    await s.cleanup();
+  }
+});
+
+test('a nearly full task context is compacted before the scheduled turn is sent, and the work continues', async () => {
+  const s = await setup();
+  try {
+    await s.native.bind(s.channel.id, s.transport.threadId);
+    // The service waits 180 s for the App by default; the poll interval follows this field.
+    s.native.compactWaitMs = 300;
+    s.transport.emit(context(0.7));
+    const order: number[] = [];
+    const send = s.transport.sendMessage.bind(s.transport);
+    Object.assign(s.transport, {
+      sendMessage: (...args: Parameters<typeof send>) => {
+        order.push(s.transport.compactions.length);
+        return send(...args);
+      },
+    });
+    await s.engine.action(s.channel.id, 'resume');
+    // The compaction is finished before the turn's own message reaches the task.
+    assert.deepEqual(order, [1]);
+    assert.deepEqual(s.transport.compactions, [s.transport.threadId]);
+    assert.equal(s.transport.sent.length, 1);
+    assert.equal(s.transport.interruptions.length, 0);
+    const texts = s.store.all<any>('events').map((event) => event.text);
+    assert(texts.includes('任务上下文已用 70%（579880 / 828400），先压缩再继续。'));
+    assert(texts.includes('上下文已压缩：70% → 10%，继续本轮工作。'));
+    const audit = s.store.all<any>('events').find((event) => event.action === 'native.compacted');
+    assert.equal(audit.actor, 'system');
+    assert.equal(audit.channelId, s.channel.id);
+    assert.deepEqual(audit.changes.after, { before: 579880, after: 82840, window: 828400, percent: 70 });
+  } finally {
+    await s.cleanup();
+  }
+});
+test('no compaction is attempted below the threshold, on an unknown reading, or without transport support', async () => {
+  for (const [name, prepare] of [
+    ['below the threshold', (s: IsolatedService & { transport: FakeNative }) => s.transport.emit(context(0.3))],
+    [
+      'no reading at all',
+      (s: IsolatedService & { transport: FakeNative }) => s.transport.emit({ latestTokenUsageInfo: undefined }),
+    ],
+    [
+      'an unusable reading',
+      (s: IsolatedService & { transport: FakeNative }) =>
+        s.transport.emit({ latestTokenUsageInfo: { last: { totalTokens: contextUsed(0.7) } } }),
+    ],
+    [
+      'no compact method',
+      (s: IsolatedService & { transport: FakeNative }) => {
+        s.transport.emit(context(0.7));
+        // The shared and test-mode transports have none, so a double without it must be safe too.
+        Object.assign(s.transport, { compact: undefined });
+      },
+    ],
+  ] as const) {
+    const s = await setup();
+    try {
+      await s.native.bind(s.channel.id, s.transport.threadId);
+      s.native.compactWaitMs = 300;
+      prepare(s);
+      await s.engine.action(s.channel.id, 'resume');
+      assert.deepEqual(s.transport.compactions, [], name);
+      assert.equal(s.transport.sent.length, 1, name);
+      assert.equal(s.store.all<any>('events').filter((event) => event.text.includes('压缩')).length, 0, name);
+    } finally {
+      await s.cleanup();
+    }
+  }
+});
+test('a refused compaction still starts the turn, is logged once and says nothing technical', async () => {
+  const s = await setup();
+  try {
+    await s.native.bind(s.channel.id, s.transport.threadId);
+    s.native.compactWaitMs = 300;
+    s.transport.compactFailure = 'reject';
+    s.transport.emit(context(0.7));
+    const lines: string[] = [];
+    setLogSink((line) => lines.push(line));
+    try {
+      await s.engine.action(s.channel.id, 'resume');
+    } finally {
+      setLogSink();
+    }
+    assert.deepEqual(s.transport.compactions, [s.transport.threadId]);
+    assert.equal(s.transport.sent.length, 1);
+    const failures = lines.map((line) => JSON.parse(line)).filter((row) => row.event === 'native.compact.failed');
+    assert.equal(failures.length, 1);
+    assert.equal(failures[0].threadId, s.transport.threadId);
+    const event = s.store.all<any>('events').find((row) => row.text.startsWith('上下文压缩未完成'));
+    assert.equal(event.text, '上下文压缩未完成（Codex App 未运行，打开后会自动重连），本轮照常开始。');
+    assert.equal(/\//.test(event.text), false);
+    assert.equal(/\bE[A-Z][A-Z0-9]{2,}\b/.test(event.text), false);
+  } finally {
+    await s.cleanup();
+  }
+});
+test('a compaction that does not finish parks the scheduled start and refuses a manual one', async () => {
+  const s = await setup();
+  try {
+    stopScheduler(s);
+    await s.native.bind(s.channel.id, s.transport.threadId);
+    s.native.compactWaitMs = 200;
+    s.transport.compactFailure = 'hang';
+    s.transport.emit(context(0.7));
+    await s.native.startScheduled(s.channel.id, true);
+    const channel = s.store.get<any>('channels', s.channel.id);
+    assert.equal(channel.status, 'waiting');
+    assert(Date.parse(channel.nextRunAt) > Date.now());
+    assert.equal(s.transport.sent.length, 0);
+    assert.deepEqual(s.transport.compactions, [s.transport.threadId]);
+    await assert.rejects(s.native.startScheduled(s.channel.id, false), {
+      message: 'Codex App 正在执行此任务，请等待当前轮次完成',
+    });
+    assert.equal(s.transport.compactions.length, 1);
+  } finally {
+    await s.cleanup();
+  }
+});
+test('the boundary after a turn compacts once, and the next start waits it out instead of asking again', async () => {
+  const s = await setup();
+  try {
+    stopScheduler(s);
+    await s.native.bind(s.channel.id, s.transport.threadId);
+    s.native.compactWaitMs = 200;
+    await s.engine.action(s.channel.id, 'resume');
+    assert.equal(s.transport.sent.length, 1);
+    assert.deepEqual(s.transport.compactions, []);
+    // The turn ends with the context nearly full; the App accepts the request and stays busy on it.
+    s.transport.compactFailure = 'hang';
+    s.transport.emit(context(0.7));
+    completeWork(s, nextWork());
+    assert.deepEqual(s.transport.compactions, [s.transport.threadId]);
+    assert.equal(s.engine.control(s.channel.id).enabled, true);
+    await s.native.startScheduled(s.channel.id, true);
+    assert.equal(s.store.get<any>('channels', s.channel.id).status, 'waiting');
+    assert.equal(s.transport.sent.length, 1);
+    assert.equal(s.transport.compactions.length, 1);
+    // Once the App finishes it, the next start proceeds and the reading asks for nothing more.
+    s.transport.compactFailure = undefined;
+    s.transport.emit({
+      threadRuntimeStatus: { type: 'idle' },
+      ...context(0.1),
+      turns: [...s.transport.snapshot.state.turns, compactionTurn()],
+    });
+    await s.native.startScheduled(s.channel.id, true);
+    assert.equal(s.transport.sent.length, 2);
+    assert.equal(s.transport.compactions.length, 1);
+  } finally {
+    await s.cleanup();
+  }
+});
+test("the App's own compaction is announced once, however often the task is read again", async () => {
+  const s = await setup();
+  try {
+    await s.native.bind(s.channel.id, s.transport.threadId);
+    const pending = compactionTurn('automatic');
+    const announced = () =>
+      s.store.all<any>('events').filter((row) => row.text.startsWith('Codex App 已压缩任务上下文'));
+    s.transport.emit({ turns: [{ ...pending, items: [{ ...pending.items[0], completed: false }] }] });
+    assert.equal(announced().length, 0);
+    assert.equal(s.store.get<any>('native_bindings', s.channel.id).compactionsSeen, undefined);
+    s.transport.emit({ turns: [pending] });
+    s.transport.emit({ turns: [pending] });
+    assert.equal(announced().length, 1);
+    assert.equal(announced()[0].text, 'Codex App 已压缩任务上下文（自动）');
+    assert.equal(s.store.get<any>('native_bindings', s.channel.id).compactionsSeen.length, 1);
   } finally {
     await s.cleanup();
   }
