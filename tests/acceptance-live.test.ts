@@ -1530,7 +1530,18 @@ test('发现率认功能 ID，也认场景登记的别名——run 02 那条标�
   assert.equal(usagegap.discovered, 2);
   assert.equal(usagegap.findings, 2);
   // 归因看的是事项自己承诺的 kind：入口那条记成 hypothesis 就是归错，反例记成 hypothesis 才算对。
-  assert.deepEqual(usagegap.attribution, { cases: 2, correct: 1, wrong: 1, missing: 0, percent: 50 });
+  assert.deepEqual(usagegap.attribution, {
+    cases: 2,
+    correct: 1,
+    wrong: 1,
+    missing: 0,
+    contradictory: 0,
+    percent: 50,
+    details: [
+      { id: 'buried-entrance', feature: 'bulkexport', verdict: 'wrong', itemIds: ['item-1'] },
+      { id: 'not-needed', feature: 'taxreport', verdict: 'correct', itemIds: ['item-2'] },
+    ],
+  });
 
   const section = findingsSection(labels, [byTitle, byId]).join('\n');
   assert.match(section, /bulkexport（buried-entrance\/entrance）· 命中别名「批量导出」/);

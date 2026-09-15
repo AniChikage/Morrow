@@ -206,7 +206,7 @@ runner 另外自己数**本次运行新出现**的 `morrow-schedule` 行（关�
 | --- | --- | --- |
 | `usagegap.discovered` / `discoveryPercent` | 写死的 `classify()` 能不能把五个功能分类，以及这些分类能不能被记录和算出来 | **模型自己从 `/usage`（和它能走的应用页面）里发现了几个埋入的问题** |
 | `usagegap.findingsWithEvidence` / `evidencePercent` | 状态机有没有把样本 ID 填进 `evidenceIds` | 模型有没有为每条发现附上真实采集到的证据（观测样本，或 Phase 2.2 的原生工具记录/截图） |
-| `usagegap.attribution.correct` | 状态机读没读 `askedFor` | **模型有没有分清「入口太深」和「目标用户本来不需要」**：反例记成 `hypothesis` 才算对 |
+| `usagegap.attribution.correct` | 状态机读没读 `askedFor` | **模型有没有分清「入口太深」和「目标用户本来不需要」**：反例记成 `hypothesis` 才算对。判定取全部命中那个功能的事项，与先后无关；两种分类都记下来的那条算 `usagegap.attribution.contradictory`，既不算归对也不算归错（`details` 逐条给出判定与命中事项，`summary.md` 会列出矛盾双方的标题） |
 | `usagegap.improvements.observed` | 状态机有没有把预期冻结在观测上 | 模型提的改进有没有事前预期与真实观测，且复盘真的拿那个观测的样本核对过 |
 | `usagegap.misFix.count` / `ids` | 状态机有没有挑错对象 | **模型有没有去"修"那个不该修的功能** |
 | `cost` | 永远 `unknown`（脚本化后台不报额度） | 真实账户用量差值 |

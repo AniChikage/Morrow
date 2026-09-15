@@ -889,7 +889,7 @@ function liveSummary(scenario: Scenario, result: LiveResult, settings: LiveSetti
       ? result.invariants.map((row) => `- ${row.ok ? 'PASS' : 'FAIL'} ${row.name} — ${row.detail}`)
       : ['- 未执行（运行在时间线之前就停下了）']),
     '',
-    ...metricsSection(result.metrics, 'live'),
+    ...metricsSection(result.metrics, 'live', items),
     ...findingsSection(result.labels, items),
     ...(result.failures.length ? ['## 失败原因', '', ...result.failures.map((row) => `- ${row}`), ''] : []),
   ].join('\n');

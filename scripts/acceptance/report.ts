@@ -1,7 +1,7 @@
 import { existsSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
-import { matchedName, namesFeature, unknown } from './metrics.ts';
-import type { Metrics, MetricsInput } from './metrics.ts';
+import { attributionVerdicts, filedAs, matchedName, namesFeature, unknown } from './metrics.ts';
+import type { AttributionVerdict, FiledAs, Metrics, MetricsInput } from './metrics.ts';
 import type { CallRecord, Labels, TimelineRecord } from './scenario.ts';
 
 /** Which runner produced a report. It changes the fixed caveat, not the metrics. */
@@ -166,6 +166,10 @@ export function scaleNote(advanceScale: number): string[] {
  * a human score: a run may name the feature without having understood the problem, and a run may
  * have understood it without naming it at all. Each hit says which name it was, so a reader can tell
  * an id match from a title match without re-deriving it.
+ *
+ * A low-usage case the run filed **both** ways is called out above the originals with the titles that
+ * disagree: `usagegap.attribution` scores it neither right nor wrong, and a reader looking for why
+ * has to be able to see the two items side by side instead of hunting for them in the list below.
  */
 export function findingsSection(
   labels: Labels | undefined,
@@ -182,6 +186,7 @@ export function findingsSection(
   const planted = (labels?.planted || []).filter((row) => !!row.feature);
   if (!planted.length) return [];
   const matched = items.filter((item) => planted.some((row) => namesFeature(item, row.feature!, row.aliases)));
+  const contradictory = attributionVerdicts(items, planted).filter((row) => row.verdict === 'contradictory');
   return [
     '## 每条发现的原文',
     '',
@@ -189,6 +194,19 @@ export function findingsSection(
       '或者场景给它登记的别名（数据里的中文标题）」，对夹具状态机和真实模型是同一条规则。' +
       '模型可能提到功能却没真的理解那个问题，也可能理解了却一个名字都没写——所以下面给出原文，请人抽查。',
     '',
+    ...(contradictory.length
+      ? [
+          `### 归因矛盾（${contradictory.length} 条）`,
+          '',
+          '下面这些低使用率的埋入功能，本次运行同时记下了两种相反的分类。归因判定取的是全部命中事项，' +
+            '所以这样的一条记为 `usagegap.attribution.contradictory`：既不算归对，也不算归错。',
+          '',
+          ...contradictory.flatMap((row) => [
+            `- ${row.feature}（${row.id}）：${row.itemIds.map((id) => nameItem(items, id)).join(' ／ ')}`,
+          ]),
+          '',
+        ]
+      : []),
     ...(matched.length
       ? matched.flatMap((item) => [
           `### ${item.title}`,
@@ -230,7 +248,11 @@ function hitBy(
 const oneLine = (text: string) => text.replaceAll('\n', ' ').replaceAll('|', '\\|').slice(0, 300);
 
 /** The metrics section `summary.md` carries, under the report's fixed caveat for its mode. */
-export function metricsSection(metrics: Metrics | undefined, mode: ReportMode = 'fixture'): string[] {
+export function metricsSection(
+  metrics: Metrics | undefined,
+  mode: ReportMode = 'fixture',
+  items: NamedItem[] = []
+): string[] {
   if (!metrics) return ['## 指标', '', '- 未计算（运行提前失败，没有可读的数据目录）', ''];
   const flat = flatten(metrics);
   // The exploration block gets its own readable section below, so it is not repeated here.
@@ -251,9 +273,28 @@ export function metricsSection(metrics: Metrics | undefined, mode: ReportMode = 
     '',
     `配置：${config.join(' · ')}`,
     '',
-    ...explorationSection(metrics, mode),
+    ...explorationSection(metrics, mode, items),
   ];
 }
+
+/** Just enough of a filed item for the exploration section to name it instead of printing its id. */
+export type NamedItem = { id: string; title?: string; kind?: string };
+
+/** What each attribution verdict says, spelled out rather than left as an English enum value. */
+const verdictText: Record<AttributionVerdict, string> = {
+  correct: '归因正确',
+  wrong: '归错',
+  missing: '未记录',
+  contradictory: '矛盾（两种分类都出现，既不算归对也不算归错）',
+};
+
+const filedText: Record<FiledAs, string> = { judgement: '待验证判断', action: '缺陷/行动' };
+
+/** An item named by its title and the classification it committed to; the bare id when unknown. */
+const nameItem = (items: NamedItem[], id: string) => {
+  const item = items.find((row) => row.id === id);
+  return item ? `「${oneLine(item.title || '（无标题）')}」（${filedText[filedAs(item)]}）` : `\`${id}\``;
+};
 
 /**
  * The exploration metrics of a scenario like `usagegap`, with the caveat they must never be read
@@ -262,10 +303,15 @@ export function metricsSection(metrics: Metrics | undefined, mode: ReportMode = 
  * say a model would find any of it on its own. That is what live mode is for; there the same numbers
  * describe one real model in one isolated run, as a text-matched lower bound rather than a score.
  */
-export function explorationSection(metrics: Metrics | undefined, mode: ReportMode = 'fixture'): string[] {
+export function explorationSection(
+  metrics: Metrics | undefined,
+  mode: ReportMode = 'fixture',
+  items: NamedItem[] = []
+): string[] {
   const rows = metrics?.usagegap;
   if (!rows || typeof rows !== 'object') return [];
   const rate = (value: number | string) => (typeof value === 'number' ? `${value}%` : value);
+  const attribution = rows.attribution;
   return [
     '## 探索指标',
     '',
@@ -280,9 +326,20 @@ export function explorationSection(metrics: Metrics | undefined, mode: ReportMod
     '| --- | --- | --- |',
     `| 埋入问题发现率 | ${rows.discovered}/${rows.planted}（${rate(rows.discoveryPercent)}） | usagegap.discovered |`,
     `| 附采集证据的发现 | ${rows.findingsWithEvidence}/${rows.findings}（${rate(rows.evidencePercent)}） | usagegap.findingsWithEvidence |`,
-    `| 低使用率归因正确 | ${rows.attribution.correct}/${rows.attribution.cases}（${rate(rows.attribution.percent)}）· 归错 ${rows.attribution.wrong} · 未记录 ${rows.attribution.missing} | usagegap.attribution.correct |`,
+    `| 低使用率归因正确 | ${attribution.correct}/${attribution.cases}（${rate(attribution.percent)}）· 归错 ${attribution.wrong} · 矛盾 ${attribution.contradictory} · 未记录 ${attribution.missing} | usagegap.attribution.correct |`,
     `| 改进设了预期与观测 | ${rows.improvements.withBoth}/${rows.improvements.chosen} · 其中真的用观测核对过 ${rows.improvements.observed} | usagegap.improvements.observed |`,
     `| 误修反例 | ${rows.misFix.count}/${rows.misFix.mustNotFix}（${rate(rows.misFix.percent)}）· 命中 ${rows.misFix.ids.join('、') || '无'} | usagegap.misFix.count |`,
+    '',
+    '归因逐条（`usagegap.attribution.details`）：判定取的是**全部**正文命中那个功能的事项，' +
+      '与它们被记下的先后无关；两种分类都出现就是矛盾，既不算归对也不算归错，所以它会把正确率压下来。',
+    '',
+    ...attribution.details.map(
+      (row) =>
+        `- \`${row.id}\`（${row.feature}）：${verdictText[row.verdict]}` +
+        (row.itemIds.length
+          ? ` · 命中 ${row.itemIds.length} 条事项：${row.itemIds.map((id) => nameItem(items, id)).join('、')}`
+          : ' · 没有事项提到这个功能')
+    ),
     '',
   ];
 }

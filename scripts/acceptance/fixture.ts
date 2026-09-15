@@ -19,7 +19,7 @@ import type { AppStop, RunningApp } from './serve.ts';
 import type { CallRecord, InvariantResult, Labels, Scenario, ServedApp, TimelineRecord } from './scenario.ts';
 import type { Metrics } from './metrics.ts';
 import type { IsolatedService } from '../../tests/harness/service.ts';
-import type { Run } from '../../service/protocol.ts';
+import type { Run, WorkItem } from '../../service/protocol.ts';
 
 /** The sentence every report carries, so a green fixture run is never read as model validation. */
 export const fixtureNotice = 'fixture 结果验证框架机制，不验证模型自主性。';
@@ -98,6 +98,8 @@ export async function runScenario(scenario: Scenario, options: RunOptions = {}):
   const labels: Labels = { staleMemoryIds: [], truth: [], planted: scenario.planted };
   let invariants: InvariantReport[] = [];
   let metrics: Metrics | undefined;
+  /** The board as the run left it, read on the same open store as the metrics: the report names items. */
+  let items: WorkItem[] = [];
   let runFacts: RunFacts | undefined;
   let service: IsolatedService | undefined;
   let transport: ScriptedNativeTransport | undefined;
@@ -214,6 +216,7 @@ export async function runScenario(scenario: Scenario, options: RunOptions = {}):
       // Measured on the still open store, after the run's own last act, so the numbers describe
       // exactly the database the report directory carries.
       try {
+        items = service.store.all<WorkItem>('items');
         metrics = computeMetrics({
           home: service.home,
           store: service.store,
@@ -255,7 +258,7 @@ export async function runScenario(scenario: Scenario, options: RunOptions = {}):
     failures,
     summary: '',
   };
-  result.summary = summaryMarkdown(scenario, result, options);
+  result.summary = summaryMarkdown(scenario, result, options, items);
   writeFileSync(join(out, 'timeline.jsonl'), lines(timeline));
   writeFileSync(join(out, 'calls.jsonl'), lines(result.calls));
   writeFileSync(join(out, 'cleanup.json'), JSON.stringify(cleanup, null, 2) + '\n');
@@ -345,7 +348,7 @@ function safeCheck(row: { check(context: any): InvariantResult }, context: any):
   }
 }
 
-function summaryMarkdown(scenario: Scenario, result: RunResult, options: RunOptions) {
+function summaryMarkdown(scenario: Scenario, result: RunResult, options: RunOptions, items: WorkItem[] = []) {
   const verbs = new Map<string, number>();
   for (const row of result.timeline) verbs.set(row.verb, (verbs.get(row.verb) || 0) + 1);
   return [
@@ -367,7 +370,7 @@ function summaryMarkdown(scenario: Scenario, result: RunResult, options: RunOpti
       ? result.invariants.map((row) => `- ${row.ok ? 'PASS' : 'FAIL'} ${row.name} — ${row.detail}`)
       : ['- 未执行（运行提前失败）']),
     '',
-    ...metricsSection(result.metrics),
+    ...metricsSection(result.metrics, 'fixture', items),
     ...(result.failures.length ? ['## 失败原因', '', ...result.failures.map((row) => `- ${row}`), ''] : []),
   ].join('\n');
 }
