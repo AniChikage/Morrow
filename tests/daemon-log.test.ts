@@ -93,6 +93,32 @@ test('a booting daemon records its build, data directory and the runs recovery f
   assert(!rows.some((row) => JSON.stringify(row).includes('?')));
 });
 
+test('a native task that stops syncing leaves one line with its thread and reason', async () => {
+  const rows = await captured(async () => {
+    const s = await startIsolated({ project: { name: '日志', goal: '记录原生同步失败' }, scheduler: false });
+    try {
+      s.store.put('native_bindings', {
+        id: s.channel.id,
+        projectId: s.project.id,
+        threadId: 'thread-that-stopped',
+        cwd: s.path,
+        createdAt: new Date().toISOString(),
+      });
+      s.native.recordError('thread-that-stopped', new Error('App disconnected'));
+      // The channel timeline still carries it; the log is the second destination, not a move.
+      assert.equal(s.store.get<any>('native_bindings', s.channel.id).syncError, 'App disconnected');
+    } finally {
+      await s.cleanup();
+    }
+  });
+  const failed = rows.filter((row) => row.event === 'native.sync.failed');
+  assert.equal(failed.length, 1);
+  assert.deepEqual(
+    { threadId: failed[0].threadId, reason: failed[0].reason },
+    { threadId: 'thread-that-stopped', reason: 'App disconnected' }
+  );
+});
+
 test('a scheduled channel that blocks itself, and an upgrade phase change, each leave one line', async () => {
   const rows = await captured(async () => {
     const s = await startIsolated({ project: { name: '日志', goal: '记录调度失败' }, scheduler: false });

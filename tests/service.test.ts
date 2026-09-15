@@ -975,6 +975,13 @@ test('a scheduler tick selects only the rows that need work, through indexes rat
       ),
       /INDEX native_events_thread_revision/
     );
+    // Every checkpoint retires the journal rows it covers through the same index.
+    assert.match(
+      plan(
+        "DELETE FROM native_events WHERE json_extract(data,'$.threadId')='t' AND (json_extract(data,'$.ownerClientId')<>'o' OR CAST(json_extract(data,'$.revision') AS INTEGER)<=1)"
+      ),
+      /INDEX native_events_thread_revision/
+    );
   } finally {
     store.close();
     rmSync(home, { recursive: true, force: true });
@@ -1054,6 +1061,116 @@ test('start-up backfills run once and the native journal keeps only what checkpo
     store.close();
     store = new Store(path);
     assert(store.all<any>('native_events').some((row) => row.id === 'later'));
+  } finally {
+    store.close();
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test('resolved native requests age out after 30 days while pending ones and recent answers stay', () => {
+  const home = mkdtempSync(join(tmpdir(), 'morrow-requests-'));
+  const path = join(home, 'workspace.sqlite');
+  let store = new Store(path);
+  try {
+    const threadId = randomUUID();
+    const days = (count: number) => new Date(Date.now() - count * 24 * 60 * 60 * 1000).toISOString();
+    const row = (id: string, status: string, resolvedAt?: string) => ({
+      id,
+      threadId,
+      nativeId: id,
+      status,
+      ...(resolvedAt ? { resolvedAt } : {}),
+    });
+    store.put('native_requests', row('live', 'pending'));
+    store.put('native_requests', row('recent', 'resolved', days(29)));
+    store.put('native_requests', row('stale', 'resolved', days(31)));
+    store.put('native_requests', row('answered', 'responded', days(400)));
+    // Written before `resolvedAt` existed; replaying the stamp is what deleting its marker does.
+    store.put('native_requests', row('legacy', 'resolved'));
+    store.db.prepare('DELETE FROM migrations WHERE id=?').run('native-requests-resolved-at-v1');
+    store.close();
+    store = new Store(path);
+    assert.deepEqual(
+      store
+        .all<any>('native_requests')
+        .map((request) => request.id)
+        .sort(),
+      ['legacy', 'live', 'recent']
+    );
+    // The legacy row ages from this upgrade rather than disappearing the moment it lands.
+    assert(store.get<any>('native_requests', 'legacy').resolvedAt > days(1));
+    assert(store.get('migrations', 'native-requests-resolved-at-v1'));
+    const plan = store.db
+      .prepare("EXPLAIN QUERY PLAN DELETE FROM native_requests WHERE json_extract(data,'$.resolvedAt')<'2026-01-01'")
+      .all()
+      .map((step: any) => step.detail)
+      .join(' ');
+    assert.match(plan, /INDEX native_requests_resolved/);
+    // A live request is never stamped, so no later start-up can retire it.
+    store.close();
+    store = new Store(path);
+    assert.equal(store.get<any>('native_requests', 'live').resolvedAt, undefined);
+    assert.equal(store.all('native_requests').length, 3);
+  } finally {
+    store.close();
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test('run output and event ordinals are counted once per run, not once per append', () => {
+  const home = mkdtempSync(join(tmpdir(), 'morrow-sequence-'));
+  const path = join(home, 'workspace.sqlite');
+  let store = new Store(path);
+  try {
+    const runId = randomUUID(),
+      channelId = randomUUID();
+    const statements: string[] = [];
+    const prepare = store.db.prepare.bind(store.db);
+    store.db.prepare = ((sql: string) => {
+      statements.push(sql);
+      return prepare(sql);
+    }) as typeof store.db.prepare;
+    for (let index = 0; index < 200; index++) {
+      store.io(runId, 'stdout', `chunk ${index}\n`);
+      store.event(
+        channelId,
+        runId,
+        'system',
+        `line ${index}`,
+        index % 2 ? { type: 'tool_use', tool: 'Read' } : undefined
+      );
+    }
+    store.db.prepare = prepare;
+    // One read of the stored ordinal each, instead of one per append over every row already written.
+    assert.equal(statements.filter((sql) => sql.includes('MAX(CAST(json_extract')).length, 1);
+    assert.equal(statements.filter((sql) => sql.startsWith('SELECT COUNT(*)')).length, 1);
+    const chunks = store.ioPage(runId, undefined, 400).chunks;
+    assert.deepEqual(
+      chunks.map((chunk) => chunk.sequence),
+      chunks.map((_, index) => index + 1)
+    );
+    // The detail ordinal still counts every event of the run, including the ones without a detail.
+    const details = store.all<any>('events').filter((row) => row.detail);
+    assert.deepEqual(
+      details.map((row) => row.detail.sequence),
+      details.map((_, index) => index * 2 + 2)
+    );
+    // A transaction that rolled back numbered nothing; the next append takes that number.
+    assert.throws(() =>
+      store.transaction(() => {
+        store.io(runId, 'stdout', 'rolled back');
+        throw new Error('rolled back');
+      })
+    );
+    assert.equal(store.io(runId, 'stdout', 'after rollback').sequence, 201);
+    store.close();
+    // A restarted daemon continues from what is stored rather than from an empty counter.
+    store = new Store(path);
+    assert.equal(store.io(runId, 'stdout', 'after restart').sequence, 202);
+    assert.equal(
+      store.event(channelId, runId, 'tool', 'after restart', { type: 'tool_use', tool: 'Read' }).detail?.sequence,
+      201
+    );
   } finally {
     store.close();
     rmSync(home, { recursive: true, force: true });

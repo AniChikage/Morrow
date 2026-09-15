@@ -65,13 +65,13 @@ MORROW_HOME="$HOME/.local/share/morrow" npm start
 
 迁移保持已有 ID 和历史，支持旧运行来源、协议标记与任务创建记录。历史证据摘要不因品牌改名重新计算。每个一次性回填带自己的 marker，跑过一次之后启动不再整表扫描；删掉某个 marker 会重放对应回填。备份应使用 SQLite 在线备份，或停止服务后复制完整数据目录及相关文件。
 
-看板、事件与运行历史目前没有自动裁剪策略。唯一会被清理的是原生任务的 IPC 增量日志 `native_events`：它只被 checkpoint 恢复读取（按线程从 `native_threads` 已覆盖的修订往后走），因此启动时的一次性迁移删掉再也读不到的行——已被 checkpoint 覆盖的修订、属于其他客户端的行、以及没有 `kind` 的投影行——并为剩下的行建 `(threadId, revision)` 索引。删行不缩小文件；停止服务后用 `bash scripts/compact-db.sh` 回收空间，步骤见[升级与数据迁移](../docs/UPGRADING.md)。
+看板、事件与运行历史目前没有自动裁剪策略。原生任务的 IPC 增量日志 `native_events` 会被持续清理：它只被 checkpoint 恢复读取（按线程从 `native_threads` 已覆盖的修订往后走），因此启动时的一次性迁移删掉再也读不到的行——已被 checkpoint 覆盖的修订、属于其他客户端的行、以及没有 `kind` 的投影行——并为剩下的行建 `(threadId, revision)` 索引。此后**每写出一次 checkpoint 就顺手删掉它已覆盖的日志行**（同一索引），所以这张表的上限是一次 checkpoint 间隔内的增量，而不是进程的运行时长：轮次流式进行时 checkpoint 最多每 30 秒一次，轮次结束或任务转为空闲时立刻写出，`close()` 一定写出。投影差异行已不再写入，恢复只依赖原始增量。`native_requests` 的已解决行在启动时按 `resolvedAt` 删掉超过 30 天的。删行不缩小文件；停止服务后用 `bash scripts/compact-db.sh` 回收空间，步骤见[升级与数据迁移](../docs/UPGRADING.md)。
 
 ## 运行日志
 
-服务把生命周期事实按**每行一个 JSON 对象**写到 stdout，也就是登录启动项和 Electron 主进程指向的 `service.log`：`boot`（版本、commit/指纹前缀、`bootId`、数据目录、端口、打开数据库耗时、恢复时判为中断的轮次数）、`shutdown`（信号）、`schedule.failed`（某频道自动调度失败并因此停用）、`upgrade.phase`（切换阶段变化，阻塞项刷新不记）、`usage.refresh.failed`、`native.start.failed`、`boot.failed` 与 `unhandled.rejection`。
+服务把生命周期事实按**每行一个 JSON 对象**写到 stdout，也就是登录启动项和 Electron 主进程指向的 `service.log`：`boot`（版本、commit/指纹前缀、`bootId`、数据目录、端口、打开数据库耗时、恢复时判为中断的轮次数）、`shutdown`（信号）、`schedule.failed`（某频道自动调度失败并因此停用）、`upgrade.phase`（切换阶段变化，阻塞项刷新不记）、`usage.refresh.failed`、`native.start.failed`、`native.sync.failed`（某个原生任务同步失败，带 `threadId`；同时仍写入该频道的时间线）、`boot.failed` 与 `unhandled.rejection`。
 
-每行都经过本服务自己的脱敏，因此不会写出服务 token。**不记录请求体、查询串和请求头**，与请求错误路径同一条规矩。日志写入失败不影响它所描述的操作。transport 的连接/断开与原生同步错误（`native-conversations.ts` 的 `recordError`）目前仍只进入频道时间线，尚未接入这里。
+每行都经过本服务自己的脱敏，因此不会写出服务 token。**不记录请求体、查询串和请求头**，与请求错误路径同一条规矩。日志写入失败不影响它所描述的操作。transport 的连接/断开仍只进入频道时间线，尚未接入这里。
 
 同一目录只允许一个 daemon，通过 `daemon.lock` 防止重复实例。SIGTERM/SIGINT 会停止服务调度并清理其拥有的 CLI 进程；不会杀死共享 Codex App。崩溃后，未结束的自有 CLI 轮次标记中断并暂停频道；共享任务则按原生状态恢复。发送回执不明确时先核对结果，不盲目重发。为新安装的版本主动让位时使用专用退出码 75（见下文），与崩溃和人工停止区分开。
 

@@ -11,6 +11,19 @@ const scheduledSource =
 export class Store {
   db: DatabaseSync;
   transactionDepth = 0;
+  /**
+   * The next sequence number for a run's output chunks, and for a run's events in one channel.
+   * Both used to be counted in SQL before every single append, so writing n chunks read O(n²)
+   * rows; a long native turn writes thousands. The number is taken from storage once per key and
+   * then kept here, which is sound because one daemon owns a data directory at a time.
+   *
+   * Bounded like a cache — the least recently used key goes rather than growing without end, and a
+   * dropped key costs one indexed read. A rolled-back transaction drops every key, so a number
+   * that was never committed is counted again instead of leaving a hole.
+   */
+  ioSequence = new Map<string, number>();
+  eventSequence = new Map<string, number>();
+  sequenceLimit = 256;
   constructor(path: string) {
     this.db = new DatabaseSync(path);
     chmodSync(path, 0o600);
@@ -71,7 +84,12 @@ export class Store {
       "CREATE INDEX IF NOT EXISTS items_project ON items(json_extract(data,'$.projectId')); CREATE INDEX IF NOT EXISTS events_project ON events(json_extract(data,'$.projectId')); CREATE INDEX IF NOT EXISTS events_item ON events(json_extract(data,'$.itemId')); CREATE INDEX IF NOT EXISTS runs_project ON runs(json_extract(data,'$.projectId')); CREATE INDEX IF NOT EXISTS run_io_run ON run_io(json_extract(data,'$.runId'));"
     );
     this.db.exec(
-      "CREATE INDEX IF NOT EXISTS native_items_thread ON native_items(json_extract(data,'$.threadId')); CREATE INDEX IF NOT EXISTS native_outbox_thread ON native_outbox(json_extract(data,'$.threadId')); CREATE INDEX IF NOT EXISTS native_turns_thread ON native_turns(json_extract(data,'$.threadId')); "
+      "CREATE INDEX IF NOT EXISTS native_items_thread ON native_items(json_extract(data,'$.threadId')); CREATE INDEX IF NOT EXISTS native_outbox_thread ON native_outbox(json_extract(data,'$.threadId')); CREATE INDEX IF NOT EXISTS native_turns_thread ON native_turns(json_extract(data,'$.threadId')); CREATE INDEX IF NOT EXISTS loop_executions_thread ON loop_executions(json_extract(data,'$.threadId'));"
+    );
+    // Ingest reads one task's bindings and resolves its requests on every projection, and the
+    // resolved requests of every task are swept by age at start-up.
+    this.db.exec(
+      "CREATE INDEX IF NOT EXISTS native_bindings_thread ON native_bindings(json_extract(data,'$.threadId')); CREATE INDEX IF NOT EXISTS native_requests_thread ON native_requests(json_extract(data,'$.threadId')); CREATE INDEX IF NOT EXISTS native_requests_resolved ON native_requests(json_extract(data,'$.resolvedAt'));"
     );
     this.db.exec(
       "CREATE INDEX IF NOT EXISTS app_resumes_channel ON app_resumes(json_extract(data,'$.channelId')); CREATE INDEX IF NOT EXISTS app_resumes_thread ON app_resumes(json_extract(data,'$.threadId')); CREATE INDEX IF NOT EXISTS runs_native_turn ON runs(json_extract(data,'$.nativeTurnId'));"
@@ -101,18 +119,22 @@ export class Store {
       "CREATE INDEX IF NOT EXISTS native_events_thread_revision ON native_events(json_extract(data,'$.threadId'), CAST(json_extract(data,'$.revision') AS INTEGER))"
     );
     // The scheduler ticks once a second and asks each of these tables for the few rows in a state
-    // that needs work; without these it read every row of every one of them, every second.
+    // that needs work; without these it read every row of every one of them, every second. An
+    // execution capture is asked for far more often still — once per native IPC delta.
     for (const [table, column] of [
       ['controls', 'enabled'],
       ['loop_releases', 'status'],
       ['loop_verifications', 'status'],
       ['loop_verifications', 'interruptPending'],
       ['loop_finalizations', 'status'],
+      ['loop_executions', 'status'],
+      ['native_outbox', 'state'],
       ['upgrades', 'phase'],
     ] as const)
       this.db.exec(
         `CREATE INDEX IF NOT EXISTS ${table}_${column.toLowerCase()} ON ${table}(json_extract(data,'$.${column}'))`
       );
+    this.pruneNativeRequests();
   }
   /**
    * One-time backfills of rows written before a field existed. Each records its own marker, so a
@@ -323,14 +345,51 @@ export class Store {
     });
     return removed;
   }
+  /**
+   * A native approval request is answered inside the turn that raised it; a resolved row is then
+   * kept only so the interface can explain what happened, which stops being worth anything long
+   * before the row stops costing anything. Rows resolved more than 30 days ago therefore go at
+   * every start-up, chosen through `native_requests_resolved` rather than by reading the table.
+   *
+   * `resolvedAt` exists only on rows that left `pending`, so a live request is never matched. The
+   * rows written before that field existed are stamped once, under their own marker, so they age
+   * from this upgrade instead of disappearing the moment it lands; deleting the marker replays it.
+   */
+  pruneNativeRequests(): number {
+    if (!this.get('migrations', 'native-requests-resolved-at-v1')) {
+      const at = now();
+      this.transaction(() => {
+        this.db
+          .prepare(
+            "UPDATE native_requests SET data=json_set(data,'$.resolvedAt',?) WHERE json_extract(data,'$.status')<>'pending' AND json_type(data,'$.resolvedAt') IS NULL"
+          )
+          .run(at);
+        this.put('migrations', { id: 'native-requests-resolved-at-v1', createdAt: at });
+      });
+    }
+    const cutoff = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
+    return Number(
+      this.db.prepare("DELETE FROM native_requests WHERE json_extract(data,'$.resolvedAt')<?").run(cutoff).changes
+    );
+  }
   projectItems(projectId: string): WorkItem[] {
     return this.all<WorkItem>('items').filter((item) => item.projectId === projectId);
   }
-  nativeRows<T = any>(table: 'native_items' | 'native_outbox' | 'native_turns', threadId: string): T[] {
+  nativeRows<T = any>(
+    table: 'native_items' | 'native_outbox' | 'native_turns' | 'native_bindings',
+    threadId: string
+  ): T[] {
     return this.db
       .prepare(`SELECT data FROM ${this.table(table)} WHERE json_extract(data,'$.threadId')=? ORDER BY rowid`)
       .all(threadId)
       .map((row: any) => JSON.parse(row.data));
+  }
+  /**
+   * The channel bindings of one native task. Ingest asked for these by reading and parsing every
+   * binding row, several times per projection, where a projection can arrive four times a second.
+   */
+  bindingsForThread<T = any>(threadId: string): T[] {
+    return this.nativeRows<T>('native_bindings', threadId);
   }
   nextItemNumber(projectId: string): number {
     return Math.max(0, ...this.projectItems(projectId).map((item) => item.number || 0)) + 1;
@@ -345,7 +404,7 @@ export class Store {
    * The rows of one table whose state needs attention, chosen by an index instead of by reading and
    * parsing the whole table. The scheduler asks once a second, so nothing here may be a full scan.
    */
-  byStatus<T = any>(table: string, states: string[], column: 'status' | 'phase' = 'status'): T[] {
+  byStatus<T = any>(table: string, states: string[], column: 'status' | 'phase' | 'state' = 'status'): T[] {
     return this.db
       .prepare(
         `SELECT data FROM ${this.table(table)} WHERE json_extract(data,'$.${column}') IN (${states.map(() => '?').join(',')}) ORDER BY rowid`
@@ -510,6 +569,14 @@ export class Store {
       throw new Error('Unknown table');
     return t;
   }
+  /** The next number for `key`, read from storage the first time and counted in memory after. */
+  nextSequence(counters: Map<string, number>, key: string, stored: () => number): number {
+    const next = counters.get(key) ?? stored() + 1;
+    counters.delete(key);
+    if (counters.size >= this.sequenceLimit) counters.delete(counters.keys().next().value!);
+    counters.set(key, next + 1);
+    return next;
+  }
   transaction<T>(fn: () => T): T {
     const depth = this.transactionDepth++;
     const savepoint = `nested_${depth}`;
@@ -521,6 +588,9 @@ export class Store {
     } catch (e) {
       this.db.exec(depth ? `ROLLBACK TO ${savepoint}` : 'ROLLBACK');
       if (depth) this.db.exec(`RELEASE ${savepoint}`);
+      // Whatever this transaction numbered is gone; count from storage again rather than skip it.
+      this.ioSequence.clear();
+      this.eventSequence.clear();
       throw e;
     } finally {
       this.transactionDepth--;
@@ -534,17 +604,20 @@ export class Store {
     detail?: EventDetail,
     metadata: Partial<Pick<Event, 'projectId' | 'itemId' | 'actor' | 'action' | 'changes'>> = {}
   ): Event {
-    const sequence = detail
-      ? Number(
-          (
-            this.db
-              .prepare(
-                "SELECT COUNT(*) AS count FROM events WHERE json_extract(data,'$.runId')=? AND json_extract(data,'$.channelId')=?"
-              )
-              .get(runId, channelId) as any
-          ).count
-        ) + 1
-      : undefined;
+    // This event's 1-based ordinal among the run's events in this channel, which is what a detail
+    // row carries so that equal timestamps still order. Counted for every event, stored only on
+    // the ones that have a detail, exactly as counting the rows again each time used to.
+    const sequence = this.nextSequence(this.eventSequence, `${runId}\0${channelId}`, () =>
+      Number(
+        (
+          this.db
+            .prepare(
+              "SELECT COUNT(*) AS count FROM events WHERE json_extract(data,'$.runId')=? AND json_extract(data,'$.channelId')=?"
+            )
+            .get(runId, channelId) as any
+        ).count
+      )
+    );
     return this.put('events', {
       id: randomUUID(),
       projectId: metadata.projectId || this.get<Channel>('channels', channelId)?.projectId || '',
@@ -617,11 +690,17 @@ export class Store {
     return { runs, hasMore: rows.length > query.limit, ...(cursor ? { cursor } : {}) };
   }
   io(runId: string, stream: RunIO['stream'], text: string): RunIO {
-    const sequence =
+    const sequence = this.nextSequence(this.ioSequence, runId, () =>
       Number(
-        (this.db.prepare("SELECT COUNT(*) AS count FROM run_io WHERE json_extract(data,'$.runId')=?").get(runId) as any)
-          .count
-      ) + 1;
+        (
+          this.db
+            .prepare(
+              "SELECT COALESCE(MAX(CAST(json_extract(data,'$.sequence') AS INTEGER)),0) AS n FROM run_io WHERE json_extract(data,'$.runId')=?"
+            )
+            .get(runId) as any
+        ).n
+      )
+    );
     return this.put('run_io', { id: randomUUID(), runId, stream, text, createdAt: now(), sequence });
   }
   ioStream(runId: string, stream: RunIO['stream'], text: string, secret: string, final = false): RunIO | undefined {

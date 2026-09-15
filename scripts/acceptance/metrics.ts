@@ -823,7 +823,16 @@ const tables = [
 
 /**
  * Opens a copy of `<home>/workspace.sqlite` read-only. The source directory is never written to —
- * this is what the weekly review runs on the real daemon's data directory.
+ * this is what the weekly review runs on the real daemon's data directory, once per release.
+ *
+ * `VACUUM INTO` from a read-only connection writes one consistent, compact database: it copies the
+ * live rows through that connection (so a concurrent daemon commit cannot tear the copy the way a
+ * byte copy of a file being written can) and leaves out the free space a long-lived daemon
+ * accumulates, which on a dogfood directory is most of the file. Taking the copy through SQLite
+ * also means no separate `-wal` and `-shm` to carry over.
+ *
+ * Any failure — an old SQLite, a WAL a read-only connection cannot map, a full temp directory —
+ * falls back to the byte copy, which is correct for a stopped daemon and is what this always did.
  */
 export function openCopy(home: string): { store: MetricsStore; close(): void } {
   const source = join(home, 'workspace.sqlite');
@@ -831,8 +840,36 @@ export function openCopy(home: string): { store: MetricsStore; close(): void } {
     throw new Error(`找不到 ${source}；metrics 需要一个 Morrow 数据目录或保留了 home/ 的报告目录`);
   const root = mkdtempSync(join(tmpdir(), 'morrow-metrics-'));
   const copy = join(root, 'workspace.sqlite');
-  copyFileSync(source, copy);
-  for (const suffix of ['-wal', '-shm']) if (existsSync(source + suffix)) copyFileSync(source + suffix, copy + suffix);
+  // A write-ahead log with its shared-memory file next to it means a daemon is holding this
+  // directory: copying the three files byte for byte can catch a commit between them, so the copy
+  // is taken through SQLite, which can only ever see a committed state. Reading the log maps the
+  // shared-memory file the daemon already keeps there; nothing is created and neither the database
+  // nor the log is modified.
+  //
+  // Otherwise nobody is writing, the database file alone is already a complete snapshot, and it is
+  // staged in the temporary directory instead — so a directory this only reads is never given a
+  // file it did not have.
+  const attached = existsSync(source + '-wal') && existsSync(source + '-shm');
+  const staged = attached ? source : join(root, 'staged.sqlite');
+  if (!attached)
+    for (const suffix of ['', '-wal', '-shm'])
+      if (existsSync(source + suffix)) copyFileSync(source + suffix, staged + suffix);
+  try {
+    // `VACUUM INTO` also leaves out the free space a long-lived daemon accumulates, which on a
+    // dogfood directory is a third of the file, and needs no `-wal`/`-shm` carried alongside.
+    const read = new DatabaseSync(staged, { readOnly: true });
+    try {
+      read.exec(`VACUUM INTO '${copy.replaceAll("'", "''")}'`);
+    } finally {
+      read.close();
+    }
+  } catch {
+    // An old SQLite, a log this connection cannot map, a full temporary directory: fall back to the
+    // plain copy, which is what this always did.
+    for (const suffix of ['', '-wal', '-shm'])
+      if (existsSync(source + suffix)) copyFileSync(source + suffix, copy + suffix);
+  }
+  if (!attached) for (const suffix of ['', '-wal', '-shm']) rmSync(staged + suffix, { force: true });
   const db = new DatabaseSync(copy, { readOnly: true });
   // Read every table at most once: a real data directory holds thousands of rows and `get` is
   // called per cited evidence id.
