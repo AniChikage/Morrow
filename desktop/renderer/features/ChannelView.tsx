@@ -4,7 +4,14 @@ import { isLegacyRuntime } from '../../shared/types';
 import type { NativeConversation, NativeThreadSummary, ProjectUsage, Run, RunDetails } from '../../shared/types';
 import type { FeatureProps } from './types';
 import { Button, Dropdown, DropdownItem, EmptyState, Markdown } from '../components/ui';
-import { channelStatusLabel, formatDate, runtimeLabel, usageWindowLabel } from '../components/format';
+import {
+  channelStatusLabel,
+  durationSeconds,
+  formatDate,
+  runTime,
+  runtimeLabel,
+  usageWindowLabel,
+} from '../components/format';
 import { ChannelQuestion, questionExcerpt } from './ChannelQuestion';
 import { ChannelAudit } from './ChannelAudit';
 import { ProjectReleases } from './ProjectWork';
@@ -81,15 +88,16 @@ function LogEntry({
   // Older services without list projections can still supply the summary through details.
   const log = run.log || detail?.run.log;
   const work = log?.work || currentWork;
-  const duration = run.finishedAt
-    ? Math.max(0, Math.round((Date.parse(run.finishedAt) - Date.parse(run.startedAt)) / 1000))
-    : undefined;
+  // A round owned by the Codex App may carry no native timestamps at all: say so rather than
+  // reporting 尚未运行 for a finished round, or NaN 秒 for a duration nothing can be derived from.
+  const started = runTime(run, run.startedAt);
+  const duration = run.finishedAt ? durationSeconds(run.startedAt, run.finishedAt) : undefined;
   return (
-    <article className="channel-log-entry" aria-label={`轮次 ${formatDate(run.startedAt)}`}>
+    <article className="channel-log-entry" aria-label={`轮次 ${started}`}>
       <header>
-        <time dateTime={run.startedAt}>{formatDate(run.startedAt)}</time>
+        <time dateTime={run.startedAt || undefined}>{started}</time>
         <span>{stateLabel(run.status)}</span>
-        <span>{duration === undefined ? '尚未结束' : `${duration} 秒`}</span>
+        <span>{!run.finishedAt ? '尚未结束' : duration === undefined ? '时长未记录' : `${duration} 秒`}</span>
         <span>{runUsage(run)}</span>
       </header>
       <h3>{work?.focus || log?.direction || (log ? '未记录本轮关注点' : '本轮摘要尚未载入')}</h3>
