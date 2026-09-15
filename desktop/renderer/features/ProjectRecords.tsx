@@ -12,8 +12,8 @@ const actions: Record<string, string> = {
   'verification.finished': '保存复核结果',
   'verification.retried': '重新核验未知结果',
   'execution.captured': '保存原生执行证据',
-  'feature.created': '建立功能',
-  'feature.updated': '推进功能',
+  'feature.created': '建立事项',
+  'feature.updated': '推进事项',
   'evidence.recorded': '记录证据',
   'learning.updated': '更新判断与尝试',
   'watch.created': '开始观察',
@@ -26,8 +26,8 @@ const actions: Record<string, string> = {
   'feedback.observed': '收到反馈',
   'feedback.unavailable': '反馈暂不可用',
   'run.completed': '完成运行',
-  'item.created': '创建功能',
-  'item.updated': '更新功能',
+  'item.created': '创建事项',
+  'item.updated': '更新事项',
   'item.conflict': '更新发生冲突',
   'project.created': '创建项目',
   'channel.created': '创建频道',
@@ -147,7 +147,7 @@ export function ProjectRecords({ projectId, itemId, ...props }: FeatureProps & {
     </div>
   );
   return (
-    <div className="project-records" aria-label={itemId ? '功能变更记录' : '项目全部记录'}>
+    <div className="project-records" aria-label={itemId ? '事项变更记录' : '项目全部记录'}>
       {!itemId && (
         <div className="records-heading">
           <p className="subtle">最近记录优先，展开查看完整内容。</p>

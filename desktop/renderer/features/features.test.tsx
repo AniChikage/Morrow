@@ -30,7 +30,7 @@ describe('project discovery workflow', () => {
     render(<ProjectView {...props} id="project-atlas" />, { wrapper: TestProviders });
     expect(screen.queryByText('其他项目的发现')).toBeNull();
     await user.click(screen.getByRole('button', { name: '筛选' }));
-    const search = screen.getByRole('textbox', { name: '搜索功能和证据' });
+    const search = screen.getByRole('textbox', { name: '搜索事项和证据' });
     await user.type(search, '唯一证据关键词');
     expect(screen.getByRole('button', { name: /CSV 重试会重复提交/ })).toBeTruthy();
     expect(screen.queryByText('缩短激活路径')).toBeNull();
@@ -420,7 +420,7 @@ it('places next steps before long detail and resets disclosures when switching i
   const view = render(<FindingView {...props} id="finding-import" />, { wrapper: TestProviders });
   expect(screen.queryByRole('complementary')).toBeNull();
   const next = screen.getByRole('heading', { name: '下一步' });
-  const description = screen.getByRole('heading', { name: '功能说明' });
+  const description = screen.getByRole('heading', { name: '事项说明' });
   expect(next.compareDocumentPosition(description) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   const full = screen.getByText('完整说明').closest('details')!;
   const evidence = screen.getByText('证据', { selector: 'summary' }).closest('details')!;

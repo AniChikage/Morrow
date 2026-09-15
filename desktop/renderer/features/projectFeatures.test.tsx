@@ -45,7 +45,7 @@ describe('project next step and secondary properties', () => {
     expect(await screen.findByRole('region', { name: '额度' })).toBeTruthy();
     await userEvent.setup().click(screen.getByRole('tab', { name: '全部记录' }));
     expect(screen.queryByRole('region', { name: '项目下一步' })).toBeNull();
-    expect(screen.queryByRole('button', { name: '新建功能' })).toBeNull();
+    expect(screen.queryByRole('button', { name: '新建事项' })).toBeNull();
   });
 
   it('uses actual brief content before guiding the user to an existing App task', async () => {
@@ -105,7 +105,7 @@ describe('one project-owned feature board', () => {
     );
     const { props } = featureProps({ snapshot: state });
     render(<ProjectView {...props} id="project-atlas" />, { wrapper: TestProviders });
-    expect(screen.getByRole('tab', { name: '功能看板 4' })).toBeTruthy();
+    expect(screen.getByRole('tab', { name: '看板 4' })).toBeTruthy();
     expect(screen.getByRole('button', { name: /CSV 重试会重复提交/ })).toBeTruthy();
     expect(screen.getByRole('button', { name: /缩短激活路径/ })).toBeTruthy();
     expect(screen.getByRole('button', { name: /#7.*人工创建的功能/ })).toBeTruthy();
@@ -115,7 +115,7 @@ describe('one project-owned feature board', () => {
     await user.selectOptions(screen.getByRole('combobox', { name: '来源频道筛选' }), 'manual');
     expect(screen.getByRole('button', { name: /人工创建的功能/ })).toBeTruthy();
     expect(screen.queryByText('CSV 重试会重复提交')).toBeNull();
-    await user.click(screen.getByRole('button', { name: '新建功能' }));
+    await user.click(screen.getByRole('button', { name: '新建事项' }));
     expect(props.onNewFeature).toHaveBeenCalledWith('project-atlas');
   });
 
@@ -176,7 +176,7 @@ describe('the project brief is the user-owned document between the board and Cod
     });
     render(<ProjectView {...props} id="project-atlas" />, { wrapper: TestProviders });
     expect(screen.getAllByRole('tab').map((tab) => tab.textContent)).toEqual([
-      '功能看板 3',
+      '看板 3',
       '项目说明',
       '当前判断',
       '全部记录',
@@ -377,7 +377,7 @@ describe('manual feature details and audit', () => {
     const properties = within(screen.getByRole('complementary'));
     expect(properties.getByText('手动创建')).toBeTruthy();
     expect(properties.getByRole('button', { name: /Atlas 示例项目/ })).toBeTruthy();
-    await user.click(screen.getByRole('button', { name: '编辑功能' }));
+    await user.click(screen.getByRole('button', { name: '编辑事项' }));
     expect(props.onEditFeature).toHaveBeenCalledWith(manual);
     await user.click(properties.getByRole('button', { name: '待处理' }));
     await user.click(screen.getByRole('menuitem', { name: '已验证' }));
@@ -514,7 +514,7 @@ describe('channels are execution sources, not separate boards', () => {
     expect(screen.queryByRole('tab')).toBeNull();
     expect(screen.queryByRole('tab', { name: /发现|功能/ })).toBeNull();
     await userEvent.setup().click(screen.getByRole('button', { name: '频道选项' }));
-    await userEvent.setup().click(screen.getByRole('menuitem', { name: '项目功能看板' }));
+    await userEvent.setup().click(screen.getByRole('menuitem', { name: '项目看板' }));
     expect(props.onNavigate).toHaveBeenCalledWith({ kind: 'project', id: 'project-atlas' });
   });
 
@@ -575,7 +575,7 @@ for (const layout of ['list', 'board']) {
     const original = JSON.stringify(props.snapshot.items);
     render(<ProjectView {...props} id="project-atlas" />, { wrapper: TestProviders });
     expect(screen.queryByText(done.title)).toBeNull();
-    expect(screen.queryByRole('textbox', { name: '搜索功能和证据' })).toBeNull();
+    expect(screen.queryByRole('textbox', { name: '搜索事项和证据' })).toBeNull();
     const history = screen.getByRole('button', { name: '已解决历史 1' });
     expect(history.getAttribute('aria-expanded')).toBe('false');
     await user.click(history);
@@ -583,7 +583,7 @@ for (const layout of ['list', 'board']) {
     expect(props.onNavigate).toHaveBeenCalledWith({ kind: 'finding', id: 'done' });
     await user.click(history);
     await user.click(screen.getByRole('button', { name: '筛选' }));
-    const search = screen.getByRole('textbox', { name: '搜索功能和证据' });
+    const search = screen.getByRole('textbox', { name: '搜索事项和证据' });
     await user.type(search, '历史唯一关键词');
     expect(screen.getByRole('button', { name: new RegExp(done.title) })).toBeTruthy();
     expect(screen.queryByRole('region', { name: '已解决历史' })).toBeNull();
@@ -622,7 +622,7 @@ it('shows unavailable saved filters explicitly and offers one clear action', asy
   );
   const { props } = featureProps();
   render(<ProjectView {...props} id="project-atlas" />, { wrapper: TestProviders });
-  expect(screen.getByText('没有符合条件的功能')).toBeTruthy();
+  expect(screen.getByText('没有符合条件的事项')).toBeTruthy();
   await userEvent.setup().click(screen.getByRole('button', { name: '已筛选' }));
   expect((screen.getByRole('combobox', { name: '状态筛选' }) as HTMLSelectElement).selectedOptions[0].textContent).toBe(
     '原状态筛选已不可用'
@@ -633,7 +633,7 @@ it('shows unavailable saved filters explicitly and offers one clear action', asy
   expect(screen.getAllByRole('button', { name: '清除筛选' })).toHaveLength(1);
   await userEvent.setup().click(screen.getByRole('button', { name: '清除筛选' }));
   expect(screen.getByRole('button', { name: /CSV 重试会重复提交/ })).toBeTruthy();
-  expect(screen.queryByText('没有符合条件的功能')).toBeNull();
+  expect(screen.queryByText('没有符合条件的事项')).toBeNull();
 });
 
 const gatedUsage = {
@@ -686,10 +686,10 @@ it('counts the board tab by what the board shows, keeping resolved history in it
   state.items.push(item({ id: 'finding-done', title: '已完成的功能', status: 'resolved' }));
   const { props } = featureProps({ snapshot: state });
   render(<ProjectView {...props} id="project-atlas" />, { wrapper: TestProviders });
-  expect(screen.getByRole('tab', { name: '功能看板 3' })).toBeTruthy();
+  expect(screen.getByRole('tab', { name: '看板 3' })).toBeTruthy();
   expect(screen.getByRole('button', { name: '已解决历史 1' })).toBeTruthy();
   await user.click(screen.getByRole('button', { name: '筛选' }));
   await user.selectOptions(screen.getByRole('combobox', { name: '状态筛选' }), 'resolved');
-  expect(screen.getByRole('tab', { name: '功能看板 1' })).toBeTruthy();
+  expect(screen.getByRole('tab', { name: '看板 1' })).toBeTruthy();
   expect(screen.queryByRole('button', { name: /已解决历史/ })).toBeNull();
 });

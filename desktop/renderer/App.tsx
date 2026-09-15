@@ -128,7 +128,7 @@ export default function App() {
   function titleOf(r: Route) {
     if (r.kind === 'project') return snapshot.projects.find((p) => p.id === r.id)?.name || '项目';
     if (r.kind === 'channel') return snapshot.channels.find((c) => c.id === r.id)?.name || '频道';
-    if (r.kind === 'finding') return snapshot.items.find((i) => i.id === r.id)?.title || '发现';
+    if (r.kind === 'finding') return snapshot.items.find((i) => i.id === r.id)?.title || '事项';
     return r.kind === 'runs' ? '运行记录' : '运行时';
   }
   const command = useCallback(

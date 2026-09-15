@@ -164,7 +164,7 @@ function ProjectDialog({
   return (
     <Modal
       title="接入项目文件夹"
-      description="接入已有目录，再关联 Codex App 任务开始工作。"
+      description="接入已有目录，再关联 Codex App 任务，交给 Codex 持续推进。"
       onClose={onClose}
       className="project-dialog"
     >
@@ -298,8 +298,8 @@ function FeatureDialog({
   }
   return (
     <Modal
-      title={item ? '编辑功能' : '新建功能'}
-      description="功能保存在项目统一看板，所有频道共享进展与证据。"
+      title={item ? '编辑事项' : '新建事项'}
+      description="事项保存在项目统一看板，所有频道共享进展与证据。"
       onClose={onClose}
     >
       <form onSubmit={submit}>
@@ -309,7 +309,7 @@ function FeatureDialog({
             value={title}
             onChange={(e) => setTitle(e.target.value)}
             maxLength={300}
-            placeholder="描述一个需要推进的功能或问题"
+            placeholder="描述一个需要推进的事项或问题"
             required
           />
         </Field>
@@ -396,7 +396,7 @@ function FeatureDialog({
         </details>
         {stale && (
           <p className="form-error">
-            此功能已有新的修改。
+            此事项已有新的修改。
             <button type="button" onClick={reload}>
               重新载入最新内容
             </button>
@@ -410,7 +410,7 @@ function FeatureDialog({
         <div className="form-actions">
           <Button onClick={onClose}>取消</Button>
           <Button variant="primary" type="submit" disabled={busy || stale || !title.trim()}>
-            {busy ? '正在保存…' : item ? '保存修改' : '创建功能'}
+            {busy ? '正在保存…' : item ? '保存修改' : '创建事项'}
           </Button>
         </div>
       </form>
@@ -611,7 +611,7 @@ function SearchDialog({
     }
   }
   return (
-    <Modal title="搜索工作空间" description="搜索项目、频道、发现与证据。" onClose={onClose} className="search-dialog">
+    <Modal title="搜索工作空间" description="搜索项目、频道、事项与证据。" onClose={onClose} className="search-dialog">
       <div className="global-search-input">
         <Search size={18} />
         <input
@@ -622,7 +622,7 @@ function SearchDialog({
           aria-controls={listId}
           aria-expanded="true"
           aria-activedescendant={results[selected] ? `${listId}-${selected}` : undefined}
-          placeholder="搜索项目、发现或关键词…"
+          placeholder="搜索项目、事项或关键词…"
           value={query}
           onChange={(e) => {
             setQuery(e.target.value);

@@ -102,7 +102,7 @@ test('the checklist marks the first unmet step and names installing, then openin
   expect(step('App 已连接')).toBe('pending');
   expect(step('任务已关联')).toBe('pending');
   expect(step('关联任务可用')).toBe('pending');
-  expect(nextStep().textContent).toBe('下一步安装并登录 Codex App；装好后回到这里，会自动重新检测。');
+  expect(nextStep().textContent).toBe('下一步安装并登录 Codex App。装好后回到这里，会自动重新检测。');
   expect(screen.queryByRole('button', { name: /启用后台连接|撤销设置/ })).toBeNull();
   cleanup();
   api.getNativeStatus.mockResolvedValue(status({ appInstalled: true, appVersion: '1.2.3' }));
@@ -123,6 +123,9 @@ test('preview installation status stays unknown and shows the preview explanatio
   await checklist();
   expect(step('Codex App 安装状态未知')).toBe('next');
   expect(nextStep().textContent).toContain(previewStatus.detail);
+  // The detail already ends in 「。」; it must not be glued to the next sentence as 「。；」.
+  expect(nextStep().textContent).not.toContain('。；');
+  expect(nextStep().textContent).toContain('装好后回到这里，会自动重新检测。');
   expect(screen.queryByText('安装并登录 Codex App')).toBeNull();
 });
 

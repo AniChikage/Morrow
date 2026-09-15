@@ -241,7 +241,7 @@ export function ProjectView(props: FeatureProps & { id: string }) {
               onClick={() => setTab('items')}
             >
               {/* The count has to be what the board actually shows; resolved items count in their own section. */}
-              功能看板 <span>{currentItems.length}</span>
+              看板 <span>{currentItems.length}</span>
             </button>
             <button
               role="tab"
@@ -298,7 +298,7 @@ export function ProjectView(props: FeatureProps & { id: string }) {
           {tab === 'items' && (
             <Button variant="ghost" disabled={busy} onClick={() => onNewFeature(id)}>
               <Plus size={14} />
-              新建功能
+              新建事项
             </Button>
           )}
           <Button variant="ghost" aria-expanded={propertiesOpen} onClick={() => setPropertiesOpen((open) => !open)}>
@@ -310,7 +310,7 @@ export function ProjectView(props: FeatureProps & { id: string }) {
             <label className="feature-search">
               <Search size={14} />
               <input
-                aria-label="搜索功能和证据"
+                aria-label="搜索事项和证据"
                 value={query}
                 onChange={(event) => setQuery(event.target.value)}
                 placeholder="搜索…"
@@ -386,11 +386,11 @@ export function ProjectView(props: FeatureProps & { id: string }) {
           <div className="feature-empty">
             <EmptyState
               icon={<CheckCheck />}
-              title={filtered ? '没有符合条件的功能' : '还没有项目功能'}
+              title={filtered ? '没有符合条件的事项' : '还没有项目事项'}
               description={
                 filtered
-                  ? '调整状态、来源频道或关键词，查看其他功能。'
-                  : 'Codex 会根据项目目标自动建立和跟踪功能，你可以进入频道指导它。'
+                  ? '调整状态、来源频道或关键词，查看其他事项。'
+                  : 'Codex 会根据项目目标自动建立和跟踪事项，你可以进入频道指导它。'
               }
               action={
                 filtered && !filtersOpen ? (
@@ -523,7 +523,7 @@ export function ProjectView(props: FeatureProps & { id: string }) {
           )}
           <section className="property-section">
             <h3>属性</h3>
-            <Property label="项目功能">{allItems.length} 个</Property>
+            <Property label="项目事项">{allItems.length} 个</Property>
             <Property label="持续频道">{channels.length} 个</Property>
             {legacyChannels.length > 0 && (
               <Property label="已停止支持">{legacyChannels.length} 个旧频道，历史可读</Property>
