@@ -224,7 +224,7 @@ invariant 是命名过的谓词，输入 `{ store, service, transport, receiver,
 | 指标 | 怎么算 | 什么时候是 `unknown` |
 | --- | --- | --- |
 | `turns` | `runs` 按 `source` 分：`morrow-schedule`/`nohuman-schedule` 是调度轮次，`*-chat` 是聊天，`native-app` 是场景预置。 | 不会。 |
-| `reviews` | `loop_verifications` 按 `status` 分（passed/failed/unknown/未结束）。 | 不会。 |
+| `reviews` | `loop_verifications` 按 `status` 分（passed/failed/unknown/未结束），外加三组：**复核闭环** `failedThenPassed` / `failedOpen` / `failedOpenItemIds` 逐个事项看它自己的复核序列（按 `createdAt` 排序，只算 `itemId` 指向该事项的**事项级**复核）：最后一次 `failed` 之后还出现过 `passed` 就算闭环，否则该事项 ID 进 `failedOpenItemIds`；**发布级复核不计入**（一次覆盖至多 30 个事项，判的是候选版本而不是某个事项的验收），只带 `decisionId` 的复核也不计入（没有可闭环的事项）。**被上限停下** `stoppedByCap` 数 summary 形如「独立复核达到 N 分钟上限」的复核（早于按类型分上限的记录写的是 5 分钟）。**被额度停下** `stoppedByQuota` 数 `status` 为 `unknown` 且 `usageWait.kind` 为 `account`（或早期记录的 summary/`error` 命中额度分类）的复核——重新排队后拿到结论的那次不算，尽管它仍保留被额度打断那一次的原文。 | 不会（没有复核就是 0 次复核）。 |
 | `time` | `virtualFrom/To/Minutes` 取 `runs` 的最早与最晚时间戳（虚拟时钟）；`steps` 来自 `timeline.jsonl`；`wallMs` 来自 `run.json`。 | 没有运行行时时间为 `unknown`；没有 timeline 时 `steps` 为 `unknown`；没有 `run.json` 时 `wallMs` 为 `unknown`。 |
 | `decisions` | `strategy_decisions` 的总数、active/reviewed，以及 `review.outcome` 的四种分布。 | 不会。 |
 | `reviewsCitingCapturedEvidence` / `reviewsAgentStatementOnly` | 已复盘的选择里，`review.evidenceIds` 与逐项 `results[].evidenceIds` 引用的证据中**存在 / 不存在** `origin !== 'agent'` 的那一条。 | 不会（没有复盘就是 0 次复盘，这是事实而非缺数据）。 |

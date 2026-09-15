@@ -4,6 +4,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { fileURLToPath } from 'node:url';
 import { join } from 'node:path';
 import { sourceVersion } from '../../service/source-version.ts';
+import { quotaFailure } from '../../service/runtimes.ts';
 import { evidenceData, qualityChecks, ruleVerdict, scalar, valueAt } from '../../service/measurement.ts';
 import type { CallRecord, Labels, PlantedProblem, TimelineRecord } from './scenario.ts';
 import type { Evidence, FeedbackWatch, Release } from '../../service/autonomy-types.ts';
@@ -118,14 +119,48 @@ function turnCounts(runs: Run[]) {
   };
 }
 
+/** A review stopped by its own time cap, at whatever cap applied; rows written before the per-kind cap say 5. */
+const cappedSummary = /^独立复核达到 .+ 分钟上限/;
+/**
+ * A review that ended because the account's quota was spent rather than on anything about the work:
+ * the wait it now records, or — for rows written before that existed — the provider's own text in
+ * the place a conclusion should be. `unknown` either way; a re-queued attempt that later reached a
+ * verdict is not counted, even though it keeps the text of the attempt the account interrupted.
+ */
+const quotaStopped = (row: Verification) =>
+  row.status === 'unknown' &&
+  (row.usageWait?.kind === 'account' || quotaFailure.test(`${row.summary || ''} ${row.error || ''}`));
+
 function reviewCounts(rows: Verification[]) {
   const by = (status: Verification['status']) => rows.filter((row) => row.status === status).length;
+  // Did the review loop close? Per item, in the order the reviews were requested: a counterexample
+  // is answered only by a later pass on that same item. Release-level reviews are left out — one
+  // covers up to 30 items and judges the candidate, not any single item's own acceptance — and so
+  // is a review that carries only a decision, which has no item to close.
+  const byItem = new Map<string, Verification[]>();
+  for (const row of rows
+    .filter((row) => row.itemId && row.kind !== 'release')
+    .sort((a, b) => a.createdAt.localeCompare(b.createdAt)))
+    byItem.set(row.itemId!, [...(byItem.get(row.itemId!) || []), row]);
+  let failedThenPassed = 0;
+  const open: string[] = [];
+  for (const [itemId, reviews] of byItem) {
+    const lastFailed = reviews.findLastIndex((row) => row.status === 'failed');
+    if (lastFailed < 0) continue;
+    if (reviews.slice(lastFailed + 1).some((row) => row.status === 'passed')) failedThenPassed++;
+    else open.push(itemId);
+  }
   return {
     total: rows.length,
     passed: by('passed'),
     failed: by('failed'),
     unknownResult: by('unknown'),
     unfinished: by('queued') + by('running'),
+    failedThenPassed,
+    failedOpen: open.length,
+    failedOpenItemIds: open.sort(),
+    stoppedByCap: rows.filter((row) => cappedSummary.test(row.summary || '')).length,
+    stoppedByQuota: rows.filter(quotaStopped).length,
   };
 }
 

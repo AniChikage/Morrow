@@ -136,6 +136,79 @@ test('file-watch evidence contributes to outcome and reaction metrics without ac
   }
 });
 
+test('review metrics close the loop per item and separate a cap or a spent account from a verdict', () => {
+  let at = Date.parse('2026-09-10T00:00:00.000Z');
+  /** One review row, in the order they are written; only the fields these metrics read. */
+  const review = (row: Record<string, any>) => ({
+    id: `review-${(at += 60_000)}`,
+    createdAt: new Date(at).toISOString(),
+    summary: '',
+    ...row,
+  });
+  const verifications = [
+    // Closed: a counterexample, an interrupted retry, then a pass.
+    review({ itemId: 'closed', status: 'failed' }),
+    review({ itemId: 'closed', status: 'unknown', summary: '独立复核达到 5 分钟上限，结果保留未知' }),
+    review({ itemId: 'closed', status: 'passed' }),
+    // Open: the pass came first, and the newest word on this item is a counterexample.
+    review({ itemId: 'open', status: 'passed' }),
+    review({ itemId: 'open', status: 'failed' }),
+    // Never failed at all, so it is neither closed nor open.
+    review({ itemId: 'quiet', status: 'passed' }),
+    // A release candidate judges the candidate, not one item's acceptance, and is not counted per
+    // item — nor is a review that carries only a decision.
+    review({ status: 'failed', kind: 'release', itemIds: ['open', 'quiet'] }),
+    review({ decisionId: 'decision', status: 'failed' }),
+    // The other release cap, and a spent account in both the shape it is recorded in now and the
+    // raw text older rows carry in place of a conclusion.
+    review({
+      status: 'unknown',
+      kind: 'release',
+      itemIds: ['quiet'],
+      summary: '独立复核达到 8 分钟上限，结果保留未知',
+    }),
+    review({
+      itemId: 'quiet',
+      status: 'unknown',
+      summary: '账号额度已用尽，09-15 11:41 后自动重试',
+      usageWait: { kind: 'account', until: '2026-09-15T11:41:00.000Z', since: '2026-09-15T10:41:00.000Z' },
+      error: "You've hit your usage limit. … try again at Sep 15th, 2026 11:41 AM.",
+    }),
+    review({
+      itemId: 'quiet',
+      status: 'unknown',
+      summary: "复核未正常完成：You've hit your usage limit. … try again at Sep 15th, 2026 11:41 AM.",
+    }),
+    // The account interrupted this attempt, which then reached a verdict: not a review the account
+    // stopped, even though it still carries the text of the interruption.
+    review({
+      itemId: 'quiet',
+      status: 'passed',
+      error: "You've hit your usage limit. … try again at Sep 15th, 2026 11:41 AM.",
+    }),
+  ];
+  const rows: Record<string, any[]> = { loop_verifications: verifications };
+  const metrics = computeMetrics({
+    home: '/unused',
+    store: {
+      all: <T>(table: string) => (rows[table] || []) as T[],
+      get: <T>(table: string, id: string) => (rows[table] || []).find((row) => row.id === id) as T | undefined,
+    },
+  });
+  assert.deepEqual(metrics.reviews, {
+    total: 12,
+    passed: 4,
+    failed: 4,
+    unknownResult: 4,
+    unfinished: 0,
+    failedThenPassed: 1,
+    failedOpen: 1,
+    failedOpenItemIds: ['open'],
+    stoppedByCap: 2,
+    stoppedByQuota: 2,
+  });
+});
+
 test('the metrics copy is compact, consistent and never writes the data directory it reads', () => {
   const home = mkdtempSync(join(tmpdir(), 'morrow-metrics-copy-'));
   const store = new Store(join(home, 'workspace.sqlite'));
