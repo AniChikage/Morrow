@@ -788,6 +788,23 @@ export class CodexDesktopTransport {
       )
     ).result;
   }
+  /**
+   * Asks the App — the thread owner — to compact this task's context. The App runs its own
+   * `thread/compact/start`; Morrow only requests it and then reads the result out of the synced
+   * state, exactly as it does for every other follower mutation.
+   */
+  async compact(threadId: string): Promise<unknown> {
+    const snapshot = await this.readThread(threadId);
+    return (
+      await this.request(
+        'thread-follower-compact-thread',
+        { conversationId: threadId },
+        1,
+        snapshot.ownerClientId,
+        true
+      )
+    ).result;
+  }
   async respond(
     threadId: string,
     requestId: string | number,

@@ -80,6 +80,11 @@ export interface NativeTransport {
     workOptions?: NativeWorkOptions
   ): Promise<unknown>;
   interrupt(threadId: string, expectedTurnId: string): Promise<unknown>;
+  /**
+   * Asks the thread owner to compact the task's context. Optional: the test-mode and shared
+   * transports, and protocol doubles, do not have it, and a transport without it never compacts.
+   */
+  compact?(threadId: string): Promise<unknown>;
   respond(
     threadId: string,
     requestId: string | number,

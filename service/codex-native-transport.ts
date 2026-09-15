@@ -53,6 +53,9 @@ export class CodexNativeTransport implements NativeTransport {
   interrupt(id: string, turnId: string) {
     return this.desktop.interrupt(id, turnId);
   }
+  compact(id: string) {
+    return this.desktop.compact(id);
+  }
   respond(
     id: string,
     requestId: string | number,
