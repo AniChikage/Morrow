@@ -323,6 +323,15 @@ export function ChannelView(props: FeatureProps & { id: string }) {
   const paused =
     channel.autonomyEnabled === undefined ? ['paused', 'blocked'].includes(channel.status) : !channel.autonomyEnabled;
   const nativeBusy = active(conversation);
+  // Approvals and follow-up questions raised inside the App are fetched with the conversation but were
+  // never shown: a round stuck on one of them looked like Codex was merely slow to answer.
+  const appRequests = (conversation?.requests || []).filter(
+    (request) => !['completed', 'resolved', 'cancelled', 'canceled', 'rejected'].includes(request.status)
+  );
+  const appRequestTitles = appRequests
+    .map((request) => request.title || request.type)
+    .filter(Boolean)
+    .join('、');
   // The API keeps App availability even when a task sync error marks this conversation disconnected.
   const unloaded =
     native && !!conversation?.threadId && conversation.status.available && conversation.status.readyThreadCount === 0;
@@ -342,7 +351,9 @@ export function ChannelView(props: FeatureProps & { id: string }) {
         : !conversation?.status.capabilities.send
           ? '当前不能发送到原生对话'
           : nativeBusy
-            ? 'Codex 正在回应，请稍候'
+            ? appRequests.length
+              ? 'Codex 在 App 里等你处理（审批/追问）'
+              : 'Codex 正在回应，请稍候'
             : '';
   const pendingReleases = (snapshot.releases || []).filter(
     (row) => row.projectId === project.id && row.channelId === id && row.status === 'awaiting_approval'
@@ -354,7 +365,13 @@ export function ChannelView(props: FeatureProps & { id: string }) {
       (item.channelId === id || item.sourceChannelIds?.includes(id))
   );
   const reviewingRelease = releasesOpen && pendingReleases.length > 0;
-  const needs = !!channel.work?.awaitingReply || pendingReleases.length > 0 || blocked.length > 0;
+  const usageGate = usage?.gate.blocked && !usage.gate.pending ? usage.gate : undefined;
+  const needs =
+    !!channel.work?.awaitingReply ||
+    pendingReleases.length > 0 ||
+    blocked.length > 0 ||
+    appRequests.length > 0 ||
+    !!usageGate;
   const needsLink = native && !!conversation && !conversation.threadId;
   const primary = needsLink
     ? 'link'
@@ -567,6 +584,22 @@ export function ChannelView(props: FeatureProps & { id: string }) {
                     />
                   )}
                 </details>
+              )}
+              {!!appRequests.length && (
+                <p className="channel-needs-note">
+                  <span>
+                    Codex 在 App 里等你处理（审批/追问）
+                    {appRequestTitles ? ` · ${appRequestTitles}` : ''}
+                  </span>
+                  <Button variant="ghost" disabled={busy || demo || legacy} onClick={openApp}>
+                    在 Codex App 中打开
+                  </Button>
+                </p>
+              )}
+              {usageGate && (
+                <p className="channel-needs-note">
+                  <span>{usageGate.message}</span>
+                </p>
               )}
               {!!blocked.length && (
                 <ul>

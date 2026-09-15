@@ -33,7 +33,9 @@ describe('project next step and secondary properties', () => {
     };
     render(<ProjectView {...props} id="project-atlas" />, { wrapper: TestProviders });
     expect(screen.queryByRole('complementary')).toBeNull();
-    expect(api.getProjectUsage).not.toHaveBeenCalled();
+    // The gate has to be known for 下一步, but nothing about 额度 is on screen until asked for.
+    expect(api.getProjectUsage).toHaveBeenCalledWith('project-atlas');
+    expect(screen.queryByRole('region', { name: '额度' })).toBeNull();
     const next = within(screen.getByRole('region', { name: '项目下一步' }));
     expect(next.getAllByRole('button')).toHaveLength(1);
     await userEvent.setup().click(next.getByRole('button', { name: '回答当前问题' }));
