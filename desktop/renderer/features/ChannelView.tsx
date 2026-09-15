@@ -111,7 +111,7 @@ function LogEntry({
   const started = runTime(run, run.startedAt);
   const duration = run.finishedAt ? durationSeconds(run.startedAt, run.finishedAt) : undefined;
   return (
-    <article className="channel-log-entry" aria-label={`轮次 ${started}`}>
+    <article className="channel-log-entry" data-status={run.status} aria-label={`轮次 ${started}`}>
       <header>
         <time dateTime={run.startedAt || undefined}>{started}</time>
         <span>{stateLabel(run.status)}</span>

@@ -86,6 +86,26 @@
   max-width: 850px;
   padding: var(--space-4) 0 var(--space-4) var(--space-4);
 }
+/* The round's own outcome on the rail, from the same tokens its status text is read by. The rules
+   below come first so the newest round, and the one wanting something from you, keep the accent. */
+.channel-log-entry[data-status='running'],
+.channel-log-entry[data-status='investigating'] {
+  --log-tick: var(--accent);
+}
+.channel-log-entry[data-status='completed'],
+.channel-log-entry[data-status='succeeded'] {
+  --log-tick: var(--success);
+}
+.channel-log-entry[data-status='waiting'],
+.channel-log-entry[data-status='paused'],
+.channel-log-entry[data-status='blocked'] {
+  --log-tick: var(--warning);
+}
+.channel-log-entry[data-status='failed'],
+.channel-log-entry[data-status='interrupted'],
+.channel-log-entry[data-status='error'] {
+  --log-tick: var(--danger);
+}
 .channel-log-entry:first-of-type,
 .channel-log-entry:has(.log-primary-action) {
   --log-tick: var(--accent);
