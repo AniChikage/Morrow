@@ -384,6 +384,12 @@ const verificationLabels = {
   unknown: '复核尚不能判断',
 };
 type VerificationRow = NonNullable<ProjectLoop['verifications']>[number];
+/**
+ * What a review says now. A pass only ever covered the source version it ran against, so once that
+ * version has moved on the label says so instead of reading as a standing pass.
+ */
+const verificationLabel = (row: Pick<VerificationRow, 'status'> & { current?: boolean }) =>
+  row.status === 'passed' && !row.current ? '源码或核验材料已变化，需要重新复核' : verificationLabels[row.status];
 function VerificationRecord({
   row,
   data,
@@ -399,9 +405,7 @@ function VerificationRecord({
     <details className="work-record" open={expanded}>
       <summary>
         <strong>
-          {row.status === 'passed' && !row.current
-            ? '源码或核验材料已变化，需要重新复核'
-            : verificationLabels[row.status]}
+          {verificationLabel(row)}
           {compact && (
             <span className="verification-summary">
               {row.summary.length > 120 ? row.summary.slice(0, 120) + '…' : row.summary}
@@ -1193,13 +1197,7 @@ export function ProjectReleases(props: FeatureProps & { projectId: string }) {
         {!!row.releaseVerificationId && (
           <p className="work-source">
             上线级复核：
-            {releaseReview
-              ? `${
-                  releaseReview.status === 'passed' && !releaseReview.current
-                    ? '源码或核验材料已变化，需要重新复核'
-                    : verificationLabels[releaseReview.status]
-                } · ${releaseReview.summary}`
-              : '记录尚未读取'}
+            {releaseReview ? `${verificationLabel(releaseReview)} · ${releaseReview.summary}` : '记录尚未读取'}
           </p>
         )}
         {!!row.verificationIds?.length && data && (
