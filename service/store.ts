@@ -94,6 +94,19 @@ export class Store {
     this.db.exec(
       "CREATE INDEX IF NOT EXISTS native_events_thread_revision ON native_events(json_extract(data,'$.threadId'), CAST(json_extract(data,'$.revision') AS INTEGER))"
     );
+    // The scheduler ticks once a second and asks each of these tables for the few rows in a state
+    // that needs work; without these it read every row of every one of them, every second.
+    for (const [table, column] of [
+      ['controls', 'enabled'],
+      ['loop_releases', 'status'],
+      ['loop_verifications', 'status'],
+      ['loop_verifications', 'interruptPending'],
+      ['loop_finalizations', 'status'],
+      ['upgrades', 'phase'],
+    ] as const)
+      this.db.exec(
+        `CREATE INDEX IF NOT EXISTS ${table}_${column.toLowerCase()} ON ${table}(json_extract(data,'$.${column}'))`
+      );
   }
   /**
    * One-time backfills of rows written before a field existed. Each records its own marker, so a
@@ -300,6 +313,31 @@ export class Store {
   all<T = any>(table: string): T[] {
     return this.db
       .prepare(`SELECT data FROM ${this.table(table)} ORDER BY rowid`)
+      .all()
+      .map((r: any) => JSON.parse(r.data));
+  }
+  /**
+   * The rows of one table whose state needs attention, chosen by an index instead of by reading and
+   * parsing the whole table. The scheduler asks once a second, so nothing here may be a full scan.
+   */
+  byStatus<T = any>(table: string, states: string[], column: 'status' | 'phase' = 'status'): T[] {
+    return this.db
+      .prepare(
+        `SELECT data FROM ${this.table(table)} WHERE json_extract(data,'$.${column}') IN (${states.map(() => '?').join(',')}) ORDER BY rowid`
+      )
+      .all(...states)
+      .map((r: any) => JSON.parse(r.data));
+  }
+  /**
+   * Channels whose autonomy control is on. A scheduler tick can only act on these — both the legacy
+   * runtime shutdown and the due-run start require an enabled control — so the others never have to
+   * be read, and a paused project costs the tick nothing.
+   */
+  enabledChannels(): Channel[] {
+    return this.db
+      .prepare(
+        "SELECT channels.data AS data FROM controls JOIN channels ON channels.id=controls.id WHERE json_extract(controls.data,'$.enabled')=1 ORDER BY channels.rowid"
+      )
       .all()
       .map((r: any) => JSON.parse(r.data));
   }

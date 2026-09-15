@@ -916,6 +916,71 @@ test('legacy project board migration is idempotent and mirrors existing artifact
   }
 });
 
+test('a scheduler tick selects only the rows that need work, through indexes rather than table scans', () => {
+  const home = mkdtempSync(join(tmpdir(), 'morrow-tick-scan-'));
+  const store = new Store(join(home, 'workspace.sqlite'));
+  try {
+    for (const id of ['on', 'off', 'no-control']) store.put('channels', { id, projectId: 'p', name: id });
+    store.put('controls', { id: 'on', enabled: true, pid: 0, runId: '' });
+    store.put('controls', { id: 'off', enabled: false, pid: 0, runId: '' });
+    // Both branches of the engine tick require an enabled control, so nothing else has to be read.
+    assert.deepEqual(
+      store.enabledChannels().map((channel) => channel.id),
+      ['on']
+    );
+    for (const status of ['awaiting_approval', 'approved', 'published', 'unknown', 'failed'])
+      store.put('loop_releases', { id: status, projectId: 'p', status });
+    assert.deepEqual(
+      store.byStatus<any>('loop_releases', ['approved', 'unknown']).map((row) => row.id),
+      ['approved', 'unknown']
+    );
+    for (const phase of ['applied', 'draining', 'blocked']) store.put('upgrades', { id: phase, phase });
+    assert.deepEqual(
+      store.byStatus<any>('upgrades', ['pending', 'draining', 'exiting'], 'phase').map((row) => row.id),
+      ['draining']
+    );
+    // `latest()` reads the newest row of any phase; `record()` the newest one still on its way.
+    assert.equal(store.recent<any>('upgrades', 1).at(-1)?.id, 'blocked');
+    const plan = (sql: string, ...values: string[]) =>
+      JSON.stringify(
+        store.db
+          .prepare('EXPLAIN QUERY PLAN ' + sql)
+          .all(...values)
+          .map((row: any) => row.detail)
+      );
+    assert.match(
+      plan("SELECT data FROM loop_releases WHERE json_extract(data,'$.status') IN ('approved','unknown')"),
+      /INDEX loop_releases_status/
+    );
+    assert.match(
+      plan("SELECT data FROM loop_finalizations WHERE json_extract(data,'$.status') IN ('pending')"),
+      /INDEX loop_finalizations_status/
+    );
+    // The merged verification tick reads one row set; both of its conditions must be indexed.
+    const verifications = plan(
+      "SELECT data FROM loop_verifications WHERE json_extract(data,'$.interruptPending')=1 OR json_extract(data,'$.status')='queued'"
+    );
+    assert.match(verifications, /INDEX loop_verifications_interruptpending/);
+    assert.match(verifications, /INDEX loop_verifications_status/);
+    assert.match(
+      plan(
+        "SELECT channels.data AS data FROM controls JOIN channels ON channels.id=controls.id WHERE json_extract(controls.data,'$.enabled')=1"
+      ),
+      /INDEX controls_enabled/
+    );
+    // Checkpoint recovery's own read of the native journal, the reason for its index.
+    assert.match(
+      plan(
+        "SELECT data FROM native_events WHERE json_extract(data,'$.kind')='native.patch' AND json_extract(data,'$.threadId')='t' AND json_extract(data,'$.ownerClientId')='o' AND json_extract(data,'$.revision')>1"
+      ),
+      /INDEX native_events_thread_revision/
+    );
+  } finally {
+    store.close();
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
 test('start-up backfills run once and the native journal keeps only what checkpoint recovery can read', () => {
   const home = mkdtempSync(join(tmpdir(), 'morrow-prune-'));
   const path = join(home, 'workspace.sqlite');

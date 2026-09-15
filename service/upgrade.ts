@@ -92,13 +92,17 @@ export class UpgradeManager {
   save(row: UpgradeRecord): UpgradeRecord {
     return this.store.put('upgrades', { ...row, updatedAt: now() });
   }
-  /** The request that governs work now: one target at a time, still on its way to a new daemon. */
+  /**
+   * The request that governs work now: one target at a time, still on its way to a new daemon.
+   * Selected by phase rather than by reading the table, because `tick()` asks once a second and
+   * every entry point asks again through `draining()`.
+   */
   record(): UpgradeRecord | undefined {
-    return this.rows().findLast((row) => ['pending', 'draining', 'exiting'].includes(row.phase));
+    return this.store.byStatus<UpgradeRecord>('upgrades', ['pending', 'draining', 'exiting'], 'phase').at(-1);
   }
   /** The newest record of any phase, so the UI can also report a finished or blocked switch. */
   latest(): UpgradeRecord | undefined {
-    return this.rows().at(-1);
+    return this.store.recent<UpgradeRecord>('upgrades', 1).at(-1);
   }
   blockers(): UpgradeBlocker[] {
     return this.blockersOf();

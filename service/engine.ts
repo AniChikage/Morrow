@@ -244,7 +244,9 @@ export class Engine {
     if (this.closed) return;
     this.upgrade.tick();
     this.loop.tick();
-    for (const channel of this.store.all<Channel>('channels')) {
+    // Only a channel whose control is on can be acted on below, so the tick asks for those instead
+    // of reading every channel of every project once a second.
+    for (const channel of this.store.enabledChannels()) {
       const control = this.control(channel.id);
       if (isLegacyRuntime(channel.runtime)) {
         // Records from retired runtimes stay readable, but they never schedule work again.

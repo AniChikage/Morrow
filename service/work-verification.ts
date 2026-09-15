@@ -804,17 +804,20 @@ file/agent 证据可能由执行者生成，只证明采集了该内容，不证
   tick() {
     if (this.loop.closed) return;
     for (const id of new Set(
-      this.loop.store
-        .all<Finalization>('loop_finalizations')
-        .filter((row) => row.status === 'pending')
-        .map((row) => row.verificationId)
+      this.loop.store.byStatus<Finalization>('loop_finalizations', ['pending']).map((row) => row.verificationId)
     ))
       this.settle(id);
-    for (const row of this.loop.store.all<Verification>('loop_verifications'))
+    // One reading for both loops instead of two scans of the same table: the interrupts are started
+    // first, exactly as before, and `interrupt()` only clears its own flag, never a row's status.
+    const waiting = this.loop.store.db
+      .prepare(
+        "SELECT data FROM loop_verifications WHERE json_extract(data,'$.interruptPending')=1 OR json_extract(data,'$.status')='queued' ORDER BY rowid"
+      )
+      .all()
+      .map((row: any) => JSON.parse(row.data) as Verification);
+    for (const row of waiting)
       if (row.interruptPending && !this.interrupting.has(row.id)) this.loop.track(this.interrupt(row.id));
-    for (const row of this.loop.store
-      .all<Verification>('loop_verifications')
-      .filter((row) => row.status === 'queued')) {
+    for (const row of waiting.filter((row) => row.status === 'queued')) {
       if (this.active.size >= 1) return;
       if (row.retryAt && row.retryAt > now()) continue;
       const channel = this.loop.store.get<Channel>('channels', row.channelId),
