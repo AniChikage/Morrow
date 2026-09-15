@@ -309,9 +309,9 @@ describe('AI work and release review', () => {
         <FeatureWork api={f.api} projectId="project-atlas" itemId="other-item" />
       </TestProviders>
     );
-    expect(await screen.findByText('源码或核验材料已变化，需要重新复核')).not.toBeNull();
+    expect(await screen.findByTitle('源码或核验材料已变化，需要重新复核')).not.toBeNull();
     expect(screen.queryByText('独立复核通过')).toBeNull();
-    await userEvent.setup().click(screen.getByText('源码或核验材料已变化，需要重新复核'));
+    await userEvent.setup().click(screen.getByTitle('源码或核验材料已变化，需要重新复核'));
     expect(screen.getByText('尚未验证业务收益')).not.toBeNull();
     expect(screen.getByText(/原生任务：independent-native-task/)).not.toBeNull();
   });
@@ -421,6 +421,73 @@ describe('AI work and release review', () => {
       const row = within(recent).getAllByText(title)[0].closest('details')!;
       expect(row.open).toBe(['current failure', 'running review'].includes(title));
     }
+  });
+  it('names review subjects, limits the recent list, and resets expansion when changing projects', async () => {
+    const f = fixture();
+    const items = Array.from({ length: 7 }, (_, index) => ({
+      ...f.props.snapshot.items[0],
+      id: `item-${index}`,
+      number: index + 1,
+      title: `事项标题 ${index + 1}`,
+    }));
+    f.data.strategy = { understanding: [], decisions: [], counts: { understanding: 0, decisions: 0 } };
+    f.data.verifications = items.map((item, index) => ({
+      ...historyRow(`review-${index}`, item.id),
+      createdAt: `2026-09-0${index + 1}T00:00:00Z`,
+      status: 'passed',
+      current: false,
+    }));
+    f.release.releaseVerificationId = 'release-review';
+    f.data.verifications.push({
+      ...historyRow('release-review'),
+      kind: 'release',
+      itemId: undefined,
+      createdAt: '2026-09-08T00:00:00Z',
+    });
+    const original = structuredClone(f.data.verifications);
+    const view = render(
+      <ProjectThinking api={f.api} projectId="project-atlas" items={items} onNavigate={f.props.onNavigate} />,
+      { wrapper: TestProviders }
+    );
+    const recent = await screen.findByRole('region', { name: '最近复核' });
+    const titles = () =>
+      [...recent.querySelectorAll('.verification-title')].map((node) => node.childNodes[0].textContent);
+    expect(titles()).toEqual([
+      '上线级 · 导入失败恢复',
+      '#7 事项标题 7',
+      '#6 事项标题 6',
+      '#5 事项标题 5',
+      '#4 事项标题 4',
+    ]);
+    expect(
+      within(recent).getAllByTitle('源码或核验材料已变化，需要重新复核')[0].classList.contains('status-waiting')
+    ).toBe(true);
+    const user = userEvent.setup();
+    await user.click(screen.getByRole('button', { name: '显示全部 8 条' }));
+    expect(titles()).toHaveLength(8);
+    await user.click(screen.getByRole('button', { name: '只显示最新 5 条' }));
+    expect(titles()).toHaveLength(5);
+    await user.click(screen.getByRole('button', { name: '显示全部 8 条' }));
+    view.rerender(
+      <ProjectThinking api={f.api} projectId="other-project" items={items} onNavigate={f.props.onNavigate} />
+    );
+    await screen.findByRole('button', { name: '显示全部 8 条' });
+    expect(screen.getByRole('region', { name: '最近复核' }).querySelectorAll('.verification-title')).toHaveLength(5);
+    expect(f.data.verifications).toEqual(original);
+  });
+  it('does not infer a missing release title from matching item IDs', async () => {
+    const f = fixture();
+    f.data.strategy = { understanding: [], decisions: [], counts: { understanding: 0, decisions: 0 } };
+    f.data.verifications = [
+      { ...historyRow('unlinked-release'), kind: 'release', itemIds: ['finding-import'] },
+      historyRow('missing-item'),
+    ];
+    render(<ProjectThinking api={f.api} projectId="project-atlas" onNavigate={f.props.onNavigate} />, {
+      wrapper: TestProviders,
+    });
+    expect(await screen.findByText('上线级 · 尚未关联上线记录')).toBeTruthy();
+    expect(screen.getByText('事项信息未载入')).toBeTruthy();
+    expect(screen.queryByText('上线级 · 导入失败恢复')).toBeNull();
   });
   it('loads older review pages and their evidence, retains current rows on error and retries the same cursor', async () => {
     const f = fixture();
@@ -754,9 +821,19 @@ describe('AI work and release review', () => {
           updatedAt: timestamp,
         },
       ],
-      decisions: [old, recent],
-      counts: { understanding: 1, decisions: 2 },
+      decisions: [
+        old,
+        recent,
+        {
+          ...evaluatedDecision(),
+          id: 'past',
+          expectations: [],
+          review: { ...evaluatedDecision().review!, evidenceIds: [] },
+        },
+      ],
+      counts: { understanding: 1, decisions: 3 },
     };
+    f.data.verifications = [{ ...historyRow('older-review'), evidenceIds: [] }];
     const original = structuredClone(f.data.strategy);
     const view = render(<ProjectThinking api={f.api} projectId="project-atlas" onNavigate={f.props.onNavigate} />, {
       wrapper: TestProviders,
@@ -764,9 +841,17 @@ describe('AI work and release review', () => {
     const user = userEvent.setup();
     await user.click(await screen.findByRole('button', { name: '查看最新工作日志' }));
     expect(f.props.onNavigate).toHaveBeenLastCalledWith({ kind: 'channel', id: 'other-channel' });
-    await user.click(screen.getByRole('button', { name: /^查看工作日志$/ }));
+    await user.click(
+      screen.getAllByRole('button', { name: /^查看工作日志$/ }).find((button) => !button.closest('.strategy-history'))!
+    );
     expect(f.props.onNavigate).toHaveBeenLastCalledWith({ kind: 'channel', id: 'channel-system' });
     const toggle = screen.getByText('对项目的认识', { selector: 'summary' });
+    expect(toggle.closest('details')?.open).toBe(true);
+    const past = screen.getByText('此前尝试与复盘', { selector: 'summary' });
+    const reviews = screen.getByRole('region', { name: '最近复核' });
+    expect(toggle.compareDocumentPosition(past) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(past.compareDocumentPosition(reviews) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    await user.click(toggle);
     expect(toggle.closest('details')?.open).toBe(false);
     await user.click(toggle);
     await user.click(screen.getByText('已有观测'));
@@ -777,7 +862,7 @@ describe('AI work and release review', () => {
     expect(f.data.strategy).toEqual(original);
     view.rerender(<ProjectThinking api={f.api} projectId="other-project" onNavigate={f.props.onNavigate} />);
     await screen.findByRole('button', { name: '查看最新工作日志' });
-    expect(screen.getByText('对项目的认识', { selector: 'summary' }).closest('details')?.open).toBe(false);
+    expect(screen.getByText('对项目的认识', { selector: 'summary' }).closest('details')?.open).toBe(true);
   });
   it('shows an accurate empty state through the actual preview adapter and project tab', async () => {
     const api = previewAPI();
@@ -1184,7 +1269,7 @@ describe('AI work and release review', () => {
       await screen.findByText('上线级复核：独立复核通过 · 候选版本的检查与各事项改动一致', { exact: false })
     ).not.toBeNull();
     // The item's own review is listed as it stands: passed at an earlier source version.
-    expect(screen.getByText('源码或核验材料已变化，需要重新复核')).not.toBeNull();
+    expect(screen.getByTitle('源码或核验材料已变化，需要重新复核')).not.toBeNull();
     cleanup();
     // The review list itself marks which record covered the whole release candidate.
     render(
@@ -1192,7 +1277,7 @@ describe('AI work and release review', () => {
         <FeatureWork api={f.api} projectId="project-atlas" itemId="finding-import" />
       </TestProviders>
     );
-    expect(await screen.findByText('上线级')).not.toBeNull();
+    expect(await screen.findByText('上线级 · 导入失败恢复')).not.toBeNull();
     expect(screen.getByText('候选版本的检查与各事项改动一致', { exact: false })).not.toBeNull();
   });
   it('says why review status reads as unknown while the source version cannot be read', async () => {

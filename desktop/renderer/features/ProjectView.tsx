@@ -374,7 +374,13 @@ export function ProjectView(props: FeatureProps & { id: string }) {
           {tab === 'brief' ? (
             <ProjectBrief key={id} api={api} project={project} busy={busy} onMutate={onMutate} />
           ) : tab === 'thinking' ? (
-            <ProjectThinking api={api} projectId={id} onNavigate={onNavigate} isDemo={project.isDemo} />
+            <ProjectThinking
+              api={api}
+              projectId={id}
+              items={snapshot.items}
+              onNavigate={onNavigate}
+              isDemo={project.isDemo}
+            />
           ) : tab === 'releases' ? (
             <ProjectReleases {...props} key={id} projectId={id} />
           ) : tab === 'records' ? (

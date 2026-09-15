@@ -154,7 +154,12 @@ export function ProjectThinking({
   projectId,
   onNavigate,
   isDemo = false,
-}: Pick<FeatureProps, 'api' | 'onNavigate'> & { projectId: string; isDemo?: boolean }) {
+  items = [],
+}: Pick<FeatureProps, 'api' | 'onNavigate'> & {
+  projectId: string;
+  isDemo?: boolean;
+  items?: FeatureProps['snapshot']['items'];
+}) {
   const { data, error, moreHistory, loadingHistory, historyError, loadHistory } = useProjectWork(api, projectId);
   if (error)
     return (
@@ -222,14 +227,8 @@ export function ProjectThinking({
             onChannel={() => onNavigate({ kind: 'channel', id: row.channelId })}
           />
         ))}
-        <SourceNotice data={data} />
-        <VerificationRecords
-          data={data}
-          compact
-          history={{ more: moreHistory, loading: loadingHistory, error: historyError, load: () => void loadHistory() }}
-        />
         {!!strategy?.understanding.length && (
-          <details className="work-record" key={`understanding:${projectId}`}>
+          <details className="work-record" key={`understanding:${projectId}`} open>
             <summary>
               对项目的认识 <span className="subtle">{strategy.understanding.length}</span>
             </summary>
@@ -285,6 +284,14 @@ export function ProjectThinking({
               ))}
           </details>
         )}
+        <SourceNotice data={data} />
+        <VerificationRecords
+          key={projectId}
+          data={data}
+          items={items}
+          compact
+          history={{ more: moreHistory, loading: loadingHistory, error: historyError, load: () => void loadHistory() }}
+        />
       </article>
     </div>
   );

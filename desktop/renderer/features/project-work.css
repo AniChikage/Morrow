@@ -275,12 +275,16 @@
   line-height: 1.6;
   overflow-wrap: anywhere;
 }
-.verification-kind {
-  margin-left: var(--space-2);
-  padding: 2px var(--space-2);
+.verification-title {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--space-2);
+}
+.verification-status {
+  padding: var(--space-1) var(--space-2);
   border-radius: var(--radius-sm);
   background: var(--hover);
-  color: var(--muted);
   font-size: var(--text-xs);
   font-weight: 500;
   white-space: nowrap;

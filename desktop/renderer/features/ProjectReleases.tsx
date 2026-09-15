@@ -228,6 +228,7 @@ export function ProjectReleases(props: FeatureProps & { projectId: string }) {
               事项历史复核 <span className="subtle">{row.verificationIds.length}</span>
             </summary>
             <VerificationRecords
+              items={snapshot.items}
               data={{ ...data, verifications: data.verifications?.filter((v) => row.verificationIds!.includes(v.id)) }}
             />
           </details>

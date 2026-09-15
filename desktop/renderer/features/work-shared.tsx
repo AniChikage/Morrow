@@ -4,10 +4,11 @@
  * feature's one stylesheet and is loaded here, for every page that builds on these parts.
  */
 import { useEffect, useRef, useState } from 'react';
-import type { DecisionView, DesktopAPI, ProjectLoop, Release } from '../../shared/types';
+import type { DecisionView, DesktopAPI, ProjectLoop, Release, WorkItem } from '../../shared/types';
 import { Button, Markdown } from '../components/ui';
 import { mergeById, replaceIfChanged } from '../components/collections';
 import { formatDate } from '../components/format';
+import { featureNumber } from './featureOwnership';
 import './project-work.css';
 
 export const releaseLabels: Record<Release['status'], string> = {
@@ -241,24 +242,49 @@ export function VerificationRecord({
   data,
   expanded,
   compact = false,
+  items = [],
 }: {
   row: VerificationRow;
   data: ProjectLoop;
   expanded: boolean;
   compact?: boolean;
+  items?: WorkItem[];
 }) {
+  const item = items.find((value) => value.id === row.itemId);
+  const release = data.releases.find((value) => value.releaseVerificationId === row.id);
+  const title =
+    row.kind === 'release'
+      ? `上线级 · ${release?.title || '尚未关联上线记录'}`
+      : item
+        ? `${featureNumber(item)} ${item.title}`
+        : row.itemId
+          ? '事项信息未载入'
+          : row.decisionId
+            ? '行动复核'
+            : '频道复核';
+  const stale = row.status === 'passed' && !row.current;
+  const tone =
+    stale || row.status === 'unknown' || row.status === 'queued'
+      ? 'waiting'
+      : row.status === 'passed'
+        ? 'verified'
+        : row.status;
   return (
     <details className="work-record" open={expanded}>
       <summary>
         <strong>
-          {verificationLabel(row)}
+          <span className="verification-title">
+            {title}
+            <span className={`verification-status status-${tone}`} title={verificationLabel(row)}>
+              {stale ? '需重新复核' : verificationLabel(row)}
+            </span>
+          </span>
           {compact && (
             <span className="verification-summary">
               {row.summary.length > 120 ? row.summary.slice(0, 120) + '…' : row.summary}
             </span>
           )}
         </strong>
-        {row.kind === 'release' && <span className="verification-kind">上线级</span>}
         <span className="subtle">{formatDate(row.finishedAt || row.createdAt)}</span>
       </summary>
       <div className="work-record-body">
@@ -296,11 +322,14 @@ export function VerificationRecords({
   data,
   compact = false,
   history,
+  items = [],
 }: {
   data: ProjectLoop;
   compact?: boolean;
+  items?: WorkItem[];
   history?: { more: boolean; loading: boolean; error: string; load: () => void };
 }) {
+  const [showAll, setShowAll] = useState(false);
   if (!data.verifications?.length) return null;
   const rows = data.verifications.slice().reverse();
   if (!compact)
@@ -312,6 +341,7 @@ export function VerificationRecords({
             key={row.id}
             row={row}
             data={data}
+            items={items}
             expanded={row.status === 'failed' || row.status === 'running'}
           />
         ))}
@@ -335,15 +365,17 @@ export function VerificationRecords({
     else latest.set(key, row);
   }
   const active = data.strategy?.decisions.filter((row) => row.status === 'active') || [];
+  const latestRows = [...latest.values()];
   return (
     <section className="finding-section" aria-label="最近复核">
       <h2>最近复核</h2>
       {history?.more && <p className="subtle">更早的复核尚未全部载入，可在历史中继续读取。</p>}
-      {[...latest.values()].map((row) => (
+      {(showAll ? latestRows : latestRows.slice(0, 5)).map((row) => (
         <VerificationRecord
           key={row.id}
           row={row}
           data={data}
+          items={items}
           compact
           expanded={
             row.status === 'running' ||
@@ -352,6 +384,11 @@ export function VerificationRecords({
           }
         />
       ))}
+      {latestRows.length > 5 && (
+        <Button variant="ghost" aria-expanded={showAll} onClick={() => setShowAll(!showAll)}>
+          {showAll ? '只显示最新 5 条' : `显示全部 ${latestRows.length} 条`}
+        </Button>
+      )}
       {(!!previous.length || history?.more || history?.error) && (
         <details className="work-record verification-history">
           <summary>
@@ -362,7 +399,7 @@ export function VerificationRecords({
             </span>
           </summary>
           {previous.map((row) => (
-            <VerificationRecord key={row.id} row={row} data={data} compact expanded={false} />
+            <VerificationRecord key={row.id} row={row} data={data} items={items} compact expanded={false} />
           ))}
           {history?.error && <p role="alert">{history.error}</p>}
           {(history?.more || history?.error) && (

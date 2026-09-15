@@ -74,7 +74,16 @@ export function FindingView(props: FeatureProps & { id: string }) {
               <h2>下一步</h2>
               <Markdown>{item.nextStep || '尚未记录下一步行动。'}</Markdown>
             </section>
-            {project && <FeatureWork key={item.id} api={api} projectId={project.id} itemId={item.id} compact />}
+            {project && (
+              <FeatureWork
+                key={item.id}
+                api={api}
+                projectId={project.id}
+                itemId={item.id}
+                items={snapshot.items}
+                compact
+              />
+            )}
             <section className="finding-section">
               <h2>事项说明</h2>
               {item.summary.length > 240 ? (

@@ -1,5 +1,5 @@
 import { CheckCircle2, Clock3 } from 'lucide-react';
-import type { DesktopAPI } from '../../shared/types';
+import type { DesktopAPI, WorkItem } from '../../shared/types';
 import { Markdown } from '../components/ui';
 import { formatDate } from '../components/format';
 import { questionExcerpt } from './ChannelQuestion';
@@ -26,11 +26,13 @@ export function FeatureWork({
   projectId,
   itemId,
   compact = false,
+  items = [],
 }: {
   api: DesktopAPI;
   projectId: string;
   itemId: string;
   compact?: boolean;
+  items?: WorkItem[];
 }) {
   const { data, error } = useProjectWork(api, projectId, itemId);
   if (!api.getProjectWork) return null;
@@ -58,7 +60,7 @@ export function FeatureWork({
   const full = (
     <section className="finding-section">
       <h2>判断、尝试与反馈</h2>
-      <VerificationRecords data={data} />
+      <VerificationRecords data={data} items={items} />
       {data.strategy?.decisions
         .filter((row) => row.expectations?.length)
         .map((row) => (
