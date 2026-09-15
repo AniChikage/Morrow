@@ -398,6 +398,11 @@ export class Engine {
       try {
         await this.start(id, true, true);
       } catch (e) {
+        // A turn that began between the check above and this call — a scheduling tick is one second
+        // wide — is not a reason to undo what the person asked for. 「持续运行」 asked for autonomy,
+        // and autonomy is now on with a turn already running, which is the state they wanted. Any
+        // other failure really did leave nothing running, so the control goes back off.
+        if (this.active.has(id) || this.native?.isBusy(id)) return;
         this.setControl(id, { enabled: false });
         throw e;
       }

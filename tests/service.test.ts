@@ -10,7 +10,7 @@ import { Store } from '../service/store.ts';
 import { eventHistory } from '../service/event-history.ts';
 import { startServer } from '../service/server.ts';
 import { invocation, diagnoseFailure } from '../service/runtimes.ts';
-import { validateResult } from '../service/protocol.ts';
+import { APIError, validateResult } from '../service/protocol.ts';
 import { startIsolated } from './harness/service.ts';
 import { until } from './harness/wait.ts';
 const fixture = resolve('tests/fixtures/runtime.mjs');
@@ -1095,5 +1095,37 @@ test('incremental raw output cursors never revise prior chunks, lose suffixes or
   } finally {
     store.close();
     rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test('a person pressing 持续运行 as a scheduled turn starts keeps autonomy on instead of switching it off', async () => {
+  const s = await startIsolated({ project: { name: '持续运行', goal: '不让竞态关掉自动工作' }, scheduler: false });
+  try {
+    const id = s.channel.id;
+    const realStart = s.engine.start.bind(s.engine);
+    // The scheduling tick is one second wide: a turn can begin between `performAction`'s own check
+    // and its call to `start`, which then refuses because the channel is already executing.
+    s.engine.start = ((channelId: string) => {
+      s.engine.active.set(channelId, { projectPath: s.path } as any);
+      throw new APIError(409, '频道正在执行');
+    }) as typeof s.engine.start;
+    await s.api('POST', `/api/channels/${id}/action`, { action: 'resume' });
+    assert.equal(s.engine.control(id).enabled, true);
+    s.engine.active.delete(id);
+    // A start that really did leave nothing running still switches the control back off and says why.
+    s.engine.start = (() => {
+      throw new APIError(400, '项目目录不存在或不可访问');
+    }) as typeof s.engine.start;
+    const refused = await s.api('POST', `/api/channels/${id}/action`, { action: 'resume' }, 400);
+    assert.match(refused.error, /项目目录不存在/);
+    assert.equal(s.engine.control(id).enabled, false);
+    // And a channel that is already executing when the request arrives is refused as before.
+    s.engine.start = realStart;
+    s.engine.active.set(id, { projectPath: s.path } as any);
+    const busy = await s.api('POST', `/api/channels/${id}/action`, { action: 'resume' }, 409);
+    assert.match(busy.error, /正在执行/);
+    s.engine.active.delete(id);
+  } finally {
+    await s.cleanup();
   }
 });
