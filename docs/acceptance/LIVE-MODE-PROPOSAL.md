@@ -104,11 +104,11 @@ fixture runner 为了可重复做了三件真实 daemon 不会做的事：停掉
 
 | 动词 | live 行为 |
 | --- | --- |
-| `turn` | **先接管真实调度器自己发起的轮次，没有可接管的才把频道置为到期**（`nextRunAt` 设到过去）。步骤开始时先找本次运行新出现（不在基线）且还没记进 `live.json` 的 `turns` 的 `morrow-schedule` 行：有 `running` 的就等它真实结束并记为本步骤的轮次；有已完成但还没记录的就直接记下，不再开新轮；两者都没有才置为到期并等新行出现。等待上限 `--turn-timeout`（缺省 10 分钟，与 App 一轮的常见耗时和复核 5 分钟上限匹配），接管进行中的那一轮从接管那一刻起算。**只认本次运行新出现的 `morrow-schedule` 行**——0.9.5 验收踩过的坑：同步进来的历史 `native-app` 轮次会被错认成本轮结果。不接管有三个后果，所以不能无条件置为到期：有轮次在跑时置为到期会把频道状态覆写成 `waiting`；调度器自己开的那轮计进 `spentTurns` 却不进「每一轮」表；一个时间线 `turn` 会实际消耗两轮。`--budget` 因此只挡「开新轮」这件事——接管已经发生的轮次不多花额度，被接管的轮次同样记下 `decision`、工具清单与真实起止（起止取 `runs` 行上的 `startedAt`/`finishedAt`，行上没有就用接管时刻，并在记录的 `timesFrom` 里标明）。 置为到期之前先 `setControl(enabled: true)`：引擎对 `interrupted` 的运行会把开关关掉，不重开的话真实调度器再也不看这个频道。本步骤的 Morrow 轮次以 `interrupted` 结束、而 runner 自己没发过中断时，再在最多 15 秒内找同一线程上随后出现的 `native-app` 运行且 `trigger === 'resume_interrupted_task'`——那是 **App 自己**中断并续跑的情形（第 10.1 节）；找到就等它结束（仍受 `--turn-timeout`），把这一对记成同一轮（`interruptedByApp`、`resumedRunId`、`resumedStatus`、`resumedWallMs`，`tools` 取并集，`decision` 仍取引擎对 Morrow 那一轮解析出的值）。找不到就照旧记 `interrupted`；两种情况都不是失败条件，时间线继续。 |
+| `turn` | **先接管真实调度器自己发起的轮次，没有可接管的才把频道置为到期**（`nextRunAt` 设到过去）。步骤开始时先找本次运行新出现（不在基线）且还没记进 `live.json` 的 `turns` 的 `morrow-schedule` 行：有 `running` 的就等它真实结束并记为本步骤的轮次；有已完成但还没记录的就直接记下，不再开新轮；两者都没有才置为到期并等新行出现。等待上限 `--turn-timeout`（缺省 10 分钟，与 App 一轮的常见耗时和复核自己的上限——事项 5 分钟、上线 8 分钟——匹配），接管进行中的那一轮从接管那一刻起算。**只认本次运行新出现的 `morrow-schedule` 行**——0.9.5 验收踩过的坑：同步进来的历史 `native-app` 轮次会被错认成本轮结果。不接管有三个后果，所以不能无条件置为到期：有轮次在跑时置为到期会把频道状态覆写成 `waiting`；调度器自己开的那轮计进 `spentTurns` 却不进「每一轮」表；一个时间线 `turn` 会实际消耗两轮。`--budget` 因此只挡「开新轮」这件事——接管已经发生的轮次不多花额度，被接管的轮次同样记下 `decision`、工具清单与真实起止（起止取 `runs` 行上的 `startedAt`/`finishedAt`，行上没有就用接管时刻，并在记录的 `timesFrom` 里标明）。 置为到期之前先 `setControl(enabled: true)`：引擎对 `interrupted` 的运行会把开关关掉，不重开的话真实调度器再也不看这个频道。本步骤的 Morrow 轮次以 `interrupted` 结束、而 runner 自己没发过中断时，再在最多 15 秒内找同一线程上随后出现的 `native-app` 运行且 `trigger === 'resume_interrupted_task'`——那是 **App 自己**中断并续跑的情形（第 10.1 节）；找到就等它结束（仍受 `--turn-timeout`），把这一对记成同一轮（`interruptedByApp`、`resumedRunId`、`resumedStatus`、`resumedWallMs`，`tools` 取并集，`decision` 仍取引擎对 Morrow 那一轮解析出的值）。找不到就照旧记 `interrupted`；两种情况都不是失败条件，时间线继续。 |
 | `poll` | 仍然调 `loop.poll(watchId)` 采一次。多采一次无害，而且让时间线里的「此刻应当有样本」是明确的；调度器自己的轮询照常进行。 |
 | `set` / `mode` | **不变**。接收端仍是本机的 `startReceiver()`，使用数据和发布回执都由它给，所以扰动完全可控。这是 live 模式仍然可读的关键：变量只有模型一个。 |
 | `advance` | **虚拟时钟不能用**。见下。改成真实等待：`advance N` 等 `min(N × --advance-scale 分钟, --max-wait)`，并把缩放比例、计划等待和真实耗时都记进 `timeline.jsonl` 与 `live.json`。等待**切成不超过 5 秒的片，每片之间过一遍第 6 节的停止条件**：`--max-wait` 最长 10 分钟，一次睡到底会让这期间调度器自己发起的轮次不被计数，预算、额度门禁（频道的 `usageWait`）、`readyThreadCount` 掉 0、`restartRequired` 与墙钟也都要等到睡醒才被发现。真实耗时仍按时钟差值记录，`waitedMs` 与 `cappedByMaxWait` 的含义不变。 |
-| `verify` | **fixture 专用，live 下是 no-op**。独立复核走真实 `codex exec`（只读、临时会话、5 分钟硬上限）。runner 只在需要时等 `loop_verifications` 从 `queued`/`running` 落到终态，上限 `--review-timeout`（缺省 6 分钟）。 |
+| `verify` | **fixture 专用，live 下是 no-op**。独立复核走真实 `codex exec`（只读、临时会话；时长上限取复核记录自己的值——事项 5 分钟、上线 8 分钟，supervisor 只在其后兜 15 分钟）。runner 只在需要时等 `loop_verifications` 从 `queued`/`running` 落到终态，上限 `--review-timeout`（缺省 6 分钟，盖不住上线级的 8 分钟，时间线里有发布级复核时要显式调大）。 |
 | `approve` / `reject` | 见第 5 节：**runner 不自批准，人在终端上输入 `approve` 就是人工确认**。stdin 是 TTY 时打印发布信息（标题、`reviewHash`、事项、产物摘要、改动摘要），在终端上问一次并等 `--approval-wait`（缺省 30 分钟）；人输入 `approve`/`reject` 就以 **human** 身份走服务正式的审阅路径，等发布落到终态（上限 `--review-timeout`），把结果记进 `live.json` 的 `approvals` 并**继续时间线**。直接回车、超时、答了别的东西，或者 stdin 不是 TTY，都照旧暂停频道、以「停在人工确认」退出 0。没有待确认的发布时先等最多 `--approval-wait` 看它会不会出现。 |
 | `guide` | 保留：以 `source:'chat'` 向同一条原生任务发一条指导。它会真的消耗一轮 App 对话（不计编排预算）。 |
 | `restart` | 保留：关服务再在同一 `home` 上打开。绑定、历史与待核对回执都应当还在。 |
@@ -116,7 +116,7 @@ fixture runner 为了可重复做了三件真实 daemon 不会做的事：停掉
 
 **为什么虚拟时钟不能用，以及用什么代替**：fixture 用 `node:test` 的 `mock.timers.enable({ apis: ['Date'] })` 冻结 `Date`，于是观察窗口、freshness、UTC 日预算都跟着虚拟时钟走。接真实模型时这行不通，原因有三条，任一条都足够：
 
-1. **只冻结了服务进程的 `Date`。** Codex App 是另一个进程，官方 `codex exec` 复核也是另一个进程，它们的时间戳、5 分钟硬超时、IPC 心跳都按真实时间走。服务以为过了 6 小时而 App 以为过了 3 秒，两边写进同一条记录的时间就自相矛盾。
+1. **只冻结了服务进程的 `Date`。** Codex App 是另一个进程，官方 `codex exec` 复核也是另一个进程，它们的时间戳、复核自己的超时（事项 5 分钟、上线 8 分钟）、IPC 心跳都按真实时间走。服务以为过了 6 小时而 App 以为过了 3 秒，两边写进同一条记录的时间就自相矛盾。
 2. **`advance` 会在一轮真实运行进行中跳时钟。** 真实一轮要几分钟，期间 `mock.timers.tick()` 把 `Date.now()` 往前推，正在算 deadline 的 loop 会当场判定观察已过期、复核已超时。
 3. **额度门禁与日预算按真实的 UTC 日界和窗口重置时间判断。** 跳时钟会让 `resetsAt` 逻辑得出假结论，而额度是这次运行真花掉的东西。
 
@@ -230,7 +230,7 @@ runner 另外自己数**本次运行新出现**的 `morrow-schedule` 行（关�
 | **App 权限与目录合并** | 0.9.5 起沿用 App 的沙箱与审批；App 可能把已有目录合并进任务的可写范围，所以「只含隔离项目目录」不能被声称为事实。模型理论上能写到隔离目录之外。 | 隔离目录在 `artifacts/` 下、与工作树源码分开；`execution.prepare` 的护栏拒绝「服务目录位于项目之内」；运行后 `git status` 核对工作树没被改动。**这一条没有硬隔离，必须写进报告的边界。** |
 | **应用内浏览器 / Computer Use** | **已验证可用**：2026-09-09 的连接实测在 Morrow 跟随的真实轮次上打开了本机合成页面、读取随机 marker、真实点击按钮并读回对应结果，`get_usage_limits` 与 Computer Use 的 `sky.list_apps()` 也实际调用成功——见 [`../CODEX-CONNECTION-VALIDATION-2026-09-09.md`](../CODEX-CONNECTION-VALIDATION-2026-09-09.md)。0.4 那次「浏览器插件不可用」只适用于 Morrow 自己创建的任务。 | 仍然把每一轮 `native_items` 里出现过的工具类型清单记进 `live.json`：可用不等于模型这一轮真的用了，走查路线有没有被走过要看这份清单。Computer Use 只验证过列举接口，不代表所有桌面交互已经验收。 |
 | **非确定性** | 同一场景两次 live 运行结果不同，`compare` 零差异不成立。 | 明确不比较；报告写明「一次运行是一次抽样」。多次运行用 `--repeat` 给均值极值，但每次都要单独付额度。 |
-| **复核 5 分钟硬上限** | 官方 `codex exec` 复核有 5 分钟上限，超时保持未知。真实项目的完整检查可能跑不完。 | `--review-timeout` 略大于 5 分钟；未知结局按既有策略处理，不重跑。 |
+| **复核有自己的时长上限** | 官方 `codex exec` 复核按复核记录自己的上限停下——事项 5 分钟、上线 8 分钟，supervisor 只在其后兜 15 分钟——超时保持未知。真实项目的完整检查可能跑不完。 | `--review-timeout` 要略大于本次会用到的上限（时间线里有发布级复核时即 8 分钟）；未知结局按既有策略处理，不重跑。 |
 | **人守在终端边上** | 建任务、发首条消息、上线确认，都要人。走到 `approve` 时 runner 在终端上等最多 `--approval-wait`（缺省 30 分钟），这段时间人必须在。 | 一次调用阻塞等待 + 把要做的四步原样打出来；等待期间频道先暂停，所以人想多久都不会多花额度；stdin 不是 TTY 时不问，直接停在人工确认。 |
 | **任务被并发占用** | 自动轮次发现任务已忙时返回等待，不会转成 steering 干扰手动轮次；但人如果在同一任务里手动提问，这一轮就会一直等。 | 打印的步骤里明确「不要在这个任务里继续手动提问」；`--turn-timeout` 兜底。 |
 | **App 自己中断 follower 轮次** | 任务窗口在 App 前台时，App 可能对这个任务重放 thread settings、把 Morrow 跟随的这一轮标成 `interrupted`（"interrupted on purpose"），然后自己以 `turnTrigger: 'resume_interrupted_task'` 开一轮把活干完。引擎随后按 `finishFailure` 把频道置 `paused` 并关掉开关，于是后续轮次再也起不来。首跑 usagegap-live-01 就是这样（见第 10.1 节）。 | runner 的 `makeDue` 重新打开开关（`liveGateDetail` 打印 `enabled=`），`turn` 步骤把「被 App 中断 + App 自己 resume」的那一对记成同一轮而不是一次失败；`prepare` 打印的第 3 步要求**发完首条消息后把 App 切到别的任务或关闭这个任务的窗口视图（不要删除任务）**，让任务保持已加载但不在前台。 |
@@ -357,7 +357,7 @@ npm run acceptance -- run usagegap --mode live --run-id <id> \
 ```
 
 - `--budget 16`：时间线有 11 个 `turn`，再留 5 轮给真实调度器自己发起的轮次（一轮以 `continue` 结束 30 秒后就有下一轮，它们会被下一个 `turn` 步骤接管，但仍然计预算）。频道 `maxRunsPerDay` 随之是 32，盖住 3 次独立复核。
-- `--wall-clock 180`：11 轮 × 前两轮实测的 2–5 分钟，加 3 次独立复核（每次上限 5 分钟）、压缩后的四次 `advance`（20+20+15 分钟 × 0.1 ≈ 5.5 分钟）和一次人工确认的等待。180 分钟是兜底，不是预期耗时。
+- `--wall-clock 180`：11 轮 × 前两轮实测的 2–5 分钟，加 3 次独立复核（两次事项级各上限 5 分钟、一次发布级上限 8 分钟）、压缩后的四次 `advance`（20+20+15 分钟 × 0.1 ≈ 5.5 分钟）和一次人工确认的等待。180 分钟是兜底，不是预期耗时。
 - `--project-window weekly --project-limit 12`：02 两轮就吃掉周额度 1%，11 轮加复核按同一速率是 5–8%，5% 的缺省会在中途把运行挡下来。保留线仍用缺省 20%/weekly。
 - 人要守在终端边上：走到 `approve` 时 runner 会在终端上问一次（`--approval-wait` 缺省 30 分钟）。
 

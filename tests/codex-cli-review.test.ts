@@ -7,6 +7,7 @@ import { tmpdir } from 'node:os';
 import { spawn } from 'node:child_process';
 import { CodexCliReviewRunner, type ReviewObservation } from '../service/codex-cli-review.ts';
 import { CodexUsageReader, parseUsageReading } from '../service/codex-usage.ts';
+import { reviewTimeoutSeconds } from '../service/work-verification.ts';
 import { until } from './harness/wait.ts';
 const executable = resolve('tests/fixtures/codex-review.mjs');
 const worker = resolve('service/codex-cli-worker.ts');
@@ -185,6 +186,22 @@ test('the supervisor imports node: builtins only, so the pinned copy cannot lose
   );
   assert(specifiers.length > 0, 'the supervisor must still declare the imports it runs on');
   for (const specifier of specifiers) assert(specifier.startsWith('node:'), specifier);
+});
+/**
+ * The supervisor's ceiling is not the review cap — the row's `timeoutSeconds` is — but it has to stay
+ * behind it. It sat at 5 minutes while the release cap was already 8, so a release review was SIGTERMed
+ * three minutes early and landed as `unknown` through 「CLI 未正常完成」 instead of reaching its own cap.
+ * Reading the number back out of the source keeps a later cap change from crossing the ceiling again.
+ */
+test('the supervisor ceiling cannot cut a review short of its own cap', () => {
+  const match = readFileSync(worker, 'utf8').match(/Math\.min\(\s*message\.timeoutMs\s*,\s*([\d_]+)\s*\)/);
+  assert(match, 'the supervisor must still bound its deadline with Math.min(message.timeoutMs, <ms>)');
+  const ceilingMs = Number(match[1].replaceAll('_', ''));
+  const largestCapMs = Math.max(...Object.values(reviewTimeoutSeconds)) * 1000;
+  assert(
+    ceilingMs >= largestCapMs,
+    `the supervisor ceiling ${ceilingMs}ms is below the largest review cap ${largestCapMs}ms`
+  );
 });
 test('usage is read without creating a task, unknown percentages stay unknown, and concurrent reads share one request', async () => {
   const reader = new CodexUsageReader({ executable: () => executable, timeoutMs: 3000 });

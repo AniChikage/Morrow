@@ -75,8 +75,9 @@ const outputTail = 4000;
  * How long one review may run, by kind. A release candidate covers up to 30 items and has to read
  * the changes made since each one's own review, which the item cap cut short on the author's own
  * project. The value is copied onto the row at creation and the row stays the timer's only source.
+ * Exported so a test can hold the CLI supervisor's own ceiling above the largest cap here.
  */
-const reviewTimeoutSeconds: Record<NonNullable<Verification['kind']>, number> = { item: 300, release: 480 };
+export const reviewTimeoutSeconds: Record<NonNullable<Verification['kind']>, number> = { item: 300, release: 480 };
 /** Reported with the cap that actually applied, so a stopped review says which limit it reached. */
 const capReached = (seconds: number) => `独立复核达到 ${Math.round(seconds / 60)} 分钟上限，结果保留未知`;
 const itemList = (value: unknown): string[] => {

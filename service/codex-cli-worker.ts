@@ -30,7 +30,8 @@ process.once(
   'message',
   (message: { executable: string; args: string[]; cwd: string; prompt: string; timeoutMs: number }) => {
     if (stopping || exited) return;
-    deadline = setTimeout(stop, Math.min(message.timeoutMs, 300_000));
+    // The row's `timeoutSeconds` is the real cap (5 or 8 minutes); this only bounds a bogus `timeoutMs`.
+    deadline = setTimeout(stop, Math.min(message.timeoutMs, 900_000));
     child = spawn(message.executable, message.args, {
       cwd: message.cwd,
       env: process.env,

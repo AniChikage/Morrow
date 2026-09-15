@@ -18,7 +18,7 @@ App 必须保持运行。连接不兼容、任务未加载或发送回执不明�
 
 已有只读和工作区写入选项保留，自动轮次分别发送明确的只读或工作区写入沙箱，以及 `on-request` / `auto_review`；启动前仍检查现有范围。App 会合并保留的工作区及可视化目录，不能把传入 `writableRoots` 当作精确的最终目录清单。明确发送的设置可能延续到后续轮次，普通聊天也应以 App 当前设置为准。
 
-独立复核使用官方 `codex exec` 的一次性只读会话：`--sandbox read-only`、`approval_policy="never"`、`--ephemeral`、`--ignore-user-config`、关闭 Web 搜索，不携带执行者的 Morrow grant 或 App 本地工具管道。它检查源文件、原始证据和命令记录，不承诺浏览器或 App 动态工具能力。实际工具记录、正常完成事件和 CLI 成功退出必须同时满足；失败、输出超限或文件变更均不能判为通过。服务关闭或被强制结束时，独立 supervisor 会停止自己拥有的 CLI 进程组；单次另有最长 5 分钟硬上限。复核不使用或修改原执行任务。
+独立复核使用官方 `codex exec` 的一次性只读会话：`--sandbox read-only`、`approval_policy="never"`、`--ephemeral`、`--ignore-user-config`、关闭 Web 搜索，不携带执行者的 Morrow grant 或 App 本地工具管道。它检查源文件、原始证据和命令记录，不承诺浏览器或 App 动态工具能力。实际工具记录、正常完成事件和 CLI 成功退出必须同时满足；失败、输出超限或文件变更均不能判为通过。服务关闭或被强制结束时，独立 supervisor 会停止自己拥有的 CLI 进程组；单次时长以复核记录自己的上限为准（事项 5 分钟、上线 8 分钟），supervisor 只在其后兜一个 15 分钟硬上限，防住异常的超时值。复核不使用或修改原执行任务。
 
 ## 原生能力
 
