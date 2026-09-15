@@ -140,9 +140,10 @@ test('the release and item review prompt text is unchanged', async () => {
     const rows = s.store.all<Verification>('loop_verifications');
     const release = rows.find((row) => row.kind === 'release')!;
     const item = rows.find((row) => row.kind !== 'release')!;
+    // Deliberate: the release prompt now states its own 8-minute cap instead of the item's 5.
     assert.equal(
       digest(stable(release.prompt, s.path)),
-      '94e6b996762f1b51a2802ca154fe7181f7ce7020e1a0c107b37abaa717bdb5af'
+      'e54dc1f9cb10bc96a86a4985ecd4e014d477109eb3f4c0731a3e95fb4274fb33'
     );
     assert.equal(
       digest(stable(item.prompt, s.path)),

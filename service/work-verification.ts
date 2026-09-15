@@ -398,6 +398,7 @@ export class WorkVerification {
         progress: JSON.stringify(item ? { title: item.title, summary: item.summary } : null),
         version: JSON.stringify(version),
         evidence: JSON.stringify(evidence),
+        minutes: Math.round(reviewTimeoutSeconds.item / 60),
       })
     );
     if (Buffer.byteLength(prompt) > 512 * 1024)
@@ -506,6 +507,7 @@ export class WorkVerification {
         reviewed: JSON.stringify(reviewed),
         checks: JSON.stringify(checks),
         subject: JSON.stringify(subject),
+        minutes: Math.round(reviewTimeoutSeconds.release / 60),
       })
     );
     if (Buffer.byteLength(prompt) > 512 * 1024)
