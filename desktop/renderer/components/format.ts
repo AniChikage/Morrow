@@ -43,6 +43,11 @@ export function shortId(value: string) {
 export const usageWindowLabels: Record<UsageWindow, string> = { '5h': '5 小时', weekly: '每周' };
 export const usageWindowLabel = (value: string) => usageWindowLabels[value as UsageWindow] || value;
 const clockFormatter = new Intl.DateTimeFormat('zh-CN', { hour: '2-digit', minute: '2-digit', hour12: false });
+/** Wall-clock HH:MM, for lines that say how old the data on screen is. */
+export function formatClock(value: string) {
+  const date = new Date(value);
+  return !value || Number.isNaN(date.getTime()) ? '时间未知' : clockFormatter.format(date);
+}
 const sameDay = (a: Date, b: Date) =>
   a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate();
 /** Reset moments read relative to today ("今天 21:00", "明天 08:00"); other days fall back to the date. */

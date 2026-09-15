@@ -4,7 +4,7 @@ import { act, cleanup, renderHook, waitFor } from '@testing-library/react';
 import type { ReactNode } from 'react';
 import { emptySnapshot, type ConnectionInfo, type DesktopAPI, type Snapshot } from '../../shared/types';
 
-const api = { getState: vi.fn(), getConnection: vi.fn() } as unknown as DesktopAPI;
+const api = { getState: vi.fn(), getConnection: vi.fn(), connect: vi.fn() } as unknown as DesktopAPI;
 window.morrow = api;
 const { WorkspaceProvider, useWorkspace } = await import('./workspace');
 const state = (id: string): Snapshot => ({
@@ -32,6 +32,7 @@ function deferred<T>() {
 }
 const getState = vi.mocked(api.getState);
 const getConnection = vi.mocked(api.getConnection);
+const connect = vi.mocked(api.connect);
 async function setup() {
   const hook = renderHook(useWorkspace, {
     wrapper: ({ children }: { children: ReactNode }) => <WorkspaceProvider>{children}</WorkspaceProvider>,
@@ -42,6 +43,7 @@ async function setup() {
 beforeEach(() => {
   getState.mockReset().mockResolvedValue(state('initial'));
   getConnection.mockReset().mockResolvedValue(local);
+  connect.mockReset().mockResolvedValue(local);
 });
 afterEach(() => {
   cleanup();
@@ -188,6 +190,72 @@ describe('workspace asynchronous state', () => {
     expect(result.current.snapshot.projects[0].id).toBe('remote-project');
     expect(result.current.error).toBe('');
     expect(result.current.busy).toBe(false);
+  });
+
+  it('keeps the last confirmed snapshot but marks it stale from the moment it was read', async () => {
+    const { result } = await setup();
+    expect(result.current.stale).toBe(false);
+    const synced = result.current.lastSyncedAt;
+    expect(synced).not.toBe('');
+    getState.mockRejectedValue(new Error('service down'));
+    getConnection.mockResolvedValue({ ...local, connected: false, error: 'service down' });
+    await act(async () => {
+      await result.current.refresh();
+    });
+    expect(result.current.snapshot.projects[0].id).toBe('initial');
+    expect(result.current.stale).toBe(true);
+    expect(result.current.lastSyncedAt).toBe(synced);
+    await act(async () => {
+      await result.current.refresh();
+    });
+    // Repeated failures must not move the timestamp forward; it dates the data, not the attempt.
+    expect(result.current.lastSyncedAt).toBe(synced);
+    getState.mockResolvedValue(state('initial'));
+    getConnection.mockResolvedValue(local);
+    await act(async () => {
+      await result.current.refresh();
+    });
+    expect(result.current.stale).toBe(false);
+  });
+
+  it('never calls an empty workspace stale, because no read ever succeeded', async () => {
+    getState.mockRejectedValue(new Error('cold start failed'));
+    getConnection.mockResolvedValue({ ...local, connected: false, error: 'cold start failed' });
+    const { result } = await setup();
+    expect(result.current.stale).toBe(false);
+    expect(result.current.lastSyncedAt).toBe('');
+    expect(result.current.snapshot.projects).toEqual([]);
+    expect(result.current.error).toBe('cold start failed');
+  });
+
+  it('raises a dismissed polling failure only once, but reconnecting and a new failure both speak up', async () => {
+    const { result } = await setup();
+    getState.mockRejectedValue(new Error('service down'));
+    getConnection.mockResolvedValue({ ...local, connected: false, error: 'service down' });
+    await act(async () => {
+      await result.current.refresh();
+    });
+    expect(result.current.error).toBe('service down');
+    act(() => result.current.dismissError());
+    await act(async () => {
+      await result.current.refresh();
+    });
+    expect(result.current.error).toBe('');
+    expect(result.current.stale).toBe(true);
+    getConnection.mockResolvedValue({ ...local, connected: false, error: 'token unreadable' });
+    await act(async () => {
+      await result.current.refresh();
+    });
+    expect(result.current.error).toBe('token unreadable');
+    getState.mockResolvedValue(state('restarted'));
+    getConnection.mockResolvedValue(local);
+    await act(async () => {
+      expect(await result.current.reconnect()).toBe(true);
+    });
+    expect(connect).toHaveBeenCalledWith(local.config);
+    expect(result.current.snapshot.projects[0].id).toBe('restarted');
+    expect(result.current.stale).toBe(false);
+    expect(result.current.error).toBe('');
   });
 
   it('both polling failures resolve without unhandled rejection and report disconnected status', async () => {
