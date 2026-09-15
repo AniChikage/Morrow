@@ -178,6 +178,49 @@ test('native execution seals real command fields and rejects stale or forged evi
     await f.cleanup();
   }
 });
+test('a streaming command is observed per delta without rereading the capture table or resealing the source', async () => {
+  const f = await fixture();
+  try {
+    const prepared = await f.call('execution.prepare', { command: f.command });
+    const statements: string[] = [];
+    const prepare = f.store.db.prepare.bind(f.store.db);
+    f.store.db.prepare = ((sql: string) => {
+      statements.push(sql);
+      return prepare(sql);
+    }) as typeof f.store.db.prepare;
+    try {
+      // Exactly what one 200-delta turn asks of the capture: `queueSnapshot` per IPC delta, then
+      // the projection `ingest` hands it the item that changed.
+      for (let index = 0; index < 200; index++) {
+        assert.equal(f.engine.loop.executions.observing(f.run.sessionId), true);
+        f.emitCommand('streamed', 'inProgress', { aggregatedOutput: `line ${index}` });
+      }
+      assert.equal(f.engine.loop.executions.observing(f.run.sessionId), true);
+      f.emitCommand('streamed', 'completed');
+      assert.equal(f.engine.loop.executions.observing(f.run.sessionId), false);
+    } finally {
+      f.store.db.prepare = prepare;
+    }
+    const reads = statements.filter((sql) => sql.includes('loop_executions') && sql.startsWith('SELECT'));
+    // Never the whole table, which is what `observing` and `observe` each used to read per delta.
+    assert.deepEqual(
+      reads.filter((sql) => !sql.includes('WHERE')),
+      []
+    );
+    // The open-capture list is read once per capture write — prepare, start, capture — and the
+    // capture row itself once per delta rather than once per item.
+    assert.equal(reads.filter((sql) => sql.includes("json_extract(data,'$.threadId')")).length, 3);
+    assert.equal(reads.filter((sql) => sql.endsWith('WHERE id=?')).length, 201);
+    const evidence = (await f.call('execution.read', { id: prepared.id })).evidence;
+    // Both seals matched: the one taken as the command started and the one taken as it ended.
+    assert.equal(evidence.data.boundVersion, true);
+    assert.equal(evidence.data.output, '1 test passed');
+    assert.equal(evidence.data.exitCode, 0);
+  } finally {
+    await f.cleanup();
+  }
+});
+
 test('native null is complete empty output, while missing, invalid and truncated output stay incomplete', async () => {
   const f = await fixture();
   try {

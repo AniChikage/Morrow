@@ -71,7 +71,7 @@ export class Store {
       "CREATE INDEX IF NOT EXISTS items_project ON items(json_extract(data,'$.projectId')); CREATE INDEX IF NOT EXISTS events_project ON events(json_extract(data,'$.projectId')); CREATE INDEX IF NOT EXISTS events_item ON events(json_extract(data,'$.itemId')); CREATE INDEX IF NOT EXISTS runs_project ON runs(json_extract(data,'$.projectId')); CREATE INDEX IF NOT EXISTS run_io_run ON run_io(json_extract(data,'$.runId'));"
     );
     this.db.exec(
-      "CREATE INDEX IF NOT EXISTS native_items_thread ON native_items(json_extract(data,'$.threadId')); CREATE INDEX IF NOT EXISTS native_outbox_thread ON native_outbox(json_extract(data,'$.threadId')); CREATE INDEX IF NOT EXISTS native_turns_thread ON native_turns(json_extract(data,'$.threadId')); "
+      "CREATE INDEX IF NOT EXISTS native_items_thread ON native_items(json_extract(data,'$.threadId')); CREATE INDEX IF NOT EXISTS native_outbox_thread ON native_outbox(json_extract(data,'$.threadId')); CREATE INDEX IF NOT EXISTS native_turns_thread ON native_turns(json_extract(data,'$.threadId')); CREATE INDEX IF NOT EXISTS loop_executions_thread ON loop_executions(json_extract(data,'$.threadId'));"
     );
     this.db.exec(
       "CREATE INDEX IF NOT EXISTS app_resumes_channel ON app_resumes(json_extract(data,'$.channelId')); CREATE INDEX IF NOT EXISTS app_resumes_thread ON app_resumes(json_extract(data,'$.threadId')); CREATE INDEX IF NOT EXISTS runs_native_turn ON runs(json_extract(data,'$.nativeTurnId'));"
@@ -101,13 +101,15 @@ export class Store {
       "CREATE INDEX IF NOT EXISTS native_events_thread_revision ON native_events(json_extract(data,'$.threadId'), CAST(json_extract(data,'$.revision') AS INTEGER))"
     );
     // The scheduler ticks once a second and asks each of these tables for the few rows in a state
-    // that needs work; without these it read every row of every one of them, every second.
+    // that needs work; without these it read every row of every one of them, every second. An
+    // execution capture is asked for far more often still — once per native IPC delta.
     for (const [table, column] of [
       ['controls', 'enabled'],
       ['loop_releases', 'status'],
       ['loop_verifications', 'status'],
       ['loop_verifications', 'interruptPending'],
       ['loop_finalizations', 'status'],
+      ['loop_executions', 'status'],
       ['upgrades', 'phase'],
     ] as const)
       this.db.exec(

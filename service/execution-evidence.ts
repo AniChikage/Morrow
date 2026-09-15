@@ -65,8 +65,35 @@ export function executionCommand(raw: Record<string, any>): string {
 
 export class ExecutionEvidence {
   readonly loop: ProjectWorkLoop;
+  /**
+   * The captures of a native task that are still waiting for, or watching, their command. Held in
+   * memory because `queueSnapshot` asks whether a task is being observed on every single IPC delta
+   * and `ingest` on every projection, while the answer changes only when a capture is written — so
+   * every write drops the entry of the task it belongs to and the next question reads it again.
+   */
+  open = new Map<string, ExecutionCapture[]>();
   constructor(loop: ProjectWorkLoop) {
     this.loop = loop;
+  }
+  /** Stores a capture and invalidates what its task had memoised. */
+  write(row: ExecutionCapture): ExecutionCapture {
+    this.open.delete(row.threadId);
+    return this.loop.store.put('loop_executions', row);
+  }
+  /** One task's open captures, chosen through `loop_executions_thread` rather than by reading the table. */
+  openCaptures(threadId: string): ExecutionCapture[] {
+    let rows = this.open.get(threadId);
+    if (!rows)
+      this.open.set(
+        threadId,
+        (rows = this.loop.store.db
+          .prepare(
+            "SELECT data FROM loop_executions WHERE json_extract(data,'$.threadId')=? AND json_extract(data,'$.status') IN ('prepared','running') ORDER BY rowid"
+          )
+          .all(threadId)
+          .map((row: any) => JSON.parse(row.data) as ExecutionCapture))
+      );
+    return rows;
   }
   prepare(scope: Scope, input: Record<string, unknown>) {
     keys(input, ['command']);
@@ -103,21 +130,20 @@ export class ExecutionEvidence {
         (this.loop.store.db.prepare('SELECT COALESCE(MAX(rowid),0) AS n FROM native_items').get() as any).n
       ),
     };
-    this.loop.store.put('loop_executions', row);
+    this.write(row);
     return row;
   }
   observing(threadId: string) {
-    return this.loop.store
-      .all<ExecutionCapture>('loop_executions')
-      .some((row) => row.threadId === threadId && ['prepared', 'running'].includes(row.status));
+    return this.openCaptures(threadId).length > 0;
   }
   observe(threadId: string, items: NativeItem[]) {
-    const pending = this.loop.store
-      .all<ExecutionCapture>('loop_executions')
-      .filter((row) => row.threadId === threadId && ['prepared', 'running'].includes(row.status));
-    for (const record of pending)
+    const pending = this.openCaptures(threadId);
+    if (!pending.length) return;
+    for (const record of pending) {
+      // Read once per capture rather than once per item: inside this loop only its own writes
+      // change the row, and a streaming command brings hundreds of items past it.
+      let row = this.loop.store.get<ExecutionCapture>('loop_executions', record.id)!;
       for (const item of items) {
-        const row = this.loop.store.get<ExecutionCapture>('loop_executions', record.id)!;
         if (
           !['prepared', 'running'].includes(row.status) ||
           item.type !== 'commandExecution' ||
@@ -136,6 +162,9 @@ export class ExecutionEvidence {
         try {
           if (typeof raw.cwd !== 'string') throw new Error('原生命令目录缺失');
           if (realpathSync(raw.cwd) !== row.cwd) error = '原生命令目录与项目不同';
+          // The seal reads every source file, so it is taken at exactly the two deltas that matter
+          // per capture — the one that starts the command, while the row is still `prepared`, and
+          // the one that ends it — and never on the hundreds of streaming deltas in between.
           if ((row.status === 'prepared' || ended) && sourceVersion(row.cwd).digest !== row.version.digest)
             error = '准备后或执行期间源文件发生变化';
         } catch {
@@ -143,7 +172,7 @@ export class ExecutionEvidence {
         }
         if (!ended) {
           if (row.status === 'prepared')
-            this.loop.store.put('loop_executions', {
+            row = this.write({
               ...row,
               status: 'running',
               nativeItemId: item.id,
@@ -195,7 +224,7 @@ export class ExecutionEvidence {
           digest: createHash('sha256').update(JSON.stringify(data)).digest('hex'),
         };
         this.loop.store.put('loop_evidence', evidence);
-        this.loop.store.put('loop_executions', {
+        const captured = this.write({
           ...row,
           status: 'captured',
           nativeItemId: item.id,
@@ -211,7 +240,9 @@ export class ExecutionEvidence {
           { evidenceId: evidence.id, boundVersion: !error },
           'system'
         );
+        row = captured;
       }
+    }
   }
   read(scope: Scope, input: Record<string, unknown>) {
     keys(input, ['id']);
@@ -221,12 +252,11 @@ export class ExecutionEvidence {
     return { ...row, evidence: row.evidenceId ? this.loop.store.get('loop_evidence', row.evidenceId) : undefined };
   }
   recover() {
-    for (const row of this.loop.store.all<ExecutionCapture>('loop_executions'))
-      if (['prepared', 'running'].includes(row.status))
-        this.loop.store.put('loop_executions', {
-          ...row,
-          status: 'unknown',
-          error: '服务重启，执行期间源版本无法完整核验；请重新准备并执行',
-        });
+    for (const row of this.loop.store.byStatus<ExecutionCapture>('loop_executions', ['prepared', 'running']))
+      this.write({
+        ...row,
+        status: 'unknown',
+        error: '服务重启，执行期间源版本无法完整核验；请重新准备并执行',
+      });
   }
 }
