@@ -11,6 +11,7 @@ import {
   GripVertical,
   Copy,
 } from 'lucide-react';
+import { readPreference, writePreference } from '../state/preferences';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { statusLabel } from './format';
@@ -171,19 +172,9 @@ function CodeBlock({ children }: { children: ReactNode }) {
   );
 }
 export function PropertyPanel({ children }: { children: ReactNode }) {
-  const [width, setWidth] = useState(() => {
-    try {
-      return Math.max(
-        240,
-        Math.min(
-          400,
-          Number(localStorage.getItem('morrow:inspector-width') ?? localStorage.getItem('nh:inspector-width')) || 280
-        )
-      );
-    } catch {
-      return 280;
-    }
-  });
+  const [width, setWidth] = useState(() =>
+    Math.max(240, Math.min(400, Number(readPreference('morrow:inspector-width', 'nh:inspector-width')) || 280))
+  );
   const widthRef = useRef(width);
   widthRef.current = width;
   useEffect(() => {
@@ -199,9 +190,7 @@ export function PropertyPanel({ children }: { children: ReactNode }) {
       node.removeEventListener('pointermove', move);
       node.removeEventListener('pointerup', end);
       node.removeEventListener('pointercancel', end);
-      try {
-        localStorage.setItem('morrow:inspector-width', String(widthRef.current));
-      } catch {}
+      writePreference('morrow:inspector-width', String(widthRef.current));
     };
     node.addEventListener('pointermove', move);
     node.addEventListener('pointerup', end);
@@ -224,9 +213,7 @@ export function PropertyPanel({ children }: { children: ReactNode }) {
             e.preventDefault();
             const next = Math.max(240, Math.min(400, width + (e.key === 'ArrowLeft' ? 16 : -16)));
             setWidth(next);
-            try {
-              localStorage.setItem('morrow:inspector-width', String(next));
-            } catch {}
+            writePreference('morrow:inspector-width', String(next));
           }
         }}
       >

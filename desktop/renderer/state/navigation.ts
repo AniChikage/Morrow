@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { Route } from '../../shared/types';
+import { readPreference, writePreference } from './preferences';
 
 interface TabSession {
   id: string;
@@ -33,9 +34,7 @@ function validRoute(value: unknown): value is Route {
 }
 function readSession(scope: string): Session {
   try {
-    const value = JSON.parse(
-      localStorage.getItem('morrow:tabs:' + scope) ?? localStorage.getItem('nh:tabs:' + scope) ?? 'null'
-    );
+    const value = JSON.parse(readPreference('morrow:tabs:' + scope, 'nh:tabs:' + scope) ?? 'null');
     const validTabs =
       Array.isArray(value?.tabs) &&
       value.tabs.every(
@@ -97,11 +96,7 @@ export function useNavigation(scope: string | null) {
       if (changed === previous) return;
       const next: ScopedSession = { ...changed, scope, hydrated: true };
       sessionRef.current = next;
-      try {
-        localStorage.setItem('morrow:tabs:' + scope, JSON.stringify(next.navigation));
-      } catch {
-        /* Navigation still works when storage is unavailable. */
-      }
+      writePreference('morrow:tabs:' + scope, JSON.stringify(next.navigation));
       setSession(next);
     },
     [scope]

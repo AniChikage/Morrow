@@ -18,6 +18,7 @@ import type { Channel, ProjectUsage, WorkItem } from '../../shared/types';
 import type { FeatureProps } from './types';
 import { Button, EmptyState, IconButton, Markdown, PropertyPanel, StatusIcon } from '../components/ui';
 import { formatDate, kindLabel, statusLabel } from '../components/format';
+import { readPreference, writePreference } from '../state/preferences';
 import {
   featureNumber,
   featureOwnerLabel,
@@ -41,9 +42,7 @@ interface ProjectPreferences {
 const defaults: ProjectPreferences = { layout: 'board', status: 'all', channel: 'all' };
 function readPreferences(id: string): ProjectPreferences {
   try {
-    const stored = JSON.parse(
-      localStorage.getItem(`morrow.project-view.${id}`) || localStorage.getItem(`nohuman.project-view.${id}`) || '{}'
-    );
+    const stored = JSON.parse(readPreference(`morrow.project-view.${id}`, `nohuman.project-view.${id}`) || '{}');
     return {
       layout: stored.layout === 'list' ? 'list' : 'board',
       status: typeof stored.status === 'string' ? stored.status : 'all',
@@ -116,11 +115,7 @@ export function ProjectView(props: FeatureProps & { id: string }) {
   const changePreferences = (patch: Partial<ProjectPreferences>) =>
     setPreferences((previous) => {
       const next = { ...previous, ...patch };
-      try {
-        localStorage.setItem(`morrow.project-view.${id}`, JSON.stringify(next));
-      } catch {
-        /* Keep this view preference for the current session. */
-      }
+      writePreference(`morrow.project-view.${id}`, JSON.stringify(next));
       return next;
     });
   const queryText = query.trim().toLocaleLowerCase();
