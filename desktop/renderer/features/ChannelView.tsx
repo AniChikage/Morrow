@@ -68,6 +68,31 @@ const runUsage = (run: Run) =>
         .join(' · ')
     : '额度消耗未记录';
 
+function LogCommand({ command }: { command: NonNullable<Run['log']>['commands'][number] }) {
+  const [expanded, setExpanded] = useState(false);
+  const firstLine = command.command.split(/\r\n|\r|\n/, 1)[0];
+  const characters = Array.from(firstLine);
+  const preview = characters.length > 160 ? characters.slice(0, 159).join('') + '…' : firstLine;
+  const expandable = command.command !== firstLine || characters.length > 160;
+  return (
+    <li>
+      <div className="log-command-line">
+        <code>{preview || '（空首行）'}</code>
+        <span>
+          {command.exitCode === undefined ? stateLabel(command.status) : `退出 ${command.exitCode}`}
+          {command.sealed ? ' · 已封存' : ' · 未封存'}
+        </span>
+        {expandable && (
+          <button type="button" aria-expanded={expanded} onClick={() => setExpanded(!expanded)}>
+            {expanded ? '收起' : '展开'}
+          </button>
+        )}
+      </div>
+      {expanded && expandable && <pre className="log-command-full">{command.command}</pre>}
+    </li>
+  );
+}
+
 function LogEntry({
   run,
   api,
@@ -145,15 +170,9 @@ function LogEntry({
           <h4>做了什么</h4>
           {!!log?.files.length && <p className="log-files">{log.files.join(' · ')}</p>}
           {log?.commands.length ? (
-            <ul className="log-commands">
+            <ul className="log-commands" aria-label="本轮命令">
               {log.commands.map((command) => (
-                <li key={command.id}>
-                  <code>{command.command}</code>
-                  <span>
-                    {command.exitCode === undefined ? stateLabel(command.status) : `退出 ${command.exitCode}`}
-                    {!command.sealed && ' · 未封存'}
-                  </span>
-                </li>
+                <LogCommand key={command.id} command={command} />
               ))}
             </ul>
           ) : (
