@@ -106,6 +106,8 @@ type Binding = {
   rawSyncError?: string;
   createdByMorrow?: boolean;
   createdByNoHuman?: boolean;
+  /** Ids of the finished context compactions already announced on this channel; the last 50. */
+  compactionsSeen?: string[];
 };
 type StoredThread = NativeSnapshot & {
   id: string;
@@ -281,6 +283,28 @@ function activeTurn(state: Record<string, any>): any | undefined {
 }
 /** Whether the task is mid-turn, the same reading `summary` reports as `running`. */
 const streaming = (state: Record<string, any>) => !!activeTurn(state) || state.threadRuntimeStatus?.type === 'active';
+/**
+ * How full the task's context is, as the App itself reports it on the synced state. Any missing or
+ * non-finite field means the reading is unknown rather than zero, and an unknown reading never
+ * compacts anything.
+ */
+export function contextUsage(
+  state: Record<string, any>
+): { used: number; window: number; percent: number } | undefined {
+  const info = state?.latestTokenUsageInfo;
+  const used = info?.last?.totalTokens,
+    window = info?.modelContextWindow;
+  if (!Number.isFinite(used) || !Number.isFinite(window) || window <= 0) return undefined;
+  return { used, window, percent: (used / window) * 100 };
+}
+/** The share of the context window at which a task is compacted at its next turn boundary. */
+export const compactContextPercent = 65;
+/** The ids of the compactions the task has finished, which is what recognizes a new one. */
+const completedCompactions = (state: Record<string, any>): string[] =>
+  nativeTurns(state)
+    .flatMap((turn) => (Array.isArray(turn.items) ? turn.items : []))
+    .filter((item: any) => item?.type === 'contextCompaction' && item.completed === true)
+    .map((item: any) => String(item.id));
 function summary(snapshot: NativeSnapshot): NativeThreadSummary {
   const state = snapshot.state;
   const active = activeTurn(state);
@@ -397,6 +421,10 @@ export class NativeConversations {
   checkpointAt = new Map<string, number>();
   dirtyThreads = new Set<string>();
   dirtyTurns = new Set<string>();
+  /** Threads with a compaction already requested, so the two turn boundaries never ask twice. */
+  private compacting = new Set<string>();
+  /** How long a turn start waits for a requested compaction to finish; a test lowers it. */
+  compactWaitMs = 180_000;
   appVersion: { value: Promise<string>; at: number } | null = null;
   closed = false;
   store: Store;
@@ -802,6 +830,10 @@ export class NativeConversations {
     const removedItemIds = [...previousItems.values()]
       .filter((item) => item.present && !itemIds.has(item.id))
       .map((item) => item.id);
+    // A compaction the App finished — its own automatic one, a person's /compact in the App, or the
+    // one Morrow asked for at a turn boundary — is announced once per item. The dedupe lives on the
+    // binding row, so no event scan is needed and re-reading the same task stays quiet.
+    const compacted = items.filter((item) => item.type === 'contextCompaction' && item.raw?.completed === true);
     // A checkpoint rewrites the whole thread state — hundreds of KiB on a long task — so a turn that
     // is still streaming gets one at most every 30 s and the IPC journal carries every revision in
     // between for recovery. The moment the task stops being busy it becomes durable immediately, and
@@ -849,13 +881,24 @@ export class NativeConversations {
               raw,
             });
       }
-      for (const binding of this.store.bindingsForThread<Binding>(safe.threadId))
+      for (const binding of this.store.bindingsForThread<Binding>(safe.threadId)) {
+        const announced = binding.compactionsSeen ?? [];
+        const fresh = compacted.filter((item) => !announced.includes(item.id));
+        for (const item of fresh)
+          this.engine.event(
+            binding.id,
+            '',
+            'system',
+            `Codex App 已压缩任务上下文（${item.raw?.source === 'automatic' ? '自动' : '手动'}）`
+          );
         this.store.put('native_bindings', {
           ...binding,
           lastSyncedAt: safe.syncedAt,
           syncError: '',
           rawSyncError: undefined,
+          ...(fresh.length ? { compactionsSeen: [...announced, ...fresh.map((item) => item.id)].slice(-50) } : {}),
         });
+      }
       for (const entry of this.store
         .nativeRows<Outbox>('native_outbox', safe.threadId)
         .filter((row) => ['pending', 'unknown'].includes(row.state))) {
@@ -1461,6 +1504,93 @@ export class NativeConversations {
     });
     return result;
   }
+  /**
+   * Compaction at a turn boundary. A task whose context reached `compactContextPercent` is compacted
+   * before the next turn starts and again once a turn is settled, and the work then continues by
+   * itself — what this replaces is a person having to stop the turn in the App and type /compact,
+   * which Morrow read as a human interrupt and left the channel paused for.
+   *
+   * A turn is never interrupted for this: `interrupt` is not called, a busy task is left alone, and
+   * a turn that grows past the threshold mid-way is left to finish. A compaction that is refused or
+   * does not finish in time never blocks the turn either — it starts as usual, and the App's own
+   * automatic compaction remains the backstop.
+   *
+   * Returns whether a compaction was requested, which is when the caller has to re-read the thread.
+   */
+  private async compactIfNeeded(
+    binding: Binding,
+    snapshot: NativeSnapshot,
+    channel: Channel,
+    { wait }: { wait: boolean }
+  ): Promise<boolean> {
+    const compact = this.transport.compact?.bind(this.transport);
+    const before = contextUsage(snapshot.state);
+    const threadId = binding.threadId;
+    if (
+      !compact ||
+      !before ||
+      before.percent < compactContextPercent ||
+      streaming(snapshot.state) ||
+      this.compacting.has(threadId)
+    )
+      return false;
+    this.compacting.add(threadId);
+    try {
+      const seen = new Set(completedCompactions(snapshot.state));
+      this.engine.event(
+        channel.id,
+        '',
+        'system',
+        `任务上下文已用 ${Math.round(before.percent)}%（${before.used} / ${before.window}），先压缩再继续。`
+      );
+      await compact(threadId);
+      if (!wait) return true;
+      let after: { used: number; window: number; percent: number } | undefined;
+      const deadline = Date.now() + this.compactWaitMs;
+      while (!this.closed) {
+        const remaining = deadline - Date.now();
+        if (remaining <= 0) break;
+        await new Promise((done) => setTimeout(done, Math.min(1000, remaining)));
+        const state = (await this.transport.readThread(threadId)).state;
+        const usage = contextUsage(state);
+        if (
+          !streaming(state) &&
+          (completedCompactions(state).some((id) => !seen.has(id)) || (usage && usage.used < before.used))
+        ) {
+          // What the App reports now; a task that stopped reporting usage keeps the reading it had.
+          after = usage ?? before;
+          break;
+        }
+      }
+      if (this.closed) return true;
+      if (!after) throw new Error('Codex App 未在等待时间内完成压缩');
+      this.engine.audit({
+        projectId: binding.projectId,
+        channelId: channel.id,
+        actor: 'system',
+        action: 'native.compacted',
+        text: '已在轮次边界自动压缩 Codex App 任务的上下文。',
+        after: { before: before.used, after: after.used, window: before.window, percent: before.percent },
+      });
+      this.engine.event(
+        channel.id,
+        '',
+        'system',
+        `上下文已压缩：${Math.round(before.percent)}% → ${Math.round(after.percent)}%，继续本轮工作。`
+      );
+    } catch (error) {
+      logError('native.compact.failed', error, { threadId });
+      this.engine.event(
+        channel.id,
+        '',
+        'system',
+        `上下文压缩未完成（${connectionDetail(errorText(error)) || '原因未知'}），本轮照常开始。`
+      );
+    } finally {
+      this.compacting.delete(threadId);
+    }
+    return true;
+  }
   async startScheduled(id: string, scheduled: boolean) {
     const { channel: opening, project } = this.channel(id);
     const binding = this.bound(id);
@@ -1469,21 +1599,35 @@ export class NativeConversations {
     if (this.starting.has(id) || this.scheduled.has(id)) throw new APIError(409, '该频道正在执行原生轮次');
     this.starting.add(id);
     try {
-      const snapshot = await this.sync(binding.threadId);
+      let snapshot = await this.sync(binding.threadId);
       // `sync` awaits the App, and ingesting that very snapshot — or a PATCH, or feedback arriving —
       // can edit this channel meanwhile. Everything below therefore reads the row as it is now and
       // writes back only the fields that starting a turn owns.
-      const channel = this.store.get<Channel>('channels', id)!;
+      let channel = this.store.get<Channel>('channels', id)!;
+      /** A busy task: a scheduled start waits 5 s and re-checks, a manual one says so. */
+      const parkWhileBusy = () => {
+        if (!scheduled) throw new APIError(409, 'Codex App 正在执行此任务，请等待当前轮次完成');
+        this.store.put('channels', {
+          ...channel,
+          status: 'waiting',
+          nextRunAt: new Date(Date.now() + 5000).toISOString(),
+        });
+      };
       if (activeTurn(snapshot.state) || snapshot.state.threadRuntimeStatus?.type === 'active') {
-        if (scheduled) {
-          this.store.put('channels', {
-            ...channel,
-            status: 'waiting',
-            nextRunAt: new Date(Date.now() + 5000).toISOString(),
-          });
+        parkWhileBusy();
+        return;
+      }
+      // The first boundary: a nearly full context is compacted before the model, permissions and
+      // prompt of this turn are read, so the run below starts from the compacted task.
+      if (await this.compactIfNeeded(binding, snapshot, channel, { wait: true })) {
+        snapshot = await this.sync(binding.threadId);
+        channel = this.store.get<Channel>('channels', id)!;
+        // A compaction still running after `compactWaitMs` leaves the task busy — the same reading
+        // as above, answered the same way rather than by failing this turn.
+        if (streaming(snapshot.state)) {
+          parkWhileBusy();
           return;
         }
-        throw new APIError(409, 'Codex App 正在执行此任务，请等待当前轮次完成');
       }
       // Native channels inherit App settings. Narrowed channels also verify the existing scope,
       // because the App merges its retained workspace roots into workspaceWrite requests.
@@ -1629,6 +1773,16 @@ export class NativeConversations {
         );
       if (turn.status === 'completed') this.engine.completeAutonomousWork(active.run, final, wasEnabled);
       this.scheduled.delete(id);
+      // The second boundary: a task left nearly full is compacted as soon as this turn is settled,
+      // so the next one usually finds it idle and compacted. Not awaited — the turn is over — and
+      // the `compacting` guard plus the busy check in `startScheduled` keep the two from asking
+      // twice: a start arriving while this compaction runs parks for 5 s and re-checks.
+      const binding = this.binding(id),
+        channel = this.store.get<Channel>('channels', id);
+      if (binding && channel && this.engine.control(id).enabled)
+        void this.compactIfNeeded(binding, snapshot, channel, { wait: false }).catch((error) =>
+          logError('native.compact.failed', error, { threadId: binding.threadId })
+        );
     }
   }
   isBusy(id: string) {
