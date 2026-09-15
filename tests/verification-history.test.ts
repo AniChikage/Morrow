@@ -2,6 +2,9 @@ import './harness/env.ts';
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { randomUUID } from 'node:crypto';
+import { symlinkSync } from 'node:fs';
+import { join } from 'node:path';
+import { clearSourceVersionCache } from '../service/source-version.ts';
 import { startIsolated } from './harness/service.ts';
 
 test('desktop work includes quiet subjects and pages all review history with preserved evidence and scoped cursors', async () => {
@@ -197,6 +200,53 @@ test('release review groups cannot evict quiet item reviews from the first page'
     for (const row of releases)
       assert.deepEqual(s.store.get('loop_verifications', row.id), JSON.parse(JSON.stringify(row)));
   } finally {
+    await s.cleanup();
+  }
+});
+
+test('an unreadable source version says why on the work page instead of quietly showing nothing current', async () => {
+  const s = await startIsolated();
+  try {
+    const itemId = randomUUID();
+    s.store.put('items', {
+      id: itemId,
+      projectId: s.project.id,
+      channelId: s.channel.id,
+      title: '需要复核的事项',
+      summary: '',
+      status: 'open',
+    });
+    s.store.put('loop_verifications', {
+      id: randomUUID(),
+      projectId: s.project.id,
+      channelId: s.channel.id,
+      itemId,
+      runId: 'run',
+      status: 'passed',
+      summary: '一次通过的复核',
+      evidenceIds: [],
+      subjectHash: 'unchanged',
+      version: { digest: 'sealed-source', files: 1 },
+      findings: [],
+      checks: [],
+      limitations: [],
+      createdAt: new Date().toISOString(),
+    });
+    const readable = await s.api('GET', `/api/projects/${s.project.id}/work`);
+    assert.equal(readable.sourceStale, undefined);
+    assert.equal(readable.sourceReason, undefined);
+    // A link inside the project takes the seal outside it, so no version can be read at all.
+    symlinkSync('/etc/hosts', join(s.path, 'outside-link'));
+    clearSourceVersionCache();
+    const stale = await s.api('GET', `/api/projects/${s.project.id}/work`);
+    assert.equal(stale.sourceStale, true);
+    assert.match(stale.sourceReason, /链接/);
+    assert.equal(stale.verifications.length, 1);
+    assert.equal(stale.verifications[0].current, false);
+    // This project directory is not a repository, so it has no cheap invalidation key and every
+    // reading — failure included — is taken fresh. `tests/source-version.test.ts` covers the cache.
+  } finally {
+    clearSourceVersionCache();
     await s.cleanup();
   }
 });

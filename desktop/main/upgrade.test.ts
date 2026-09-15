@@ -153,17 +153,28 @@ test('a person asking for the switch runs the same handover even while the daemo
 });
 
 test('identity and target mismatches stop the switch instead of relaunching', async () => {
+  // A fatal identity mismatch is written onto the daemon's record, not only logged here: a row left
+  // in `draining` refuses every entry point that starts work, with nobody left to move it along.
   const other = handover({}, state({ identity: { ...state().identity, bundlePath: '/Applications/Other.app' } }));
   await other.instance.check();
   expect(other.calls.acknowledge).not.toHaveBeenCalled();
   expect(other.calls.log).toHaveBeenCalledWith('待切换的服务不是本应用所在的安装包，已停止自动切换。');
+  expect(other.reasons()).toEqual(['待切换的服务不是本应用所在的安装包，已停止自动切换。']);
+  // Reported once, not on every five-second poll.
+  await other.instance.check();
+  await other.instance.check();
+  expect(other.calls.blocked).toHaveBeenCalledTimes(1);
   const elsewhere = handover({}, state({ identity: { ...state().identity, dataDirectory: '/tmp/other' } }));
   await elsewhere.instance.check();
   expect(elsewhere.calls.acknowledge).not.toHaveBeenCalled();
-  // A development run has no bundle of its own and never takes over.
+  expect(elsewhere.reasons()).toEqual(['待切换的服务使用了其他数据目录，已停止自动切换。']);
+  // A development run has no bundle of its own: it never takes over, and it never blocks the record
+  // either, since the installed app is the one that should complete the switch.
   const development = handover({ bundlePath: '' });
   await development.instance.check();
   expect(development.calls.acknowledge).not.toHaveBeenCalled();
+  expect(development.calls.blocked).not.toHaveBeenCalled();
+  expect(development.calls.log).toHaveBeenCalledWith('本应用不是安装包运行，不参与自动切换。');
   // The bundle on disk is not the target: report it and stop, without relaunching into it.
   const wrong = handover({ installedFingerprint: vi.fn(async () => 'f'.repeat(64)) });
   await wrong.instance.check();
@@ -183,6 +194,8 @@ test('a daemon that changed boot id mid-handover is re-verified rather than hand
   await scenario.instance.check();
   expect(scenario.calls.log).toHaveBeenCalledWith('本机服务已更换启动实例，重新核对后再切换。');
   expect(scenario.calls.relaunch).toHaveBeenCalledTimes(1);
+  // The record does not stay in `draining` with nobody driving it; the reason goes onto the row.
+  expect(scenario.reasons()).toEqual(['本机服务已更换启动实例，重新核对后再切换。']);
 });
 
 test('an SSH session never switches this Mac, and an unreachable daemon is simply not switched', async () => {

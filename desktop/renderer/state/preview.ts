@@ -351,30 +351,9 @@ export function previewAPI(): DesktopAPI {
       hasMore: false,
     }),
     bindNativeThread: unavailable,
-    createNativeThread: unavailable,
     sendNativeMessage: unavailable,
     interruptNativeTurn: unavailable,
-    respondNativeRequest: unavailable,
     openNativeApp: unavailable,
-    chooseNativeImages: unavailable,
-    getNativeImage: unavailable,
-    sendMessage: async (id, text) => {
-      const channel = snapshot.channels.find((value) => value.id === id);
-      if (!channel) throw new Error('频道不存在');
-      const event: WorkspaceEvent = {
-        id: crypto.randomUUID(),
-        projectId: channel.projectId,
-        channelId: id,
-        runId: '',
-        kind: 'message',
-        actor: 'human',
-        text,
-        createdAt: new Date().toISOString(),
-      };
-      snapshot.events.push(event);
-      return structuredClone(event);
-    },
-    updateItem: async (id, status) => api.patchItem(id, { status }),
     createItem: async ({ projectId, ...data }) => {
       const now = new Date().toISOString();
       const item = {
@@ -398,13 +377,13 @@ export function previewAPI(): DesktopAPI {
         updatedAt: now,
       };
       snapshot.items.push(item);
-      audit(projectId, item.channelId, item.id, '[预览] 新建了功能', 'item.created', { after: item });
+      audit(projectId, item.channelId, item.id, '[预览] 新建了事项', 'item.created', { after: item });
       return structuredClone(item);
     },
     patchItem: async (id, data) => {
       const item = snapshot.items.find((value) => value.id === id);
-      if (!item) throw new Error('功能不存在');
-      if (data.revision !== undefined && data.revision !== item.revision) throw new Error('功能已被更新，请重新加载。');
+      if (!item) throw new Error('事项不存在');
+      if (data.revision !== undefined && data.revision !== item.revision) throw new Error('事项已被更新，请重新加载。');
       const before = structuredClone(item),
         revision = (item.revision || 1) + 1;
       const { ownerChannelId, ...fields } = data;
@@ -412,7 +391,7 @@ export function previewAPI(): DesktopAPI {
       // `null` releases the item to 无人负责; an absent field leaves the current owner untouched.
       if (ownerChannelId === null) delete item.ownerChannelId;
       else if (ownerChannelId !== undefined) item.ownerChannelId = ownerChannelId;
-      audit(item.projectId || '', item.channelId, id, '[预览] 更新了功能', 'item.updated', { before, after: item });
+      audit(item.projectId || '', item.channelId, id, '[预览] 更新了事项', 'item.updated', { before, after: item });
       return structuredClone(item);
     },
     getRuns: async (query) => ({
@@ -439,7 +418,6 @@ export function previewAPI(): DesktopAPI {
         cursor: chunks.at(-1)?.id,
       };
     },
-    openNativeSession: unavailable,
     loadDemo: async () => ({ ok: true }),
     refreshRuntimes: async () => structuredClone(snapshot.runtimes),
     getEvents: async (query) => {

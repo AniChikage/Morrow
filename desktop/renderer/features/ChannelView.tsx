@@ -480,7 +480,7 @@ export function ChannelView(props: FeatureProps & { id: string }) {
               <DropdownItem onSelect={() => onEditChannel(channel)}>调整方向</DropdownItem>
               {/* Two neighbouring entries read as the same thing; this one only reads the current state back. */}
               <DropdownItem onSelect={() => setSettingsOpen((value) => !value)}>当前方向与额度</DropdownItem>
-              <DropdownItem onSelect={() => onNavigate({ kind: 'project', id: project.id })}>项目功能看板</DropdownItem>
+              <DropdownItem onSelect={() => onNavigate({ kind: 'project', id: project.id })}>项目看板</DropdownItem>
               {primary !== 'resume' && (
                 <DropdownItem
                   disabled={busy || demo || (paused && (switching || legacy || !ready(conversation) || nativeBusy))}
@@ -646,7 +646,7 @@ export function ChannelView(props: FeatureProps & { id: string }) {
               {!!pendingReleases.length && (
                 <details open={reviewingRelease} onToggle={(event) => setReleasesOpen(event.currentTarget.open)}>
                   <summary className={primary === 'release' && !reviewingRelease ? 'log-primary-action' : undefined}>
-                    待批准发布 · {pendingReleases.map((row) => row.title).join('、')}
+                    待确认上线 · {pendingReleases.map((row) => row.title).join('、')}
                   </summary>
                   {reviewingRelease && (
                     <ProjectReleases

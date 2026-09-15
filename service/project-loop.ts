@@ -329,6 +329,9 @@ export class ProjectWorkLoop {
       releases,
       strategy,
       verifications,
+      // Why no verification can read as current right now, when the source version is unreadable at
+      // all. Previously swallowed, which left every row looking stale with nothing said about it.
+      ...(verificationPage.sourceStale ? { sourceStale: true, sourceReason: verificationPage.sourceReason } : {}),
       ...(verificationOptions.includeLatest
         ? {
             verificationHistory: {
@@ -1680,18 +1683,30 @@ export class ProjectWorkLoop {
     if (this.closed) return;
     this.verification.tick();
     const time = now();
-    for (const row of this.store.all<Release>('loop_releases')) {
+    // A tick asks for the few rows in a state that needs work, never for the whole table: these two
+    // run once a second for as long as a project is open.
+    for (const row of this.store.byStatus<Release>('loop_releases', ['approved', 'unknown'])) {
       if (row.status === 'approved') this.track(this.publish(row.id));
       else if (row.status === 'unknown' && Date.parse(row.updatedAt) < Date.now() - 60000)
         this.track(this.reconcile(row.id));
     }
-    for (const watch of this.store.all<FeedbackWatch>('loop_watches'))
+    // A watch's due condition mixes two ranges, which no single index answers; this stays a scan of
+    // a small table, but only the rows that are actually due are parsed and turned into objects.
+    const due = this.store.db
+      .prepare(
+        `SELECT data FROM loop_watches
+         WHERE (json_extract(data,'$.nextPollAt')<=?
+             OR (json_extract(data,'$.status')='watching' AND json_extract(data,'$.deadline')<=?))
+           AND (json_extract(data,'$.status') IS NULL OR json_extract(data,'$.status')<>'cancelled')
+         ORDER BY rowid`
+      )
+      .all(time, time)
+      .map((row: any) => JSON.parse(row.data) as FeedbackWatch);
+    for (const watch of due)
       if (
         this.inFlight.size < 4 &&
         this.store.get<any>('controls', watch.channelId)?.enabled &&
-        watch.status !== 'cancelled' &&
-        (watch.status === 'watching' || watch.continuous !== false) &&
-        (watch.nextPollAt <= time || (watch.status === 'watching' && watch.deadline <= time))
+        (watch.status === 'watching' || watch.continuous !== false)
       )
         this.track(this.poll(watch.id));
   }

@@ -108,14 +108,18 @@ function AppChecklist({
   // Every step that waits on something happening outside Morrow says that coming back is enough.
   let next: ReactNode;
   if (native.restartRequired) next = <span>旧转接设置已撤销；当前任务结束后重开 Codex App，再重新检测。</span>;
+  // `native.detail` is a finished sentence of its own, so it gets its own span instead of being
+  // glued to the next one with a 「；」 the reader would see as 「。；」.
   else if (pending === 0)
     next = (
-      <span>
-        {native.appInstalled === false
-          ? '安装并登录 Codex App'
-          : native.detail || '无法确认安装状态，请在 Morrow 桌面应用中重新检测。'}
-        ；装好后回到这里，会自动重新检测。
-      </span>
+      <>
+        <span>
+          {native.appInstalled === false
+            ? '安装并登录 Codex App。'
+            : native.detail || '无法确认安装状态，请在 Morrow 桌面应用中重新检测。'}
+        </span>
+        <span>装好后回到这里，会自动重新检测。</span>
+      </>
     );
   else if (pending === 1) next = <span>打开 Codex App；打开后回到这里，会自动重新检测。</span>;
   else if (pending === 2)

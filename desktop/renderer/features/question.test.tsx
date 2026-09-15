@@ -129,7 +129,6 @@ describe('the Codex question card on the channel page', () => {
     expect(screen.queryByRole('textbox', { name: boxName })).toBeNull();
     expect(screen.queryByRole('button', { name: '回答' })).toBeNull();
     expect(screen.getByRole('heading', { name: '工作日志' })).toBeTruthy();
-    expect(api.sendMessage).not.toHaveBeenCalled();
     expect(api.channelAction).not.toHaveBeenCalled();
   });
 

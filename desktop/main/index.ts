@@ -21,7 +21,6 @@ import {
   eventsInput,
   externalURL,
   id,
-  itemStatuses,
   projectInput,
   projectPatch,
   settingsPatch,
@@ -33,14 +32,10 @@ import {
   runOutputInput,
   nativeHistoryInput,
   nativeMessageInput,
-  nativeResponseInput,
-  integer,
 } from './validation';
 
-import { launchNativeSession } from './native-session';
 import { codexAppLink } from './codex-link';
 import { bundleFromResources, readInstalledFingerprint, UpgradeHandover } from './upgrade';
-import type { NativeSessionTarget } from '../shared/types';
 
 const dirname = fileURLToPath(new URL('.', import.meta.url));
 const packagedURL = 'morrow://app/index.html';
@@ -202,17 +197,9 @@ function registerIPC(): void {
   handle('channel-action', 2, (channelId, action) =>
     service.request(`channels/${id(channelId)}/action`, 'POST', { action: choice(action, ['run', 'pause', 'resume']) })
   );
-  handle('send-message', 2, (channelId, value) =>
-    service.request(`channels/${id(channelId)}/messages`, 'POST', { text: text(value, '消息', 10000) })
-  );
   handle('get-native-status', 1, (refreshUsage) => {
     if (typeof refreshUsage !== 'boolean') throw new Error('额度刷新参数必须是开或关。');
     return service.request(`native/status${refreshUsage ? '?refreshUsage=1' : ''}`);
-  });
-  handle('setup-native-background', 0, async () => {
-    if ((await service.getInfo()).config.mode !== 'local')
-      throw new Error('后台桥接需要在 Codex App 所在的本机 Mac 设置。');
-    return service.request('native/background/setup', 'POST', {});
   });
   handle('restore-native-background', 0, async () => {
     if ((await service.getInfo()).config.mode !== 'local') throw new Error('请在本机 Mac 恢复连接设置。');
@@ -229,20 +216,11 @@ function registerIPC(): void {
   handle('bind-native-thread', 2, (channelId, threadId) =>
     service.request(`channels/${id(channelId)}/native/bind`, 'POST', { threadId: id(threadId) })
   );
-  handle('create-native-thread', 1, (channelId) =>
-    service.request(`channels/${id(channelId)}/native/create`, 'POST', {})
-  );
   handle('send-native-message', 2, (channelId, value) =>
     service.request(`channels/${id(channelId)}/native/messages`, 'POST', nativeMessageInput(value))
   );
   handle('interrupt-native-turn', 2, (channelId, turnId) =>
     service.request(`channels/${id(channelId)}/native/interrupt`, 'POST', { turnId: id(turnId) })
-  );
-  handle('respond-native-request', 3, (channelId, requestId, response) =>
-    service.request(`channels/${id(channelId)}/native/respond`, 'POST', {
-      requestId: text(requestId, '原生请求标识', 200),
-      response: nativeResponseInput(response),
-    })
   );
   handle('open-native-app', 1, async (channelId) => {
     if ((await service.getInfo()).config.mode !== 'local')
@@ -252,23 +230,6 @@ function registerIPC(): void {
     );
     await shell.openExternal(codexAppLink(target));
   });
-  handle('choose-native-images', 1, async (channelId) => {
-    const channel = id(channelId);
-    if ((await service.getInfo()).config.mode !== 'local') throw new Error('远程图片请在对应主机的 Codex App 中添加。');
-    const selection = await dialog.showOpenDialog(window!, {
-      title: '向原生会话添加图片',
-      properties: ['openFile', 'multiSelections'],
-      filters: [{ name: '图片', extensions: ['png', 'jpg', 'jpeg', 'webp', 'gif'] }],
-    });
-    if (selection.canceled || !selection.filePaths.length) return [];
-    return service.request(`channels/${channel}/native/images`, 'POST', { paths: selection.filePaths });
-  });
-  handle('get-native-image', 3, (channelId, itemId, index) =>
-    service.request(`channels/${id(channelId)}/native/images/${id(itemId)}/${integer(index, 0, 100)}`)
-  );
-  handle('update-item', 2, (itemId, status) =>
-    service.request(`items/${id(itemId)}`, 'PATCH', { status: choice(status, itemStatuses) })
-  );
   handle('get-project-work', 3, (projectId, itemId, before) => {
     const params = new URLSearchParams();
     if (itemId) params.set('itemId', id(itemId));
@@ -314,13 +275,6 @@ function registerIPC(): void {
     });
     return service.request(`runs/${id(runId)}/output?${params}`);
   });
-  handle('open-native-session', 1, async (channelId) => {
-    if ((await service.getInfo()).config.mode !== 'local')
-      throw new Error('原生会话位于远程主机，请在远程终端中继续。');
-    const target = await service.request<NativeSessionTarget>(`channels/${id(channelId)}/native-handoff`, 'POST', {});
-    await launchNativeSession(target);
-  });
-  handle('get-upgrade', 0, () => service.upgradeState());
   // The person asking for the switch runs the same verified handover, never a separate shortcut.
   handle('request-upgrade-restart', 0, () => handover.request());
   handle('load-demo', 0, () => service.request('demo', 'POST', {}));

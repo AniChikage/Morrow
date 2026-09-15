@@ -10,7 +10,7 @@ import { Store } from '../service/store.ts';
 import { eventHistory } from '../service/event-history.ts';
 import { startServer } from '../service/server.ts';
 import { invocation, diagnoseFailure } from '../service/runtimes.ts';
-import { validateResult } from '../service/protocol.ts';
+import { APIError, validateResult } from '../service/protocol.ts';
 import { startIsolated } from './harness/service.ts';
 import { until } from './harness/wait.ts';
 const fixture = resolve('tests/fixtures/runtime.mjs');
@@ -916,6 +916,150 @@ test('legacy project board migration is idempotent and mirrors existing artifact
   }
 });
 
+test('a scheduler tick selects only the rows that need work, through indexes rather than table scans', () => {
+  const home = mkdtempSync(join(tmpdir(), 'morrow-tick-scan-'));
+  const store = new Store(join(home, 'workspace.sqlite'));
+  try {
+    for (const id of ['on', 'off', 'no-control']) store.put('channels', { id, projectId: 'p', name: id });
+    store.put('controls', { id: 'on', enabled: true, pid: 0, runId: '' });
+    store.put('controls', { id: 'off', enabled: false, pid: 0, runId: '' });
+    // Both branches of the engine tick require an enabled control, so nothing else has to be read.
+    assert.deepEqual(
+      store.enabledChannels().map((channel) => channel.id),
+      ['on']
+    );
+    for (const status of ['awaiting_approval', 'approved', 'published', 'unknown', 'failed'])
+      store.put('loop_releases', { id: status, projectId: 'p', status });
+    assert.deepEqual(
+      store.byStatus<any>('loop_releases', ['approved', 'unknown']).map((row) => row.id),
+      ['approved', 'unknown']
+    );
+    for (const phase of ['applied', 'draining', 'blocked']) store.put('upgrades', { id: phase, phase });
+    assert.deepEqual(
+      store.byStatus<any>('upgrades', ['pending', 'draining', 'exiting'], 'phase').map((row) => row.id),
+      ['draining']
+    );
+    // `latest()` reads the newest row of any phase; `record()` the newest one still on its way.
+    assert.equal(store.recent<any>('upgrades', 1).at(-1)?.id, 'blocked');
+    const plan = (sql: string, ...values: string[]) =>
+      JSON.stringify(
+        store.db
+          .prepare('EXPLAIN QUERY PLAN ' + sql)
+          .all(...values)
+          .map((row: any) => row.detail)
+      );
+    assert.match(
+      plan("SELECT data FROM loop_releases WHERE json_extract(data,'$.status') IN ('approved','unknown')"),
+      /INDEX loop_releases_status/
+    );
+    assert.match(
+      plan("SELECT data FROM loop_finalizations WHERE json_extract(data,'$.status') IN ('pending')"),
+      /INDEX loop_finalizations_status/
+    );
+    // The merged verification tick reads one row set; both of its conditions must be indexed.
+    const verifications = plan(
+      "SELECT data FROM loop_verifications WHERE json_extract(data,'$.interruptPending')=1 OR json_extract(data,'$.status')='queued'"
+    );
+    assert.match(verifications, /INDEX loop_verifications_interruptpending/);
+    assert.match(verifications, /INDEX loop_verifications_status/);
+    assert.match(
+      plan(
+        "SELECT channels.data AS data FROM controls JOIN channels ON channels.id=controls.id WHERE json_extract(controls.data,'$.enabled')=1"
+      ),
+      /INDEX controls_enabled/
+    );
+    // Checkpoint recovery's own read of the native journal, the reason for its index.
+    assert.match(
+      plan(
+        "SELECT data FROM native_events WHERE json_extract(data,'$.kind')='native.patch' AND json_extract(data,'$.threadId')='t' AND json_extract(data,'$.ownerClientId')='o' AND json_extract(data,'$.revision')>1"
+      ),
+      /INDEX native_events_thread_revision/
+    );
+  } finally {
+    store.close();
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test('start-up backfills run once and the native journal keeps only what checkpoint recovery can read', () => {
+  const home = mkdtempSync(join(tmpdir(), 'morrow-prune-'));
+  const path = join(home, 'workspace.sqlite');
+  let store = new Store(path);
+  try {
+    const threadId = randomUUID();
+    store.put('native_threads', { id: threadId, threadId, ownerClientId: 'client-a', revision: 5 });
+    for (const revision of [4, 5, 6])
+      store.put('native_events', {
+        id: `patch-${revision}`,
+        kind: 'native.patch',
+        threadId,
+        ownerClientId: 'client-a',
+        revision,
+      });
+    store.put('native_events', {
+      id: 'other-owner',
+      kind: 'native.patch',
+      threadId,
+      ownerClientId: 'client-b',
+      revision: 9,
+    });
+    // A projection row: written without a `kind`, so no reader ever selected it.
+    store.put('native_events', { id: 'projection', threadId, ownerClientId: 'client-a', revision: 9 });
+    const orphan = randomUUID();
+    store.put('native_events', {
+      id: 'no-checkpoint',
+      kind: 'native.patch',
+      threadId: orphan,
+      ownerClientId: 'client-a',
+      revision: 1,
+    });
+    // Rows written after the backfills recorded their markers; a replayed scan would rewrite them.
+    store.put('channels', { id: 'c1', projectId: 'p1' });
+    store.put('items', { id: 'i1', channelId: 'c1', title: '迁移标记之后写入的事项' });
+    store.db.prepare('DELETE FROM migrations WHERE id=?').run('native-events-prune-v1');
+    store.close();
+    store = new Store(path);
+    assert.deepEqual(
+      store
+        .all<any>('native_events')
+        .map((row) => row.id)
+        .sort(),
+      ['no-checkpoint', 'patch-6']
+    );
+    assert.equal(store.get<any>('migrations', 'native-events-prune-v1').removed, 4);
+    // The index the only reader needs, built over what survived the prune.
+    assert.equal(
+      (
+        store.db
+          .prepare(
+            "SELECT count(*) AS n FROM sqlite_master WHERE type='index' AND name='native_events_thread_revision'"
+          )
+          .get() as any
+      ).n,
+      1
+    );
+    for (const marker of ['project-runtime-brief-v1', 'item-number-v1', 'run-project-report-v1', 'event-project-v1'])
+      assert(store.get('migrations', marker), marker);
+    assert.equal(store.get<any>('items', 'i1').number, undefined);
+    // Replaying the events backfill fills a missing project from the row's own channel in one statement.
+    store.put('events', { id: 'e1', channelId: 'c1', runId: '', kind: 'assistant', text: '旧事件' });
+    store.put('events', { id: 'e2', channelId: 'gone', runId: '', kind: 'assistant', text: '频道已不存在' });
+    store.db.prepare('DELETE FROM migrations WHERE id=?').run('event-project-v1');
+    store.close();
+    store = new Store(path);
+    assert.equal(store.get<any>('events', 'e1').projectId, 'p1');
+    assert.equal(store.get<any>('events', 'e2').projectId, '');
+    // With the marker in place the journal is never swept again.
+    store.put('native_events', { id: 'later', threadId, ownerClientId: 'client-a', revision: 1 });
+    store.close();
+    store = new Store(path);
+    assert(store.all<any>('native_events').some((row) => row.id === 'later'));
+  } finally {
+    store.close();
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
 test('incremental raw output cursors never revise prior chunks, lose suffixes or expose pending token prefixes', () => {
   const home = mkdtempSync(join(tmpdir(), 'morrow-output-cursors-'));
   const path = join(home, 'workspace.sqlite');
@@ -951,5 +1095,37 @@ test('incremental raw output cursors never revise prior chunks, lose suffixes or
   } finally {
     store.close();
     rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test('a person pressing 持续运行 as a scheduled turn starts keeps autonomy on instead of switching it off', async () => {
+  const s = await startIsolated({ project: { name: '持续运行', goal: '不让竞态关掉自动工作' }, scheduler: false });
+  try {
+    const id = s.channel.id;
+    const realStart = s.engine.start.bind(s.engine);
+    // The scheduling tick is one second wide: a turn can begin between `performAction`'s own check
+    // and its call to `start`, which then refuses because the channel is already executing.
+    s.engine.start = ((channelId: string) => {
+      s.engine.active.set(channelId, { projectPath: s.path } as any);
+      throw new APIError(409, '频道正在执行');
+    }) as typeof s.engine.start;
+    await s.api('POST', `/api/channels/${id}/action`, { action: 'resume' });
+    assert.equal(s.engine.control(id).enabled, true);
+    s.engine.active.delete(id);
+    // A start that really did leave nothing running still switches the control back off and says why.
+    s.engine.start = (() => {
+      throw new APIError(400, '项目目录不存在或不可访问');
+    }) as typeof s.engine.start;
+    const refused = await s.api('POST', `/api/channels/${id}/action`, { action: 'resume' }, 400);
+    assert.match(refused.error, /项目目录不存在/);
+    assert.equal(s.engine.control(id).enabled, false);
+    // And a channel that is already executing when the request arrives is refused as before.
+    s.engine.start = realStart;
+    s.engine.active.set(id, { projectPath: s.path } as any);
+    const busy = await s.api('POST', `/api/channels/${id}/action`, { action: 'resume' }, 409);
+    assert.match(busy.error, /正在执行/);
+    s.engine.active.delete(id);
+  } finally {
+    await s.cleanup();
   }
 });

@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, type CSSProperties } from 'react';
 import {
   PanelLeft,
-  PanelRight,
   ChevronLeft,
   ChevronRight,
   Plus,
@@ -68,7 +67,6 @@ export default function App() {
   const navigation = useNavigation(connection ? scope : null);
   const { route, navigate } = navigation;
   const [sidebar, setSidebar] = useState(() => savedPreference('sidebar') !== 'closed');
-  const [inspector, setInspector] = useState(() => savedPreference('inspector') !== 'closed');
   const [modal, setModal] = useState<ModalState>(null);
   const [sidebarWidth, setSidebarWidth] = useState(() => Number(savedPreference('sidebar-width')) || 236);
   const [sidebarSection, setSidebarSection] = useState<Record<string, boolean>>({});
@@ -100,7 +98,6 @@ export default function App() {
     route?.kind === 'project'
       ? snapshot.projects.find((p) => p.id === route.id)
       : snapshot.projects.find((p) => p.id === (finding?.projectId || channel?.projectId));
-  const canInspect = !!project && !['runs', 'runtimes', 'channel', 'project', 'finding'].includes(route?.kind || '');
   // The runtimes page acts on a project's channel; the most recently opened project is the only
   // honest default, so it is derived here rather than guessed from the first Codex channel there.
   function projectOf(target: Route): string | undefined {
@@ -128,15 +125,10 @@ export default function App() {
       }),
     []
   );
-  const toggleInspector = () =>
-    setInspector((v) => {
-      localStorage.setItem('morrow:inspector', v ? 'closed' : 'open');
-      return !v;
-    });
   function titleOf(r: Route) {
     if (r.kind === 'project') return snapshot.projects.find((p) => p.id === r.id)?.name || '项目';
     if (r.kind === 'channel') return snapshot.channels.find((c) => c.id === r.id)?.name || '频道';
-    if (r.kind === 'finding') return snapshot.items.find((i) => i.id === r.id)?.title || '发现';
+    if (r.kind === 'finding') return snapshot.items.find((i) => i.id === r.id)?.title || '事项';
     return r.kind === 'runs' ? '运行记录' : '运行时';
   }
   const command = useCallback(
@@ -187,7 +179,6 @@ export default function App() {
         projectId: item.projectId || snapshot.channels.find((c) => c.id === item.channelId)?.projectId || '',
         item,
       }),
-    showInspector: inspector && canInspect,
   };
   function feature() {
     if (loading && snapshot.projects.length === 0) return <LoadingWorkspace starting={!connection?.connected} />;
@@ -452,7 +443,7 @@ export default function App() {
             />
           </aside>
         )}
-        <main className={`workspace-canvas ${canInspect && inspector ? 'inspected' : ''}`}>
+        <main className="workspace-canvas">
           <header className="breadcrumb">
             <div className="breadcrumbs">
               {project ? (
@@ -482,11 +473,6 @@ export default function App() {
               {project && !project.isDemo && (
                 <IconButton label="打开项目目录" onClick={() => void mutate(() => api.openProjectFolder(project.id))}>
                   <FolderOpenIcon />
-                </IconButton>
-              )}
-              {canInspect && (
-                <IconButton label={inspector ? '收起属性栏' : '显示属性栏'} onClick={toggleInspector}>
-                  <PanelRight />
                 </IconButton>
               )}
             </div>

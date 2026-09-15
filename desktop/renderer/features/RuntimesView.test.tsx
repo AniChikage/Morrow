@@ -102,7 +102,7 @@ test('the checklist marks the first unmet step and names installing, then openin
   expect(step('App 已连接')).toBe('pending');
   expect(step('任务已关联')).toBe('pending');
   expect(step('关联任务可用')).toBe('pending');
-  expect(nextStep().textContent).toBe('下一步安装并登录 Codex App；装好后回到这里，会自动重新检测。');
+  expect(nextStep().textContent).toBe('下一步安装并登录 Codex App。装好后回到这里，会自动重新检测。');
   expect(screen.queryByRole('button', { name: /启用后台连接|撤销设置/ })).toBeNull();
   cleanup();
   api.getNativeStatus.mockResolvedValue(status({ appInstalled: true, appVersion: '1.2.3' }));
@@ -123,6 +123,9 @@ test('preview installation status stays unknown and shows the preview explanatio
   await checklist();
   expect(step('Codex App 安装状态未知')).toBe('next');
   expect(nextStep().textContent).toContain(previewStatus.detail);
+  // The detail already ends in 「。」; it must not be glued to the next sentence as 「。；」.
+  expect(nextStep().textContent).not.toContain('。；');
+  expect(nextStep().textContent).toContain('装好后回到这里，会自动重新检测。');
   expect(screen.queryByText('安装并登录 Codex App')).toBeNull();
 });
 
@@ -138,7 +141,6 @@ test('missing installation metadata does not hide a confirmed App connection', a
 
 test('a connected App guides task association without enabling a launcher', async () => {
   const { props, api } = runtimeProps();
-  props.api.setupNativeBackground = vi.fn();
   api.getNativeStatus.mockResolvedValue(
     status({ connected: true, connectionMode: 'app-follower', boundThreadCount: 0, readyThreadCount: 0 })
   );
@@ -151,7 +153,6 @@ test('a connected App guides task association without enabling a launcher', asyn
     kind: 'channel',
     id: props.snapshot.channels.find((c) => c.runtime === 'codex')!.id,
   });
-  expect(props.api.setupNativeBackground).not.toHaveBeenCalled();
   expect(api.openNativeApp).not.toHaveBeenCalled();
 });
 test('associated tasks must actually be available before the checklist says ready', async () => {
@@ -330,7 +331,6 @@ test('entering the page and manual detection request fresh usage and display lat
   await userEvent.setup().click(screen.getByRole('button', { name: '重新检测' }));
   await screen.findByText('刷新失败，显示最近读数');
   expect(screen.getByLabelText('账户用量').textContent).toContain('41%');
-  expect(api.createNativeThread).not.toHaveBeenCalled();
   expect(api.channelAction).not.toHaveBeenCalled();
 });
 

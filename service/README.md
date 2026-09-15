@@ -63,7 +63,15 @@ MORROW_HOME="$HOME/.local/share/morrow" npm start
 
 所有表位于 `workspace.sqlite`。`runs/`、`native-images/` 和 `releases/` 保存相关私有文件。原生任务的权威历史由 Codex 管理，Morrow 的 SQLite 保存已同步的镜像和编排记录，不把自己的记录当成另一套原生会话。
 
-迁移保持已有 ID 和历史，支持旧运行来源、协议标记与任务创建记录。历史证据摘要不因品牌改名重新计算。当前没有自动裁剪历史的策略；备份应使用 SQLite 在线备份，或停止服务后复制完整数据目录及相关文件。
+迁移保持已有 ID 和历史，支持旧运行来源、协议标记与任务创建记录。历史证据摘要不因品牌改名重新计算。每个一次性回填带自己的 marker，跑过一次之后启动不再整表扫描；删掉某个 marker 会重放对应回填。备份应使用 SQLite 在线备份，或停止服务后复制完整数据目录及相关文件。
+
+看板、事件与运行历史目前没有自动裁剪策略。唯一会被清理的是原生任务的 IPC 增量日志 `native_events`：它只被 checkpoint 恢复读取（按线程从 `native_threads` 已覆盖的修订往后走），因此启动时的一次性迁移删掉再也读不到的行——已被 checkpoint 覆盖的修订、属于其他客户端的行、以及没有 `kind` 的投影行——并为剩下的行建 `(threadId, revision)` 索引。删行不缩小文件；停止服务后用 `bash scripts/compact-db.sh` 回收空间，步骤见[升级与数据迁移](../docs/UPGRADING.md)。
+
+## 运行日志
+
+服务把生命周期事实按**每行一个 JSON 对象**写到 stdout，也就是登录启动项和 Electron 主进程指向的 `service.log`：`boot`（版本、commit/指纹前缀、`bootId`、数据目录、端口、打开数据库耗时、恢复时判为中断的轮次数）、`shutdown`（信号）、`schedule.failed`（某频道自动调度失败并因此停用）、`upgrade.phase`（切换阶段变化，阻塞项刷新不记）、`usage.refresh.failed`、`native.start.failed`、`boot.failed` 与 `unhandled.rejection`。
+
+每行都经过本服务自己的脱敏，因此不会写出服务 token。**不记录请求体、查询串和请求头**，与请求错误路径同一条规矩。日志写入失败不影响它所描述的操作。transport 的连接/断开与原生同步错误（`native-conversations.ts` 的 `recordError`）目前仍只进入频道时间线，尚未接入这里。
 
 同一目录只允许一个 daemon，通过 `daemon.lock` 防止重复实例。SIGTERM/SIGINT 会停止服务调度并清理其拥有的 CLI 进程；不会杀死共享 Codex App。崩溃后，未结束的自有 CLI 轮次标记中断并暂停频道；共享任务则按原生状态恢复。发送回执不明确时先核对结果，不盲目重发。为新安装的版本主动让位时使用专用退出码 75（见下文），与崩溃和人工停止区分开。
 
@@ -153,6 +161,10 @@ MORROW_HOME="$HOME/.local/share/morrow" npm start
 `receipt()` 在与 `published` 同一事务内判断是否要切换：只有 `local-script` 目标、回执包路径与本服务自身包的真实路径一致、指纹与运行中的不同，才写入一条 `pending` 记录（同指纹记为 `applied`，不重启；同一目标指纹只记一次）。HTTP 目标、别的项目里同名的脚本装到别处、缺字段或字段非法，都不会产生请求——识别依据是包路径与指纹，不是脚本文件名。
 
 待切换期间（`pending`/`draining`/`exiting`）拒绝一切**会开新工作**的入口，409 都点明切换：手动 `run`/`resume`、会启动原生轮次的聊天发送、新的独立复核与重试、上线确认、发布结果核对；自动调度不报错而是等待并每频道写一条系统事件。暂停、中断、回答原生提问、读取与否决发布照常可用；已排队的复核会跑完（否则永远等不到空闲），已批准但尚未开始的发布留到切换后再执行。空闲判定读真实状态而非 `channels.status`：无 CLI 轮次、无原生轮次（含 starting/scheduled 与活跃 turn）、无未被任务接收的发送、无排队或进行中的复核、无进行中的发布。10 分钟只是提示期限，到点把阻塞项写进记录供界面显示，继续等待，不中断任何工作。
+
+没有发布回执的安装也会被发现：`tick()` 每 60 秒重读自己所在包的 `build-info.json`，磁盘上的整包指纹与运行中的不一致时登记一条待切换记录（`releaseId` 记为 `manual-install`），之后与回执路径完全相同。因此 `npm run build:app && bash scripts/install-app.sh` 之后不需要手动 `pkill`。开发检出（无包、指纹 `unknown`）和重装同一版本都不触发；同一目标指纹已有记录（含 `recover()` 判为 `blocked` 的）不会再登记，因此不会反复重开。
+
+本机 Electron 发现无法完成接手时——待切换的服务不是本应用所在的安装包、使用了其他数据目录、或本机服务已更换启动实例——会把原因写进记录并置为 `blocked`（每个原因只报一次），而不是只留一行日志。否则记录会停在 `draining`：每个会开新工作的入口永久 409，调度每个 tick 都写等待，而没有人再推进它。开发模式运行的界面没有自己的安装包，既不接手也不写 `blocked`，留给已安装的应用完成切换。
 
 确认空闲且本机 Electron 已接手后，daemon 先置内部退出标记再写 `exiting`（两者之间没有 await，因此发布或轮次无法在检查后插队），随后停止接收请求（其余请求 503 带 `code:upgrade_exiting`）、有界排空在途请求、走原有关闭路径释放 HTTP/锁/数据库，最后以退出码 75 退出。主进程确认旧 daemon 真的退出（自有子进程等退出事件；被接管的 daemon 等锁释放且健康检查离线）后才 `app.relaunch()`，新实例启动新 daemon。新 daemon 启动时先对账：目标指纹已在运行记 `applied`，仍是旧指纹记 `blocked` 并保留原因（不无限重开），之后才走原有的发布 reconcile 与原生恢复。首个带该能力的安装版仍需一次人工切换来启用它。
 

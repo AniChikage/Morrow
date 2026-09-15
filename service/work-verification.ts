@@ -8,7 +8,7 @@ import type { ProjectWorkLoop, Scope } from './project-loop.ts';
 import type { NativeSnapshot, NativeTransport } from './native-conversations.ts';
 import { nativeTurns } from './native-conversations.ts';
 import { now } from './store.ts';
-import { sourceVersion } from './source-version.ts';
+import { readSourceVersion, sourceVersion } from './source-version.ts';
 import { evidenceData } from './measurement.ts';
 import type { Verification, Finalization } from './verification-types.ts';
 
@@ -131,15 +131,19 @@ export class WorkVerification {
     const rows = all
       .filter((row) => selected.has(row.id))
       .map((row) => this.loop.store.get<Verification>('loop_verifications', row.id)!);
-    let digest = '';
-    if (rows.length)
-      try {
-        digest = sourceVersion(this.loop.store.get<Project>('projects', projectId)!.path).digest;
-      } catch {
-        /* Unreadable versions cannot pass. */
-      }
+    // This page is on the interface's 5-second poll, so the seal is read through the cache Git's own
+    // HEAD and porcelain status invalidate, never by hashing every file again on each request. An
+    // unreadable version cannot pass, and now says why instead of leaving the page silently empty.
+    let digest = '',
+      sourceReason = '';
+    if (rows.length) {
+      const reading = readSourceVersion(this.loop.store.get<Project>('projects', projectId)!.path);
+      if (reading.version) digest = reading.version.digest;
+      else sourceReason = reading.reason || '源版本不可读';
+    }
     return {
       verifications: rows.map(({ prompt, ...row }) => ({ ...row, current: this.materialCurrent(row, digest) })),
+      ...(sourceReason ? { sourceStale: true, sourceReason } : {}),
       // Invalidate cached UI pages after a project mutation or source change.
       revision:
         digest +
@@ -800,17 +804,20 @@ file/agent 证据可能由执行者生成，只证明采集了该内容，不证
   tick() {
     if (this.loop.closed) return;
     for (const id of new Set(
-      this.loop.store
-        .all<Finalization>('loop_finalizations')
-        .filter((row) => row.status === 'pending')
-        .map((row) => row.verificationId)
+      this.loop.store.byStatus<Finalization>('loop_finalizations', ['pending']).map((row) => row.verificationId)
     ))
       this.settle(id);
-    for (const row of this.loop.store.all<Verification>('loop_verifications'))
+    // One reading for both loops instead of two scans of the same table: the interrupts are started
+    // first, exactly as before, and `interrupt()` only clears its own flag, never a row's status.
+    const waiting = this.loop.store.db
+      .prepare(
+        "SELECT data FROM loop_verifications WHERE json_extract(data,'$.interruptPending')=1 OR json_extract(data,'$.status')='queued' ORDER BY rowid"
+      )
+      .all()
+      .map((row: any) => JSON.parse(row.data) as Verification);
+    for (const row of waiting)
       if (row.interruptPending && !this.interrupting.has(row.id)) this.loop.track(this.interrupt(row.id));
-    for (const row of this.loop.store
-      .all<Verification>('loop_verifications')
-      .filter((row) => row.status === 'queued')) {
+    for (const row of waiting.filter((row) => row.status === 'queued')) {
       if (this.active.size >= 1) return;
       if (row.retryAt && row.retryAt > now()) continue;
       const channel = this.loop.store.get<Channel>('channels', row.channelId),

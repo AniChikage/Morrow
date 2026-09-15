@@ -25,6 +25,7 @@ import type { Verification } from './verification-types.ts';
 import { sanitizeEventDetail } from './event-details.ts';
 import type { EventDetail } from './protocol.ts';
 import { Store, now } from './store.ts';
+import { logError } from './log.ts';
 import { decodeLine, diagnoseFailure, invocation } from './runtimes.ts';
 import { projectTreeState } from './source-version.ts';
 import { extractReport } from './reports.ts';
@@ -248,7 +249,9 @@ export class Engine {
     if (this.closed) return;
     this.upgrade.tick();
     this.loop.tick();
-    for (const channel of this.store.all<Channel>('channels')) {
+    // Only a channel whose control is on can be acted on below, so the tick asks for those instead
+    // of reading every channel of every project once a second.
+    for (const channel of this.store.enabledChannels()) {
       const control = this.control(channel.id);
       if (isLegacyRuntime(channel.runtime)) {
         // Records from retired runtimes stay readable, but they never schedule work again.
@@ -279,6 +282,9 @@ export class Engine {
     this.setControl(id, { enabled: false });
     this.store.put('channels', { ...c, status: 'blocked', nextRunAt: '' });
     this.event(id, '', 'error', error instanceof Error ? error.message : '调度失败');
+    // A channel that stops scheduling itself is the failure a person notices hours later; the
+    // reason belongs in the daemon's own log too, not only in that channel's timeline.
+    logError('schedule.failed', error, { channelId: id, projectId: c.projectId });
   }
   budgetCount(id: string) {
     const day = now().slice(0, 10);
@@ -400,6 +406,11 @@ export class Engine {
       try {
         await this.start(id, true, true);
       } catch (e) {
+        // A turn that began between the check above and this call — a scheduling tick is one second
+        // wide — is not a reason to undo what the person asked for. 「持续运行」 asked for autonomy,
+        // and autonomy is now on with a turn already running, which is the state they wanted. Any
+        // other failure really did leave nothing running, so the control goes back off.
+        if (this.active.has(id) || this.native?.isBusy(id)) return;
         this.setControl(id, { enabled: false });
         throw e;
       }

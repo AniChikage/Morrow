@@ -214,11 +214,11 @@ it('shows only this channel pending releases and blocked items in 需要你', as
   const { props } = featureProps({ snapshot: state });
   const view = render(<ChannelView {...props} id="channel-system" />, { wrapper: TestProviders });
   const needs = within(screen.getByRole('region', { name: '需要你' }));
-  expect(needs.getByText('待批准发布 · 候选版本')).toBeTruthy();
-  expect(needs.getByText('待批准发布 · 候选版本').classList.contains('log-primary-action')).toBe(true);
+  expect(needs.getByText('待确认上线 · 候选版本')).toBeTruthy();
+  expect(needs.getByText('待确认上线 · 候选版本').classList.contains('log-primary-action')).toBe(true);
   expect(needs.getByRole('button', { name: /被阻塞/ })).toBeTruthy();
-  expect(needs.queryByText('待批准发布 · 别的频道发布')).toBeNull();
-  await userEvent.setup().click(needs.getByText('待批准发布 · 候选版本'));
+  expect(needs.queryByText('待确认上线 · 别的频道发布')).toBeNull();
+  await userEvent.setup().click(needs.getByText('待确认上线 · 候选版本'));
   view.rerender(<ChannelView {...props} snapshot={{ ...state, releases: [] }} id="channel-system" />);
   expect(screen.getByRole('button', { name: /被阻塞/ }).classList.contains('button-primary')).toBe(true);
 });
