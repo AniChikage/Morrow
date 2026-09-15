@@ -1476,11 +1476,18 @@ test('a nearly full task context is compacted before the scheduled turn is sent,
     assert.equal(s.transport.interruptions.length, 0);
     const texts = s.store.all<any>('events').map((event) => event.text);
     assert(texts.includes('任务上下文已用 70%（579880 / 828400），先压缩再继续。'));
-    assert(texts.includes('上下文已压缩：70% → 10%，继续本轮工作。'));
-    const audit = s.store.all<any>('events').find((event) => event.action === 'native.compacted');
-    assert.equal(audit.actor, 'system');
-    assert.equal(audit.channelId, s.channel.id);
-    assert.deepEqual(audit.changes.after, { before: 579880, after: 82840, window: 828400, percent: 70 });
+    // One completion record, written where the finished compaction is synced. The App files a
+    // follower's request as a person's /compact, so announcing it there too said it twice and
+    // credited the wrong asker.
+    assert.deepEqual(
+      texts.filter((text) => text.includes('压缩任务上下文')),
+      ['已按 65% 规则压缩任务上下文：70% → 10%，继续工作。']
+    );
+    const audits = s.store.all<any>('events').filter((event) => event.action === 'native.compacted');
+    assert.equal(audits.length, 1);
+    assert.equal(audits[0].actor, 'system');
+    assert.equal(audits[0].channelId, s.channel.id);
+    assert.deepEqual(audits[0].changes.after, { before: 579880, after: 82840, window: 828400, percent: 70 });
   } finally {
     await s.cleanup();
   }
@@ -1598,6 +1605,43 @@ test('the boundary after a turn compacts once, and the next start waits it out i
     await s.native.startScheduled(s.channel.id, true);
     assert.equal(s.transport.sent.length, 2);
     assert.equal(s.transport.compactions.length, 1);
+    // Nobody waited for this request, and it is still recorded once the App finishes it.
+    const texts = s.store.all<any>('events').map((event) => event.text);
+    assert.deepEqual(
+      texts.filter((text) => text.includes('压缩任务上下文')),
+      ['已按 65% 规则压缩任务上下文：70% → 10%，继续工作。']
+    );
+    assert.equal(s.store.all<any>('events').filter((event) => event.action === 'native.compacted').length, 1);
+  } finally {
+    await s.cleanup();
+  }
+});
+test('a human compaction long after Morrow asked for one is announced as the App owner does it', async () => {
+  const s = await setup();
+  try {
+    stopScheduler(s);
+    await s.native.bind(s.channel.id, s.transport.threadId);
+    s.native.compactWaitMs = 200;
+    s.transport.compactFailure = 'hang';
+    s.transport.emit(context(0.7));
+    await s.native.startScheduled(s.channel.id, true);
+    assert.deepEqual(s.transport.compactions, [s.transport.threadId]);
+    // The App never finished that request. What a person compacts ten minutes later answers their
+    // own /compact, not the rule, so the stale request claims neither the event nor the audit.
+    const requested = (s.native as any).requestedCompactions as Map<string, { at: number }>;
+    requested.set(s.transport.threadId, { ...requested.get(s.transport.threadId)!, at: Date.now() - 601_000 });
+    s.transport.compactFailure = undefined;
+    s.transport.emit({
+      threadRuntimeStatus: { type: 'idle' },
+      ...context(0.1),
+      turns: [...s.transport.snapshot.state.turns, compactionTurn()],
+    });
+    const texts = s.store.all<any>('events').map((event) => event.text);
+    assert.deepEqual(
+      texts.filter((text) => text.includes('压缩任务上下文')),
+      ['Codex App 已压缩任务上下文（手动）']
+    );
+    assert.equal(s.store.all<any>('events').filter((event) => event.action === 'native.compacted').length, 0);
   } finally {
     await s.cleanup();
   }

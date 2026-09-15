@@ -423,6 +423,15 @@ export class NativeConversations {
   dirtyTurns = new Set<string>();
   /** Threads with a compaction already requested, so the two turn boundaries never ask twice. */
   private compacting = new Set<string>();
+  /**
+   * The compaction Morrow asked for on a thread and the reading it asked at, kept until the synced
+   * item that finished it is announced. The App attributes a follower's request to a person, so this
+   * is what lets the one completion record name the rule that asked instead.
+   */
+  private requestedCompactions = new Map<
+    string,
+    { at: number; before: { used: number; window: number; percent: number } }
+  >();
   /** How long a turn start waits for a requested compaction to finish; a test lowers it. */
   compactWaitMs = 180_000;
   appVersion: { value: Promise<string>; at: number } | null = null;
@@ -884,13 +893,38 @@ export class NativeConversations {
       for (const binding of this.store.bindingsForThread<Binding>(safe.threadId)) {
         const announced = binding.compactionsSeen ?? [];
         const fresh = compacted.filter((item) => !announced.includes(item.id));
-        for (const item of fresh)
-          this.engine.event(
-            binding.id,
-            '',
-            'system',
-            `Codex App 已压缩任务上下文（${item.raw?.source === 'automatic' ? '自动' : '手动'}）`
-          );
+        for (const item of fresh) {
+          // The finished item is the one place a compaction is recorded, whoever asked for it: a
+          // request Morrow raised at a turn boundary is reported against the rule that asked — the
+          // App would otherwise file the follower's request as a person's /compact — and everything
+          // else as the App's own. A request nobody waited for is therefore still reported.
+          const requested = this.requestedCompactions.get(safe.threadId);
+          if (requested && Date.now() - requested.at < 600_000) {
+            const before = requested.before,
+              after = contextUsage(safe.state) ?? before;
+            this.requestedCompactions.delete(safe.threadId);
+            this.engine.audit({
+              projectId: binding.projectId,
+              channelId: binding.id,
+              actor: 'system',
+              action: 'native.compacted',
+              text: '已在轮次边界自动压缩 Codex App 任务的上下文。',
+              after: { before: before.used, after: after.used, window: before.window, percent: before.percent },
+            });
+            this.engine.event(
+              binding.id,
+              '',
+              'system',
+              `已按 ${compactContextPercent}% 规则压缩任务上下文：${Math.round(before.percent)}% → ${Math.round(after.percent)}%，继续工作。`
+            );
+          } else
+            this.engine.event(
+              binding.id,
+              '',
+              'system',
+              `Codex App 已压缩任务上下文（${item.raw?.source === 'automatic' ? '自动' : '手动'}）`
+            );
+        }
         this.store.put('native_bindings', {
           ...binding,
           lastSyncedAt: safe.syncedAt,
@@ -1543,7 +1577,15 @@ export class NativeConversations {
         'system',
         `任务上下文已用 ${Math.round(before.percent)}%（${before.used} / ${before.window}），先压缩再继续。`
       );
-      await compact(threadId);
+      // The request is registered before it is raised, so the ingest of the item that finishes it —
+      // which can arrive while `compact` is still awaited — already knows this compaction is ours.
+      this.requestedCompactions.set(threadId, { at: Date.now(), before });
+      try {
+        await compact(threadId);
+      } catch (error) {
+        this.requestedCompactions.delete(threadId);
+        throw error;
+      }
       if (!wait) return true;
       let after: { used: number; window: number; percent: number } | undefined;
       const deadline = Date.now() + this.compactWaitMs;
@@ -1563,21 +1605,9 @@ export class NativeConversations {
         }
       }
       if (this.closed) return true;
+      // Waiting only decides whether this turn starts from a compacted task; the completion itself
+      // is recorded by the ingest of the finished item, so nothing is written here.
       if (!after) throw new Error('Codex App 未在等待时间内完成压缩');
-      this.engine.audit({
-        projectId: binding.projectId,
-        channelId: channel.id,
-        actor: 'system',
-        action: 'native.compacted',
-        text: '已在轮次边界自动压缩 Codex App 任务的上下文。',
-        after: { before: before.used, after: after.used, window: before.window, percent: before.percent },
-      });
-      this.engine.event(
-        channel.id,
-        '',
-        'system',
-        `上下文已压缩：${Math.round(before.percent)}% → ${Math.round(after.percent)}%，继续本轮工作。`
-      );
     } catch (error) {
       logError('native.compact.failed', error, { threadId });
       this.engine.event(
