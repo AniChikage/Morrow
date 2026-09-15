@@ -2,7 +2,8 @@ import { DatabaseSync } from 'node:sqlite';
 import { randomUUID } from 'node:crypto';
 import { chmodSync, readFileSync, statSync } from 'node:fs';
 import { dirname, join } from 'node:path';
-import type { Channel, Event, EventDetail, Project, Run, RunIO, WorkItem } from './protocol.ts';
+import { appResumeSummary } from './protocol.ts';
+import type { AppResumeRecord, Channel, Event, EventDetail, Project, Run, RunIO, WorkItem } from './protocol.ts';
 export const now = () => new Date().toISOString();
 /** A Morrow-orchestrated turn, as opposed to native chat or a turn the App itself started. */
 const scheduledSource =
@@ -54,6 +55,8 @@ export class Store {
       'usage_samples',
       'settings',
       'upgrades',
+      'channel_intents',
+      'app_resumes',
     ])
       this.db.exec(`CREATE TABLE IF NOT EXISTS ${table} (id TEXT PRIMARY KEY, data TEXT NOT NULL)`);
     this.db.exec(
@@ -64,6 +67,9 @@ export class Store {
     );
     this.db.exec(
       "CREATE INDEX IF NOT EXISTS native_items_thread ON native_items(json_extract(data,'$.threadId')); CREATE INDEX IF NOT EXISTS native_outbox_thread ON native_outbox(json_extract(data,'$.threadId')); CREATE INDEX IF NOT EXISTS native_turns_thread ON native_turns(json_extract(data,'$.threadId')); "
+    );
+    this.db.exec(
+      "CREATE INDEX IF NOT EXISTS app_resumes_channel ON app_resumes(json_extract(data,'$.channelId')); CREATE INDEX IF NOT EXISTS app_resumes_thread ON app_resumes(json_extract(data,'$.threadId')); CREATE INDEX IF NOT EXISTS runs_native_turn ON runs(json_extract(data,'$.nativeTurnId'));"
     );
     this.migrate(dirname(path));
     for (const table of [
@@ -185,6 +191,25 @@ export class Store {
         }
       }
       this.put('migrations', { id: 'run-io-v1', createdAt: now() });
+    }
+    // Every channel gets its durable user-intent counter, so a later "nobody paused since" check
+    // reads storage rather than an in-memory counter that a restart forgets. Existing channels start
+    // at generation 0. Turns recorded before the intent snapshot existed keep no snapshot, and no
+    // continuation record is created for historical interruptions: paused channels stay paused.
+    if (!this.get('migrations', 'app-resume-v1')) {
+      const time = now();
+      this.transaction(() => {
+        for (const channel of this.all<Channel>('channels'))
+          if (!this.get('channel_intents', channel.id))
+            this.put('channel_intents', {
+              id: channel.id,
+              projectId: channel.projectId,
+              generation: 0,
+              createdAt: time,
+              updatedAt: time,
+            });
+        this.put('migrations', { id: 'app-resume-v1', createdAt: time });
+      });
     }
   }
   projectItems(projectId: string): WorkItem[] {
@@ -342,6 +367,8 @@ export class Store {
         'usage_samples',
         'settings',
         'upgrades',
+        'channel_intents',
+        'app_resumes',
       ].includes(t)
     )
       throw new Error('Unknown table');
@@ -508,10 +535,17 @@ export class Store {
         ...project,
         briefRevision: project.briefRevision || 0,
       })),
-      channels: this.all<Channel>('channels').map((channel) => ({
-        ...channel,
-        autonomyEnabled: !!this.get<any>('controls', channel.id)?.enabled,
-      })),
+      channels: this.all<Channel>('channels').map((channel) => {
+        // One line and one expandable reason per channel; the ids stay in the record itself.
+        const resume = this.db
+          .prepare("SELECT data FROM app_resumes WHERE json_extract(data,'$.channelId')=? ORDER BY rowid DESC LIMIT 1")
+          .get(channel.id) as { data: string } | undefined;
+        return {
+          ...channel,
+          autonomyEnabled: !!this.get<any>('controls', channel.id)?.enabled,
+          ...(resume ? { appResume: appResumeSummary(JSON.parse(resume.data) as AppResumeRecord) } : {}),
+        };
+      }),
       items: this.all<WorkItem>('items'),
       runs: this.recent<Run>('runs', 500),
       events: this.recent<Event>('events', 1500),

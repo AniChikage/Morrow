@@ -778,6 +778,9 @@ export class NativeConversations {
       }
     }
     this.finishScheduled(safe);
+    // Read-only: the task's own turn order decides whether the App continued an interrupted turn,
+    // and a completed continuation can turn that pause back into an ordinary wait.
+    this.engine.appResume.observe(safe.threadId, nativeTurns(safe.state), complete);
   }
   async list(id: string) {
     const { project } = this.channel(id);
@@ -927,6 +930,9 @@ export class NativeConversations {
     this.store.transaction(() => {
       this.store.put('native_bindings', binding);
       this.store.put('channels', { ...channel, sessionId: threadId });
+      // Rebinding is a human decision about which task this channel continues; older continuation
+      // candidates no longer apply.
+      this.engine.appResume.advance(id, 'bind');
       this.engine.audit({
         projectId: project.id,
         channelId: id,
@@ -1093,6 +1099,9 @@ export class NativeConversations {
       };
       this.store.transaction(() => {
         this.store.put('native_outbox', entry);
+        // A person sending into the task is new guidance: older continuation candidates no longer
+        // describe what the user wants next.
+        if (source === 'chat') this.engine.appResume.advance(id, 'guidance');
         this.engine.audit({
           projectId: project.id,
           channelId: id,
@@ -1377,6 +1386,9 @@ export class NativeConversations {
         trigger: scheduled ? 'schedule' : 'manual',
         resumedFromSessionId: binding.threadId,
         workDirection: channel.goal,
+        // What the user's autonomous-work intent was as this turn began; read again if the App
+        // continues this turn by itself after an interruption.
+        workIntent: this.engine.appResume.snapshot(channel, project, binding.threadId),
         reportStatus: 'pending',
         reportError: '',
         status: 'running',

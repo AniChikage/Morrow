@@ -93,6 +93,8 @@ export type Channel = {
   pendingWake?: { reason: string; at: string };
   promptCharter?: PromptCharter;
   autonomyEnabled?: boolean;
+  /** Added by the polled snapshot only: the current App-resume observation, when there is one. */
+  appResume?: AppResumeSummary;
   id: string;
   projectId: string;
   name: string;
@@ -140,8 +142,96 @@ export type WorkItem = {
  * which never blocks another channel.
  */
 export type TreeState = { dirty: boolean; files: string[]; unknown?: boolean };
+/**
+ * What the user's autonomous-work intent was when one normal orchestrated turn began, saved on that
+ * turn's row. `generation` is the channel's durable user-intent counter (`channel_intents`), which
+ * every human action advances; an in-memory activation counter cannot prove that nobody paused
+ * before a restart. A turn written before this record existed has no snapshot, and such a turn never
+ * produces a continuation candidate.
+ */
+export type WorkIntent = {
+  generation: number;
+  /** Whether automatic work was on as this turn started; a manual single run records `false`. */
+  autonomyEnabled: boolean;
+  /** The native task this channel was bound to. */
+  threadId: string;
+  /** The project goal/brief version this turn was started under. */
+  briefRevision: number;
+  /** The channel's work direction this turn was started under. */
+  workDirection: string;
+  permission: Channel['permission'];
+  at: string;
+};
+/** Which human action advanced a channel's user-intent generation, invalidating older candidates. */
+export type IntentAction =
+  'pause' | 'run' | 'resume' | 'bind' | 'project-brief' | 'direction' | 'permission' | 'guidance';
+/** The durable user-intent counter of one channel. `pausedAt` records the last human pause. */
+export type ChannelIntent = {
+  id: string;
+  projectId: string;
+  generation: number;
+  lastAction?: IntentAction;
+  lastReason?: string;
+  pausedAt?: string;
+  createdAt: string;
+  updatedAt: string;
+};
+/**
+ * One interrupted orchestrated turn kept under observation, and at most one App-started turn
+ * inferred to continue it. There is no parent id in the native record, so the relation is only ever
+ * `inferred-sequence`: same project, channel and currently bound task, an explicit
+ * `resume_interrupted_task` marker, and nothing at all between the two turns in task order.
+ * `basis` and `exclusions` are appended, never rewritten; `appliedAt` makes the recovery apply once.
+ */
+export type AppResumeRecord = {
+  id: string;
+  projectId: string;
+  channelId: string;
+  threadId: string;
+  originalRunId: string;
+  originalNativeTurnId?: string;
+  /** Why the original turn's channel is paused: the native task was interrupted, or a person paused. */
+  pauseCause: 'native-interrupt' | 'human-pause';
+  intent: WorkIntent;
+  status: 'observing' | 'unconfirmed' | 'linked' | 'resumed' | 'kept-paused';
+  relation?: 'inferred-sequence';
+  resumeRunId?: string;
+  resumeNativeTurnId?: string;
+  /** The native turn trigger that marked the continuation, stored verbatim. */
+  marker?: string;
+  basis: string[];
+  exclusions: string[];
+  appliedAt?: string;
+  createdAt: string;
+  updatedAt: string;
+};
+/** What a channel page shows: the current state and one expandable reason; ids stay in the record. */
+export type AppResumeSummary = {
+  state: AppResumeRecord['status'];
+  /** One sentence naming the current state and why. */
+  reason: string;
+  recordId: string;
+};
+const appResumeReasons: Record<AppResumeRecord['status'], string> = {
+  observing: '原生中断后已暂停，正在观察 Codex App 是否自行续跑',
+  unconfirmed: '原生记录不足以确认续跑关联，保持暂停',
+  linked: '已推断 App 正在续跑本频道被中断的那一轮，等待它结束',
+  resumed: 'App 续跑完成，下一轮核对其工作',
+  'kept-paused': '未满足恢复条件，保持暂停',
+};
+/** The one line and expandable reason a channel page shows for an App-resume record. */
+export function appResumeSummary(record: AppResumeRecord): AppResumeSummary {
+  const why = record.status === 'observing' || record.status === 'linked' ? record.basis : record.exclusions;
+  return {
+    state: record.status,
+    reason: `${appResumeReasons[record.status]}${why.length ? `（依据：${why.join('、')}）` : ''}`,
+    recordId: record.id,
+  };
+}
 export type Run = {
   workDirection?: string;
+  /** The user's autonomous-work intent as this turn began; absent on turns written before it existed. */
+  workIntent?: WorkIntent;
   /** The working tree as this turn left it; absent on rows written before it was recorded. */
   treeState?: TreeState;
   id: string;
