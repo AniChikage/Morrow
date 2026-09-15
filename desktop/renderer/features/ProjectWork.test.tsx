@@ -485,6 +485,45 @@ describe('AI work and release review', () => {
     );
     expect(screen.queryByText('late old project')).toBeNull();
   });
+  it('shares one work-page request and one poll between every consumer of the same page', async () => {
+    vi.useFakeTimers();
+    try {
+      const f = fixture();
+      f.data.strategy = { understanding: [], decisions: [], counts: { understanding: 0, decisions: 0 } };
+      const view = render(
+        <TestProviders>
+          <ProjectThinking api={f.props.api} projectId="project-atlas" onNavigate={f.props.onNavigate} />
+          <ProjectReleases {...f.props} projectId="project-atlas" />
+          <FeatureWork api={f.props.api} projectId="project-atlas" itemId="finding-import" compact />
+        </TestProviders>
+      );
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(0);
+      });
+      // 当前判断 and 上线确认 read the same page, so they ask for it once; the item page is its own.
+      expect(f.getProjectWork.mock.calls).toEqual([
+        ['project-atlas', undefined],
+        ['project-atlas', 'finding-import'],
+      ]);
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(5000);
+      });
+      expect(f.getProjectWork).toHaveBeenCalledTimes(4);
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(5000);
+      });
+      expect(f.getProjectWork).toHaveBeenCalledTimes(6);
+      view.unmount();
+      const settled = f.getProjectWork.mock.calls.length;
+      // The last consumer to leave takes the page and its poll with it.
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(20000);
+      });
+      expect(f.getProjectWork).toHaveBeenCalledTimes(settled);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
   it('invalidates an in-flight history page when the project revision changes', async () => {
     vi.useFakeTimers();
     try {

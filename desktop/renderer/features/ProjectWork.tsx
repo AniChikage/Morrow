@@ -26,117 +26,167 @@ const conclusionLabels = {
   inconclusive: '证据不足',
   stopped: '已停止',
 };
-function useProjectWork(api: DesktopAPI, projectId: string, itemId?: string) {
-  const [data, setData] = useState<ProjectLoop>();
-  const [error, setError] = useState('');
-  const [historyError, setHistoryError] = useState('');
-  const [loadingHistory, setLoadingHistory] = useState(false);
-  const [moreHistory, setMoreHistory] = useState(false);
-  const generation = useRef(0),
-    historyBusy = useRef(false),
-    historyStarted = useRef(false);
-  const historyRequest = useRef(0);
-  const cursor = useRef<string | undefined>(undefined);
-  const base = useRef<ProjectLoop | undefined>(undefined);
-  const older = useRef<Pick<ProjectLoop, 'verifications' | 'evidence'>>({ verifications: [], evidence: [] });
-  const merge = <T extends { id: string }>(a: T[], b: T[]) => [
-    ...new Map([...a, ...b].map((row) => [row.id, row])).values(),
-  ];
+type WorkPageState = {
+  data?: ProjectLoop;
+  error: string;
+  historyError: string;
+  moreHistory: boolean;
+  loadingHistory: boolean;
+};
+const emptyWorkPage: WorkPageState = { error: '', historyError: '', moreHistory: false, loadingHistory: false };
+/**
+ * One work page per (project, item): its request, its result, its loaded history and its five-second
+ * poll, shared by every mounted consumer. `FeatureWork`, `ProjectThinking` and `ProjectReleases` each
+ * polled `projects/:id/work` on their own, so an open channel page — which shows the releases of its
+ * project — ran the same request two or three times over at once.
+ */
+type WorkPage = {
+  readonly api: DesktopAPI;
+  readonly key: string;
+  readonly subscribers: Set<() => void>;
+  state: WorkPageState;
+  timer: ReturnType<typeof setInterval>;
+  /** False once the last consumer has gone, so a late response writes nothing that is still shown. */
+  alive: boolean;
+  pending: boolean;
+  base?: ProjectLoop;
+  older: Pick<ProjectLoop, 'verifications' | 'evidence'>;
+  cursor?: string;
+  historyBusy: boolean;
+  historyStarted: boolean;
+  historyRequest: number;
+  load: () => Promise<void>;
+  loadHistory: () => Promise<void>;
+};
+/** Keyed by the desktop API first: another connection is another service, not the same page. */
+const workPages = new WeakMap<DesktopAPI, Map<string, WorkPage>>();
+const merge = <T extends { id: string }>(a: T[], b: T[]) => [
+  ...new Map([...a, ...b].map((row) => [row.id, row])).values(),
+];
+function createWorkPage(api: DesktopAPI, key: string, projectId: string, itemId?: string): WorkPage {
+  const page: WorkPage = {
+    api,
+    key,
+    subscribers: new Set(),
+    state: emptyWorkPage,
+    timer: setInterval(() => {
+      if (document.visibilityState !== 'hidden') void page.load();
+    }, 5000),
+    alive: true,
+    pending: false,
+    older: { verifications: [], evidence: [] },
+    historyBusy: false,
+    historyStarted: false,
+    historyRequest: 0,
+    load: () => Promise.resolve(),
+    loadHistory: () => Promise.resolve(),
+  };
+  const publish = (patch: Partial<WorkPageState>) => {
+    const next: WorkPageState = { ...page.state, ...patch };
+    // A poll that read the same page changes nothing here, so no consumer re-renders.
+    if ((Object.keys(next) as Array<keyof WorkPageState>).every((field) => next[field] === page.state[field])) return;
+    page.state = next;
+    page.subscribers.forEach((notify) => notify());
+  };
   const combined = (value: ProjectLoop): ProjectLoop => ({
     ...value,
-    verifications: merge(older.current.verifications || [], value.verifications || []),
-    evidence: merge(older.current.evidence, value.evidence),
+    verifications: merge(page.older.verifications || [], value.verifications || []),
+    evidence: merge(page.older.evidence, value.evidence),
   });
-  async function loadHistory() {
-    if (historyBusy.current || !cursor.current || !api.getProjectWork) return;
-    const before = cursor.current,
-      gen = generation.current,
-      request = ++historyRequest.current;
-    historyBusy.current = true;
-    historyStarted.current = true;
-    setLoadingHistory(true);
-    setHistoryError('');
+  page.load = async () => {
+    if (page.pending || !api.getProjectWork) return;
+    page.pending = true;
     try {
-      const page = await api.getProjectWork(projectId, itemId, before);
-      if (gen !== generation.current || request !== historyRequest.current) return;
-      if (page.verificationHistory?.revision !== base.current?.verificationHistory?.revision)
-        throw new Error('项目记录已更新，请稍后重新加载历史。');
-      if (!page.verificationHistory || page.verificationHistory.cursor === before)
-        throw new Error('服务未提供更早复核，请更新服务后重试。');
-      older.current = {
-        verifications: merge(older.current.verifications || [], page.verifications || []),
-        evidence: merge(older.current.evidence, page.evidence),
-      };
-      cursor.current = page.verificationHistory.cursor;
-      setMoreHistory(page.verificationHistory.hasMore);
-      if (base.current) {
-        const merged = combined(base.current);
-        setData((previous) => replaceIfChanged(previous, merged));
+      const result = await api.getProjectWork(projectId, itemId);
+      if (page.alive) {
+        if (page.base && page.base.verificationHistory?.revision !== result.verificationHistory?.revision) {
+          page.historyRequest++;
+          page.older = { verifications: [], evidence: [] };
+          page.historyStarted = false;
+          page.historyBusy = false;
+          publish({ loadingHistory: false, historyError: '' });
+        }
+        page.base = result;
+        const patch: Partial<WorkPageState> = { error: '', data: replaceIfChanged(page.state.data, combined(result)) };
+        if (!page.historyStarted) {
+          page.cursor = result.verificationHistory?.cursor;
+          patch.moreHistory = !!result.verificationHistory?.hasMore;
+        }
+        publish(patch);
       }
     } catch (e) {
-      if (gen === generation.current && request === historyRequest.current)
-        setHistoryError(e instanceof Error ? e.message : '历史复核读取失败');
+      if (page.alive) publish({ error: e instanceof Error ? e.message : '工作记录加载失败' });
     } finally {
-      if (gen === generation.current && request === historyRequest.current) {
-        historyBusy.current = false;
-        setLoadingHistory(false);
+      page.pending = false;
+    }
+  };
+  page.loadHistory = async () => {
+    if (page.historyBusy || !page.cursor || !api.getProjectWork) return;
+    const before = page.cursor,
+      request = ++page.historyRequest;
+    page.historyBusy = true;
+    page.historyStarted = true;
+    publish({ loadingHistory: true, historyError: '' });
+    try {
+      const older = await api.getProjectWork(projectId, itemId, before);
+      if (!page.alive || request !== page.historyRequest) return;
+      if (older.verificationHistory?.revision !== page.base?.verificationHistory?.revision)
+        throw new Error('项目记录已更新，请稍后重新加载历史。');
+      if (!older.verificationHistory || older.verificationHistory.cursor === before)
+        throw new Error('服务未提供更早复核，请更新服务后重试。');
+      page.older = {
+        verifications: merge(page.older.verifications || [], older.verifications || []),
+        evidence: merge(page.older.evidence, older.evidence),
+      };
+      page.cursor = older.verificationHistory.cursor;
+      const patch: Partial<WorkPageState> = { moreHistory: older.verificationHistory.hasMore };
+      if (page.base) patch.data = replaceIfChanged(page.state.data, combined(page.base));
+      publish(patch);
+    } catch (e) {
+      if (page.alive && request === page.historyRequest)
+        publish({ historyError: e instanceof Error ? e.message : '历史复核读取失败' });
+    } finally {
+      if (page.alive && request === page.historyRequest) {
+        page.historyBusy = false;
+        publish({ loadingHistory: false });
       }
     }
-  }
+  };
+  return page;
+}
+function acquireWorkPage(api: DesktopAPI, projectId: string, itemId?: string): WorkPage {
+  let pages = workPages.get(api);
+  if (!pages) workPages.set(api, (pages = new Map()));
+  const key = JSON.stringify([projectId, itemId || '']);
+  let page = pages.get(key);
+  if (!page) pages.set(key, (page = createWorkPage(api, key, projectId, itemId)));
+  return page;
+}
+/** The last consumer to leave takes the page with it, so a remount reads the service again. */
+function releaseWorkPage(page: WorkPage): void {
+  if (page.subscribers.size) return;
+  page.alive = false;
+  clearInterval(page.timer);
+  const pages = workPages.get(page.api);
+  if (pages?.get(page.key) === page) pages.delete(page.key);
+}
+function useProjectWork(api: DesktopAPI, projectId: string, itemId?: string) {
+  const [state, setState] = useState<WorkPageState>(emptyWorkPage);
+  const page = useRef<WorkPage>(undefined);
   useEffect(() => {
-    const gen = ++generation.current;
-    let pending = false;
-    historyRequest.current++;
-    base.current = undefined;
-    older.current = { verifications: [], evidence: [] };
-    cursor.current = undefined;
-    historyBusy.current = false;
-    historyStarted.current = false;
-    setData(undefined);
-    setError('');
-    setHistoryError('');
-    setLoadingHistory(false);
-    setMoreHistory(false);
-    const load = async () => {
-      if (pending || !api.getProjectWork) return;
-      pending = true;
-      try {
-        const result = await api.getProjectWork(projectId, itemId);
-        if (gen === generation.current) {
-          if (base.current && base.current.verificationHistory?.revision !== result.verificationHistory?.revision) {
-            historyRequest.current++;
-            older.current = { verifications: [], evidence: [] };
-            historyStarted.current = false;
-            historyBusy.current = false;
-            setLoadingHistory(false);
-            setHistoryError('');
-          }
-          base.current = result;
-          const merged = combined(result);
-          // A five-second poll that read the same page must not re-render the whole document.
-          setData((previous) => replaceIfChanged(previous, merged));
-          if (!historyStarted.current) {
-            cursor.current = result.verificationHistory?.cursor;
-            setMoreHistory(!!result.verificationHistory?.hasMore);
-          }
-          setError('');
-        }
-      } catch (e) {
-        if (gen === generation.current) setError(e instanceof Error ? e.message : '工作记录加载失败');
-      } finally {
-        pending = false;
-      }
-    };
-    void load();
-    const timer = setInterval(() => {
-      if (document.visibilityState !== 'hidden') void load();
-    }, 5000);
+    const shared = acquireWorkPage(api, projectId, itemId);
+    page.current = shared;
+    const notify = () => setState(shared.state);
+    shared.subscribers.add(notify);
+    notify(); // Whatever this page already holds is shown without asking the service again.
+    void shared.load();
     return () => {
-      generation.current++;
-      clearInterval(timer);
+      shared.subscribers.delete(notify);
+      page.current = undefined;
+      releaseWorkPage(shared);
     };
   }, [api, projectId, itemId]);
-  return { data, error, historyError, moreHistory, loadingHistory, loadHistory };
+  return { ...state, loadHistory: () => void page.current?.loadHistory() };
 }
 export function FeatureWork({
   api,
