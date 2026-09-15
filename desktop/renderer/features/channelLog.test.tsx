@@ -30,6 +30,43 @@ const round = (id: string, patch: Partial<Run> = {}): Run => ({
   },
   ...patch,
 });
+
+it('previews command first lines and expands each full command without moving its result', async () => {
+  const state = snapshot();
+  const first = "python3 - <<'PY'\nprint('保留原样')\nPY";
+  const second = 'echo ' + '🙂'.repeat(180);
+  const run = round('commands');
+  run.log!.commands = [
+    { id: 'first', command: first, status: 'completed', exitCode: 0, sealed: true, output: '' },
+    { id: 'second', command: second, status: 'running', sealed: false, output: '' },
+    { id: 'short', command: 'npm test', status: 'completed', exitCode: 1, sealed: false, output: '' },
+  ];
+  const original = structuredClone(run);
+  const { props, api } = featureProps({ snapshot: state });
+  vi.mocked(props.api.getRuns).mockResolvedValue({ runs: [run], hasMore: false });
+  render(<ChannelView {...props} id="channel-system" />, { wrapper: TestProviders });
+  const entry = within(await screen.findByRole('article', { name: /轮次/ }));
+  const user = userEvent.setup();
+  await user.click(entry.getByText(/^(本轮详情|查看最新轮次)$/));
+  const rows = within(entry.getByRole('list', { name: '本轮命令' })).getAllByRole('listitem');
+  expect(rows[0].querySelector('code')!.textContent).toBe("python3 - <<'PY'");
+  expect(rows[0].querySelector('pre')).toBeNull();
+  expect(Array.from(rows[1].querySelector('code')!.textContent!)).toHaveLength(160);
+  expect(rows[1].querySelector('code')!.textContent?.endsWith('🙂…')).toBe(true);
+  expect(within(rows[2]).queryByRole('button')).toBeNull();
+  expect(rows[0].querySelector('.log-command-line')!.textContent).toContain('退出 0 · 已封存');
+  expect(rows[1].querySelector('.log-command-line')!.textContent).toContain('工作中 · 未封存');
+  await user.click(within(rows[0]).getByRole('button', { name: '展开' }));
+  expect(rows[0].querySelector('pre')!.textContent).toBe(first);
+  expect(rows[1].querySelector('pre')).toBeNull();
+  await user.click(within(rows[1]).getByRole('button', { name: '展开' }));
+  expect(rows[1].querySelector('pre')!.textContent).toBe(second);
+  await user.click(within(rows[0]).getByRole('button', { name: '收起' }));
+  expect(rows[0].querySelector('pre')).toBeNull();
+  expect(rows[1].querySelector('pre')!.textContent).toBe(second);
+  expect(run).toEqual(original);
+});
+
 it('renders a structured round and opens raw activity only on expansion for demo and linked channels', async () => {
   for (const demo of [true, false]) {
     const state = snapshot();
@@ -57,7 +94,7 @@ it('renders a structured round and opens raw activity only on expansion for demo
       '已有证据，等待报告',
       'src/import.ts',
       'npm test',
-      '退出 0',
+      '退出 0 · 已封存',
       '修复导入',
       '检查下一份报告',
       '120 秒',

@@ -172,20 +172,42 @@
   line-height: var(--text-xs-lh);
 }
 .log-commands li {
+  padding: var(--space-1) 0;
+}
+.log-command-line {
   display: flex;
   align-items: baseline;
   justify-content: space-between;
   gap: var(--space-3);
-  padding: var(--space-1) 0;
 }
-.log-commands code {
+.log-command-line code {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   font-family: var(--font-mono);
+}
+.log-command-full {
+  margin: var(--space-2) 0;
+  font-family: var(--font-mono);
+  font-size: inherit;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
 .log-commands span {
   flex-shrink: 0;
+  white-space: nowrap;
   color: var(--muted);
+}
+.log-command-line button {
+  flex-shrink: 0;
+  border: 0;
+  background: none;
+  padding: 0;
+  color: var(--muted);
+  font: inherit;
+  cursor: pointer;
 }
 .log-outputs li {
   display: flex;
