@@ -579,6 +579,10 @@ export class Engine {
     const itemRevisions = new Map(this.store.projectItems(project.id).map((item) => [item.id, item.revision]));
     this.store.put('channels', {
       ...channel,
+      // The question this turn was asked to answer is no longer waiting: whatever a person left is
+      // already in the prompt above, as a new note beside the previous turn's summary. The decision
+      // itself is kept, so the page can still say what the last turn asked and that it was answered.
+      ...(channel.work ? { work: { ...channel.work, awaitingReply: false } } : {}),
       status: 'running',
       lastRunAt: run.startedAt,
       nextRunAt: '',
@@ -1199,6 +1203,25 @@ export class Engine {
       const enabled = this.control(run.channelId).enabled;
       this.store.put('channels', {
         ...current,
+        // A bounded CLI turn has no `morrow-next` block to parse, so without this its question would
+        // exist only inside the run summary: the page would say 已暂停 and never that a turn is
+        // waiting for an answer. The report's summary is the question — a report carries no separate
+        // field for one — and the page reads it off `work` exactly as it reads a native question.
+        // The native path keeps its own decision: `completeAutonomousWork` runs right after this one
+        // and replaces `work` with the block that turn wrote.
+        ...(needsHuman && run.executionOwner !== 'codex-app'
+          ? {
+              work: {
+                state: 'needs_input' as const,
+                focus: '',
+                reason: '本轮需要人工输入',
+                nextStep: Array.from(result.summary).slice(0, 4000).join(''),
+                runId: run.id,
+                updatedAt: time,
+                awaitingReply: true,
+              },
+            }
+          : {}),
         status: needsHuman ? 'blocked' : enabled ? 'waiting' : 'paused',
         nextRunAt: enabled
           ? new Date(Date.now() + Math.max(current.intervalMinutes, result.nextCheckMinutes) * 60000).toISOString()

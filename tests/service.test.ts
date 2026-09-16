@@ -641,6 +641,76 @@ test('resume scheduling, per-project queued work, and human-needed results stop 
     await s.cleanup();
   }
 });
+test('a CLI turn that needs a person leaves its question on the channel, and the next turn takes the answer', async () => {
+  const s = await setup();
+  try {
+    // Every turn here is started by hand; the daemon loop would otherwise choose its own moment.
+    stopScheduler(s);
+    const claude = await s.api(
+      'POST',
+      '/api/channels',
+      { projectId: s.project.id, name: '提问频道', goal: '缺关键信息时先问人', runtime: 'claude' },
+      201
+    );
+    // A report has no separate question field, so a turn that needs a person puts the question in
+    // its summary — which is exactly what the real Claude Code turn behind this behaviour did.
+    const question = '样本数据从哪里取？现有导出缺少退款记录，请指定来源。';
+    s.config({ result: { summary: question, items: [], nextCheckMinutes: 60, knowledge: [], needsHuman: true } });
+    const finished = (count: number) =>
+      until(
+        () =>
+          s.store.all<any>('runs').filter((r) => r.channelId === claude.id && r.status === 'completed').length === count
+      );
+    await s.api('POST', `/api/channels/${claude.id}/action`, { action: 'resume' });
+    await finished(1);
+    const asked = s.store.all<any>('runs').find((r) => r.channelId === claude.id)!;
+    const blocked = s.store.get<any>('channels', claude.id);
+    assert.equal(blocked.status, 'blocked');
+    assert(!s.engine.control(claude.id).enabled);
+    // The question the page shows, stored the way a native question is stored.
+    assert.equal(blocked.work.state, 'needs_input');
+    assert.equal(blocked.work.awaitingReply, true);
+    assert.equal(blocked.work.nextStep, question);
+    assert.equal(blocked.work.runId, asked.id);
+    assert.equal(blocked.work.focus, '');
+    assert.equal(blocked.work.reason, '本轮需要人工输入');
+    assert(blocked.work.updatedAt);
+    // The audit line that says why automatic scheduling stopped is still written.
+    assert(
+      s.store
+        .all<any>('events')
+        .some((e) => e.channelId === claude.id && e.text === '此轮需要人工输入，频道已停止自动调度。')
+    );
+    // The only reply a CLI channel has is a note; storing one answers nothing on its own.
+    const answer = await s.api(
+      'POST',
+      `/api/channels/${claude.id}/messages`,
+      { text: '用 2026-08 的对账导出，退款记录在第二张表。' },
+      201
+    );
+    assert.equal(s.store.get<any>('channels', claude.id).work.awaitingReply, true);
+    s.config({ result: progressReport });
+    await s.api('POST', `/api/channels/${claude.id}/action`, { action: 'run' });
+    await finished(2);
+    // Cleared when the turn started: this turn's report says nothing about a person, so nothing
+    // after the start could have cleared it. The decision itself stays, now marked answered.
+    const answered = s.store.get<any>('channels', claude.id);
+    assert.equal(answered.work.awaitingReply, false);
+    assert.equal(answered.work.state, 'needs_input');
+    assert.equal(answered.work.nextStep, question);
+    // Answering does not resume autonomy; the person asks for the turn, as they did above.
+    assert(!s.engine.control(claude.id).enabled);
+    const second = s.store.all<any>('runs').find((r) => r.channelId === claude.id && r.id !== asked.id)!;
+    const prompt = s.store.runText(second.id, 'prompt')!;
+    const context = JSON.parse(prompt.split('\n').find((line) => line.startsWith('{"project":'))!);
+    // Nothing was added to the prompt for this: the answer arrives as the note this turn is the
+    // first to see, beside the previous turn's summary — the question it answers.
+    assert.deepEqual(context.humanNotes, [{ text: answer.text, createdAt: answer.createdAt, new: true }]);
+    assert(context.previousRuns.some((r: any) => r.summary === question));
+  } finally {
+    await s.cleanup();
+  }
+});
 test('safe adapters and evidence validation', () => {
   const channel: any = {
     runtime: 'codex',
