@@ -10,7 +10,13 @@ import { formatResetTime, usageWindowLabel } from '../components/format';
 import './content.css';
 import './runtimes.css';
 
-const runtimeMarks: Record<string, string> = { codex: 'CX' };
+const runtimeMarks: Record<string, string> = { codex: 'CX', claude: 'CL', trae: 'TR' };
+/** What a person runs in a terminal to log each CLI in, quoted where the login state is explained. */
+const loginCommands: Record<string, string> = {
+  codex: 'codex login',
+  claude: 'claude auth login',
+  trae: 'traex login',
+};
 function RuntimeMark({ runtime }: { runtime: Runtime }) {
   return (
     <span className={`runtime-settings-mark ${runtimeMarks[runtime.id] ? runtime.id : 'other'}`} aria-hidden="true">
@@ -404,7 +410,7 @@ export function RuntimesView({
                         {status.label}
                       </span>
                       <span className="runtime-settings-auth">
-                        {appRuntime ? '由 App 管理' : runtime.available ? '待验证' : '—'}
+                        {appRuntime ? '由 App 管理' : runtime.available ? '沿用 CLI 登录' : '—'}
                       </span>
                       <span className="runtime-settings-usage">
                         {running > 0 ? (
@@ -470,7 +476,7 @@ export function RuntimesView({
                           )}
                           <dt>CLI 路径</dt>
                           <dd>{runtime.path ? <code>{runtime.path}</code> : '执行主机的命令路径中尚未找到此 CLI。'}</dd>
-                          {appRuntime && runtime.version && (
+                          {!!runtime.version && (
                             <>
                               <dt>CLI 版本</dt>
                               <dd>
@@ -485,14 +491,14 @@ export function RuntimesView({
                               <dt>账号登录</dt>
                               <dd>
                                 {runtime.available
-                                  ? '沿用 CLI 已有账号。检测不会调用模型，登录状态与配额在实际执行时验证。'
-                                  : '检测到可用 CLI 后，在执行主机终端完成登录。'}
+                                  ? `沿用 CLI 已有账号。检测不会调用模型，登录状态与配额在实际执行时验证；登录失效时在执行主机终端运行 ${loginCommands[runtime.id] || `${runtime.id} login`}。`
+                                  : `检测到可用 CLI 后，在执行主机终端运行 ${loginCommands[runtime.id] || `${runtime.id} login`} 完成登录。`}
                               </dd>
                               <dt>执行权限</dt>
                               <dd>
                                 {runtime.available
                                   ? runtime.canWrite
-                                    ? '自动轮次默认沿用 App 任务设置；每个频道可单独收紧为只读或工作区编辑。'
+                                    ? '只读 / 工作区写入，由每个频道单独设置；沿用 App 任务权限只有 Codex 可选。'
                                     : '只读执行'
                                   : 'CLI 可用后读取支持的权限。'}
                               </dd>
@@ -544,8 +550,8 @@ export function RuntimesView({
             <p className="runtime-settings-note">
               <Info size={13} />
               <span>
-                自动工作使用 Codex App 任务；独立复核使用官方只读
-                CLI。连接检测不会调用模型，账号与配额以实际读数为准。旧的 Claude Code / Trae 频道保持可读，但不再执行。
+                Codex 对话连接 Mac App；Claude Code 与 Trae 用本机 CLI 执行有界轮次。独立复核一律使用官方只读 Codex
+                CLI。连接检测不会调用模型，账号与配额以实际读数为准。
               </span>
             </p>
           </details>

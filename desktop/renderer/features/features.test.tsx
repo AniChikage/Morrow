@@ -114,39 +114,39 @@ describe('channel control and history', () => {
     expect(api.channelAction).not.toHaveBeenCalled();
   });
 
-  it('keeps a retired-runtime channel readable: notice shown, run and resume disabled, pause still dispatched', async () => {
+  it('runs a Claude Code channel from the page itself: no App entry, continue and pause both work', async () => {
     const user = userEvent.setup();
     const state = snapshot();
     state.projects[0].isDemo = false;
     state.channels[0].runtime = 'claude';
-    state.channels[0].status = 'idle';
-    state.channels[0].nextRunAt = '2026-09-08T12:00:00Z';
+    state.channels[0].permission = 'workspace-write';
+    state.channels[0].status = 'paused';
+    state.channels[0].nextRunAt = '';
     const { props, api } = featureProps({ snapshot: state });
-    api.getEvents.mockResolvedValueOnce({ events: [event('legacy-history', '旧运行时留下的记录')], hasMore: false });
+    api.getEvents.mockResolvedValueOnce({ events: [event('cli-history', '本机 CLI 轮次留下的记录')], hasMore: false });
     const view = render(<ChannelView {...props} id="channel-system" />, { wrapper: TestProviders });
     await user.click(screen.getByText('频道审计记录'));
-    await screen.findByText('旧运行时留下的记录');
-    expect(screen.getByRole('note').textContent).toContain('已停止支持');
-    expect(screen.getAllByText('Claude Code（已停止支持）').length).toBeGreaterThan(0);
-    await user.click(screen.getByRole('button', { name: '频道选项' }));
-    expect(screen.getByRole('menuitem', { name: '在 Codex App 中打开对话' }).getAttribute('aria-disabled')).toBe(
-      'true'
-    );
-    expect(screen.queryByRole('textbox', { name: '向频道补充上下文' })).toBeNull();
-    await user.click(screen.getByRole('menuitem', { name: '暂停' }));
-    expect(api.channelAction).toHaveBeenLastCalledWith('channel-system', 'pause');
-    const pausedState = {
+    await screen.findByText('本机 CLI 轮次留下的记录');
+    expect(screen.queryByRole('note')).toBeNull();
+    // Nothing here belongs to an App task, so its entry is not offered at all.
+    expect(screen.queryByRole('button', { name: /在 Codex App 中打开/ })).toBeNull();
+    expect(screen.getByText('准备好后继续工作。')).toBeTruthy();
+    const resume = screen.getByRole('button', { name: /继续工作/ }) as HTMLButtonElement;
+    expect(resume.disabled).toBe(false);
+    await user.click(resume);
+    expect(api.channelAction).toHaveBeenLastCalledWith('channel-system', 'resume');
+    const runningState = {
       ...state,
       channels: state.channels.map((channel) =>
-        channel.id === 'channel-system' ? { ...channel, status: 'paused', nextRunAt: '' } : channel
+        channel.id === 'channel-system' ? { ...channel, status: 'running', autonomyEnabled: true } : channel
       ),
     };
-    view.rerender(<ChannelView {...props} snapshot={pausedState} id="channel-system" />);
+    view.rerender(<ChannelView {...props} snapshot={runningState} id="channel-system" />);
     await user.click(screen.getByRole('button', { name: '频道选项' }));
-    expect(screen.getByRole('menuitem', { name: '继续工作' }).getAttribute('aria-disabled')).toBe('true');
-    await user.keyboard('{Escape}');
-    expect(screen.getByText('旧运行时留下的记录')).toBeTruthy();
-    expect(api.channelAction).toHaveBeenCalledTimes(1);
+    expect(screen.queryByRole('menuitem', { name: '在 Codex App 中打开对话' })).toBeNull();
+    await user.click(screen.getByRole('menuitem', { name: '暂停' }));
+    expect(api.channelAction).toHaveBeenLastCalledWith('channel-system', 'pause');
+    expect(api.channelAction).toHaveBeenCalledTimes(2);
   });
 
   it('during a version handover a paused channel cannot be resumed, while pausing a running one still works', async () => {

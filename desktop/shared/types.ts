@@ -30,13 +30,7 @@ export interface UpgradeHandshake {
   fromBootId: string;
   targetFingerprint: string;
 }
-export type RuntimeID = 'codex';
-/** Runtimes that older records may still reference. Their records stay readable but never execute. */
-export type LegacyRuntimeID = 'claude' | 'trae';
-export type AnyRuntimeID = RuntimeID | LegacyRuntimeID;
-export const legacyRuntimes: readonly LegacyRuntimeID[] = ['claude', 'trae'];
-export const isLegacyRuntime = (value: string): value is LegacyRuntimeID =>
-  (legacyRuntimes as readonly string[]).includes(value);
+export type RuntimeID = 'codex' | 'claude' | 'trae';
 /** Account rate-limit windows Codex reports: a rolling five-hour window and a weekly one. */
 export const usageWindows = ['5h', 'weekly'] as const;
 export type UsageWindow = (typeof usageWindows)[number];
@@ -127,7 +121,7 @@ export interface Project {
   usageBudget?: UsageBudget;
   createdAt: string;
   isDemo: boolean;
-  runtime?: AnyRuntimeID;
+  runtime?: RuntimeID;
 }
 export interface ProjectBrief {
   goal: string;
@@ -166,7 +160,7 @@ export interface Channel {
   projectId: string;
   name: string;
   goal: string;
-  runtime: AnyRuntimeID;
+  runtime: RuntimeID;
   model: string;
   status: string;
   intervalMinutes: number;

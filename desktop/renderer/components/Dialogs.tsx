@@ -3,21 +3,30 @@ import { useEffect, useId, useRef, useState, type ReactNode, type FormEvent } fr
 import * as Dialog from '@radix-ui/react-dialog';
 import { X, FolderOpen, Plus, Search, Hash, Folder, FileText, Laptop, Server, ArrowUpRight, Check } from 'lucide-react';
 import { Button, IconButton, StatusIcon } from './ui';
-import { kindLabel, usageWindowLabel } from './format';
+import { kindLabel, runtimeLabel, usageWindowLabel } from './format';
 import { useWorkspace } from '../state/workspace';
 import { briefPlaceholder, briefTemplate } from '../features/ProjectBrief';
-import { isLegacyRuntime, usageWindows } from '../../shared/types';
+import { usageWindows } from '../../shared/types';
 import type {
   Channel,
   ChannelPatch,
   ConnectionConfig,
   Route,
+  RuntimeID,
   WorkItem,
   ItemPatch,
   Settings,
   SettingsPatch,
   UsageWindow,
 } from '../../shared/types';
+/** The runtimes a person can pick, in the order they are offered. */
+const runtimeIds: readonly RuntimeID[] = ['codex', 'claude', 'trae'];
+/**
+ * A Codex channel follows the App task's own permission settings; the CLI runtimes have no such task,
+ * so they start in Morrow's own workspace-write scope. The service applies the same rule.
+ */
+const defaultPermission = (runtime: RuntimeID): Channel['permission'] =>
+  runtime === 'codex' ? 'native' : 'workspace-write';
 
 export type ModalState =
   | { kind: 'project' }
@@ -120,6 +129,7 @@ function ProjectDialog({
     [path, setPath] = useState(''),
     [goal, setGoal] = useState(''),
     [brief, setBrief] = useState(''),
+    [runtime, setRuntime] = useState<RuntimeID>('codex'),
     [localError, setLocalError] = useState('');
   const remote = connection?.config.mode === 'ssh';
   const existing = path.trim()
@@ -151,7 +161,7 @@ function ProjectDialog({
         name: name.trim() || path.split('/').filter(Boolean).pop() || '项目',
         path: path.trim(),
         goal: goal.trim() || '持续跟踪项目进展，识别有证据支持的问题，在授权范围内推进修复并验证结果。',
-        runtime: 'codex',
+        runtime,
         ...(brief.trim() ? { brief: brief.trim() } : {}),
       });
       projectId = project.id;
@@ -194,6 +204,15 @@ function ProjectDialog({
               placeholder="默认使用文件夹名称"
               maxLength={100}
             />
+          </Field>
+          <Field title="默认运行时" hint="Codex 通过 Codex App 工作；Claude Code 与 Trae 使用本机已登录的 CLI。">
+            <select value={runtime} onChange={(e) => setRuntime(e.target.value as RuntimeID)}>
+              {runtimeIds.map((id) => (
+                <option key={id} value={id}>
+                  {runtimeLabel(id)}
+                </option>
+              ))}
+            </select>
           </Field>
           <Field title="持续目标" hint="可以留空，稍后在频道中细化长期职责。">
             <textarea
@@ -431,11 +450,16 @@ function ChannelDialog({
   const { api, mutate, busy, error, clearError, snapshot } = useWorkspace();
   const [name, setName] = useState(channel?.name || '');
   const [goal, setGoal] = useState(channel?.goal || '');
+  const [runtime, setRuntime] = useState<RuntimeID>(channel?.runtime || 'codex');
+  const [model, setModel] = useState(channel?.model || '');
+  const [permission, setPermission] = useState<Channel['permission']>(
+    channel?.permission || defaultPermission(channel?.runtime || 'codex')
+  );
   const [interval, setInterval] = useState(channel?.intervalMinutes || 60);
   const [budget, setBudget] = useState(channel?.maxRunsPerDay || 32);
   const demo = !!snapshot.projects.find((p) => p.id === projectId)?.isDemo;
-  // Channels from retired runtimes keep their records; only their name and direction remain editable.
-  const legacy = !!channel && isLegacyRuntime(channel.runtime);
+  // The service refuses a runtime, model or scope change while a turn is running.
+  const running = !!channel && snapshot.channels.find((c) => c.id === channel.id)?.status === 'running';
   useEffect(() => clearError(), []);
   async function submit(e: FormEvent) {
     e.preventDefault();
@@ -447,15 +471,20 @@ function ChannelDialog({
           intervalMinutes: interval,
           maxRunsPerDay: budget,
         };
+        if (!running) {
+          if (runtime !== channel.runtime) data.runtime = runtime;
+          if (model !== channel.model) data.model = model.trim();
+          if (permission !== channel.permission) data.permission = permission;
+        }
         await api.updateChannel(channel.id, data);
       } else {
         const c = await api.createChannel({
           projectId,
           name: name.trim(),
           goal: goal.trim(),
-          runtime: 'codex',
-          model: '',
-          permission: 'native',
+          runtime,
+          model: model.trim(),
+          permission,
           intervalMinutes: interval,
           maxRunsPerDay: budget,
         });
@@ -490,18 +519,12 @@ function ChannelDialog({
             required
           />
         </Field>
-        {!legacy && channel && ['read-only', 'workspace-write'].includes(channel.permission) && (
-          <p className="form-note">
-            此频道还保留此前的自动执行范围：{channel.permission === 'read-only' ? '只读工作空间' : '允许工作区写入'}。
-            保存方向会保留该范围。
-          </p>
-        )}
-        {!legacy && !channel && <p className="form-note">创建频道后，在频道页关联已有的 App 任务。</p>}
-        {!legacy && (
+        {!channel && runtime === 'codex' && <p className="form-note">创建频道后，在频道页关联已有的 App 任务。</p>}
+        {runtime === 'codex' && (
           <details className="feature-form-details">
             <summary>对话与任务设置</summary>
             <p className="form-note">
-              模型、工具与任务权限在 Codex App 中管理。
+              工具与任务权限在 Codex App 中管理。
               {channel ? '保存方向会保留已有对话和进展，可在 App 中继续指导。' : '关联后可在 App 中继续指导。'}
             </p>
             {channel && (
@@ -517,6 +540,54 @@ function ChannelDialog({
         )}
         <details className="feature-form-details">
           <summary>工作设置</summary>
+          <div className="form-row">
+            <Field title="运行引擎">
+              <select
+                value={runtime}
+                onChange={(e) => {
+                  const next = e.target.value as RuntimeID;
+                  setRuntime(next);
+                  setModel('');
+                  if (next !== 'codex' && permission === 'native') setPermission('workspace-write');
+                }}
+                disabled={running}
+              >
+                {runtimeIds.map((id) => (
+                  <option key={id} value={id}>
+                    {runtimeLabel(id)}
+                  </option>
+                ))}
+              </select>
+            </Field>
+            <Field title="模型">
+              <input
+                value={model}
+                onChange={(e) => setModel(e.target.value)}
+                placeholder={runtime === 'codex' ? 'Codex App 默认模型' : 'CLI 默认模型'}
+                disabled={running}
+              />
+            </Field>
+          </div>
+          <Field
+            title="执行权限"
+            hint={
+              permission === 'workspace-write' && runtime === 'claude'
+                ? '可在项目内修改文件并执行命令；命令不在沙箱内运行。'
+                : runtime === 'codex'
+                  ? '默认沿用 Codex App 的权限设置（默认为完整访问）；需要收紧时改为只读或工作区写入。'
+                  : '本机 CLI 在所选范围内执行有界轮次。'
+            }
+          >
+            <select
+              value={permission}
+              onChange={(e) => setPermission(e.target.value as Channel['permission'])}
+              disabled={running}
+            >
+              <option value="read-only">只读工作空间</option>
+              <option value="workspace-write">允许工作区写入</option>
+              {runtime === 'codex' && <option value="native">沿用 Codex App 原生权限</option>}
+            </select>
+          </Field>
           <div className="form-row">
             <Field title="复查间隔（分钟）">
               <input
@@ -540,11 +611,7 @@ function ChannelDialog({
             </Field>
           </div>
         </details>
-        {legacy && (
-          <p className="form-note">
-            此频道使用的运行时已停止支持，只能调整名称与方向；历史记录保持可读，新工作请新建 Codex 频道。
-          </p>
-        )}
+        {running && <p className="form-note">暂停频道后可以更换引擎、模型或执行权限。</p>}
         {error && (
           <p className="form-error" role="alert">
             {error}

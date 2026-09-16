@@ -343,11 +343,12 @@ function RunInspector({ run, ...props }: FeatureProps & { run: Run }) {
       </div>
       {run.sessionId && (
         <div className="run-native-session">
-          <span>{nativeRun(value) ? 'App 任务' : '原生会话'}</span>
+          {/* Only a turn the App actually owned is an App task; everything else is a CLI turn. */}
+          <span>{value.executionOwner === 'codex-app' ? 'App 任务' : 'CLI 轮次'}</span>
           <code>{run.sessionId}</code>
           <Button
             variant="ghost"
-            aria-label={nativeRun(value) ? '复制 App 任务 ID' : '复制原生会话 ID'}
+            aria-label={value.executionOwner === 'codex-app' ? '复制 App 任务 ID' : '复制 CLI 轮次 ID'}
             onClick={() =>
               void navigator.clipboard
                 .writeText(run.sessionId)
@@ -358,7 +359,9 @@ function RunInspector({ run, ...props }: FeatureProps & { run: Run }) {
             <Copy size={12} />
             {copied ? '已复制' : '复制'}
           </Button>
-          {value.resumedFromSessionId && <small>{nativeRun(value) ? '沿用已有任务' : '沿用已有会话'}</small>}
+          {value.resumedFromSessionId && (
+            <small>{value.executionOwner === 'codex-app' ? '沿用已有任务' : '沿用已有会话'}</small>
+          )}
         </div>
       )}
       <TabRow

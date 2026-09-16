@@ -133,6 +133,11 @@
   background: var(--selected);
   color: var(--text);
 }
+.runtime-settings-mark.claude,
+.runtime-settings-mark.trae {
+  background: var(--hover);
+  color: var(--text);
+}
 .runtime-settings-mark.other {
   background: var(--hover);
   color: var(--muted);

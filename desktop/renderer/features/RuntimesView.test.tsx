@@ -87,7 +87,7 @@ test('CLI detection stays separate from authentication and details are progressi
   api.getNativeStatus.mockImplementation(() => new Promise(() => {}));
   render(<RuntimesView {...props} />);
   expect(screen.getByText('已检测到')).toBeTruthy();
-  expect(screen.getByText('待验证')).toBeTruthy();
+  expect(screen.getByText('沿用 CLI 登录')).toBeTruthy();
   expect(screen.queryByText('已登录')).toBeNull();
   expect(screen.queryByText(installed.path)).toBeNull();
   expect(screen.queryByRole('list', { name: 'Codex App 连接清单' })).toBeNull();
@@ -96,7 +96,7 @@ test('CLI detection stays separate from authentication and details are progressi
   await userEvent.setup().click(row);
   const details = within(screen.getByRole('region', { name: 'Codex 详情' }));
   expect(details.getByText(installed.path)).toBeTruthy();
-  expect(details.getByText('自动轮次默认沿用 App 任务设置；每个频道可单独收紧为只读或工作区编辑。')).toBeTruthy();
+  expect(details.getByText('只读 / 工作区写入，由每个频道单独设置；沿用 App 任务权限只有 Codex 可选。')).toBeTruthy();
   expect(details.getByText(/登录状态与配额在实际执行时验证/)).toBeTruthy();
   expect(row.getAttribute('aria-expanded')).toBe('true');
   expect(screen.queryByRole('button', { name: /安装|登录|配置/ })).toBeNull();
@@ -239,18 +239,41 @@ test('an unreachable service shows no checklist instead of a guessed next step',
   expect(within(screen.getByRole('region', { name: 'Codex 详情' })).getByText('暂时无法连接 Codex App。')).toBeTruthy();
 });
 
-test('an installed but incompatible CLI differs from a CLI missing from PATH, and retired runtimes are never listed', () => {
+test('an installed but incompatible CLI differs from a CLI missing from PATH, and every runtime gets its own row', () => {
   const { props, api } = runtimeProps([
     { ...installed, available: false, detail: '当前 CLI 版本缺少必要的安全或结构化输出选项，请升级。' },
+    {
+      ...installed,
+      id: 'claude',
+      name: 'Claude Code',
+      available: false,
+      canWrite: false,
+      path: '',
+      version: '',
+      detail: '未找到 Claude Code 命令行运行时。',
+    },
+    {
+      ...installed,
+      id: 'trae',
+      name: 'Trae CLI',
+      available: false,
+      canWrite: false,
+      path: '',
+      version: '',
+      detail: '未找到 Trae CLI 命令行运行时。',
+    },
   ]);
-  // A channel left over from a retired runtime is not counted against the Codex row and gets no row of its own.
+  // A Claude channel is counted against the Claude row, not against Codex.
   props.snapshot.channels[1].runtime = 'claude';
   api.getNativeStatus.mockImplementation(() => new Promise(() => {}));
   const view = render(<RuntimesView {...props} />);
   expect(screen.getByRole('button', { name: 'Codex，需检查，查看详情' })).toBeTruthy();
+  expect(screen.getByRole('button', { name: 'Claude Code，未检测到，查看详情' })).toBeTruthy();
+  expect(screen.getByRole('button', { name: 'Trae CLI，未检测到，查看详情' })).toBeTruthy();
+  expect(screen.getAllByRole('button', { name: /查看详情/ })).toHaveLength(3);
   expect(screen.getByText('2 个频道')).toBeTruthy();
-  expect(screen.queryByRole('button', { name: /Claude Code|Trae/ })).toBeNull();
-  expect(screen.getAllByRole('button', { name: /查看详情/ })).toHaveLength(1);
+  expect(screen.getByText('1 个频道')).toBeTruthy();
+  expect(screen.getByText('未使用')).toBeTruthy();
   view.rerender(
     <RuntimesView
       {...props}

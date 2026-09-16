@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Hash, MoreHorizontal, Play } from 'lucide-react';
-import { isLegacyRuntime } from '../../shared/types';
 import type {
   Channel,
   NativeConversation,
@@ -234,11 +233,12 @@ export function ChannelView(props: FeatureProps & { id: string }) {
   const { id, snapshot, api, busy, onMutate, onNavigate, onEditChannel } = props;
   const channel = snapshot.channels.find((value) => value.id === id);
   const project = snapshot.projects.find((value) => value.id === channel?.projectId);
-  const demo = !!project?.isDemo,
-    legacy = !!channel && isLegacyRuntime(channel.runtime);
+  const demo = !!project?.isDemo;
   // While the service steps aside for a new version, nothing may start work; pausing still can.
   const switching = upgradeSwitching(snapshot);
-  const native = !!channel && !demo && !legacy;
+  // Only a Codex channel has an App conversation behind it; Claude Code and Trae channels run a
+  // bounded CLI turn instead, so none of the App-task state applies to them.
+  const native = channel?.runtime === 'codex' && !demo;
   const [conversation, setConversation] = useState<NativeConversation | null>(null);
   const [usage, setUsage] = useState<ProjectUsage>();
   const [runs, setRuns] = useState<Run[]>([]);
@@ -408,17 +408,19 @@ export function ChannelView(props: FeatureProps & { id: string }) {
       : '';
   const unavailable = demo
     ? '示例频道不能回答'
-    : unloaded
-      ? '任务未在 Codex App 中打开，打开后才能继续或回答。'
-      : !ready(conversation)
-        ? '原生对话尚未就绪，暂时不能回答'
-        : !conversation?.status.capabilities.send
-          ? '当前不能发送到原生对话'
-          : nativeBusy
-            ? appRequests.length
-              ? 'Codex 在 App 里等你处理（审批/追问）'
-              : 'Codex 正在回应，请稍候'
-            : '';
+    : !native
+      ? ''
+      : unloaded
+        ? '任务未在 Codex App 中打开，打开后才能继续或回答。'
+        : !ready(conversation)
+          ? '原生对话尚未就绪，暂时不能回答'
+          : !conversation?.status.capabilities.send
+            ? '当前不能发送到原生对话'
+            : nativeBusy
+              ? appRequests.length
+                ? 'Codex 在 App 里等你处理（审批/追问）'
+                : 'Codex 正在回应，请稍候'
+              : '';
   const pendingReleases = (snapshot.releases || []).filter(
     (row) => row.projectId === project.id && row.channelId === id && row.status === 'awaiting_approval'
   );
@@ -450,7 +452,7 @@ export function ChannelView(props: FeatureProps & { id: string }) {
               ? 'release'
               : blocked.length
                 ? 'blocked'
-                : paused && !legacy
+                : paused
                   ? 'resume'
                   : runs.length
                     ? 'latest'
@@ -495,7 +497,7 @@ export function ChannelView(props: FeatureProps & { id: string }) {
             {primary === 'resume' && (
               <Button
                 variant="primary"
-                disabled={busy || demo || (paused && (switching || legacy || !ready(conversation) || nativeBusy))}
+                disabled={busy || demo || (paused && (switching || (native && (!ready(conversation) || nativeBusy))))}
                 onClick={() => void onMutate(() => api.channelAction(id, paused ? 'resume' : 'pause'))}
               >
                 <Play size={13} /> 继续工作
@@ -508,8 +510,10 @@ export function ChannelView(props: FeatureProps & { id: string }) {
                 </Button>
               }
             >
-              {primary !== 'open' && (
-                <DropdownItem disabled={busy || demo || legacy} onSelect={openApp}>
+              {/* A CLI-runtime channel has no App conversation to open; the demo one keeps the
+                  entry so the preview still shows it, disabled like every other demo action. */}
+              {primary !== 'open' && channel.runtime === 'codex' && (
+                <DropdownItem disabled={busy || demo} onSelect={openApp}>
                   在 Codex App 中打开对话
                 </DropdownItem>
               )}
@@ -519,7 +523,7 @@ export function ChannelView(props: FeatureProps & { id: string }) {
               <DropdownItem onSelect={() => onNavigate({ kind: 'project', id: project.id })}>项目看板</DropdownItem>
               {primary !== 'resume' && (
                 <DropdownItem
-                  disabled={busy || demo || (paused && (switching || legacy || !ready(conversation) || nativeBusy))}
+                  disabled={busy || demo || (paused && (switching || (native && (!ready(conversation) || nativeBusy))))}
                   onSelect={() => void onMutate(() => api.channelAction(id, paused ? 'resume' : 'pause'))}
                 >
                   {paused ? '继续工作' : '暂停'}
@@ -656,11 +660,6 @@ export function ChannelView(props: FeatureProps & { id: string }) {
             )}
           </details>
         )}
-        {legacy && (
-          <p role="note" className="channel-demo-note">
-            {runtimeLabel(channel.runtime)}：此频道已停止支持，历史记录保持可读。
-          </p>
-        )}
         <div className="feature-scroll channel-log-scroll">
           {needs && (
             <section className="channel-needs" aria-label="需要你">
@@ -672,7 +671,6 @@ export function ChannelView(props: FeatureProps & { id: string }) {
                   work={channel.work}
                   api={api}
                   busy={busy}
-                  readOnly={legacy}
                   unavailable={unavailable}
                   autoFocus={entryQuestion.current?.present}
                   primaryAction={primary === 'answer' && !reviewingRelease}
@@ -699,7 +697,7 @@ export function ChannelView(props: FeatureProps & { id: string }) {
                     Codex 在 App 里等你处理（审批/追问）
                     {appRequestTitles ? ` · ${appRequestTitles}` : ''}
                   </span>
-                  <Button variant="ghost" disabled={busy || demo || legacy} onClick={openApp}>
+                  <Button variant="ghost" disabled={busy || demo} onClick={openApp}>
                     在 Codex App 中打开
                   </Button>
                 </p>

@@ -192,12 +192,14 @@ test('item text and evidence bounds match daemon acceptance limits', () => {
     assert.throws(() => itemPatch(value));
 });
 
-test('project and channel runtimes accept only Codex; retired runtimes and native launch parameters are rejected', () => {
-  assert.equal(projectInput({ name: '项目', path: '/tmp/project', goal: '目标', runtime: 'codex' }).runtime, 'codex');
-  for (const runtime of ['claude', 'trae', 'bash'])
-    assert.throws(() => projectInput({ name: '项目', path: '/tmp/project', goal: '目标', runtime }), runtime);
-  for (const runtime of ['claude', 'trae']) assert.throws(() => channelPatch({ runtime }), runtime);
-  assert.deepEqual(channelPatch({ runtime: 'codex' }), { runtime: 'codex' });
+test('project and channel runtimes accept the three supported CLIs and nothing else', () => {
+  for (const runtime of ['codex', 'claude', 'trae']) {
+    assert.equal(projectInput({ name: '项目', path: '/tmp/project', goal: '目标', runtime }).runtime, runtime);
+    assert.deepEqual(channelPatch({ runtime }), { runtime });
+  }
+  for (const runtime of ['bash', 'claude-code', ''])
+    assert.throws(() => projectInput({ name: '项目', path: '/tmp/project', goal: '目标', runtime }), String(runtime));
+  assert.throws(() => channelPatch({ runtime: 'bash' }));
   assert.throws(() => projectInput({ name: '项目', path: '/tmp/project', goal: '目标', executable: '/bin/bash' }));
 });
 

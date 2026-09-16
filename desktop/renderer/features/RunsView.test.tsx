@@ -230,9 +230,10 @@ it('keeps CLI completion separate from report validation and displays exact inpu
 
 it.each([
   [{ executionOwner: 'codex-app', permission: 'workspace-write' }, 'App 任务', '沿用已有任务'],
-  [{ permission: 'native' }, 'App 任务', '沿用已有任务'],
-  [{ permission: 'workspace-write' }, '原生会话', '沿用已有会话'],
-] as const)('names App tasks separately from CLI sessions and copies the same ID (%j)', async (patch, label, reuse) => {
+  // Without an App owner the turn ran as a CLI subprocess, whatever scope it was given.
+  [{ permission: 'native' }, 'CLI 轮次', '沿用已有会话'],
+  [{ permission: 'workspace-write' }, 'CLI 轮次', '沿用已有会话'],
+] as const)('names App tasks separately from CLI turns and copies the same ID (%j)', async (patch, label, reuse) => {
   const { props } = featureProps();
   const user = userEvent.setup();
   const current = run('session-label', {
@@ -247,11 +248,9 @@ it.each([
   await user.click(headings()[0]);
   expect(await screen.findByText(label)).toBeTruthy();
   expect(screen.getByText(reuse)).toBeTruthy();
-  await user.click(screen.getByRole('button', { name: `复制${label === 'App 任务' ? ' App 任务' : label} ID` }));
+  await user.click(screen.getByRole('button', { name: `复制 ${label} ID` }));
   expect(await navigator.clipboard.readText()).toBe(current.sessionId);
-  expect(
-    screen.getByRole('button', { name: `复制${label === 'App 任务' ? ' App 任务' : label} ID` }).textContent
-  ).toContain('已复制');
+  expect(screen.getByRole('button', { name: `复制 ${label} ID` }).textContent).toContain('已复制');
 });
 
 it.each([

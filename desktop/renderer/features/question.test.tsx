@@ -199,15 +199,17 @@ describe('the Codex question card on the channel page', () => {
     expect(screen.getByText('示例频道不能回答')).toBeTruthy();
   });
 
-  it('keeps a retired-runtime question readable without an answer box', () => {
+  it('answers a CLI-runtime question without waiting on an App conversation', () => {
     const state = waitingState(question);
     state.channels[0].runtime = 'claude';
     const { props } = featureProps({ snapshot: state });
     render(<ChannelView {...props} id="channel-system" />, { wrapper: TestProviders });
     expect(within(card()).getByText('如果两者都要，先做哪个？')).toBeTruthy();
-    expect(screen.queryByRole('textbox', { name: boxName })).toBeNull();
-    expect(screen.queryByRole('button', { name: '回答' })).toBeNull();
-    expect(screen.getByRole('note').textContent).toContain('已停止支持');
+    // No App task stands behind this channel, so nothing about App readiness may block the answer.
+    expect(box().disabled).toBe(false);
+    expect(screen.getByText('⌘ Enter 回答')).toBeTruthy();
+    expect(screen.queryByText('原生对话尚未就绪，暂时不能回答')).toBeNull();
+    expect(screen.queryByRole('note')).toBeNull();
   });
 
   it('waits for a native conversation that can send, then focuses the box because the page opened with the question', async () => {

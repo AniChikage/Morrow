@@ -13,7 +13,6 @@ import {
   Search,
   X,
 } from 'lucide-react';
-import { isLegacyRuntime } from '../../shared/types';
 import type { Channel, ProjectUsage, WorkItem } from '../../shared/types';
 import type { FeatureProps } from './types';
 import {
@@ -161,9 +160,8 @@ export function ProjectView(props: FeatureProps & { id: string }) {
     setQuery('');
   };
   const openItem = (item: WorkItem) => onNavigate({ kind: 'finding', id: item.id });
-  // Only a Codex channel can continue in the App; channels from retired runtimes stay readable but never execute.
+  // Only a Codex channel continues in the App; Claude Code and Trae channels run a bounded CLI turn.
   const codexChannel = channels.find((channel) => channel.runtime === 'codex');
-  const legacyChannels = channels.filter((channel) => isLegacyRuntime(channel.runtime));
   const pendingQuestions = channels.filter((channel) => channel.work?.awaitingReply);
   if (!project) return <EmptyState title="项目不存在" description="项目可能已被移除，请在侧栏重新选择。" />;
   const pendingReleases = (snapshot.releases || []).filter(
@@ -479,9 +477,7 @@ export function ProjectView(props: FeatureProps & { id: string }) {
                 ? '示例项目不会打开 App 任务。'
                 : codexChannel
                   ? '打开此项目的 App 任务；尚未关联时打开 App 新建任务。'
-                  : legacyChannels.length
-                    ? '旧频道使用的运行时已停止支持；新建 Codex 频道后可打开 App 任务。'
-                    : '创建 Codex 频道后可打开 App 任务。'
+                  : '本项目没有 Codex 频道；新建一个后可打开 App 任务。'
             }
             disabled={busy || project.isDemo || !codexChannel}
             onClick={() => codexChannel && void onMutate(() => api.openNativeApp(codexChannel.id))}
@@ -514,9 +510,6 @@ export function ProjectView(props: FeatureProps & { id: string }) {
             <h3>属性</h3>
             <Property label="项目事项">{allItems.length} 个</Property>
             <Property label="持续频道">{channels.length} 个</Property>
-            {legacyChannels.length > 0 && (
-              <Property label="已停止支持">{legacyChannels.length} 个旧频道，历史可读</Property>
-            )}
             <Property label="正在运行">{channels.filter((channel) => channel.status === 'running').length} 个</Property>
             {channels.some((channel) => channel.usageWait && channel.status === 'waiting') && (
               <Property label="等待额度">

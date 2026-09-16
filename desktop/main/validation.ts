@@ -17,7 +17,7 @@ import type {
 } from '../shared/types';
 import { usageWindows } from '../shared/types';
 
-const runtimes = ['codex'] as const;
+const runtimes = ['codex', 'claude', 'trae'] as const;
 const itemStatuses = ['open', 'investigating', 'verified', 'resolved', 'blocked'];
 export function record(value: unknown, allowed: string[]): Record<string, unknown> {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('请求必须是对象。');
