@@ -8,8 +8,13 @@ if (args.includes('--version')) {
   process.exit(0);
 }
 if (args.includes('--help')) {
-  // Only the flags the real `codex exec --help` advertises; drift against the real CLI must stay visible.
-  console.log('--json --sandbox --output-last-message --skip-git-repo-check --model --ignore-user-config');
+  // The union of what the real `codex exec --help` and `claude --help` advertise, and nothing more;
+  // drift against either real CLI must stay visible.
+  console.log(
+    '--json --sandbox --output-last-message --skip-git-repo-check --model --ignore-user-config ' +
+      '--print --output-format --verbose --permission-mode --tools --allowedTools --strict-mcp-config ' +
+      '--mcp-config --safe-mode --name --resume'
+  );
   process.exit(0);
 }
 let input = '';
@@ -69,6 +74,10 @@ if (config.sleep) {
     })
   );
 } else {
+  // `--print` is Claude Code's non-interactive mode; the stream it emits differs from codex exec's,
+  // and it announces its session before anything else.
+  const claude = args.includes('--print');
+  if (claude) console.log(JSON.stringify({ type: 'system', subtype: 'init', session_id: 'fixture-session-1' }));
   if (Array.isArray(config.events)) for (const event of config.events) console.log(JSON.stringify(event));
   if (config.delay) await new Promise((resolve) => setTimeout(resolve, config.delay));
   const result = config.result || {
@@ -96,20 +105,32 @@ if (config.sleep) {
     (config.markdown
       ? 'Implemented the requested work.\n\n```morrow-report\n' + JSON.stringify(result) + '\n```'
       : JSON.stringify(result));
-  console.log(
-    JSON.stringify({
-      type: 'thread.started',
-      session_id: 'fixture-session-1',
-      thread_id: 'fixture-session-1',
-    })
-  );
-  const output = args[args.indexOf('--output-last-message') + 1];
-  if (output) writeFileSync(output, finalText);
-  console.log(
-    JSON.stringify({
-      type: 'item.completed',
-      item: { type: 'agent_message', text: finalText },
-    })
-  );
+  if (claude) {
+    console.log(
+      JSON.stringify({
+        type: 'result',
+        is_error: false,
+        session_id: 'fixture-session-1',
+        result: finalText,
+        ...(config.finalText !== undefined || config.markdown ? {} : { structured_output: result }),
+      })
+    );
+  } else {
+    console.log(
+      JSON.stringify({
+        type: 'thread.started',
+        session_id: 'fixture-session-1',
+        thread_id: 'fixture-session-1',
+      })
+    );
+    const output = args[args.indexOf('--output-last-message') + 1];
+    if (output) writeFileSync(output, finalText);
+    console.log(
+      JSON.stringify({
+        type: 'item.completed',
+        item: { type: 'agent_message', text: finalText },
+      })
+    );
+  }
   if (config.recovered) console.log(JSON.stringify({ type: 'turn.completed' }));
 }

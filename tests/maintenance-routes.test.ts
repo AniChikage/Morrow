@@ -29,13 +29,14 @@ test('refreshing runtimes re-detects the CLI and replaces the reported list', as
     const before: Runtime[] = await s.api('POST', '/api/runtimes/refresh', {});
     assert.deepEqual(
       before.map((runtime) => runtime.id),
-      ['codex']
+      ['codex', 'claude', 'trae']
     );
     const [codex] = before;
     assert.equal(codex.available, true);
     assert.equal(codex.canWrite, true);
     assert.equal(codex.version, 'fixture-runtime 1.0.0');
     assert.equal(codex.path, process.env.MORROW_TEST_CODEX_PATH);
+    assert(before.every((runtime) => runtime.available && runtime.canWrite));
     // The route discovers again rather than returning what the daemon read at boot.
     s.engine.runtimes = [];
     const after: Runtime[] = await s.api('POST', '/api/runtimes/refresh', {});

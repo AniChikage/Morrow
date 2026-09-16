@@ -20,21 +20,19 @@ import type { ChildProcessWithoutNullStreams } from 'node:child_process';
 import { appendFileSync, mkdirSync, readFileSync, writeFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
-import { APIError, isLegacyRuntime, resultSchema } from './protocol.ts';
+import { APIError, resultSchema } from './protocol.ts';
 import type { AgentResult, Channel, Control, Event, Project, Run, Runtime, WorkItem } from './protocol.ts';
 import type { Verification } from './verification-types.ts';
 import { sanitizeEventDetail } from './event-details.ts';
 import type { EventDetail } from './protocol.ts';
 import { Store, now } from './store.ts';
 import { logError } from './log.ts';
-import { decodeLine, diagnoseFailure, invocation } from './runtimes.ts';
+import { decodeLine, diagnoseFailure, invocation, runtimeTitles } from './runtimes.ts';
 import { projectTreeState } from './source-version.ts';
 import { pinHelpers } from './runtime-helpers.ts';
 import { extractReport } from './reports.ts';
 /** A Morrow-orchestrated turn, as opposed to native chat or a turn the App itself started. */
 const scheduledRun = (row: Run) => !row.source || ['morrow-schedule', 'nohuman-schedule'].includes(row.source);
-const legacyRuntimeMessage =
-  '此频道使用已停止支持的运行时（Claude Code / Trae）。历史记录保持可读；请新建 Codex 频道继续工作。';
 type Active = {
   child: ChildProcessWithoutNullStreams;
   channelId: string;
@@ -257,15 +255,6 @@ export class Engine {
     // of reading every channel of every project once a second.
     for (const channel of this.store.enabledChannels()) {
       const control = this.control(channel.id);
-      if (isLegacyRuntime(channel.runtime)) {
-        // Records from retired runtimes stay readable, but they never schedule work again.
-        if (control.enabled) {
-          this.setControl(channel.id, { enabled: false, pid: 0, runId: '' });
-          this.store.put('channels', { ...channel, status: 'paused', nextRunAt: '' });
-          this.event(channel.id, '', 'system', '此频道使用的运行时已停止支持，自动调度已关闭；历史记录保持可读。');
-        }
-        continue;
-      }
       if (
         control.enabled &&
         !this.active.has(channel.id) &&
@@ -318,8 +307,13 @@ export class Engine {
     });
     if (changed) this.event(channel.id, '', 'system', `${gate.message}。`);
   }
-  /** Reads the account usage as a run starts; the reading lands on the run row when it arrives, never blocking the start. */
+  /**
+   * Reads the account usage as a run starts; the reading lands on the run row when it arrives, never
+   * blocking the start. Only a Codex run is measured: the reading is the Codex account's own, so a
+   * Claude Code or Trae turn would be attributed usage it did not spend.
+   */
   trackUsageBefore(run: Run) {
+    if (run.runtime !== 'codex') return;
     const scope = { projectId: run.projectId, channelId: run.channelId, runId: run.id };
     const task = this.usage
       .sample('before', scope)
@@ -336,8 +330,12 @@ export class Engine {
       .finally(() => this.usageBefore.delete(run.id));
     this.usageBefore.set(run.id, task);
   }
-  /** Reads the account usage after a run and stores the per-window difference as this run's estimated share. */
+  /**
+   * Reads the account usage after a run and stores the per-window difference as this run's estimated
+   * share. Skipped for the runtimes that do not spend the Codex account, as `trackUsageBefore` is.
+   */
   trackUsageAfter(run: Run) {
+    if (run.runtime !== 'codex') return;
     const scope = { projectId: run.projectId, channelId: run.channelId, runId: run.id };
     void (async () => {
       await this.usageBefore.get(run.id);
@@ -378,7 +376,6 @@ export class Engine {
     // advances before anything else happens, so any continuation candidate still under observation
     // is closed even if this action is then refused.
     if (action === 'pause' || action === 'run' || action === 'resume') this.appResume.advance(id, action);
-    if (action !== 'pause' && isLegacyRuntime(c.runtime)) throw new APIError(409, legacyRuntimeMessage);
     if (action === 'pause') {
       this.setControl(id, { enabled: false });
       this.loop.verification.cancelChannel(id);
@@ -430,7 +427,6 @@ export class Engine {
     const channel = this.store.get<Channel>('channels', id)!;
     const project = this.store.get<Project>('projects', channel.projectId)!;
     if (project.isDemo) throw new APIError(409, '示例项目不能执行');
-    if (isLegacyRuntime(channel.runtime)) throw new APIError(409, legacyRuntimeMessage);
     if (this.active.has(id)) throw new APIError(409, '频道正在执行');
     // A newly installed version is waiting for real idleness. No new turn starts, and nothing already
     // running is interrupted: a scheduled start parks and re-checks, a person hears why.
@@ -502,7 +498,9 @@ export class Engine {
       return;
     }
     // Usage gate: the account reserve line (exact) and this project's attributed budget (estimate).
-    const gate = this.usage.gate(project);
+    // Both read the Codex account, so they say nothing about a Claude Code or Trae turn and are not
+    // applied to one; the per-day run budget above still bounds every runtime.
+    const gate = channel.runtime === 'codex' ? this.usage.gate(project) : ({ blocked: false } as const);
     if (gate.blocked) {
       if (!scheduled)
         throw gate.pending ? new APIError(409, '额度读数尚未就绪，几秒后重试') : new APIError(429, gate.message);
@@ -514,14 +512,16 @@ export class Engine {
     } catch {
       throw new APIError(400, '项目目录不存在或不可访问');
     }
-    if (process.env.MORROW_TEST_MODE !== '1' || this.native?.binding(id)) {
+    if (channel.runtime === 'codex' && (process.env.MORROW_TEST_MODE !== '1' || this.native?.binding(id))) {
       if (!this.native) throw new APIError(409, '请连接并绑定 Codex App 中的原生任务');
       return this.native.startScheduled(id, scheduled);
     }
-    // Fixture runtime path: only MORROW_TEST_MODE reaches the bounded CLI subprocess below. Real Codex
-    // channels always run inside the shared App task above.
+    // The bounded CLI subprocess below is how Claude Code and Trae channels really work. A Codex
+    // channel only reaches it under MORROW_TEST_MODE with the fixture runtime; real Codex work always
+    // happens inside the shared App task above.
     const runtime = this.runtimes.find((r) => r.id === channel.runtime);
-    if (!runtime?.available) throw new APIError(409, '所选 CLI 不可用，请在运行环境页刷新并检查安装');
+    if (!runtime?.available)
+      throw new APIError(409, `${runtimeTitles[channel.runtime]} CLI 不可用，请在运行环境页刷新并检查安装`);
     const run: Run = {
       id: randomUUID(),
       projectId: project.id,
@@ -563,7 +563,7 @@ export class Engine {
       'system',
       `${runtime.name} 开始执行 · ${channel.permission === 'read-only' ? '只读分析' : channel.permission === 'native' ? '完整访问' : '工作区编辑'} · ${channel.sessionId ? '恢复原生会话' : '完整上下文启动'}。`
     );
-    const child = spawn(runtime.path, invocation(channel, outputPath), {
+    const child = spawn(runtime.path, invocation(channel, run.id, outputPath), {
       cwd: project.path,
       env: { ...process.env, NO_COLOR: '1' },
       detached: true,
@@ -595,7 +595,7 @@ export class Engine {
     let spawnError = '';
     let failureDiagnosis: { priority: number; summary: string } | undefined;
     const diagnose = (text: string) => {
-      const candidate = diagnoseFailure('codex', text);
+      const candidate = diagnoseFailure(channel.runtime, text);
       if (candidate && (!failureDiagnosis || candidate.priority > failureDiagnosis.priority))
         failureDiagnosis = candidate;
     };
@@ -832,6 +832,7 @@ export class Engine {
       brief: projectBriefBlock(project),
       responsibility: channel.goal,
       permission: channel.permission,
+      runtime: channel.runtime,
       context: JSON.stringify({
         project: projectContext,
         channel: { name: channel.name, goal: channel.goal },

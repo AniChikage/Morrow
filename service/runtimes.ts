@@ -8,7 +8,17 @@ import type { Channel, EventDetail, Runtime, RuntimeID } from './protocol.ts';
 import { providerEventDetails } from './event-details.ts';
 import { codexAppBinary } from './codex-bridge-setup.ts';
 const execute = promisify(execFile);
-const titles: Record<RuntimeID, string> = { codex: 'Codex' };
+/** Display names, shared with the engine so a refusal can name the CLI a channel actually needs. */
+export const runtimeTitles: Record<RuntimeID, string> = { codex: 'Codex', claude: 'Claude Code', trae: 'Trae CLI' };
+const titles = runtimeTitles;
+/** Where a person logs each runtime in; quoted back whenever a turn fails on authentication. */
+const loginCommands: Record<RuntimeID, string> = {
+  codex: 'codex login',
+  claude: 'claude auth login',
+  trae: 'traex login',
+};
+/** Executable names to look for, in order. The Trae graphical app's own `trae` is deliberately not one. */
+const executables: Record<RuntimeID, string[]> = { codex: ['codex'], claude: ['claude'], trae: ['traex', 'traecli'] };
 const codexAppBundle = '/Applications/ChatGPT.app';
 function executable(path: string): boolean {
   try {
@@ -29,14 +39,17 @@ export function runtimePath(id: RuntimeID): string {
   const directories = [
     ...(process.env.PATH || '').split(delimiter),
     join(homedir(), '.local/bin'),
+    // Claude Code's own native installer puts its launcher here, outside a login shell's PATH.
+    join(homedir(), '.claude/local'),
     '/opt/homebrew/bin',
     '/usr/local/bin',
     '/usr/bin',
   ];
-  for (const d of directories) {
-    const p = join(d, id);
-    if (executable(p)) return p;
-  }
+  for (const name of executables[id])
+    for (const d of directories) {
+      const p = join(d, name);
+      if (executable(p)) return p;
+    }
   return '';
 }
 /**
@@ -63,12 +76,35 @@ export async function codexAppVersion(): Promise<string> {
     return '';
   }
 }
+/**
+ * Flags a runtime's `--help` must advertise before Morrow will drive it. They are exactly the ones
+ * `invocation` passes, so a CLI that renamed or dropped one is reported as too old instead of being
+ * spawned with arguments it would reject.
+ */
+const requiredFlags: Record<RuntimeID, string[]> = {
+  codex: ['--json', '--sandbox', '--output-last-message'],
+  claude: [
+    '--print',
+    '--output-format',
+    '--verbose',
+    '--permission-mode',
+    '--tools',
+    '--allowedTools',
+    '--strict-mcp-config',
+    '--mcp-config',
+    '--safe-mode',
+    '--name',
+    '--resume',
+    '--model',
+  ],
+  trae: ['--json', '--sandbox', '--output-last-message'],
+};
 export async function discoverRuntimes(): Promise<Runtime[]> {
   const appVersion = await codexAppVersion();
   return await Promise.all(
     engines.map(async (id): Promise<Runtime> => {
       const path = runtimePath(id);
-      const bundled = !!path && path === codexAppBinary;
+      const bundled = id === 'codex' && !!path && path === codexAppBinary;
       const base: Runtime = {
         id,
         name: titles[id],
@@ -76,18 +112,24 @@ export async function discoverRuntimes(): Promise<Runtime[]> {
         version: '',
         available: false,
         canWrite: false,
-        detail: '未找到 Codex 命令行运行时。安装并登录 Codex App 后重新检测。',
+        detail:
+          id === 'codex'
+            ? '未找到 Codex 命令行运行时。安装并登录 Codex App 后重新检测。'
+            : `未找到 ${titles[id]} 命令行运行时。安装后在终端运行 ${loginCommands[id]} 登录，再重新检测。`,
         ...(bundled ? { bundled: true } : {}),
-        ...(appVersion ? { appVersion } : {}),
+        ...(id === 'codex' && appVersion ? { appVersion } : {}),
       };
       if (!path) return base;
       try {
         const [version, help] = await Promise.all([
           execute(path, ['--version'], { timeout: 8000, maxBuffer: 64 * 1024 }),
-          execute(path, ['exec', '--help'], { timeout: 8000, maxBuffer: 256 * 1024 }),
+          // Claude Code advertises its turn flags on the root command; the exec-style CLIs on `exec`.
+          execute(path, id === 'claude' ? ['--help'] : ['exec', '--help'], {
+            timeout: 8000,
+            maxBuffer: 256 * 1024,
+          }),
         ]);
-        const required = ['--json', '--sandbox', '--output-last-message'];
-        if (!required.every((flag) => help.stdout.includes(flag)))
+        if (!requiredFlags[id].every((flag) => help.stdout.includes(flag)))
           return {
             ...base,
             version: version.stdout.trim().slice(0, 300),
@@ -100,7 +142,9 @@ export async function discoverRuntimes(): Promise<Runtime[]> {
           canWrite: true,
           detail: bundled
             ? 'Codex App 自带的命令行运行时；登录、模型与配额由 App 管理。'
-            : 'CLI 已安装，尚未验证登录和配额；执行时将使用本机登录状态。',
+            : id === 'codex'
+              ? 'CLI 已安装，尚未验证登录和配额；执行时将使用本机登录状态。'
+              : `CLI 已安装，尚未验证登录和配额；Morrow 用它执行有界轮次，沿用本机 ${loginCommands[id]} 的登录状态。`,
         };
       } catch {
         return { ...base, detail: 'CLI 探测失败或超时，请在终端检查安装。' };
@@ -108,18 +152,57 @@ export async function discoverRuntimes(): Promise<Runtime[]> {
     })
   );
 }
+/** The built-in tools a Claude Code turn may use, by channel scope. Workspace write includes Bash. */
+const claudeTools = {
+  'read-only': 'Read,Grep,Glob',
+  'workspace-write': 'Read,Grep,Glob,Edit,Write,MultiEdit,NotebookEdit,Bash',
+};
 /**
- * Fixture-only command line. Production Codex channels always run inside the shared App task; this
- * path is reached only under MORROW_TEST_MODE with the fake runtime.
+ * The command line for one bounded turn. Claude Code and Trae channels really run this way; a Codex
+ * channel reaches it only under MORROW_TEST_MODE, because production Codex work happens inside the
+ * shared App task instead.
  */
-export function invocation(channel: Channel, outputPath: string): string[] {
-  // A channel that follows the App's own settings maps to full access here; other scopes keep the
-  // sandbox and stay offline. No bypass switches are used on fresh or resumed sessions.
-  const sandbox = channel.permission === 'native' ? 'danger-full-access' : channel.permission;
+export function invocation(channel: Channel, runId: string, outputPath: string): string[] {
+  if (channel.runtime === 'claude') {
+    // No project hooks, plugins or MCP servers are loaded, and the tool list is stated twice: `--tools`
+    // bounds what exists, `--allowedTools` what runs without asking. The prompt arrives on stdin.
+    const tools = channel.permission === 'read-only' ? claudeTools['read-only'] : claudeTools['workspace-write'];
+    const args = [
+      '--print',
+      '--verbose',
+      '--output-format',
+      'stream-json',
+      '--safe-mode',
+      '--strict-mcp-config',
+      '--mcp-config',
+      '{"mcpServers":{}}',
+      '--tools',
+      tools,
+      '--allowedTools',
+      tools,
+      '--permission-mode',
+      channel.permission === 'read-only' ? 'dontAsk' : 'acceptEdits',
+      '--name',
+      `Morrow:${runId}`,
+    ];
+    if (channel.model) args.push('--model', channel.model);
+    if (channel.sessionId) args.push('--resume', channel.sessionId);
+    return args;
+  }
+  // Codex and Trae share the `exec` shape. A Codex channel that follows the App's own settings maps
+  // to full access here; every other scope keeps the sandbox and stays offline. Trae never carries
+  // the native scope — the server refuses it — so it always runs sandboxed. No bypass switches are
+  // used on fresh or resumed sessions.
+  const native = channel.runtime === 'codex' && channel.permission === 'native';
+  const sandbox = native
+    ? 'danger-full-access'
+    : channel.permission === 'native'
+      ? 'workspace-write'
+      : channel.permission;
   const args = ['exec'];
   if (channel.sessionId) args.push('resume');
   args.push('--json', '--skip-git-repo-check', '-c', `sandbox_mode="${sandbox}"`, '-c', 'approval_policy="never"');
-  if (channel.permission !== 'native') args.push('-c', 'sandbox_workspace_write.network_access=false');
+  if (!native) args.push('-c', 'sandbox_workspace_write.network_access=false');
   args.push('--output-last-message', outputPath);
   if (!channel.sessionId) args.push('--sandbox', sandbox);
   if (channel.model) args.push('--model', channel.model);
@@ -151,6 +234,18 @@ export function decodeLine(line: string): {
     : {};
   const sessionId =
     typeof (data.thread_id || data.session_id) === 'string' ? data.thread_id || data.session_id : undefined;
+  // Claude Code's terminal line for the whole turn: the answer text, and structured output when a
+  // schema was in force. `is_error` is the turn's own verdict, not a single failed tool call.
+  if (data.type === 'result')
+    return {
+      kind: data.is_error ? 'error' : 'result',
+      text: typeof data.result === 'string' ? data.result : JSON.stringify(data.structured_output || data),
+      sessionId,
+      final: data.structured_output,
+      finalText: typeof data.result === 'string' ? data.result : undefined,
+      error: !!data.is_error,
+      terminalOutcome: data.is_error ? 'failed' : 'completed',
+    };
   if (data.item?.type === 'agent_message')
     return {
       kind: 'assistant',
@@ -158,6 +253,22 @@ export function decodeLine(line: string): {
       sessionId,
       finalText: typeof data.item.text === 'string' ? data.item.text : undefined,
     };
+  // One Claude assistant message can carry several text and tool blocks at once.
+  if (data.type === 'assistant') {
+    const content = Array.isArray(data.message?.content)
+      ? data.message.content.filter((block: any) => block && typeof block === 'object')
+      : [];
+    const text = content
+      .filter((b: any) => b.type === 'text' && typeof b.text === 'string')
+      .map((b: any) => b.text)
+      .join('\n');
+    return {
+      kind: content.some((b: any) => b.type === 'tool_use') ? 'tool' : 'assistant',
+      text: text || JSON.stringify(data),
+      sessionId,
+      ...detailFields,
+    };
+  }
   if (data.summary && Array.isArray(data.items))
     return {
       kind: 'result',
@@ -188,7 +299,7 @@ export function decodeLine(line: string): {
 export const quotaFailure = /insufficient[_ -]quota|quota exceeded|usage limit|rate[_ -]limit|\b429\b|credit balance/i;
 
 export function diagnoseFailure(runtime: RuntimeID, text: string): { priority: number; summary: string } | undefined {
-  const command = 'codex login';
+  const command = loginCommands[runtime];
   if (
     /not logged in|authentication[_ -]failed|unauthenticated|unauthorized|\b401\b|invalid[_ -](?:api[_ -])?(?:key|token)|login required/i.test(
       text

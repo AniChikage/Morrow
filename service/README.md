@@ -98,11 +98,17 @@ MORROW_HOME="$HOME/.local/share/morrow" npm start
 
 服务启动撤销精确匹配的旧转接环境变量及登录项；不终止 App，不覆盖其他自定义配置。旧转接进程仍在运行时，状态与自动工作门禁要求在当前任务结束后重开 App。后台连接就绪与某个任务已加载是两回事，运行时页分别展示。
 
-### 已停止支持的运行时
+### 运行时适配器
 
-早期版本支持过 Claude Code 与 Trae。它们的频道、运行和事件记录保持可读，服务不再调度或执行：`run`/`resume` 返回 409；巡检发现仍启用的旧频道时，会关闭其调度、置为暂停并写一条系统事件；`pause` 仍然可用。创建项目和频道只接受 `codex`。旧频道仍可通过 API 原地转换为 Codex 频道：`PATCH /api/channels/:id` 传入 `{ "runtime": "codex" }` 后，运行时变为 `codex`，已保存的会话 ID 被清空并写一条系统事件，事项、证据和历史记录保留。这是有意保留的迁移路径，桌面界面不提供该操作。
+Claude Code 与 Trae 的频道走有界 CLI 子进程：一次 `spawn`，提示从 stdin 进入，结束时可选的 `morrow-report` 代码块写看板。它们不获得 Morrow 工作接口（`release.propose`、`evidence.native`、`memory.search` 等只属于 Codex 频道），额度门禁与用量归因也不对它们生效（那些读数来自 Codex 账户）；每日运行次数上限照旧对所有运行时生效。verified/resolved 与 Codex 频道一样，先进入 Codex 独立复核。
 
-运行时发现只探测 Codex：优先使用 Codex App 自带的 `codex` 可执行文件，其次查找 PATH。CLI 安装检测不等于登录或额度验证；实际失败与原始输出会落库。
+Claude 使用 `--print --verbose --output-format stream-json --safe-mode --strict-mcp-config --mcp-config {"mcpServers":{}} --tools <T> --allowedTools <T> --permission-mode <M> --name Morrow:<runId>`，有模型时加 `--model`，有会话时加 `--resume <sessionId>`。只读为 `T = Read,Grep,Glob`、`M = dontAsk`；工作区写入为 `T = Read,Grep,Glob,Edit,Write,MultiEdit,NotebookEdit,Bash`、`M = acceptEdits`——命令执行是开放的，且不在沙箱内运行，提示词中的权限一行会写明这一点。`--safe-mode` 不加载项目的 CLAUDE.md、hooks、插件、技能与 MCP 服务器，因此这不等于完整继承 Claude 的自定义配置。会话 ID 取事件流里的 `session_id`。
+
+Trae 使用 `traex exec --json` / `exec resume`，保留原生 provider、规则和默认模型，显式约束所选沙箱与审批设置，沙箱内命令不联网。发现顺序为 `traex`、`traecli`，不使用图形应用的 `trae` 可执行文件。`native` 权限只有 Codex 可选，服务端对其他运行时返回 400。
+
+这两个适配器的人工备注是下一轮上下文，不是实时 App 对话。运行时发现按 `codex`、`claude`、`trae` 逐个探测：Codex 优先使用 Codex App 自带的可执行文件，其次查找 PATH；Claude 另外查找 `~/.claude/local`，用 `--version` 与 `--help` 核对上面用到的参数；Trae 用 `exec --help` 核对 `--json`、`--sandbox`、`--output-last-message`。CLI 安装检测不等于登录或额度验证；实际失败与原始输出会落库，登录失效时分别提示 `codex login`、`claude auth login`、`traex login`。
+
+测试模式（`MORROW_TEST_MODE=1`）用 `MORROW_TEST_CODEX_PATH`、`MORROW_TEST_CLAUDE_PATH`、`MORROW_TEST_TRAE_PATH` 指向夹具，不探测本机安装。
 
 ## 持续工作与反馈
 
@@ -116,7 +122,7 @@ MORROW_HOME="$HOME/.local/share/morrow" npm start
 
 每日上限之后还有额度门禁：全局的「保留给自己的额度」按共享后台读到的精确账户用量判断，项目的「额度上限」按 Morrow 归因到该项目的轮次估算判断。达到任一条时，新的自动轮次和独立复核不再发起（频道 `waiting`，`nextRunAt` 取窗口重置时间或下一个 UTC 日，写一条系统事件，不计入运行次数；排队中的复核保留 `queued` 并按 `retryAt` 重试），手动运行返回 429。读数不可用时默认放行，设置 `stopWhenUsageUnknown` 后阻断并每 10 分钟重试；进行中的轮次不打断，普通对话不受影响。读数与限制通过 `context.budget` 和每轮的轮次提示提供给 Codex。
 
-有界 CLI 子进程路径只在 `MORROW_TEST_MODE=1` 下作为测试夹具通道可达：单轮超时 15 分钟，stdout/stderr 合计上限 20 MiB，组装提示上限 1 MiB；这些子进程限制不套用到共享 Codex App 轮次。暂停原生自动工作只中断属于该责任轮次的精确 turn ID。
+有界 CLI 子进程路径是 Claude Code 与 Trae 频道的生产路径，Codex 频道只在 `MORROW_TEST_MODE=1` 下经由夹具走到这里：单轮超时 15 分钟，stdout/stderr 合计上限 20 MiB，组装提示上限 1 MiB；这些子进程限制不套用到共享 Codex App 轮次。暂停原生自动工作只中断属于该责任轮次的精确 turn ID。
 
 反馈监测支持 HTTP(S) GET JSON、JSON Pointer 和 `changed/equals/gte/lte` 条件。新反馈、质量变化、采集故障和复查期限可唤醒启用的频道；重复相同状态不反复触发。与发布关联的观测在确认发布后开始采集。当前不包含文件变化触发器。
 

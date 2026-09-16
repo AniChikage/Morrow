@@ -6,4 +6,6 @@
  */
 import { fileURLToPath } from 'node:url';
 process.env.MORROW_TEST_MODE = '1';
-process.env.MORROW_TEST_CODEX_PATH = fileURLToPath(new URL('../fixtures/runtime.mjs', import.meta.url));
+const fixture = fileURLToPath(new URL('../fixtures/runtime.mjs', import.meta.url));
+// One fixture stands in for every runtime; it answers both CLI shapes and reports which one it saw.
+for (const id of ['CODEX', 'CLAUDE', 'TRAE']) process.env[`MORROW_TEST_${id}_PATH`] = fixture;

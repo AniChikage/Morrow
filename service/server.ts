@@ -28,7 +28,7 @@ import {
   projectBriefLimit,
   string,
 } from './protocol.ts';
-import type { Channel, Project, ProjectBriefRevision, Run, WorkItem } from './protocol.ts';
+import type { Channel, Project, ProjectBriefRevision, Run, RuntimeID, WorkItem } from './protocol.ts';
 import { now, Store } from './store.ts';
 import { log, logError, setLogRedactor } from './log.ts';
 import { Engine } from './engine.ts';
@@ -50,19 +50,24 @@ function model(value: unknown) {
   if (text && !/^[A-Za-z0-9][A-Za-z0-9._:/-]*$/.test(text)) throw new APIError(400, 'model 格式无效');
   return text;
 }
-function defaultChannel(projectId: string, name: string, goal: string): Channel {
+/**
+ * A Codex channel inherits the App task's own permission and approval settings; the CLI runtimes have
+ * no such task, so they start in Morrow's own workspace-write sandbox.
+ */
+const defaultPermission = (runtime: RuntimeID): Channel['permission'] =>
+  runtime === 'codex' ? 'native' : 'workspace-write';
+function defaultChannel(projectId: string, name: string, goal: string, runtime: RuntimeID = 'codex'): Channel {
   return {
     id: randomUUID(),
     projectId,
     name,
     goal,
-    runtime: 'codex',
+    runtime,
     model: '',
     status: 'paused',
     intervalMinutes: 60,
     maxRunsPerDay: 8,
-    // New channels inherit the App task's permission and approval settings.
-    permission: 'native',
+    permission: defaultPermission(runtime),
     nextRunAt: '',
     lastRunAt: '',
     sessionId: '',
@@ -559,10 +564,10 @@ export async function startServer(
             defaultChannel(
               project.id,
               '自主推进',
-              '围绕项目目标理解现状与关键未知，自主选择有价值的行动，获取真实反馈并调整策略；按需要补齐工作能力，合理使用资源。'
+              '围绕项目目标理解现状与关键未知，自主选择有价值的行动，获取真实反馈并调整策略；按需要补齐工作能力，合理使用资源。',
+              project.runtime
             ),
           ]) {
-            c.runtime = project.runtime;
             c.maxRunsPerDay = 32;
             store.put('channels', c);
             engine.event(
@@ -669,15 +674,15 @@ export async function startServer(
         const projectId = string(data.projectId, 'projectId', 100);
         const project = store.get<Project>('projects', projectId);
         if (!project) throw new APIError(404, '项目不存在');
+        const runtime = choice(data.runtime, 'runtime', engines);
         const c = {
-          ...defaultChannel(projectId, string(data.name, 'name', 100), string(data.goal, 'goal', 20000)),
-          runtime: choice(data.runtime, 'runtime', engines),
+          ...defaultChannel(projectId, string(data.name, 'name', 100), string(data.goal, 'goal', 20000), runtime),
           model: data.model === undefined ? '' : model(data.model),
           intervalMinutes: data.intervalMinutes === undefined ? 60 : integer(data.intervalMinutes, 'intervalMinutes'),
           maxRunsPerDay: data.maxRunsPerDay === undefined ? 8 : integer(data.maxRunsPerDay, 'maxRunsPerDay', 1, 100),
           permission:
             data.permission === undefined
-              ? ('native' as const)
+              ? defaultPermission(runtime)
               : choice(data.permission, 'permission', ['read-only', 'workspace-write', 'native'] as const),
         };
         if (c.permission === 'native' && c.runtime !== 'codex')
@@ -957,7 +962,8 @@ function createDemo(store: Store, engine: Engine) {
     runtime: 'codex',
   };
   const system = defaultChannel(p.id, '系统完善', '持续提升 Atlas 的可靠性与产品体验。');
-  const operations = defaultChannel(p.id, '运营洞察', '从用户反馈中发现增长机会，记录证据并验证假设。');
+  // The preview deliberately shows both execution paths: a Codex App channel and a CLI one.
+  const operations = defaultChannel(p.id, '运营洞察', '从用户反馈中发现增长机会，记录证据并验证假设。', 'claude');
   store.transaction(() => {
     store.put('projects', p);
     store.put('channels', system);

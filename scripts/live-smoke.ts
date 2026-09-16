@@ -54,6 +54,8 @@ try {
         `channels/${channel.id}`,
         {
           runtime: runtime.id,
+          // The smoke turn is a read-only cross-check, and only Codex may keep the App's own scope.
+          permission: 'read-only',
           maxRunsPerDay: 1,
           goal: '快速核对 ratio.js 是否满足 README.md 的零分母约定。只需读取这两个文件，可使用 cat 等只读命令读取，不修改文件。用文件和表达式作为证据，返回指定 JSON。',
         },

@@ -121,6 +121,34 @@ test('a reached reserve line parks scheduled work until the reset with one event
     await s.cleanup();
   }
 });
+test('the reserve line stops the Codex channel and leaves a CLI-runtime channel alone', async () => {
+  const s = await setup();
+  try {
+    await s.api('PATCH', '/api/settings', { usageReserve: { window: '5h', keepPercent: 10 } });
+    s.transport.usage(() => reading(92, iso(3600_000)));
+    await s.engine.usage.refresh();
+    await s.api('POST', `/api/channels/${s.channel.id}/action`, { action: 'run' }, 429);
+    const claude = await s.api(
+      'POST',
+      '/api/channels',
+      { projectId: s.project.id, name: 'CLI 频道', goal: '用本机 CLI 执行有界轮次', runtime: 'claude' },
+      201
+    );
+    // The reading is the Codex account's own, so it neither gates this turn nor is attributed to it.
+    const reads = s.transport.reads;
+    await s.api('POST', `/api/channels/${claude.id}/action`, { action: 'run' });
+    const run = await until(() =>
+      s.store.all<any>('runs').find((r) => r.channelId === claude.id && r.status !== 'running')
+    );
+    assert.equal(run.status, 'completed');
+    assert.equal(run.runtime, 'claude');
+    assert.equal(run.usage, undefined);
+    assert.equal(s.transport.reads, reads);
+    assert.equal(s.store.get<any>('channels', claude.id).usageWait, undefined);
+  } finally {
+    await s.cleanup();
+  }
+});
 test('once the window resets and the reading drops, the parked channel starts and its wait is cleared', async () => {
   const s = await setup();
   try {

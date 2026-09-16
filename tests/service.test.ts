@@ -9,7 +9,7 @@ import { randomUUID } from 'node:crypto';
 import { Store } from '../service/store.ts';
 import { eventHistory } from '../service/event-history.ts';
 import { startServer } from '../service/server.ts';
-import { invocation, diagnoseFailure } from '../service/runtimes.ts';
+import { discoverRuntimes, invocation, diagnoseFailure } from '../service/runtimes.ts';
 import { APIError, validateResult } from '../service/protocol.ts';
 import { startIsolated } from './harness/service.ts';
 import { until } from './harness/wait.ts';
@@ -64,7 +64,21 @@ test('local auth, schema validation, paused defaults and idempotent explicit dem
     await s.api('PATCH', `/api/channels/${s.channels[0].id}`, { model: '--dangerous' }, 400);
     await s.api('PATCH', `/api/channels/${s.channels[0].id}`, { maxRunsPerDay: 0 }, 400);
     await s.api('POST', '/api/channels', { projectId: s.project.id, name: 'A', goal: 'B', runtime: 'unknown' }, 400);
-    await s.api('POST', '/api/channels', { projectId: s.project.id, name: 'A', goal: 'B', runtime: 'claude' }, 400);
+    // Only a Codex channel can follow the App's own scope; a CLI runtime has no App task to follow.
+    await s.api(
+      'POST',
+      '/api/channels',
+      { projectId: s.project.id, name: 'A', goal: 'B', runtime: 'claude', permission: 'native' },
+      400
+    );
+    const cli = await s.api(
+      'POST',
+      '/api/channels',
+      { projectId: s.project.id, name: 'CLI 频道', goal: '用本机 CLI 执行', runtime: 'claude' },
+      201
+    );
+    assert.equal(cli.permission, 'workspace-write');
+    await s.api('PATCH', `/api/channels/${cli.id}`, { permission: 'native' }, 400);
     await s.api('POST', '/api/demo', {});
     await s.api('POST', '/api/demo', {});
     const state = await s.api('GET', '/api/state');
@@ -99,7 +113,6 @@ test('one-shot persists valid results, shared sourced knowledge, messages, nativ
     await s.api('POST', `/api/channels/${c.id}/action`, { action: 'run' });
     await until(() => s.store.all<any>('runs').filter((r) => r.status === 'completed').length === 2);
     assert(JSON.parse(readFileSync(join(s.projectPath, '.fixture-capture.json'), 'utf8')).args.includes('resume'));
-    await s.api('PATCH', `/api/channels/${c.id}`, { runtime: 'claude' }, 400);
     const updated = await s.api('PATCH', `/api/channels/${c.id}`, { model: 'gpt-5-codex' });
     assert.equal(updated.sessionId, '');
     await s.api('POST', `/api/channels/${c.id}/action`, { action: 'run' });
@@ -176,73 +189,92 @@ test('project execution lock, settings guard, pause cancels complete process gro
     await s.cleanup();
   }
 });
-test('channels from retired runtimes stay readable but never execute again', async () => {
+test('a Claude Code channel runs a bounded CLI turn, resumes its session and still waits for independent review', async () => {
   const s = await setup();
   try {
-    // An old database row: a Claude channel that was still scheduled when support ended.
-    const legacy = {
-      id: randomUUID(),
-      projectId: s.project.id,
-      name: '旧 Claude 频道',
-      goal: '历史职责',
-      runtime: 'claude',
-      model: '',
-      status: 'idle',
-      intervalMinutes: 60,
-      maxRunsPerDay: 8,
-      permission: 'workspace-write',
-      nextRunAt: new Date(Date.now() - 60_000).toISOString(),
-      lastRunAt: '',
-      sessionId: 'legacy-claude-session',
-    };
-    s.store.put('channels', legacy);
-    s.engine.setControl(legacy.id, { enabled: true });
-    const listed = (await s.api('GET', '/api/state')).channels.find((c: any) => c.id === legacy.id);
-    assert.equal(listed.runtime, 'claude');
-    assert.equal(listed.sessionId, 'legacy-claude-session');
-    for (const action of ['run', 'resume']) {
-      const rejected = await s.api('POST', `/api/channels/${legacy.id}/action`, { action }, 409);
-      assert.match(rejected.error, /停止支持/);
-    }
-    const notices = () =>
-      s.store.all<any>('events').filter((e) => e.channelId === legacy.id && e.text.includes('停止支持'));
-    s.engine.tick();
-    s.engine.tick();
-    assert.equal(s.store.all('runs').length, 0);
-    assert.equal(s.engine.control(legacy.id).enabled, false);
-    const current = s.store.get<any>('channels', legacy.id);
-    assert.equal(current.status, 'paused');
-    assert.equal(current.nextRunAt, '');
-    assert.equal(current.sessionId, 'legacy-claude-session');
-    assert.equal(notices().length, 1);
-    assert.equal(notices()[0].kind, 'system');
-    await s.api('POST', `/api/channels/${legacy.id}/action`, { action: 'pause' });
-    assert.equal(s.store.get<any>('channels', legacy.id).status, 'paused');
-    assert.equal(s.store.all('runs').length, 0);
-    assert.equal(notices().length, 1);
-    // The API keeps a deliberate migration path the desktop never sends: converting
-    // the retired channel into a Codex channel in place. History must survive it.
-    const preserved = s.store.all<any>('events').filter((e) => e.channelId === legacy.id);
-    assert.ok(preserved.length >= 1);
-    const converted = await s.api('PATCH', `/api/channels/${legacy.id}`, { runtime: 'codex' });
-    assert.equal(converted.runtime, 'codex');
-    assert.equal(converted.sessionId, '');
-    const stored = s.store.get<any>('channels', legacy.id);
-    assert.equal(stored.runtime, 'codex');
-    assert.equal(stored.sessionId, '');
-    assert.equal(stored.goal, '历史职责');
-    const remaining = s.store.all<any>('events').filter((e) => e.channelId === legacy.id);
-    for (const event of preserved) assert.ok(remaining.some((e) => e.id === event.id && e.text === event.text));
-    assert.ok(remaining.some((e) => e.kind === 'system' && e.text.includes('运行时已切换为 codex')));
-    // The converted channel executes again: the run request is accepted instead of the 停止支持 409.
-    // Under MORROW_TEST_MODE the fixture CLI really runs, so let that run settle before pausing.
-    await s.api('POST', `/api/channels/${legacy.id}/action`, { action: 'run' });
-    const run = await until(() =>
-      s.store.all<any>('runs').find((r) => r.channelId === legacy.id && r.status !== 'running')
+    const claude = await s.api(
+      'POST',
+      '/api/channels',
+      { projectId: s.project.id, name: 'Claude 频道', goal: '用本机 Claude Code 执行有界轮次', runtime: 'claude' },
+      201
     );
-    assert.equal(run.runtime, 'codex');
-    await s.api('POST', `/api/channels/${legacy.id}/action`, { action: 'pause' });
-    assert.equal(s.store.get<any>('channels', legacy.id).status, 'paused');
+    assert.equal(claude.permission, 'workspace-write');
+    const capture = () => JSON.parse(readFileSync(join(s.projectPath, '.fixture-capture.json'), 'utf8'));
+    const finished = (count: number) =>
+      until(
+        () =>
+          s.store.all<any>('runs').filter((r) => r.channelId === claude.id && r.status === 'completed').length === count
+      );
+    await s.api('POST', `/api/channels/${claude.id}/action`, { action: 'run' });
+    await finished(1);
+    const first = capture();
+    const tools = 'Read,Grep,Glob,Edit,Write,MultiEdit,NotebookEdit,Bash';
+    // Workspace write opens edits and commands, accepts its own edits, and loads no project MCP.
+    assert.equal(first.args[first.args.indexOf('--tools') + 1], tools);
+    assert.equal(first.args[first.args.indexOf('--allowedTools') + 1], tools);
+    assert.equal(first.args[first.args.indexOf('--permission-mode') + 1], 'acceptEdits');
+    assert.equal(first.args[first.args.indexOf('--output-format') + 1], 'stream-json');
+    assert.equal(first.args[first.args.indexOf('--mcp-config') + 1], '{"mcpServers":{}}');
+    for (const flag of ['--print', '--verbose', '--safe-mode', '--strict-mcp-config'])
+      assert(first.args.includes(flag));
+    assert(!first.args.some((a: string) => a.includes('dangerously')));
+    // The first turn has no session to continue, and the turn carries its own run id as a name.
+    assert(!first.args.includes('--resume'));
+    const run = s.store.all<any>('runs').find((r) => r.channelId === claude.id)!;
+    assert.equal(run.runtime, 'claude');
+    assert.equal(first.args[first.args.indexOf('--name') + 1], `Morrow:${run.id}`);
+    assert(first.input.includes('工作区写入：可在项目内修改文件，并可执行命令'));
+    assert.equal(s.store.get<any>('channels', claude.id).sessionId, 'fixture-session-1');
+    // The optional report reached the board, and its verified item waits for the Codex reviewer.
+    const item = s.store.all<any>('items').find((i) => i.lastRunId === run.id)!;
+    assert.equal(item.title, 'Fixture 发现');
+    assert.equal(item.status, 'investigating');
+    assert(item.nextStep.startsWith('等待当前版本的独立复核；'));
+    await s.api('POST', `/api/channels/${claude.id}/action`, { action: 'run' });
+    await finished(2);
+    assert.equal(capture().args[capture().args.indexOf('--resume') + 1], 'fixture-session-1');
+    await s.api('PATCH', `/api/channels/${claude.id}`, { permission: 'read-only' });
+    await s.api('POST', `/api/channels/${claude.id}/action`, { action: 'run' });
+    await finished(3);
+    const readOnly = capture();
+    assert.equal(readOnly.args[readOnly.args.indexOf('--tools') + 1], 'Read,Grep,Glob');
+    assert.equal(readOnly.args[readOnly.args.indexOf('--permission-mode') + 1], 'dontAsk');
+    assert(!readOnly.args.some((a: string) => a.includes('Bash')));
+  } finally {
+    await s.cleanup();
+  }
+});
+test('a Trae channel runs the sandboxed exec shape and every runtime is listed by discovery', async () => {
+  const s = await setup();
+  try {
+    const trae = await s.api(
+      'POST',
+      '/api/channels',
+      { projectId: s.project.id, name: 'Trae 频道', goal: '用本机 Trae CLI 执行有界轮次', runtime: 'trae' },
+      201
+    );
+    assert.equal(trae.permission, 'workspace-write');
+    await s.api('POST', `/api/channels/${trae.id}/action`, { action: 'run' });
+    await until(() => s.store.all<any>('runs').find((r) => r.channelId === trae.id && r.status === 'completed'));
+    const args = JSON.parse(readFileSync(join(s.projectPath, '.fixture-capture.json'), 'utf8')).args;
+    assert.equal(args[0], 'exec');
+    assert(args.includes('--json'));
+    assert.equal(args[args.indexOf('--sandbox') + 1], 'workspace-write');
+    assert(args.includes('sandbox_mode="workspace-write"'));
+    assert(args.includes('approval_policy="never"'));
+    assert(args.includes('sandbox_workspace_write.network_access=false'));
+    assert(args.includes('--output-last-message'));
+    assert(!args.some((a: string) => a.includes('dangerously')));
+    const runtimes = await discoverRuntimes();
+    assert.deepEqual(
+      runtimes.map((r) => r.id),
+      ['codex', 'claude', 'trae']
+    );
+    assert(runtimes.every((r) => r.available && r.path === fixture));
+    assert.deepEqual(
+      runtimes.map((r) => r.name),
+      ['Codex', 'Claude Code', 'Trae CLI']
+    );
   } finally {
     await s.cleanup();
   }
@@ -283,16 +315,27 @@ test('safe adapters and evidence validation', () => {
     sessionId: 'previous-session',
     model: '',
   };
-  const args = invocation(channel, 'output');
-  assert(args.includes('resume'));
-  assert(args.includes('sandbox_mode="read-only"'));
-  assert(args.includes('approval_policy="never"'));
-  assert(args.includes('sandbox_workspace_write.network_access=false'));
-  assert(!args.some((a) => a.includes('dangerously')));
-  const native = invocation({ ...channel, permission: 'native', sessionId: '' }, 'output');
+  for (const runtime of ['codex', 'trae']) {
+    const args = invocation({ ...channel, runtime }, 'run', 'output');
+    assert(args.includes('resume'));
+    assert(args.includes('sandbox_mode="read-only"'));
+    assert(args.includes('approval_policy="never"'));
+    assert(args.includes('sandbox_workspace_write.network_access=false'));
+    assert(!args.some((a) => a.includes('dangerously')));
+  }
+  const native = invocation({ ...channel, permission: 'native', sessionId: '' }, 'run', 'output');
   assert(native.includes('sandbox_mode="danger-full-access"'));
   assert(!native.includes('sandbox_workspace_write.network_access=false'));
   assert.equal(native[native.indexOf('--sandbox') + 1], 'danger-full-access');
+  const claude = invocation({ ...channel, runtime: 'claude', permission: 'workspace-write' }, 'run-7', 'output');
+  assert.equal(claude[claude.indexOf('--tools') + 1], 'Read,Grep,Glob,Edit,Write,MultiEdit,NotebookEdit,Bash');
+  assert.equal(claude[claude.indexOf('--permission-mode') + 1], 'acceptEdits');
+  assert.equal(claude[claude.indexOf('--name') + 1], 'Morrow:run-7');
+  assert.equal(claude[claude.indexOf('--resume') + 1], 'previous-session');
+  assert(!claude.some((a) => a.includes('dangerously')));
+  // The login command a failed turn quotes belongs to the runtime that produced it.
+  assert(diagnoseFailure('claude', 'authentication_failed')?.summary.includes('claude auth login'));
+  assert(diagnoseFailure('trae', 'get_detail_param returned 401')?.summary.includes('traex login'));
   assert.throws(() =>
     validateResult({
       summary: 'Claim',
@@ -533,6 +576,56 @@ test('event history uses scoped stable cursors and includes legacy events', asyn
   }
 });
 
+test('streamed Claude tools persist multiple details, matched names and sanitized output', async () => {
+  const s = await setup();
+  try {
+    const channel = await s.api(
+      'POST',
+      '/api/channels',
+      { projectId: s.project.id, name: 'Claude 工具流', goal: '检查工具事件落库', runtime: 'claude' },
+      201
+    );
+    s.config({
+      events: [
+        {
+          type: 'assistant',
+          message: {
+            content: [
+              { type: 'tool_use', id: 'read-a', name: 'Read', input: { path: 'a.txt' } },
+              { type: 'tool_use', id: 'read-b', name: 'Grep', input: { pattern: 'TODO' } },
+            ],
+          },
+        },
+        {
+          type: 'user',
+          message: {
+            content: [
+              { type: 'tool_result', tool_use_id: 'read-a', content: `visible ${s.token}`, is_error: false },
+              { type: 'tool_result', tool_use_id: 'read-b', content: 'no matches', is_error: false },
+            ],
+          },
+        },
+      ],
+    });
+    await s.api('POST', `/api/channels/${channel.id}/action`, { action: 'run' });
+    await until(() => s.store.all<any>('runs').some((r) => r.channelId === channel.id && r.status === 'completed'));
+    const runId = s.store.all<any>('runs').find((r) => r.channelId === channel.id)!.id;
+    const page = await s.api('GET', `/api/events?channelId=${channel.id}&runId=${runId}`);
+    const details = page.events.filter((e: any) => e.detail).map((e: any) => e.detail);
+    assert.equal(details.length, 4);
+    // A tool_result carries only the call id, so the name is matched from the earlier tool_use.
+    assert.deepEqual(
+      details.map((d: any) => d.tool),
+      ['Read', 'Grep', 'Read', 'Grep']
+    );
+    assert(details.every((d: any, i: number) => i === 0 || d.sequence > details[i - 1].sequence));
+    assert(!JSON.stringify(page).includes(s.token));
+    assert(!JSON.stringify(s.store.all('events')).includes(s.token));
+    assert(details[2].output.includes('[REDACTED]'));
+  } finally {
+    await s.cleanup();
+  }
+});
 test('streamed Codex tool items persist details, matched names and sanitized output', async () => {
   const s = await setup();
   try {
@@ -641,16 +734,17 @@ test('project board creation, provenance, optimistic edits and project audit are
     assert.equal((await fetch(s.base + `/api/events?projectId=${s.project.id}`)).status, 401);
     const rootPath = join(s.root, 'second');
     mkdirSync(rootPath);
-    await s.api('POST', '/api/projects', { name: 'Other', path: rootPath, goal: 'other', runtime: 'claude' }, 400);
     const project = await s.api(
       'POST',
       '/api/projects',
-      { name: 'Other', path: rootPath, goal: 'other', runtime: 'codex' },
+      { name: 'Other', path: rootPath, goal: 'other', runtime: 'claude' },
       201
     );
     const state = await s.api('GET', '/api/state');
-    assert.equal(project.runtime, 'codex');
-    assert(state.channels.filter((c: any) => c.projectId === project.id).every((c: any) => c.runtime === 'codex'));
+    assert.equal(project.runtime, 'claude');
+    // The project's own runtime decides its first channel's runtime and its default scope.
+    const seeded = state.channels.filter((c: any) => c.projectId === project.id);
+    assert(seeded.every((c: any) => c.runtime === 'claude' && c.permission === 'workspace-write'));
     await s.api(
       'POST',
       `/api/projects/${project.id}/items`,

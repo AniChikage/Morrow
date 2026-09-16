@@ -8,16 +8,10 @@ export type ChannelWork = {
   updatedAt: string;
   awaitingReply: boolean;
 };
-export const engines = ['codex'] as const;
-/** Runtimes that older databases may still reference. Their records stay readable but never execute. */
-export const legacyEngines = ['claude', 'trae'] as const;
+export const engines = ['codex', 'claude', 'trae'] as const;
 export const itemStatuses = ['open', 'investigating', 'verified', 'resolved', 'blocked'] as const;
 export const itemKinds = ['feature', 'issue', 'opportunity', 'hypothesis'] as const;
 export type RuntimeID = (typeof engines)[number];
-export type LegacyRuntimeID = (typeof legacyEngines)[number];
-export type AnyRuntimeID = RuntimeID | LegacyRuntimeID;
-export const isLegacyRuntime = (value: string): value is LegacyRuntimeID =>
-  (legacyEngines as readonly string[]).includes(value);
 /** Account rate-limit windows Codex reports: a rolling five-hour window and a weekly one. */
 export const usageWindows = ['5h', 'weekly'] as const;
 export type UsageWindow = (typeof usageWindows)[number];
@@ -71,7 +65,7 @@ export type Project = {
   usageBudget?: UsageBudget;
   createdAt: string;
   isDemo: boolean;
-  runtime: AnyRuntimeID;
+  runtime: RuntimeID;
 };
 export const projectBriefLimit = 65536;
 /** One row per saved goal/brief version; the human is the only author. */
@@ -102,7 +96,7 @@ export type Channel = {
   projectId: string;
   name: string;
   goal: string;
-  runtime: AnyRuntimeID;
+  runtime: RuntimeID;
   model: string;
   status: string;
   intervalMinutes: number;
@@ -240,7 +234,7 @@ export type Run = {
   id: string;
   projectId: string;
   channelId: string;
-  runtime: AnyRuntimeID;
+  runtime: RuntimeID;
   model: string;
   permission: 'read-only' | 'workspace-write' | 'native';
   executionOwner?: 'cli' | 'codex-app';

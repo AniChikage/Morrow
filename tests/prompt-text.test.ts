@@ -79,7 +79,9 @@ test('the non-native CLI turn prompt text is unchanged', async () => {
     assert.equal(s.engine.loop.channelNames(fixedProject.id)[fixedChannel.id], undefined);
     assert.equal(
       digest(s.engine.prompt(fixedProject, fixedChannel)),
-      '22fe4eb5b5c5a4b0ff5c56d6c3e599316938d0f30e48cdb3c6e14163f95bc52a'
+      // Changed deliberately in 0.12.0: the permission line now states what the channel's scope
+      // really allows in the runtime that runs the turn, instead of only naming the scope.
+      '62754e4afaf8a3319427c9244843725f0811aedf716088db5862ec5a841af737'
     );
   } finally {
     await s.cleanup();

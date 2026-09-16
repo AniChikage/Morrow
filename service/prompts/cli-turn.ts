@@ -1,3 +1,4 @@
+import type { RuntimeID } from '../protocol.ts';
 /**
  * One bounded turn for a channel that is not bound to a native Codex App task: the rules, the
  * project goal and brief, the whole project context as JSON, and the optional board report.
@@ -10,11 +11,28 @@ export type CliTurnFields = {
   /** The channel's continuing responsibility. */
   responsibility: string;
   permission: string;
+  /** Which CLI runs this turn; the scope sentence states what that runtime may actually do. */
+  runtime: RuntimeID;
   /** The project data context, already serialized. */
   context: string;
   intervalMinutes: number;
   /** The board report schema, already serialized. */
   schema: string;
+};
+/**
+ * What the channel scope really allows in this runtime, rather than the bare scope name. Claude Code
+ * runs its commands with no sandbox around them, so its workspace scope has to say so; the exec-style
+ * CLIs keep the sandbox they were started with and stay offline.
+ */
+const scopeText = (runtime: RuntimeID, permission: string) => {
+  if (permission === 'native') return '沿用该 CLI 当前的权限设置';
+  if (permission === 'read-only')
+    return runtime === 'claude'
+      ? '只读：可读取、检索项目文件，不修改工作区，也不执行命令'
+      : '只读沙箱：仅调查与验证，不修改工作区';
+  return runtime === 'claude'
+    ? '工作区写入：可在项目内修改文件，并可执行命令用于构建、测试和验证；命令不在沙箱内运行，因此只在本项目范围内工作，不做破坏性或对外操作'
+    : '工作区写入沙箱：可在项目内修改和验证，沙箱内命令不联网';
 };
 export const cliTurnText = (p: CliTurnFields) => `\
 你正在通过 Morrow 编排层执行一次有边界的原生 CLI 工作轮次。由当前 CLI 管理会话、工具调用和原生历史；Morrow \
@@ -29,7 +47,7 @@ export const cliTurnText = (p: CliTurnFields) => `\
 verified/resolved 必须有实际证据。\n\
 项目目标：${p.goal}\n\
 ${p.brief}持续职责：${p.responsibility}\n\
-权限：${p.permission}\n\
+权限：${p.permission}（${scopeText(p.runtime, p.permission)}）\n\
 以下 JSON 为项目数据上下文，人类备注将在本轮处理（并非运行中的实时输入）：\n\
 ${p.context}\n\
 请正常使用 Markdown 汇报实际工作、验证和下一步。若需要同步功能看板，可在回复末尾附加一个 标记为 morrow-report \
