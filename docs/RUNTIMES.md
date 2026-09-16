@@ -10,7 +10,7 @@ Morrow 支持三种运行时。Codex 频道的自动工作通过 App 本地 IPC 
 | Claude Code | `claude -p` 一次有界轮次：`--print --verbose --output-format stream-json --safe-mode --strict-mcp-config --mcp-config {"mcpServers":{}} --tools <T> --allowedTools <T> --permission-mode <M> --name Morrow:<runId>`，有模型加 `--model`，有会话加 `--resume`；提示从 stdin 进入 | 只读 → `Read,Grep,Glob` + `dontAsk`；工作区写入 → 另加 `Edit,Write,MultiEdit,NotebookEdit,Bash` + `acceptEdits`。**工作区写入包含命令执行，且这些命令不在 Morrow 的沙箱内运行**，边界由提示词和项目目录约定，不是系统级隔离 |
 | Trae | `traex exec --json …` / `exec resume <id>`，`--output-last-message` 取最终答复 | 只读或工作区写入沙箱，`approval_policy="never"`，沙箱内命令不联网 |
 
-CLI 轮次的共同边界：单轮 45 分钟上限（`cliTurnMinutes`，超时即 SIGTERM 中断并暂停频道），stdout/stderr 合计 20 MiB，组装提示 1 MiB；结束时可选的 `morrow-report` 代码块是唯一的看板写入口，没有报告时保留 CLI 的原始答复、不改看板。轮次提示会写明这个时限、以及超时轮次没有汇报也不会更新看板，并像原生轮次一样列出工作树里未提交的文件。`--safe-mode` 不加载项目的 CLAUDE.md、hooks、插件、技能与 MCP，因此沿用本机登录不等于沿用全部自定义配置。
+CLI 轮次的共同边界：单轮 45 分钟上限（`cliTurnMinutes`，超时即 SIGTERM 中断并暂停频道），stdout/stderr 合计 20 MiB，组装提示 1 MiB；结束时可选的 `morrow-report` 代码块是唯一的看板写入口，没有报告时保留 CLI 的原始答复、不改看板。轮次提示会写明这个时限、以及超时轮次没有汇报也不会更新看板，并像原生轮次一样列出工作树里未提交的文件。在频道页留下的留言以 `humanNotes` 随同一份上下文进入下一轮，其中上一轮开始之后留下的那几条带 `new` 标记，提示词要求本轮处理并在汇报中回应，其余是仍然适用的既往交代；留言本身不会开始一轮，要立刻跑就用页面上的「留言并运行一轮」。`--safe-mode` 不加载项目的 CLAUDE.md、hooks、插件、技能与 MCP，因此沿用本机登录不等于沿用全部自定义配置。
 
 工作日志只保留一轮里可读的部分：Claude Code 每秒一条的 `system/thinking_tokens`、`tool_progress`、只含 thinking 块的 assistant 消息，以及 `rate_limit_info.status` 以 `allowed` 开头的 `rate_limit_event`（每轮都有，只是说账户没问题），都被跳过；`system/init` 收敛成一行「会话已开始 · 模型 … · 权限 … · 工具 …」。跳过的行只写进该轮的 `stdout.jsonl`，不产生事件，也**不进入失败诊断**——诊断的配额规则会命中 `rate_limit_event` 字面量本身，读它会把每一次因别的原因失败的 Claude 轮次都报成「配额不足」。其余状态（`rejected`、缺失、无法识别）不跳过，会以「速率限制：<status>（<窗口>）」一行留在日志里，并照常参与失败诊断。
 

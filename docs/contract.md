@@ -68,6 +68,7 @@ RunOutputChunk = {
 - `GET /api/state` → `{projects,channels,items,runs,events,runtimes}`. Projects/channels/items are current state; runs are the latest 500 and events the latest 1,500. Bulk I/O is excluded.
 - `GET /api/events?projectId=&channelId=&itemId=&runId=&before=&after=&limit=` → `{events,hasMore,cursor?}`. Require projectId or channelId; when both are supplied they must agree. Item and run filters must belong to that scope. Limit defaults to 50, accepts 1–200.
 - `GET /api/runs?projectId=&channelId=&before=&after=&limit=` → `{runs,hasMore,cursor?}`. Project/channel filters are optional. Limit defaults to 50, accepts 1–200.
+- `GET /api/channels/:id/messages` → `{messages}`. The channel's notes, oldest first, capped at the latest 100. Not refused for a channel bound to a Codex App task; an unknown channel is 404.
 - `GET /api/runs/:id` → `{run,prompt:string,finalOutput:string,report?:AgentResult}`. This reads persisted records beyond the snapshot window; missing historical artifacts remain empty, not reconstructed from guesses.
 - `GET /api/runs/:id/output?after=&limit=` → `{chunks:RunOutputChunk[],hasMore,cursor?}`. Limit defaults to 50, accepts 1–100. Only an `after` cursor is supported; output is read from the beginning when omitted.
 
@@ -85,7 +86,7 @@ Unknown or out-of-scope filters/cursors return 404; malformed, duplicate or unsu
 | `POST /api/channels` | `{projectId,name,goal,runtime,model?,intervalMinutes?,maxRunsPerDay?,permission?}` | Paused channel. |
 | `PATCH /api/channels/:id` | `{name?,goal?,runtime?,model?,intervalMinutes?,maxRunsPerDay?,permission?}` | Updated channel. Runtime/model/permission changes are rejected while active; changing them clears the current session reference for the next round, while prior runs and provider history remain. |
 | `POST /api/channels/:id/action` | `{action:"run"|"pause"|"resume"}` | `{ok:true}`. Run once; pause pending and active execution; or enable continuous scheduling. |
-| `POST /api/channels/:id/messages` | `{text}` | Persisted message event, included in next round. Does not auto-launch. |
+| `POST /api/channels/:id/messages` | `{text}` | Persisted message event, included in next round as `humanNotes`; notes created after the previous scheduled round started carry `new:true` there. Does not auto-launch. |
 | `POST /api/projects/:id/items` | `{title,summary?,kind?,status?,evidence?,nextStep?,channelId?}` | New project item. Defaults: feature/open, empty description/evidence/next step, empty channel origin. Supplied source channel must belong to project. |
 | `PATCH /api/items/:id` | `{title?,summary?,kind?,status?,evidence?,nextStep?,revision?}` | Updated item and incremented revision. Stale supplied revision returns 409. Legacy `{status}` remains accepted. |
 | `POST /api/runtimes/refresh` | `{}` | Runtime installation/capability list; does not prove account login or quota. |

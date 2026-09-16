@@ -16,15 +16,15 @@ Morrow 是一个本地优先的 Mac 应用。打开已有项目，说明想达�
 - **原生 Codex 对话**：通过 Codex App follower 复用同一任务；认证、模型、工具和执行由原生运行时管理。
 - **上线前有据可审**：呈现改动、预期收益、验证结果、风险与回退计划，由人确认对应发布版本。
 
-Morrow 支持 Codex（通过 Codex App）、Claude Code 与 Trae（本机已登录的 CLI）。Codex 频道的自动轮次默认沿用 Codex App 中已关联任务的权限与审批设置，需要时可在频道设置中收紧为只读或工作区写入；Claude Code 与 Trae 频道执行有界 CLI 轮次，默认工作区写入，也可收紧为只读。
+Morrow 支持 Codex（通过 Codex App）、Claude Code 与 Trae（本机已登录的 CLI）。Codex 频道的自动轮次默认沿用 Codex App 中已关联任务的权限与审批设置，需要时可在频道设置中收紧为只读或工作区写入；Claude Code 与 Trae 频道执行有界 CLI 轮次，默认工作区写入，也可收紧为只读。Claude Code 与 Trae 的频道页还有「留言」：写下的补充背景或方向会在下一轮开始时随上下文交给 CLI，列表写明每条是等待读取还是已在哪一轮被读取；留言本身不会开始一轮，需要立刻跑时用「留言并运行一轮」。
 
 框架已提供持续工作与反馈闭环的支撑机制；实际项目仍需接入自己的监控和发布能力，长期自主效果需要真实环境验证。详见 [能力边界](docs/RUNTIMES.md)。
 
 ## 这条分支与 main 的区别
 
-这是 `yukun` 分支（0.12.1）。远端 `main`（0.10.0）自 `6246930` 起改为「直接用 Codex CLI、去掉与桌面 App 的耦合」；本分支是另一条线，执行入口以 Codex App follower 为准。两条线在执行路线上互斥，本 README 其余部分描述的都是本分支的行为。
+这是 `yukun` 分支（0.13.0）。远端 `main`（0.10.0）自 `6246930` 起改为「直接用 Codex CLI、去掉与桌面 App 的耦合」；本分支是另一条线，执行入口以 Codex App follower 为准。两条线在执行路线上互斥，本 README 其余部分描述的都是本分支的行为。
 
-| 差异 | main（0.10.0） | 本分支 yukun（0.12.1） |
+| 差异 | main（0.10.0） | 本分支 yukun（0.13.0） |
 | --- | --- | --- |
 | 执行入口 | Morrow 自己启动 `codex app-server --listen stdio://`，不查找或唤醒 Codex App | 通过 Codex App 的本地 IPC 以 follower 身份，复用 App 已创建、已加载并明确关联的任务 |
 | 需要安装什么 | 安装 Codex CLI，在终端 `codex login` | Codex 频道：安装并登录 Codex Mac App；在 App 里为项目目录建任务、发送首条消息并保持打开，再回到频道点「关联 App 任务」，App 须保持运行。Claude Code 频道：安装 Claude Code，在终端 `claude auth login`。Trae 频道：安装 `traex`，在终端 `traex login` |
