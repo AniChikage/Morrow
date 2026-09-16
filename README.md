@@ -16,19 +16,20 @@ Morrow 是一个本地优先的 Mac 应用。打开已有项目，说明想达�
 - **原生 Codex 对话**：通过 Codex App follower 复用同一任务；认证、模型、工具和执行由原生运行时管理。
 - **上线前有据可审**：呈现改动、预期收益、验证结果、风险与回退计划，由人确认对应发布版本。
 
-Morrow 只支持 Codex。新频道的自动轮次默认沿用 Codex App 中已关联任务的权限与审批设置，需要时可在频道设置中收紧为只读或工作区写入。早期版本留下的 Claude Code / Trae 记录保持可读，但不再执行。
+Morrow 支持 Codex（通过 Codex App）、Claude Code 与 Trae（本机已登录的 CLI）。Codex 频道的自动轮次默认沿用 Codex App 中已关联任务的权限与审批设置，需要时可在频道设置中收紧为只读或工作区写入；Claude Code 与 Trae 频道执行有界 CLI 轮次，默认工作区写入，也可收紧为只读。
 
 框架已提供持续工作与反馈闭环的支撑机制；实际项目仍需接入自己的监控和发布能力，长期自主效果需要真实环境验证。详见 [能力边界](docs/RUNTIMES.md)。
 
 ## 这条分支与 main 的区别
 
-这是 `yukun` 分支（0.11.0）。远端 `main`（0.10.0）自 `6246930` 起改为「直接用 Codex CLI、去掉与桌面 App 的耦合」；本分支是另一条线，执行入口以 Codex App follower 为准。两条线在执行路线上互斥，本 README 其余部分描述的都是本分支的行为。
+这是 `yukun` 分支（0.12.0）。远端 `main`（0.10.0）自 `6246930` 起改为「直接用 Codex CLI、去掉与桌面 App 的耦合」；本分支是另一条线，执行入口以 Codex App follower 为准。两条线在执行路线上互斥，本 README 其余部分描述的都是本分支的行为。
 
-| 差异 | main（0.10.0） | 本分支 yukun（0.11.0） |
+| 差异 | main（0.10.0） | 本分支 yukun（0.12.0） |
 | --- | --- | --- |
 | 执行入口 | Morrow 自己启动 `codex app-server --listen stdio://`，不查找或唤醒 Codex App | 通过 Codex App 的本地 IPC 以 follower 身份，复用 App 已创建、已加载并明确关联的任务 |
-| 需要安装什么 | 安装 Codex CLI，在终端 `codex login` | 安装并登录 Codex Mac App；在 App 里为项目目录建任务、发送首条消息并保持打开，再回到频道点「关联 App 任务」。App 须保持运行 |
-| 审批与权限在哪里处理 | 登录、模型、MCP 和工具配置来自 CLI，界面内指导和审批，不再提供 App 打开或桥接配置入口 | 由 App 管理；新频道默认沿用 App 的沙箱与审批设置，不自动提升为完整访问，审批请求在 Codex App 里处理 |
+| 需要安装什么 | 安装 Codex CLI，在终端 `codex login` | Codex 频道：安装并登录 Codex Mac App；在 App 里为项目目录建任务、发送首条消息并保持打开，再回到频道点「关联 App 任务」，App 须保持运行。Claude Code 频道：安装 Claude Code，在终端 `claude auth login`。Trae 频道：安装 `traex`，在终端 `traex login` |
+| 支持的运行时 | Codex、Claude Code、Trae | Codex、Claude Code、Trae；差别只在 Codex 的执行入口（本分支走 App follower，main 走 CLI 直连），Claude Code 与 Trae 两边都是本机 CLI 的有界轮次 |
+| 审批与权限在哪里处理 | 登录、模型、MCP 和工具配置来自 CLI，界面内指导和审批，不再提供 App 打开或桥接配置入口 | 由 App 管理；新的 Codex 频道默认沿用 App 的沙箱与审批设置，不自动提升为完整访问，审批请求在 Codex App 里处理 |
 | 应用内浏览器 / Computer Use / App 动态工具 | Morrow 启动的 CLI 不连接 App，文档未列这些能力 | 2026-09-09 follower 实测可用：真实点击页面、`sky.list_apps()`、`get_usage_limits`。这三项依赖 App，也是本分支没有改用 CLI 直连的原因 |
 | 看板形态 | 待处理、调查中、需要关注、已验证、已解决五列固定 | 前四列固定，已解决收进下方「已解决历史」折叠区，该区标题同时是第五个放置目标 |
 | 独立复核方式 | 与执行共用同一个 CLI app-server 入口 | 官方 `codex exec` 的一次性只读会话（`--sandbox read-only`、`--ephemeral`、`--ignore-user-config`），不带执行者的权限和 App 本地工具管道 |

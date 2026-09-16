@@ -2,7 +2,19 @@
 
 [文档首页](README.md) · [连接与安装](GETTING-STARTED.md) · [服务配置](../service/README.md)
 
-Morrow 只支持 Codex。自动工作通过 App 本地 IPC 作为 follower 发送轮次，复用 App 已创建并加载的任务；登录、模型、工具和实际权限继续由 App 管理。旧 `CODEX_CLI_PATH` 转接方案已退役，生产连接不再使用共享后台转接程序。
+Morrow 支持三种运行时。Codex 频道的自动工作通过 App 本地 IPC 作为 follower 发送轮次，复用 App 已创建并加载的任务；登录、模型、工具和实际权限继续由 App 管理。旧 `CODEX_CLI_PATH` 转接方案已退役，生产连接不再使用共享后台转接程序。Claude Code 与 Trae 频道不连接 App，用本机已登录的 CLI 执行有界轮次。
+
+| 运行时 | 执行方式 | 权限映射 |
+| --- | --- | --- |
+| Codex | Codex App follower：复用 App 中已关联并打开的任务 | 默认沿用 App 设置（`native`），也可收紧为只读或工作区写入沙箱 |
+| Claude Code | `claude -p` 一次有界轮次：`--print --verbose --output-format stream-json --safe-mode --strict-mcp-config --mcp-config {"mcpServers":{}} --tools <T> --allowedTools <T> --permission-mode <M> --name Morrow:<runId>`，有模型加 `--model`，有会话加 `--resume`；提示从 stdin 进入 | 只读 → `Read,Grep,Glob` + `dontAsk`；工作区写入 → 另加 `Edit,Write,MultiEdit,NotebookEdit,Bash` + `acceptEdits`。**工作区写入包含命令执行，且这些命令不在 Morrow 的沙箱内运行**，边界由提示词和项目目录约定，不是系统级隔离 |
+| Trae | `traex exec --json …` / `exec resume <id>`，`--output-last-message` 取最终答复 | 只读或工作区写入沙箱，`approval_policy="never"`，沙箱内命令不联网 |
+
+CLI 轮次的共同边界：单轮 15 分钟上限，stdout/stderr 合计 20 MiB，组装提示 1 MiB；结束时可选的 `morrow-report` 代码块是唯一的看板写入口，没有报告时保留 CLI 的原始答复、不改看板。`--safe-mode` 不加载项目的 CLAUDE.md、hooks、插件、技能与 MCP，因此沿用本机登录不等于沿用全部自定义配置。
+
+**工作接口只属于 Codex 频道**：`release.propose`、`evidence.native`、`memory.search` 等 `agent-cli.ts` 操作需要轮次能访问本机 HTTP 接口，当前只有 Codex 的原生轮次具备；Claude Code 与 Trae 频道通过可选报告维护看板。**独立复核一律走 Codex**：这两种运行时汇报的 verified/resolved 与 Codex 频道一样，先进入 `codex exec` 的只读复核，通过后才算数。**额度门禁与用量归因只对 Codex 生效**（读数来自 Codex 账户），每日运行次数上限对所有运行时生效。
+
+CLI 安装检测不等于登录或配额验证。登录失效时，运行时页与失败轮次分别提示 `codex login`、`claude auth login`、`traex login`。
 
 ## 连接
 
@@ -14,7 +26,7 @@ App 必须保持运行。连接不兼容、任务未加载或发送回执不明�
 
 ## 权限与独立复核
 
-新频道默认「沿用 App 设置」：普通消息和自动轮次都不附带新的权限或审批策略，不自动提升为完整访问。要让任务访问本机工作接口、联网或使用原生工具，请在 App 中配置适当权限。此前工作区断网导致本机 HTTP 工作接口失败的观察仍然有效，不能据此悄悄提升权限。
+新的 Codex 频道默认「沿用 App 设置」：普通消息和自动轮次都不附带新的权限或审批策略，不自动提升为完整访问。要让任务访问本机工作接口、联网或使用原生工具，请在 App 中配置适当权限。此前工作区断网导致本机 HTTP 工作接口失败的观察仍然有效，不能据此悄悄提升权限。
 
 已有只读和工作区写入选项保留，自动轮次分别发送明确的只读或工作区写入沙箱，以及 `on-request` / `auto_review`；启动前仍检查现有范围。App 会合并保留的工作区及可视化目录，不能把传入 `writableRoots` 当作精确的最终目录清单。明确发送的设置可能延续到后续轮次，普通聊天也应以 App 当前设置为准。
 
@@ -52,10 +64,6 @@ Morrow 启动一个短暂的官方只读 app-server 协议客户端读取账户�
 - **项目额度上限**（项目属性栏「额度」）：按项目，是估算。Morrow 把自己发起的轮次前后读数之差累加为本项目在该窗口内的用量；你在同一账号下自己使用 Codex 也会混进去，所以它只能当作归因估算，界面上标为「估算」。
 
 读数不可用时界面标红「额度未知」，默认不阻断自动工作；勾选「额度未知时也停止自动工作」后会停止，并每 10 分钟重试。门禁只决定是否发起新的轮次或复核：正在进行的轮次和复核不会被打断，普通 Codex 对话从不受额度限制。限制的设置改动和每次触发都写入审计记录；自动轮次的提示词也会带上当前读数和限制，让 Codex 在额度紧张时优先做便宜且有信息价值的事，或选择等待。
-
-## 旧运行时记录
-
-早期版本支持过 Claude Code 与 Trae。它们的频道、运行记录和事件保持可读，界面标记为「已停止支持」；这些频道不再调度，不能手动运行或继续，也不能打开原生会话。服务巡检发现仍在启用的旧频道时，会关闭其调度、置为暂停并记录一条系统事件。新工作请在同一项目下新建 Codex 频道。需要沿用旧频道时，可通过服务 API 将其原地转换为 Codex 频道（`PATCH /api/channels/:id`，传入 `{ "runtime": "codex" }`）：运行时变为 `codex`，已保存的会话 ID 被清空，事项、证据和历史记录保留；桌面界面不提供这一操作。
 
 ## 发布与证据
 

@@ -7,7 +7,7 @@
 | 文档 | 内容 |
 | --- | --- |
 | [开始使用](GETTING-STARTED.md) | 安装、关联 Codex App 任务、第一个项目和日常操作。 |
-| [原生运行时](RUNTIMES.md) | Codex 的接入方式、默认权限、实测过的原生能力与能力边界，以及旧运行时记录的处理。 |
+| [原生运行时](RUNTIMES.md) | Codex、Claude Code 和 Trae 的接入方式、默认权限、实测过的原生能力与能力边界。 |
 | [升级与数据迁移](UPGRADING.md) | 旧 NoHuman 数据、任务连续性、更新与备份。 |
 
 ## 机制与开发
