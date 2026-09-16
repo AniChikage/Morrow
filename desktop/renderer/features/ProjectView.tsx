@@ -35,6 +35,7 @@ import {
   featureSourceIds,
   featureSourceLabel,
 } from './featureOwnership';
+import { FeatureBoard, boardStatuses } from './FeatureBoard';
 import { ProjectRecords } from './ProjectRecords';
 import { ProjectReleases, ProjectThinking } from './ProjectWork';
 import { ProjectBrief } from './ProjectBrief';
@@ -48,7 +49,6 @@ import './content.css';
  * colour, no size — so it stays out of the stylesheets.
  */
 const panelLayout: CSSProperties = { display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0 };
-const statusOrder = ['open', 'investigating', 'blocked', 'verified', 'resolved'];
 interface ProjectPreferences {
   layout: 'list' | 'board';
   status: string;
@@ -69,6 +69,10 @@ function readPreferences(id: string): ProjectPreferences {
 }
 export function ProjectView(props: FeatureProps & { id: string }) {
   const { id, snapshot, api, onMutate, onNavigate, onNewFeature, onNewChannel, busy } = props;
+  // The list view and the status filter still order every status; the board keeps 已解决 out of its
+  // columns. Declared here so this module's top level never reads `FeatureBoard` while that module is
+  // still importing `FeatureOwnerTag` from this one.
+  const statusOrder = [...boardStatuses, 'resolved'];
   const project = snapshot.projects.find((project) => project.id === id);
   const channels = snapshot.channels.filter((channel) => channel.projectId === id);
   const allItems = snapshot.items.filter((item) => featureProjectId(item, snapshot.channels) === id);
@@ -226,8 +230,10 @@ export function ProjectView(props: FeatureProps & { id: string }) {
 
   const history = !filtered && resolvedItems.length > 0 && (
     <section className="project-history" aria-label="已解决历史">
+      {/* `data-status` makes this heading the board's fifth drop target: 已解决 has no column. */}
       <button
         className="task-group-heading"
+        data-status="resolved"
         aria-expanded={historyOpen}
         onClick={() => setHistoryOpen((open) => !open)}
       >
@@ -443,43 +449,16 @@ export function ProjectView(props: FeatureProps & { id: string }) {
           ) : (
             <div className="feature-scroll board-scroll">
               {!currentItems.length && <p className="project-board-empty">当前没有未解决事项，历史记录保留在下方。</p>}
-              <div className="finding-board current-board">
-                {statusOrder
-                  .filter((status) => currentItems.some((item) => item.status === status))
-                  .map((status) => (
-                    <section className="board-column" key={status}>
-                      <h3>
-                        <StatusIcon status={status} />
-                        {statusLabel(status)}{' '}
-                        <span>{currentItems.filter((item) => item.status === status).length}</span>
-                      </h3>
-                      {currentItems
-                        .filter((item) => item.status === status)
-                        .map((item) => (
-                          <button className="board-card" key={item.id} onClick={() => openItem(item)}>
-                            <span className="board-card-type">
-                              {kindLabel(item.kind)} <span>{featureNumber(item)}</span>
-                            </span>
-                            <strong>{item.title}</strong>
-                            <span className="board-card-meta">
-                              <span
-                                className="feature-source-tag"
-                                title={`来源：${featureSourceLabel(item, channels)}`}
-                              >
-                                {item.channelId ? '# ' : ''}
-                                {featureSourceLabel(item, channels)}
-                              </span>
-                              <FeatureOwnerTag item={item} channels={channels} />
-                              <span>
-                                <Link2 size={12} />
-                                {item.evidence.length}
-                              </span>
-                            </span>
-                          </button>
-                        ))}
-                    </section>
-                  ))}
-              </div>
+              <FeatureBoard
+                key={id}
+                items={currentItems}
+                channels={channels}
+                filtered={filtered}
+                api={api}
+                onMutate={onMutate}
+                busy={busy}
+                onOpen={openItem}
+              />
               {history}
             </div>
           )}

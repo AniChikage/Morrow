@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, render, screen, waitFor, within } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { ProjectView } from './ProjectView';
 import { FindingView } from './FindingView';
@@ -17,6 +17,9 @@ beforeEach(() => {
 afterEach(() => {
   cleanup();
   vi.restoreAllMocks();
+  // Only the board drag test stands these in for jsdom; leave the document as it was found.
+  Reflect.deleteProperty(document, 'elementFromPoint');
+  Reflect.deleteProperty(window, 'PointerEvent');
 });
 
 describe('project next step and secondary properties', () => {
@@ -135,14 +138,14 @@ describe('one project-owned feature board', () => {
     const { props } = featureProps({ snapshot: state });
     render(<ProjectView {...props} id="project-atlas" />, { wrapper: TestProviders });
     expect(screen.getByRole('tab', { name: '看板 4' })).toBeTruthy();
-    expect(screen.getByRole('button', { name: /CSV 重试会重复提交/ })).toBeTruthy();
-    expect(screen.getByRole('button', { name: /缩短激活路径/ })).toBeTruthy();
+    expect(screen.getByRole('button', { name: /^打开.+CSV 重试会重复提交/ })).toBeTruthy();
+    expect(screen.getByRole('button', { name: /^打开.+缩短激活路径/ })).toBeTruthy();
     expect(screen.getByRole('button', { name: /#7.*人工创建的功能/ })).toBeTruthy();
     expect(screen.queryByText('明确属于其他项目')).toBeNull();
     expect(screen.queryByRole('tab', { name: /持续频道/ })).toBeNull();
     await user.click(screen.getByRole('button', { name: '筛选' }));
     await user.selectOptions(screen.getByRole('combobox', { name: '来源频道筛选' }), 'manual');
-    expect(screen.getByRole('button', { name: /人工创建的功能/ })).toBeTruthy();
+    expect(screen.getByRole('button', { name: /^打开.+人工创建的功能/ })).toBeTruthy();
     expect(screen.queryByText('CSV 重试会重复提交')).toBeNull();
     await user.click(screen.getByRole('button', { name: '新建事项' }));
     expect(props.onNewFeature).toHaveBeenCalledWith('project-atlas');
@@ -156,7 +159,7 @@ describe('one project-owned feature board', () => {
     render(<ProjectView {...props} id="project-atlas" />, { wrapper: TestProviders });
     await user.click(screen.getByRole('button', { name: '筛选' }));
     await user.selectOptions(screen.getByRole('combobox', { name: '来源频道筛选' }), 'channel-growth');
-    expect(screen.getByRole('button', { name: /CSV 重试会重复提交/ })).toBeTruthy();
+    expect(screen.getByRole('button', { name: /^打开.+CSV 重试会重复提交/ })).toBeTruthy();
     expect(screen.getByTitle('来源：系统完善')).toBeTruthy();
   });
 
@@ -603,6 +606,10 @@ for (const layout of ['list', 'board']) {
     });
     props.snapshot.items.push(done);
     const original = JSON.stringify(props.snapshot.items);
+    // A filter can put a resolved item back on the board, where it is a card with its own 打开 button;
+    // in the list, and in the history section of either layout, it is a single row button.
+    const itemButton = (title: string) =>
+      screen.getByRole('button', { name: layout === 'board' ? new RegExp(`^打开.+${title}`) : new RegExp(title) });
     render(<ProjectView {...props} id="project-atlas" />, { wrapper: TestProviders });
     expect(screen.queryByText(done.title)).toBeNull();
     expect(screen.queryByRole('textbox', { name: '搜索事项和证据' })).toBeNull();
@@ -615,17 +622,39 @@ for (const layout of ['list', 'board']) {
     await user.click(screen.getByRole('button', { name: '筛选' }));
     const search = screen.getByRole('textbox', { name: '搜索事项和证据' });
     await user.type(search, '历史唯一关键词');
-    expect(screen.getByRole('button', { name: new RegExp(done.title) })).toBeTruthy();
+    expect(itemButton(done.title)).toBeTruthy();
     expect(screen.queryByRole('region', { name: '已解决历史' })).toBeNull();
     await user.clear(search);
     await user.type(search, '   ');
     expect(screen.queryByText(done.title)).toBeNull();
     await user.clear(search);
     await user.selectOptions(screen.getByRole('combobox', { name: '状态筛选' }), 'resolved');
-    expect(screen.getByRole('button', { name: new RegExp(done.title) })).toBeTruthy();
+    expect(itemButton(done.title)).toBeTruthy();
     expect(JSON.stringify(props.snapshot.items)).toBe(original);
   });
 }
+
+it('files a card under 已解决 when it is dropped on the history heading', async () => {
+  const { props, api } = featureProps();
+  props.snapshot.items = [
+    item({ revision: 3 }),
+    item({ id: 'done', title: '已完成的恢复任务', status: 'resolved', evidence: [] }),
+  ];
+  render(<ProjectView {...props} id="project-atlas" />, { wrapper: TestProviders });
+  const heading = screen.getByRole('button', { name: '已解决历史 1' });
+  const card = screen.getByRole('button', { name: /^打开.+CSV 重试会重复提交/ });
+  Object.defineProperty(window, 'PointerEvent', { value: MouseEvent, configurable: true });
+  Object.defineProperty(document, 'elementFromPoint', { value: () => heading, configurable: true });
+  fireEvent.pointerDown(card, { button: 0, clientX: 20, clientY: 20 });
+  fireEvent.pointerMove(card, { clientX: 40, clientY: 400 });
+  expect(heading.className).toContain('board-drop-over');
+  fireEvent.pointerUp(card, { clientX: 40, clientY: 400 });
+  await waitFor(() =>
+    expect(api.patchItem).toHaveBeenCalledWith('finding-import', { status: 'resolved', revision: 3 })
+  );
+  expect(heading.className).not.toContain('board-drop-over');
+  expect(props.onNavigate).not.toHaveBeenCalled();
+});
 
 it('handles all-resolved boards, live status changes and project-local disclosure', async () => {
   const { props } = featureProps();
@@ -634,10 +663,13 @@ it('handles all-resolved boards, live status changes and project-local disclosur
   expect(screen.getByText('当前没有未解决事项，历史记录保留在下方。')).toBeTruthy();
   expect(screen.queryByText('还没有项目功能')).toBeNull();
   await userEvent.setup().click(screen.getByRole('button', { name: '已解决历史 3' }));
-  expect(screen.getAllByRole('button', { name: /CSV 重试会重复提交/ })).toHaveLength(1);
+  const controls = () => screen.getAllByRole('button', { name: /CSV 重试会重复提交/ }).map((one) => one.className);
+  // While resolved the item is one history row and nothing on the board.
+  expect(controls()).toEqual(['finding-row']);
   props.snapshot.items[0].status = 'investigating';
   view.rerender(<ProjectView {...props} id="project-atlas" />);
-  expect(screen.getAllByRole('button', { name: /CSV 重试会重复提交/ })).toHaveLength(1);
+  // Back on the board it is one card: the 打开 button and its 移动到 menu, and it has left the history.
+  expect(controls()).toEqual(['board-card-open', 'board-card-menu']);
   expect(screen.getByRole('button', { name: '已解决历史 2' })).toBeTruthy();
   view.rerender(<ProjectView {...props} id="project-other" />);
   expect(screen.getByRole('button', { name: '已解决历史 1' }).getAttribute('aria-expanded')).toBe('false');
