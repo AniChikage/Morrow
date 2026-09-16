@@ -79,11 +79,13 @@ test('the non-native CLI turn prompt text is unchanged', async () => {
     assert.equal(s.engine.loop.channelNames(fixedProject.id)[fixedChannel.id], undefined);
     assert.equal(
       digest(s.engine.prompt(fixedProject, fixedChannel)),
-      // Changed deliberately in 0.12.1, two edits after the permission line: the turn now states its
-      // own 45-minute limit and what an interrupted turn loses, and carries the working-tree line the
-      // native charter already had. `fixedProject.path` is not a repository, so the tree line is
-      // empty here and only the limit sentence moves these bytes.
-      '86824910dd8001f3b73d6a073177345fe5016e4de5c5593f9dc7494820d79930'
+      // Changed deliberately in 0.13.0, in the sentence that introduces the JSON context: it now
+      // names `humanNotes` as notes people left for the channel rather than live input, and says the
+      // ones marked `new` arrived after the previous turn started and must be answered this turn.
+      // (0.12.1 changed the two edits after the permission line: the 45-minute limit the turn now
+      // states, and the working-tree line the native charter already had. `fixedProject.path` is not
+      // a repository, so the tree line stays empty here.)
+      '96d7f05a7b14532aa775d5ebb1c9f4525c9fe940314c6f1d48ac491dd193ce3c'
     );
   } finally {
     await s.cleanup();

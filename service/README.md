@@ -106,7 +106,7 @@ Claude 使用 `--print --verbose --output-format stream-json --safe-mode --stric
 
 Trae 使用 `traex exec --json` / `exec resume`，保留原生 provider、规则和默认模型，显式约束所选沙箱与审批设置，沙箱内命令不联网。发现顺序为 `traex`、`traecli`，不使用图形应用的 `trae` 可执行文件。`native` 权限只有 Codex 可选，服务端对其他运行时返回 400。
 
-这两个适配器的人工备注是下一轮上下文，不是实时 App 对话。运行时发现按 `codex`、`claude`、`trae` 逐个探测：Codex 优先使用 Codex App 自带的可执行文件，其次查找 PATH；Claude 另外查找 `~/.claude/local`，用 `--version` 与 `--help` 核对上面用到的参数；Trae 用 `exec --help` 核对 `--json`、`--sandbox`、`--output-last-message`。CLI 安装检测不等于登录或额度验证；实际失败与原始输出会落库，登录失效时分别提示 `codex login`、`claude auth login`、`traex login`。
+这两个适配器的人工备注是下一轮上下文，不是实时 App 对话。`GET /api/channels/:id/messages` 返回该频道的留言（按时间从旧到新，最多 100 条，已绑定原生任务的频道也能读）；`POST` 同一路径写入一条。留言以 `humanNotes` 进入下一轮提示，其中上一轮开始之后留下的那几条带 `new: true`，提示词要求本轮处理并在汇报中回应，其余是仍然适用的既往交代。运行时发现按 `codex`、`claude`、`trae` 逐个探测：Codex 优先使用 Codex App 自带的可执行文件，其次查找 PATH；Claude 另外查找 `~/.claude/local`，用 `--version` 与 `--help` 核对上面用到的参数；Trae 用 `exec --help` 核对 `--json`、`--sandbox`、`--output-last-message`。CLI 安装检测不等于登录或额度验证；实际失败与原始输出会落库，登录失效时分别提示 `codex login`、`claude auth login`、`traex login`。
 
 测试模式（`MORROW_TEST_MODE=1`）用 `MORROW_TEST_CODEX_PATH`、`MORROW_TEST_CLAUDE_PATH`、`MORROW_TEST_TRAE_PATH` 指向夹具，不探测本机安装。
 

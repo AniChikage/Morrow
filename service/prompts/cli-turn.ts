@@ -54,7 +54,8 @@ ${p.brief}持续职责：${p.responsibility}\n\
 权限：${p.permission}（${scopeText(p.runtime, p.permission)}）\n\
 本轮最多 ${p.minutes} 分钟，超时会被直接中断：那一轮没有汇报，看板也不会更新。请把工作切成能在时限内完成的一步，\
 并留出时间在结尾附上 morrow-report，没做完的部分写进 nextStep。\n\
-${p.tree || ''}以下 JSON 为项目数据上下文，人类备注将在本轮处理（并非运行中的实时输入）：\n\
+${p.tree || ''}以下 JSON 为项目数据上下文；humanNotes 是有人给这个频道留下的留言，不是运行中的实时输入。\
+其中标记 new 的是上一轮开始之后留下的，请在本轮处理并在汇报中回应，其余是仍然适用的既往交代：\n\
 ${p.context}\n\
 请正常使用 Markdown 汇报实际工作、验证和下一步。若需要同步功能看板，可在回复末尾附加一个 标记为 morrow-report \
 的 Markdown 代码块，其中 JSON 符合下方 Schema；它是可选的看板报告，不是原生执行成功的条件。\

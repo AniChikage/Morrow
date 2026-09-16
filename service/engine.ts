@@ -837,6 +837,9 @@ export class Engine {
     // its files still uncommitted, which the resumed session cannot see on its own.
     const cliTree = projectTreeState(project.path);
     const cliPrevious = this.previousScheduledRun(channel.id);
+    // Which notes this turn is the first to see: anything left after the previous scheduled turn
+    // started. Without a previous turn every note is new, so a first turn answers all of them.
+    const since = cliPrevious?.startedAt || '';
     // The brief appears once, as a labelled block; the JSON context carries the rest of the project row.
     const { brief, ...projectContext } = project;
     return cliTurnText({
@@ -851,7 +854,11 @@ export class Engine {
         project: projectContext,
         channel: { name: channel.name, goal: channel.goal },
         items,
-        humanNotes: notes.map((n) => ({ text: n.text, createdAt: n.createdAt })),
+        humanNotes: notes.map((n) => ({
+          text: n.text,
+          createdAt: n.createdAt,
+          ...(n.createdAt > since ? { new: true } : {}),
+        })),
         knowledge,
         previousRuns: prior.map((r) => ({ summary: r.summary, status: r.status, startedAt: r.startedAt })),
       }),

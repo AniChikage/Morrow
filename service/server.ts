@@ -776,6 +776,12 @@ export async function startServer(
           respond(res, 200, { ok: true });
           return;
         }
+        if (req.method === 'GET' && channelMatch[2] === 'messages') {
+          // Reading what people left is never refused: a channel bound to an App task still keeps
+          // its earlier notes, and the page shows them even though it may no longer post new ones.
+          respond(res, 200, { messages: store.messages(id) });
+          return;
+        }
         if (req.method === 'POST' && channelMatch[2] === 'messages') {
           if (native.binding(id)) throw new APIError(409, '已绑定原生任务，请使用原生对话发送消息');
           keys(data, ['text']);

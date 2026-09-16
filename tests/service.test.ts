@@ -199,6 +199,8 @@ test('a Claude Code channel runs a bounded CLI turn, resumes its session and sti
       201
     );
     assert.equal(claude.permission, 'workspace-write');
+    // A note left before the channel ever ran: the first turn is the first to see it.
+    const firstNote = await s.api('POST', `/api/channels/${claude.id}/messages`, { text: '先看导入流程' }, 201);
     // A real temporary repository, so `projectTreeState` has something to read; only `git status`
     // is ever run against it, and the working tree starts clean.
     const git = (...args: string[]) =>
@@ -209,6 +211,10 @@ test('a Claude Code channel runs a bounded CLI turn, resumes its session and sti
     git('config', 'commit.gpgsign', 'false');
     git('commit', '-q', '--allow-empty', '-m', 'fixture baseline');
     const capture = () => JSON.parse(readFileSync(join(s.projectPath, '.fixture-capture.json'), 'utf8'));
+    // The turn's project data context is one JSON line inside the prompt; `humanNotes` is the part
+    // this checks, so the notes are read back the way the CLI receives them.
+    const humanNotes = (input: string): { text: string; new?: boolean }[] =>
+      JSON.parse(input.split('\n').find((line) => line.startsWith('{"project":'))!).humanNotes;
     const finished = (count: number) =>
       until(
         () =>
@@ -236,6 +242,8 @@ test('a Claude Code channel runs a bounded CLI turn, resumes its session and sti
     // The turn knows its own deadline, and says nothing about a working tree that was clean.
     assert(first.input.includes('本轮最多 45 分钟'));
     assert(!first.input.includes('工作树有未提交改动'));
+    // Nothing ran before, so the one note is this turn's to answer.
+    assert.deepEqual(humanNotes(first.input), [{ text: '先看导入流程', createdAt: firstNote.createdAt, new: true }]);
     assert.equal(s.store.get<any>('channels', claude.id).sessionId, 'fixture-session-1');
     // The optional report reached the board, and its verified item waits for the Codex reviewer.
     const item = s.store.all<any>('items').find((i) => i.lastRunId === run.id)!;
@@ -252,6 +260,10 @@ test('a Claude Code channel runs a bounded CLI turn, resumes its session and sti
     assert(second.input.includes('unfinished.ts'));
     // The same channel left them, so the line says so rather than blaming another channel.
     assert(second.input.includes('这是本频道上一轮留下的'));
+    // Nobody left anything since the first turn started, so the note is now earlier guidance.
+    assert.deepEqual(humanNotes(second.input), [{ text: '先看导入流程', createdAt: firstNote.createdAt }]);
+    // A note left after the second turn started is the only one the third turn has to answer.
+    const laterNote = await s.api('POST', `/api/channels/${claude.id}/messages`, { text: '再核对重试路径' }, 201);
     await s.api('PATCH', `/api/channels/${claude.id}`, { permission: 'read-only' });
     await s.api('POST', `/api/channels/${claude.id}/action`, { action: 'run' });
     await finished(3);
@@ -259,6 +271,17 @@ test('a Claude Code channel runs a bounded CLI turn, resumes its session and sti
     assert.equal(readOnly.args[readOnly.args.indexOf('--tools') + 1], 'Read,Grep,Glob');
     assert.equal(readOnly.args[readOnly.args.indexOf('--permission-mode') + 1], 'dontAsk');
     assert(!readOnly.args.some((a: string) => a.includes('Bash')));
+    assert.deepEqual(humanNotes(readOnly.input), [
+      { text: '先看导入流程', createdAt: firstNote.createdAt },
+      { text: '再核对重试路径', createdAt: laterNote.createdAt, new: true },
+    ]);
+    // Reading them back: oldest first, and an unknown channel is a 404 rather than an empty list.
+    const listed = await s.api('GET', `/api/channels/${claude.id}/messages`);
+    assert.deepEqual(
+      listed.messages.map((m: any) => m.text),
+      ['先看导入流程', '再核对重试路径']
+    );
+    await s.api('GET', '/api/channels/missing-channel/messages', undefined, 404);
   } finally {
     await s.cleanup();
   }
