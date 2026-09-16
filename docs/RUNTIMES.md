@@ -14,7 +14,7 @@ CLI 轮次的共同边界：单轮 45 分钟上限（`cliTurnMinutes`，超时�
 
 工作日志只保留一轮里可读的部分：Claude Code 每秒一条的 `system/thinking_tokens`、`tool_progress`、只含 thinking 块的 assistant 消息，以及 `rate_limit_info.status` 以 `allowed` 开头的 `rate_limit_event`（每轮都有，只是说账户没问题），都被跳过；`system/init` 收敛成一行「会话已开始 · 模型 … · 权限 … · 工具 …」。跳过的行只写进该轮的 `stdout.jsonl`，不产生事件，也**不进入失败诊断**——诊断的配额规则会命中 `rate_limit_event` 字面量本身，读它会把每一次因别的原因失败的 Claude 轮次都报成「配额不足」。其余状态（`rejected`、缺失、无法识别）不跳过，会以「速率限制：<status>（<窗口>）」一行留在日志里，并照常参与失败诊断。
 
-**工作接口只属于 Codex 频道**：`release.propose`、`evidence.native`、`memory.search` 等 `agent-cli.ts` 操作需要轮次能访问本机 HTTP 接口，当前只有 Codex 的原生轮次具备；Claude Code 与 Trae 频道通过可选报告维护看板。**独立复核一律走 Codex**：这两种运行时汇报的 verified/resolved 与 Codex 频道一样，先进入 `codex exec` 的只读复核，通过后才算数。**额度门禁与用量归因只对 Codex 生效**（读数来自 Codex 账户），每日运行次数上限对所有运行时生效。
+**工作接口只属于 Codex 频道**：`release.propose`、`evidence.native`、`memory.search` 等 `agent-cli.ts` 操作需要轮次能访问本机 HTTP 接口，当前只有 Codex 的原生轮次具备；Claude Code 与 Trae 频道通过可选报告维护看板。**独立复核一律走 Codex**：这两种运行时汇报的 verified/resolved 与 Codex 频道一样，先进入 `codex exec` 的只读复核，通过后才算数——而且由服务自己发起，因为这些轮次没有工作接口，无法自己请求。事项先留在调查中，服务把本轮的报告条目、最终答复和它为这一轮记录的工具调用存成一条证据，据此排一次只读复核，并把所报状态挂在这次复核上：通过就自动落到 verified/resolved，不必再跑一轮；未通过则事项留在调查中，下一步和工作日志写明先处理哪条复核发现，源码没有变化之前不会再买一次复核。复核本身仍然花 Codex 账户，因此保留线挡住时它和别的复核一起等额度。复核者拿到的这份材料是执行者的自述：它只证明采集了这些内容，不证明命令真的跑过，所以复核者会独立重跑、重读去找反例，不把自述当结论。这次复核在下一次调度心跳就开始，不要求频道开着持续运行——CLI 频道平时是暂停的（「留言并运行一轮」就是一次手动运行），而请求它的那一轮已经结束、也已经付过了。账户保留线按住复核时，等待只落在复核这一行上：额度门禁读的是 Codex 账户，Claude Code 与 Trae 频道本来就不花它，照常继续运行；等待期间源码若发生变化，这次复核真正开始时会因材料已过期判为 unknown，下一次 verified/resolved 声明带着新材料重新请求。**额度门禁与用量归因只对 Codex 生效**（读数来自 Codex 账户），每日运行次数上限对所有运行时生效。
 
 CLI 安装检测不等于登录或配额验证。登录失效时，运行时页与失败轮次分别提示 `codex login`、`claude auth login`、`traex login`。
 
