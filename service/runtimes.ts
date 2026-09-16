@@ -152,6 +152,13 @@ export async function discoverRuntimes(): Promise<Runtime[]> {
     })
   );
 }
+/**
+ * How long one bounded CLI turn may run before the engine interrupts it and pauses the channel. The
+ * turn prompt states the same number, so a turn can size its own step instead of being cut off with
+ * no report: a Claude Code turn that merged a branch and ran a full test suite before starting the
+ * real work spent the old 15-minute budget on preparation and left the board untouched.
+ */
+export const cliTurnMinutes = 45;
 /** The built-in tools a Claude Code turn may use, by channel scope. Workspace write includes Bash. */
 const claudeTools = {
   'read-only': 'Read,Grep,Glob',
@@ -220,6 +227,11 @@ export function decodeLine(line: string): {
   terminalOutcome?: 'completed' | 'failed';
   detail?: EventDetail;
   additionalDetails?: EventDetail[];
+  /**
+   * Progress chatter with nothing a work log can show. The caller drops the line after writing it
+   * to the raw log: no event, no failure diagnosis and no session id are taken from it.
+   */
+  skip?: true;
 } {
   let data: any;
   try {
@@ -234,6 +246,35 @@ export function decodeLine(line: string): {
     : {};
   const sessionId =
     typeof (data.thread_id || data.session_id) === 'string' ? data.thread_id || data.session_id : undefined;
+  // Claude Code reports its own progress on a cadence of its own — a thinking-token tally roughly
+  // every second, plus tool-progress notices. None of it is work a person reads, and on a real turn
+  // it was the large majority of the log. The raw line still reaches stdout.jsonl.
+  if ((data.type === 'system' && data.subtype === 'thinking_tokens') || data.type === 'tool_progress')
+    return { kind: 'system', text: line, sessionId, skip: true };
+  // A rate-limit notice arrives on every turn, almost always only to say the account is still fine.
+  // Those `allowed*` ones are chatter; anything else is a real limit a person has to see, and
+  // staying visible is also what keeps it readable by `diagnoseFailure`.
+  if (data.type === 'rate_limit_event') {
+    const info = data.rate_limit_info;
+    const status = typeof info?.status === 'string' ? info.status : '';
+    if (status.startsWith('allowed')) return { kind: 'system', text: line, sessionId, skip: true };
+    const window = typeof info?.rateLimitType === 'string' ? info.rateLimitType : '';
+    return {
+      kind: 'system',
+      text: status ? `速率限制：${status}${window ? `（${window}）` : ''}` : line,
+      sessionId,
+    };
+  }
+  // The session announcement carries the whole CLI startup inventory (commands, skills, plugins,
+  // capabilities); the work log needs only what the turn actually runs with, and the session id.
+  if (data.type === 'system' && data.subtype === 'init') {
+    const tools = (Array.isArray(data.tools) ? data.tools : []).filter((t: unknown) => typeof t === 'string');
+    const parts = ['会话已开始'];
+    if (typeof data.model === 'string' && data.model) parts.push(`模型 ${data.model}`);
+    if (typeof data.permissionMode === 'string' && data.permissionMode) parts.push(`权限 ${data.permissionMode}`);
+    if (tools.length) parts.push(`工具 ${tools.join(' / ')}`);
+    return { kind: 'system', text: parts.join(' · '), sessionId };
+  }
   // Claude Code's terminal line for the whole turn: the answer text, and structured output when a
   // schema was in force. `is_error` is the turn's own verdict, not a single failed tool call.
   if (data.type === 'result')
@@ -262,8 +303,13 @@ export function decodeLine(line: string): {
       .filter((b: any) => b.type === 'text' && typeof b.text === 'string')
       .map((b: any) => b.text)
       .join('\n');
+    const usesTool = content.some((b: any) => b.type === 'tool_use');
+    // Extended thinking arrives as assistant messages of its own. Without an answer or a tool call
+    // there is nothing to show, and the fallback below would dump the raw thinking into the log.
+    if (!text && !usesTool && content.some((b: any) => b.type === 'thinking' || b.type === 'redacted_thinking'))
+      return { kind: 'assistant', text: line, sessionId, skip: true };
     return {
-      kind: content.some((b: any) => b.type === 'tool_use') ? 'tool' : 'assistant',
+      kind: usesTool ? 'tool' : 'assistant',
       text: text || JSON.stringify(data),
       sessionId,
       ...detailFields,

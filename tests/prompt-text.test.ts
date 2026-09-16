@@ -79,9 +79,11 @@ test('the non-native CLI turn prompt text is unchanged', async () => {
     assert.equal(s.engine.loop.channelNames(fixedProject.id)[fixedChannel.id], undefined);
     assert.equal(
       digest(s.engine.prompt(fixedProject, fixedChannel)),
-      // Changed deliberately in 0.12.0: the permission line now states what the channel's scope
-      // really allows in the runtime that runs the turn, instead of only naming the scope.
-      '62754e4afaf8a3319427c9244843725f0811aedf716088db5862ec5a841af737'
+      // Changed deliberately in 0.12.1, two edits after the permission line: the turn now states its
+      // own 45-minute limit and what an interrupted turn loses, and carries the working-tree line the
+      // native charter already had. `fixedProject.path` is not a repository, so the tree line is
+      // empty here and only the limit sentence moves these bytes.
+      '86824910dd8001f3b73d6a073177345fe5016e4de5c5593f9dc7494820d79930'
     );
   } finally {
     await s.cleanup();

@@ -122,7 +122,7 @@ Trae 使用 `traex exec --json` / `exec resume`，保留原生 provider、规则
 
 每日上限之后还有额度门禁：全局的「保留给自己的额度」按共享后台读到的精确账户用量判断，项目的「额度上限」按 Morrow 归因到该项目的轮次估算判断。达到任一条时，新的自动轮次和独立复核不再发起（频道 `waiting`，`nextRunAt` 取窗口重置时间或下一个 UTC 日，写一条系统事件，不计入运行次数；排队中的复核保留 `queued` 并按 `retryAt` 重试），手动运行返回 429。读数不可用时默认放行，设置 `stopWhenUsageUnknown` 后阻断并每 10 分钟重试；进行中的轮次不打断，普通对话不受影响。读数与限制通过 `context.budget` 和每轮的轮次提示提供给 Codex。
 
-有界 CLI 子进程路径是 Claude Code 与 Trae 频道的生产路径，Codex 频道只在 `MORROW_TEST_MODE=1` 下经由夹具走到这里：单轮超时 15 分钟，stdout/stderr 合计上限 20 MiB，组装提示上限 1 MiB；这些子进程限制不套用到共享 Codex App 轮次。暂停原生自动工作只中断属于该责任轮次的精确 turn ID。
+有界 CLI 子进程路径是 Claude Code 与 Trae 频道的生产路径，Codex 频道只在 `MORROW_TEST_MODE=1` 下经由夹具走到这里：单轮超时 45 分钟（`cliTurnMinutes`，同一个数字写进轮次提示），stdout/stderr 合计上限 20 MiB，组装提示上限 1 MiB；这些子进程限制不套用到共享 Codex App 轮次。CLI 轮次提示与原生轮次一样带上工作树里未提交的文件。工作日志过滤掉 CLI 的进度噪音（`system/thinking_tokens`、`tool_progress`、只含 thinking 块的 assistant 消息，以及 `status` 为 `allowed*` 的 `rate_limit_event`），`system/init` 收敛成一行摘要；被跳过的行只写入该轮 `stdout.jsonl`，既不产生事件也不进入失败诊断（否则每轮都有的速率限制通知会让所有失败轮次都被归因为配额不足）。非 `allowed` 的速率限制通知不跳过，照常入库并参与诊断。暂停原生自动工作只中断属于该责任轮次的精确 turn ID。
 
 反馈监测支持 HTTP(S) GET JSON、JSON Pointer 和 `changed/equals/gte/lte` 条件。新反馈、质量变化、采集故障和复查期限可唤醒启用的频道；重复相同状态不反复触发。与发布关联的观测在确认发布后开始采集。当前不包含文件变化触发器。
 

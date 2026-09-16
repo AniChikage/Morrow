@@ -6,6 +6,7 @@ import {
   charterResendReason,
   parseWorkDecision,
   projectBriefBlock,
+  treeLine,
 } from './channel-work.ts';
 import { cliTurnText } from './prompts/cli-turn.ts';
 import { ProjectWorkLoop } from './project-loop.ts';
@@ -27,7 +28,7 @@ import { sanitizeEventDetail } from './event-details.ts';
 import type { EventDetail } from './protocol.ts';
 import { Store, now } from './store.ts';
 import { logError } from './log.ts';
-import { decodeLine, diagnoseFailure, invocation, runtimeTitles } from './runtimes.ts';
+import { cliTurnMinutes, decodeLine, diagnoseFailure, invocation, runtimeTitles } from './runtimes.ts';
 import { projectTreeState } from './source-version.ts';
 import { pinHelpers } from './runtime-helpers.ts';
 import { extractReport } from './reports.ts';
@@ -571,15 +572,15 @@ export class Engine {
     });
     let resolveDone: () => void = () => {};
     const done = new Promise<void>((r) => (resolveDone = r));
-    const timeout =
-      process.env.MORROW_TEST_MODE === '1' ? Number(process.env.MORROW_TEST_TIMEOUT_MS || 900000) : 900000;
+    const limit = cliTurnMinutes * 60000;
+    const timeout = process.env.MORROW_TEST_MODE === '1' ? Number(process.env.MORROW_TEST_TIMEOUT_MS || limit) : limit;
     const active: Active = {
       child,
       channelId: id,
       projectPath: project.path,
       runId: run.id,
       interrupted: '',
-      timer: setTimeout(() => this.interrupt(id, '执行超时（15 分钟），频道已暂停'), timeout),
+      timer: setTimeout(() => this.interrupt(id, `执行超时（${cliTurnMinutes} 分钟），频道已暂停`), timeout),
       done,
     };
     this.active.set(id, active);
@@ -604,6 +605,12 @@ export class Engine {
       this.persistIO(run.id, 'stdout', text + (newline ? '\n' : ''), join(runDir, 'stdout.jsonl'), true, false);
       if (!text.trim()) return;
       const decoded = decodeLine(text);
+      // Progress chatter reaches the raw log and stops there: no event, no failure diagnosis, no
+      // session id. Diagnosis especially — `quotaFailure` matches the words inside the ordinary
+      // `rate_limit_event` Claude Code emits on every turn, so reading those would report every
+      // failed Claude turn as a spent account and hide the real cause. Nothing is lost: every line
+      // that carries state (`system/init`, a refused rate limit, results) is not skipped.
+      if (decoded.skip) return;
       diagnose(text);
       if (decoded.sessionId && /^[a-zA-Z0-9_-]{1,200}$/.test(decoded.sessionId)) {
         run.sessionId = decoded.sessionId;
@@ -825,6 +832,11 @@ export class Engine {
     const notes = this.store.messages(channel.id);
     const knowledge = this.store.contextKnowledge(project.id, channel.id);
     const prior = this.store.channelRuns(channel.id);
+    // The same working-tree reading the native charter carries: what is uncommitted right now, and
+    // whether this channel's own last turn left it that way. An interrupted CLI turn resumes with
+    // its files still uncommitted, which the resumed session cannot see on its own.
+    const cliTree = projectTreeState(project.path);
+    const cliPrevious = this.previousScheduledRun(channel.id);
     // The brief appears once, as a labelled block; the JSON context carries the rest of the project row.
     const { brief, ...projectContext } = project;
     return cliTurnText({
@@ -833,6 +845,8 @@ export class Engine {
       responsibility: channel.goal,
       permission: channel.permission,
       runtime: channel.runtime,
+      minutes: cliTurnMinutes,
+      ...(cliTree.dirty ? { tree: treeLine({ files: cliTree.files, own: !!cliPrevious?.treeState?.dirty }) } : {}),
       context: JSON.stringify({
         project: projectContext,
         channel: { name: channel.name, goal: channel.goal },

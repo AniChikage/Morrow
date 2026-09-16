@@ -111,6 +111,100 @@ test('unstructured and primitive legacy log lines retain text without invented t
   assert.equal(assistant.detail, undefined);
 });
 
+test('Claude progress chatter is skipped and the session announcement becomes one summary line', () => {
+  // Shapes taken from a real Claude Code 2.1.236 stream-json turn, where a thinking-token tally
+  // arrived about once a second and made up most of the log.
+  const noise = [
+    { type: 'system', subtype: 'thinking_tokens', estimated_tokens: 140, session_id: 'live-1' },
+    // Every turn carries these, and almost always only to say the account is still fine.
+    {
+      type: 'rate_limit_event',
+      rate_limit_info: { status: 'allowed', rateLimitType: 'five_hour' },
+      session_id: 'live-1',
+    },
+    {
+      type: 'rate_limit_event',
+      rate_limit_info: { status: 'allowed_warning', rateLimitType: 'seven_day' },
+      session_id: 'live-1',
+    },
+    { type: 'tool_progress', tool_use_id: 'read-a', session_id: 'live-1' },
+    {
+      type: 'assistant',
+      session_id: 'live-1',
+      message: { content: [{ type: 'thinking', thinking: '先看一遍改动。' }] },
+    },
+  ];
+  for (const event of noise) {
+    const decoded = decodeLine(JSON.stringify(event));
+    assert.equal(decoded.skip, true, `${event.type} 应跳过事件`);
+    assert.equal(decoded.detail, undefined);
+    assert.equal(decoded.sessionId, 'live-1');
+  }
+  // A limit that actually bit is not chatter: it stays visible, and stays readable by the failure
+  // diagnosis, which only ever sees lines the engine did not skip.
+  const refused = decodeLine(
+    JSON.stringify({
+      type: 'rate_limit_event',
+      rate_limit_info: { status: 'rejected', rateLimitType: 'five_hour' },
+      session_id: 'live-1',
+    })
+  );
+  assert.equal(refused.skip, undefined);
+  assert.equal(refused.kind, 'system');
+  assert.equal(refused.text, '速率限制：rejected（five_hour）');
+  assert.equal(refused.sessionId, 'live-1');
+  // An unreadable notice is never assumed to be the harmless kind.
+  const bare = decodeLine(JSON.stringify({ type: 'rate_limit_event', uuid: 'x' }));
+  assert.equal(bare.skip, undefined);
+  assert.equal(bare.text, JSON.stringify({ type: 'rate_limit_event', uuid: 'x' }));
+  assert.equal(decodeLine(JSON.stringify({ type: 'rate_limit_event', rate_limit_info: {} })).skip, undefined);
+  // A thinking block next to real content is still one ordinary assistant or tool line.
+  const answered = decodeLine(
+    JSON.stringify({
+      type: 'assistant',
+      message: {
+        content: [
+          { type: 'thinking', thinking: 'x' },
+          { type: 'text', text: '已完成。' },
+        ],
+      },
+    })
+  );
+  assert.equal(answered.skip, undefined);
+  assert.equal(answered.text, '已完成。');
+  const init = decodeLine(
+    JSON.stringify({
+      type: 'system',
+      subtype: 'init',
+      session_id: '420e096f-f0eb-4d56-ab29-5abb7dc5f9bc',
+      model: 'claude-opus-5[1m]',
+      permissionMode: 'acceptEdits',
+      tools: ['Read', 'Grep', 'Bash'],
+      slash_commands: ['deep-research', 'verify'],
+      skills: ['a', 'b'],
+      cwd: '/tmp/project',
+    })
+  );
+  assert.equal(init.skip, undefined);
+  assert.equal(init.kind, 'system');
+  assert.equal(init.sessionId, '420e096f-f0eb-4d56-ab29-5abb7dc5f9bc');
+  assert.equal(init.text, '会话已开始 · 模型 claude-opus-5[1m] · 权限 acceptEdits · 工具 Read / Grep / Bash');
+  // Missing fields drop their own segment instead of printing an empty one.
+  assert.equal(decodeLine(JSON.stringify({ type: 'system', subtype: 'init', session_id: 'bare' })).text, '会话已开始');
+  assert.equal(
+    decodeLine(JSON.stringify({ type: 'system', subtype: 'init', permissionMode: 'dontAsk', tools: [] })).text,
+    '会话已开始 · 权限 dontAsk'
+  );
+  // Codex `exec --json` keeps its own event shapes.
+  assert.equal(decodeLine(JSON.stringify({ type: 'thread.started', thread_id: 't-1' })).skip, undefined);
+  assert.equal(decodeLine(JSON.stringify({ type: 'turn.completed' })).terminalOutcome, 'completed');
+  assert.equal(
+    decodeLine(JSON.stringify({ type: 'item.started', item: { id: 'c', type: 'command_execution', command: 'ls' } }))
+      .skip,
+    undefined
+  );
+});
+
 test('structured payloads redact bearer and credential fields, strip controls, bound nesting/size and ignore provider sequence', () => {
   const bearer = 'f'.repeat(64);
   const detail = sanitizeEventDetail(

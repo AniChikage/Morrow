@@ -79,6 +79,9 @@ if (config.sleep) {
   const claude = args.includes('--print');
   if (claude) console.log(JSON.stringify({ type: 'system', subtype: 'init', session_id: 'fixture-session-1' }));
   if (Array.isArray(config.events)) for (const event of config.events) console.log(JSON.stringify(event));
+  // A turn that streamed real events and only then failed: the exit code is the whole failure
+  // signal, so whatever the stream said is all a diagnosis has to work with.
+  if (config.failAfterEvents) process.exit(2);
   if (config.delay) await new Promise((resolve) => setTimeout(resolve, config.delay));
   const result = config.result || {
     summary: '检查完成，已验证一个真实 fixture 事项。',

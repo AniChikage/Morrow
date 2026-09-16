@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync, statSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
-import { spawn } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { Store } from '../service/store.ts';
 import { eventHistory } from '../service/event-history.ts';
@@ -199,6 +199,15 @@ test('a Claude Code channel runs a bounded CLI turn, resumes its session and sti
       201
     );
     assert.equal(claude.permission, 'workspace-write');
+    // A real temporary repository, so `projectTreeState` has something to read; only `git status`
+    // is ever run against it, and the working tree starts clean.
+    const git = (...args: string[]) =>
+      execFileSync('git', args, { cwd: s.projectPath, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
+    git('init', '-q');
+    git('config', 'user.email', 'fixture@example.com');
+    git('config', 'user.name', 'Morrow Fixture');
+    git('config', 'commit.gpgsign', 'false');
+    git('commit', '-q', '--allow-empty', '-m', 'fixture baseline');
     const capture = () => JSON.parse(readFileSync(join(s.projectPath, '.fixture-capture.json'), 'utf8'));
     const finished = (count: number) =>
       until(
@@ -224,15 +233,25 @@ test('a Claude Code channel runs a bounded CLI turn, resumes its session and sti
     assert.equal(run.runtime, 'claude');
     assert.equal(first.args[first.args.indexOf('--name') + 1], `Morrow:${run.id}`);
     assert(first.input.includes('工作区写入：可在项目内修改文件，并可执行命令'));
+    // The turn knows its own deadline, and says nothing about a working tree that was clean.
+    assert(first.input.includes('本轮最多 45 分钟'));
+    assert(!first.input.includes('工作树有未提交改动'));
     assert.equal(s.store.get<any>('channels', claude.id).sessionId, 'fixture-session-1');
     // The optional report reached the board, and its verified item waits for the Codex reviewer.
     const item = s.store.all<any>('items').find((i) => i.lastRunId === run.id)!;
     assert.equal(item.title, 'Fixture 发现');
     assert.equal(item.status, 'investigating');
     assert(item.nextStep.startsWith('等待当前版本的独立复核；'));
+    // What an interrupted turn leaves behind: uncommitted files the resumed session cannot see.
+    writeFileSync(join(s.projectPath, 'unfinished.ts'), 'export const half = true;\n');
     await s.api('POST', `/api/channels/${claude.id}/action`, { action: 'run' });
     await finished(2);
-    assert.equal(capture().args[capture().args.indexOf('--resume') + 1], 'fixture-session-1');
+    const second = capture();
+    assert.equal(second.args[second.args.indexOf('--resume') + 1], 'fixture-session-1');
+    assert(second.input.includes('工作树有未提交改动'));
+    assert(second.input.includes('unfinished.ts'));
+    // The same channel left them, so the line says so rather than blaming another channel.
+    assert(second.input.includes('这是本频道上一轮留下的'));
     await s.api('PATCH', `/api/channels/${claude.id}`, { permission: 'read-only' });
     await s.api('POST', `/api/channels/${claude.id}/action`, { action: 'run' });
     await finished(3);
@@ -587,6 +606,8 @@ test('streamed Claude tools persist multiple details, matched names and sanitize
     );
     s.config({
       events: [
+        // Claude Code's own progress chatter, interleaved the way a real turn emits it.
+        { type: 'system', subtype: 'thinking_tokens', estimated_tokens: 50, estimated_tokens_delta: 50 },
         {
           type: 'assistant',
           message: {
@@ -596,6 +617,7 @@ test('streamed Claude tools persist multiple details, matched names and sanitize
             ],
           },
         },
+        { type: 'rate_limit_event', rate_limit_info: { status: 'allowed', rateLimitType: 'five_hour' } },
         {
           type: 'user',
           message: {
@@ -622,6 +644,50 @@ test('streamed Claude tools persist multiple details, matched names and sanitize
     assert(!JSON.stringify(page).includes(s.token));
     assert(!JSON.stringify(s.store.all('events')).includes(s.token));
     assert(details[2].output.includes('[REDACTED]'));
+    // The progress chatter reached stdout.jsonl but never the work log, and the session
+    // announcement is one summary line instead of the whole CLI startup inventory.
+    const texts = page.events.map((e: any) => e.text).join('\n');
+    assert(!texts.includes('thinking_tokens'));
+    assert(!texts.includes('rate_limit_event'));
+    assert(page.events.some((e: any) => e.text.startsWith('会话已开始')));
+    const stdout = readFileSync(join(s.home, 'runs', runId, 'stdout.jsonl'), 'utf8');
+    assert(stdout.includes('thinking_tokens') && stdout.includes('rate_limit_event'));
+  } finally {
+    await s.cleanup();
+  }
+});
+test('an ordinary rate-limit notice never becomes the reason a failed Claude turn is reported', async () => {
+  const s = await setup();
+  try {
+    const channel = await s.api(
+      'POST',
+      '/api/channels',
+      { projectId: s.project.id, name: 'Claude 失败轮次', goal: '检查失败原因归因', runtime: 'claude' },
+      201
+    );
+    const failures = () => s.store.all<any>('runs').filter((r) => r.channelId === channel.id && r.status === 'failed');
+    // Every Claude turn carries an allowed notice; its words match the quota pattern, so a turn that
+    // fails for any other reason must not be reported as a spent account.
+    s.config({
+      failAfterEvents: true,
+      events: [{ type: 'rate_limit_event', rate_limit_info: { status: 'allowed', rateLimitType: 'five_hour' } }],
+    });
+    await s.api('POST', `/api/channels/${channel.id}/action`, { action: 'run' });
+    await until(() => failures().length === 1);
+    const allowed = failures()[0];
+    assert(allowed.summary.includes('CLI 执行失败（退出码 2）'), allowed.summary);
+    assert(!allowed.summary.includes('配额不足或触发速率限制'), allowed.summary);
+    // A refusal is a real limit: visible in the log, and still the explanation for the failure.
+    s.config({
+      failAfterEvents: true,
+      events: [{ type: 'rate_limit_event', rate_limit_info: { status: 'rejected', rateLimitType: 'five_hour' } }],
+    });
+    await s.api('POST', `/api/channels/${channel.id}/action`, { action: 'run' });
+    await until(() => failures().length === 2);
+    const rejected = failures().find((r) => r.id !== allowed.id)!;
+    assert(rejected.summary.includes('配额不足或触发速率限制'), rejected.summary);
+    const page = await s.api('GET', `/api/events?channelId=${channel.id}&runId=${rejected.id}`);
+    assert(page.events.some((e: any) => e.text === '速率限制：rejected（five_hour）'));
   } finally {
     await s.cleanup();
   }
