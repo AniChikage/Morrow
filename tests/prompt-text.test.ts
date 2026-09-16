@@ -79,13 +79,16 @@ test('the non-native CLI turn prompt text is unchanged', async () => {
     assert.equal(s.engine.loop.channelNames(fixedProject.id)[fixedChannel.id], undefined);
     assert.equal(
       digest(s.engine.prompt(fixedProject, fixedChannel)),
-      // Changed deliberately in 0.13.0, in the sentence that introduces the JSON context: it now
+      // Changed deliberately in 0.14.0, in the evidence sentence: a report's verified/resolved now
+      // queues one independent read-only Codex review by itself and only takes effect when that
+      // review passes, so the turn is told to write evidence a reviewer can re-run and re-read.
+      // (0.13.0 changed the sentence that introduces the JSON context: it now
       // names `humanNotes` as notes people left for the channel rather than live input, and says the
       // ones marked `new` arrived after the previous turn started and must be answered this turn.
-      // (0.12.1 changed the two edits after the permission line: the 45-minute limit the turn now
+      // 0.12.1 changed the two edits after the permission line: the 45-minute limit the turn now
       // states, and the working-tree line the native charter already had. `fixedProject.path` is not
       // a repository, so the tree line stays empty here.)
-      '96d7f05a7b14532aa775d5ebb1c9f4525c9fe940314c6f1d48ac491dd193ce3c'
+      '23bac230fa2d874bd6c23a8d5f6911a615849e08dac693519020e6cdb5f0acf0'
     );
   } finally {
     await s.cleanup();

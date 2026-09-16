@@ -11,9 +11,28 @@ import { eventHistory } from '../service/event-history.ts';
 import { startServer } from '../service/server.ts';
 import { discoverRuntimes, invocation, diagnoseFailure } from '../service/runtimes.ts';
 import { APIError, validateResult } from '../service/protocol.ts';
-import { startIsolated } from './harness/service.ts';
+import { startIsolated, stopScheduler } from './harness/service.ts';
+import { FakeReviewer } from './harness/fake-reviewer.ts';
 import { until } from './harness/wait.ts';
 const fixture = resolve('tests/fixtures/runtime.mjs');
+/** A turn that reports real progress and claims nothing verified, so no independent review is due. */
+const progressReport = {
+  summary: '继续核对导入流程，本轮记录进展。',
+  items: [
+    {
+      id: '',
+      title: 'Fixture 进展',
+      summary: '根据测试文件确认。',
+      status: 'investigating',
+      kind: 'issue',
+      evidence: ['fixture.txt:1 — 可复查的测试证据'],
+      nextStep: '继续核对',
+    },
+  ],
+  nextCheckMinutes: 60,
+  knowledge: [],
+  needsHuman: false,
+};
 async function setup() {
   const s = await startIsolated({ project: { name: 'Test Project', goal: '验证完整项目循环' } });
   const state = await s.api('GET', '/api/state');
@@ -36,6 +55,16 @@ async function setup() {
   );
   const config = (value: any) => writeFileSync(join(s.path, '.fixture.json'), JSON.stringify(value));
   return { ...s, projectPath: s.path, channels, config };
+}
+/**
+ * Drives every queued review to a conclusion. The fixture report claims one item verified, which now
+ * queues that item's own independent review, and a queued review holds the whole project
+ * (`Engine.start`), so a test that runs further turns has to let it finish first — exactly as a real
+ * project waits for one. No model runs: with no reviewer connected the review concludes as unknown.
+ */
+async function concludeReviews(s: Awaited<ReturnType<typeof setup>>) {
+  for (const row of s.store.all<any>('loop_verifications').filter((r) => r.status === 'queued'))
+    await s.engine.loop.verification.start(row.id);
 }
 test('local auth, schema validation, paused defaults and idempotent explicit demo', async () => {
   const s = await setup();
@@ -110,11 +139,13 @@ test('one-shot persists valid results, shared sourced knowledge, messages, nativ
     assert(s.engine.prompt(s.project, s.channels[1]).includes('共享确认事实'));
     assert(!s.engine.prompt(s.project, s.channels[1]).includes('未验证的猜想'));
     assert(s.store.all<any>('knowledge').every((k) => k.source && k.createdAt));
+    await concludeReviews(s);
     await s.api('POST', `/api/channels/${c.id}/action`, { action: 'run' });
     await until(() => s.store.all<any>('runs').filter((r) => r.status === 'completed').length === 2);
     assert(JSON.parse(readFileSync(join(s.projectPath, '.fixture-capture.json'), 'utf8')).args.includes('resume'));
     const updated = await s.api('PATCH', `/api/channels/${c.id}`, { model: 'gpt-5-codex' });
     assert.equal(updated.sessionId, '');
+    await concludeReviews(s);
     await s.api('POST', `/api/channels/${c.id}/action`, { action: 'run' });
     await until(() => s.store.all<any>('runs').filter((r) => r.status === 'completed').length === 3);
     const nextCapture = JSON.parse(readFileSync(join(s.projectPath, '.fixture-capture.json'), 'utf8'));
@@ -152,6 +183,7 @@ test('daily budget applies to manual runs and scheduled continuation', async () 
     await s.api('PATCH', `/api/channels/${c.id}`, { maxRunsPerDay: 1 });
     await s.api('POST', `/api/channels/${c.id}/action`, { action: 'run' });
     await until(() => s.store.all<any>('runs').some((r) => r.status === 'completed'));
+    await concludeReviews(s);
     await s.api('POST', `/api/channels/${c.id}/action`, { action: 'run' }, 429);
     await s.api('POST', `/api/channels/${c.id}/action`, { action: 'resume' });
     const current = s.store.get<any>('channels', c.id);
@@ -192,6 +224,10 @@ test('project execution lock, settings guard, pause cancels complete process gro
 test('a Claude Code channel runs a bounded CLI turn, resumes its session and still waits for independent review', async () => {
   const s = await setup();
   try {
+    // Every turn here is started by hand, and the review the first one queues is concluded by hand
+    // below; the daemon's own one-second loop would otherwise start that review at a moment of its
+    // choosing, before the reviewer double is connected.
+    stopScheduler(s);
     const claude = await s.api(
       'POST',
       '/api/channels',
@@ -250,6 +286,17 @@ test('a Claude Code channel runs a bounded CLI turn, resumes its session and sti
     assert.equal(item.title, 'Fixture 发现');
     assert.equal(item.status, 'investigating');
     assert(item.nextStep.startsWith('等待当前版本的独立复核；'));
+    // That claim queued the review itself (covered in full below), and a queued review holds the
+    // whole project: the rest of this test is about session resume, notes and scope, so the review
+    // is settled here and the later turns report progress instead of another verified claim.
+    const queued = s.store.all<any>('loop_verifications').find((row) => row.itemId === item.id)!;
+    assert.equal(queued.status, 'queued');
+    const reviewer = new FakeReviewer();
+    reviewer.autoComplete = true;
+    s.engine.loop.verification.connect(reviewer, (v) => v);
+    await s.engine.loop.verification.start(queued.id);
+    assert.equal(s.store.get<any>('items', item.id).status, 'verified');
+    s.config({ result: progressReport });
     // What an interrupted turn leaves behind: uncommitted files the resumed session cannot see.
     writeFileSync(join(s.projectPath, 'unfinished.ts'), 'export const half = true;\n');
     await s.api('POST', `/api/channels/${claude.id}/action`, { action: 'run' });
@@ -282,6 +329,249 @@ test('a Claude Code channel runs a bounded CLI turn, resumes its session and sti
       ['先看导入流程', '再核对重试路径']
     );
     await s.api('GET', '/api/channels/missing-channel/messages', undefined, 404);
+  } finally {
+    await s.cleanup();
+  }
+});
+/** One report entry claiming the work is verified; `id` empty opens a new item, as a report may. */
+const verifiedClaim = (id: string, title: string) => ({
+  id,
+  title,
+  summary: '根据测试文件确认。',
+  status: 'verified',
+  kind: 'issue',
+  evidence: ['fixture.txt:1 — 可复查的测试证据'],
+  nextStep: '继续核对',
+});
+test('a report claiming verified records the turn as evidence, queues its own review and applies the claim when it passes', async () => {
+  const s = await setup();
+  try {
+    const claude = await s.api(
+      'POST',
+      '/api/channels',
+      { projectId: s.project.id, name: '自动复核频道', goal: '让汇报的 verified 自行排队复核', runtime: 'claude' },
+      201
+    );
+    // This test drives the review tick itself, so the daemon's own loop must not start the review
+    // at a moment of its choosing — before the assertions below, or before the reviewer double.
+    stopScheduler(s);
+    // What the turn did is part of the material the reviewer receives, so the fixture streams one
+    // real tool call and its result rather than only the final report.
+    s.config({
+      events: [
+        {
+          type: 'assistant',
+          message: { content: [{ type: 'tool_use', id: 'check-1', name: 'Bash', input: { command: 'npm test' } }] },
+        },
+        {
+          type: 'user',
+          message: {
+            content: [{ type: 'tool_result', tool_use_id: 'check-1', content: '3 tests passed', is_error: false }],
+          },
+        },
+      ],
+    });
+    await s.api('POST', `/api/channels/${claude.id}/action`, { action: 'run' });
+    const run = await until(() =>
+      s.store.all<any>('runs').find((r) => r.channelId === claude.id && r.status === 'completed')
+    );
+    const item = s.store.all<any>('items').find((i) => i.lastRunId === run.id)!;
+    assert.equal(item.status, 'investigating');
+    assert(item.nextStep.startsWith('等待当前版本的独立复核；'));
+    // One agent-origin row holding the claim and the tool activity Morrow recorded for this run.
+    const evidence = s.store.all<any>('loop_evidence').filter((row) => row.itemId === item.id);
+    assert.equal(evidence.length, 1);
+    assert.equal(evidence[0].origin, 'agent');
+    assert.equal(evidence[0].source, `run:${run.id}`);
+    assert.equal(evidence[0].data.runtime, 'claude');
+    assert.equal(evidence[0].data.report.status, 'verified');
+    assert.deepEqual(
+      evidence[0].data.tools.map((tool: any) => [tool.tool, tool.failed]),
+      [['Bash', false]]
+    );
+    assert(evidence[0].data.tools[0].input.includes('npm test'));
+    assert(evidence[0].data.tools[0].output.includes('3 tests passed'));
+    assert(item.evidence.some((line: string) => line.startsWith(`[${evidence[0].id}]`)));
+    // One queued review citing exactly that row, and one completion held against the stored revision.
+    const reviews = s.store.all<any>('loop_verifications').filter((row) => row.itemId === item.id);
+    assert.equal(reviews.length, 1);
+    assert.equal(reviews[0].status, 'queued');
+    assert.deepEqual(reviews[0].evidenceIds, [evidence[0].id]);
+    const intents = s.store.all<any>('loop_finalizations').filter((row) => row.targetId === item.id);
+    assert.equal(intents.length, 1);
+    assert.equal(intents[0].status, 'pending');
+    assert.equal(intents[0].operation, 'feature.complete');
+    assert.equal(intents[0].verificationId, reviews[0].id);
+    assert.equal(intents[0].revision, item.revision);
+    assert.deepEqual(intents[0].input, { status: 'verified' });
+    // The channel is paused again — a manual 运行一轮 leaves autonomy off — and the review still
+    // starts on the next tick, the same call the daemon's loop makes every second. Nothing here
+    // reaches into the reviewer: the claimed status takes effect on its own, without another turn.
+    const reviewer = new FakeReviewer();
+    reviewer.autoComplete = true;
+    s.engine.loop.verification.connect(reviewer, (v) => v);
+    assert(!s.engine.control(claude.id).enabled);
+    s.engine.loop.verification.tick();
+    await until(() => s.store.get<any>('loop_verifications', reviews[0].id).status === 'passed');
+    assert.equal(s.store.get<any>('items', item.id).status, 'verified');
+    assert.equal(s.store.get<any>('loop_finalizations', intents[0].id).status, 'applied');
+    // And the project is free again: the next manual run is accepted instead of 409.
+    await s.api('POST', `/api/channels/${claude.id}/action`, { action: 'run' });
+    await until(() => s.store.all<any>('runs').filter((r) => r.status === 'completed').length === 2);
+  } finally {
+    await s.cleanup();
+  }
+});
+test('a pending, refused or failed review keeps a re-claimed report item waiting without buying a second review', async () => {
+  const s = await setup();
+  try {
+    const claude = await s.api(
+      'POST',
+      '/api/channels',
+      { projectId: s.project.id, name: '复核等待频道', goal: '检查重复汇报不会重复复核', runtime: 'claude' },
+      201
+    );
+    // The queued review has to stay queued while the claims below arrive, so the daemon's own loop,
+    // which now starts a CLI channel's review whether or not the channel is running, is stopped.
+    stopScheduler(s);
+    // A repository whose ignored fixture files keep the source digest identical from turn to turn,
+    // so a review that failed on this source is still the current source's review afterwards.
+    writeFileSync(join(s.projectPath, '.gitignore'), '.fixture*\n');
+    const git = (...args: string[]) =>
+      execFileSync('git', args, { cwd: s.projectPath, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
+    git('init', '-q');
+    git('config', 'user.email', 'fixture@example.com');
+    git('config', 'user.name', 'Morrow Fixture');
+    git('config', 'commit.gpgsign', 'false');
+    git('add', '.gitignore');
+    git('commit', '-q', '-m', 'fixture baseline');
+    /**
+     * One report delivered the way a turn the App itself started delivers it: straight into
+     * `Engine.finishSuccess`. `Engine.start` refuses a turn while a review is queued, so this is
+     * how a second claim can arrive before the first one's review has concluded.
+     */
+    const directReport = (items: unknown[]) => {
+      const run = {
+        id: randomUUID(),
+        projectId: s.project.id,
+        channelId: claude.id,
+        runtime: 'claude',
+        model: '',
+        permission: 'workspace-write',
+        trigger: 'manual',
+        resumedFromSessionId: '',
+        reportStatus: 'pending',
+        reportError: '',
+        status: 'running',
+        startedAt: new Date().toISOString(),
+        finishedAt: '',
+        summary: '',
+        sessionId: '',
+      } as any;
+      s.store.put('runs', run);
+      const dir = join(s.home, 'runs', run.id);
+      mkdirSync(dir, { recursive: true });
+      s.engine.finishSuccess(
+        run,
+        s.store.get<any>('channels', claude.id),
+        { summary: '再次汇报同一结论', items, nextCheckMinutes: 60, knowledge: [], needsHuman: false } as any,
+        dir,
+        undefined,
+        '最终答复'
+      );
+      return run;
+    };
+    const notes = (runId: string, text: string) =>
+      s.store.all<any>('events').filter((e) => e.runId === runId && e.kind === 'system' && e.text.includes(text));
+    const rows = (table: 'loop_evidence' | 'loop_verifications', itemId: string) =>
+      s.store.all<any>(table).filter((row) => row.itemId === itemId);
+    await s.api('POST', `/api/channels/${claude.id}/action`, { action: 'run' });
+    const run = await until(() =>
+      s.store.all<any>('runs').find((r) => r.channelId === claude.id && r.status === 'completed')
+    );
+    const item = s.store.all<any>('items').find((i) => i.lastRunId === run.id)!;
+    const review = rows('loop_verifications', item.id)[0];
+    assert.equal(review.status, 'queued');
+    // Re-claiming the same item while its review is still queued waits for that review instead of
+    // paying for a second one, and records the same material again no more than it asks again.
+    const repeat = directReport([verifiedClaim(item.id, item.title)]);
+    assert.equal(s.store.get<any>('items', item.id).status, 'investigating');
+    assert(s.store.get<any>('items', item.id).nextStep.startsWith('等待当前版本的独立复核；'));
+    assert.equal(rows('loop_evidence', item.id).length, 1);
+    assert.equal(rows('loop_verifications', item.id).length, 1);
+    assert.equal(notes(repeat.id, '独立复核').length, 0);
+    // A different item claimed while the project already has a review pending: the request is
+    // refused, so nothing of it is kept, and the work log says why and that the next turn retries.
+    const refused = directReport([verifiedClaim('', '另一个 Fixture 发现')]);
+    const other = s.store.all<any>('items').find((i) => i.title === '另一个 Fixture 发现')!;
+    assert.equal(other.status, 'investigating');
+    assert(other.nextStep.startsWith('等待当前版本的独立复核；'));
+    assert.equal(rows('loop_evidence', other.id).length, 0);
+    assert.equal(rows('loop_verifications', other.id).length, 0);
+    const refusal = notes(refused.id, `#${other.number} 的独立复核未能自动发起`);
+    assert.equal(refusal.length, 1);
+    assert(refusal[0].text.includes('项目已有复核待完成'));
+    assert(refusal[0].text.endsWith('下一轮汇报时会再试'));
+    // The review finds a counterexample. Claiming the same item again on a source nobody has
+    // changed since asks for no new review: the findings have to be answered in the project first.
+    const reviewer = new FakeReviewer();
+    reviewer.autoComplete = true;
+    reviewer.verdict = 'fail';
+    s.engine.loop.verification.connect(reviewer, (v) => v);
+    await s.engine.loop.verification.start(review.id);
+    assert.equal(s.store.get<any>('loop_verifications', review.id).status, 'failed');
+    const known = new Set(s.store.all<any>('runs').map((r) => r.id));
+    s.config({ result: { ...progressReport, items: [verifiedClaim(item.id, item.title)] } });
+    await s.api('POST', `/api/channels/${claude.id}/action`, { action: 'run' });
+    const again = await until(() => s.store.all<any>('runs').find((r) => !known.has(r.id) && r.status === 'completed'));
+    const parked = s.store.get<any>('items', item.id);
+    assert.equal(parked.status, 'investigating');
+    assert(parked.nextStep.startsWith('上一次独立复核未通过且源码此后未变，先处理复核发现；'));
+    assert.equal(rows('loop_verifications', item.id).length, 1);
+    assert.equal(rows('loop_evidence', item.id).length, 1);
+    const finding = notes(again.id, `#${item.number} 的上一次独立复核未通过`);
+    assert.equal(finding.length, 1);
+    assert(finding[0].text.includes('夹具按要求给出反例'));
+  } finally {
+    await s.cleanup();
+  }
+});
+test('a review the Codex account holds keeps waiting without freezing the CLI channel that asked for it', async () => {
+  const s = await setup();
+  try {
+    const claude = await s.api(
+      'POST',
+      '/api/channels',
+      { projectId: s.project.id, name: '额度等待频道', goal: '检查保留线不冻结 CLI 频道', runtime: 'claude' },
+      201
+    );
+    stopScheduler(s);
+    await s.api('POST', `/api/channels/${claude.id}/action`, { action: 'run' });
+    const run = await until(() =>
+      s.store.all<any>('runs').find((r) => r.channelId === claude.id && r.status === 'completed')
+    );
+    const review = s.store.all<any>('loop_verifications').find((row) => row.runId === run.id)!;
+    assert.equal(review.status, 'queued');
+    // The account is spent until its window resets. The reviewer is a Codex job, so the tick writes
+    // that wait onto the row and starts nothing; the row stays queued, with no verdict of its own.
+    s.engine.usage.exhaustedUntil = new Date(Date.now() + 3600_000).toISOString();
+    s.engine.loop.verification.tick();
+    const row = () => s.store.get<any>('loop_verifications', review.id);
+    await until(() => row().usageWait);
+    assert.equal(row().status, 'queued');
+    assert.equal(row().usageWait.kind, 'account');
+    assert(row().retryAt > new Date().toISOString());
+    // 额度门禁 reads the Codex account, which a Claude Code channel never spends: its next manual run
+    // is accepted and completes while that review keeps waiting, instead of 409 for the whole hold.
+    await s.api('POST', `/api/channels/${claude.id}/action`, { action: 'run' });
+    await until(
+      () => s.store.all<any>('runs').filter((r) => r.channelId === claude.id && r.status === 'completed').length === 2
+    );
+    assert.equal(row().status, 'queued');
+    assert.equal(s.store.all('loop_verifications').length, 1);
+    // A Codex channel of the same project waits behind it exactly as before.
+    const refused = await s.api('POST', `/api/channels/${s.channels[0].id}/action`, { action: 'run' }, 409);
+    assert.equal(refused.error, '项目独立复核尚未完成，完成后会继续原任务');
   } finally {
     await s.cleanup();
   }
@@ -329,6 +619,7 @@ test('resume scheduling, per-project queued work, and human-needed results stop 
     await until(() => s.store.all<any>('runs').some((r) => r.status === 'completed'));
     assert.equal(s.store.get<any>('channels', c.id).status, 'waiting');
     assert(s.engine.control(c.id).enabled);
+    await concludeReviews(s);
     s.config({
       result: {
         summary: '需要人类提供样本数据。',

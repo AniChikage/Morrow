@@ -893,8 +893,16 @@ export class WorkVerification {
       if (row.retryAt && row.retryAt > now()) continue;
       const channel = this.loop.store.get<Channel>('channels', row.channelId),
         run = this.loop.store.get<Run>('runs', row.runId);
-      if (!channel || (!this.loop.store.get<Control>('controls', row.channelId)?.enabled && run?.status !== 'running'))
-        continue;
+      if (!channel) continue;
+      // The control gate asks whether this channel is still working, so that reviewing for it is
+      // still wanted. That question decides nothing for a review a bounded CLI turn requested from
+      // its own report: the turn is over, it was already paid for by the person who ran it or by the
+      // scheduler, and such a channel is normally paused between turns (「留言并运行一轮」 is a
+      // manual run with autonomy off). Waiting for autonomy to be switched on would leave the item
+      // in 调查中 for good and, through `Engine.start`'s pending-review gate, hold the whole project
+      // with it. The day's run budget and the one-reviewer-at-a-time rule still apply.
+      const idle = !this.loop.store.get<Control>('controls', row.channelId)?.enabled && run?.status !== 'running';
+      if (idle && channel.runtime === 'codex') continue;
       if (this.loop.store.runCount(row.channelId, now().slice(0, 10)) >= channel.maxRunsPerDay) continue;
       this.loop.track(this.start(row.id));
     }

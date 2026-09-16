@@ -102,6 +102,10 @@ MORROW_HOME="$HOME/.local/share/morrow" npm start
 
 Claude Code 与 Trae 的频道走有界 CLI 子进程：一次 `spawn`，提示从 stdin 进入，结束时可选的 `morrow-report` 代码块写看板。它们不获得 Morrow 工作接口（`release.propose`、`evidence.native`、`memory.search` 等只属于 Codex 频道），额度门禁与用量归因也不对它们生效（那些读数来自 Codex 账户）；每日运行次数上限照旧对所有运行时生效。verified/resolved 与 Codex 频道一样，先进入 Codex 独立复核。
 
+这一步由服务自己发起，轮次不需要（也没有）工作接口：报告把某个事项报为 verified/resolved 时，事项先存为 `investigating`，随后服务把本轮的报告条目与 Morrow 为该轮记录的工具调用写成一条 `origin: 'agent'`、`source: run:<runId>` 的 `loop_evidence`（`data` 为 `{runtime, report, tools, finalOutput}`；最多 40 次调用、每段输入/输出摘录 2000 字符、最终答复 4000 字符，整条 `data` 压到 512 KB 以内，只截断不报错），按 `linkEvidence` / `strategy.evidenceObserved` 入账并审计 `evidence.recorded`（actor `system`），再用它请求一次事项级复核，同时把所报状态作为 `feature.complete` 意图挂在这次复核上——复核通过即自动完成该事项，不必再跑一轮。该事项已有排队/进行中的复核时不重复请求、也不再记一条证据；上一次复核未通过且源码此后没有变化时同样不请求，只在 `nextStep` 与工作日志里写明先处理复核发现（含首条阻断性发现）。请求被拒（项目已有复核待完成、正在切换版本、证据被拒等）不会让报告失败：该次证据与请求整体回滚，事项留在 `调查中` 并保留「等待当前版本的独立复核；」前缀，工作日志记一条说明，下一轮汇报再试。复核本身仍是 Codex 作业，因此账户保留线挡住时它和其它复核一样等待额度。
+
+这次复核在下一次心跳就开始，不要求该频道处于持续运行：`WorkVerification.tick()` 对 `runtime !== 'codex'` 的频道跳过控制位判断（请求它的那一轮已经结束，也已经由人或调度付过了；CLI 频道平时就是暂停的），每日运行次数上限与「同一时间只跑一个复核」照旧。反过来，`Engine.start` 的待复核门禁对 CLI 频道忽略被额度门禁按住的排队复核（`retryAt` 尚未到期，由 `WorkVerification.start` 在保留线挡住或读数待定时写入）：保留线是 Codex 账户的读数，不该冻结不花这份额度的频道；`running` 的复核和没有被按住的排队复核照旧拦截，Codex 频道的行为完全不变。代价是明确的：等待期间源码若发生变化，这次复核开始时会因材料过期判为 unknown，下一次声明重新请求。
+
 Claude 使用 `--print --verbose --output-format stream-json --safe-mode --strict-mcp-config --mcp-config {"mcpServers":{}} --tools <T> --allowedTools <T> --permission-mode <M> --name Morrow:<runId>`，有模型时加 `--model`，有会话时加 `--resume <sessionId>`。只读为 `T = Read,Grep,Glob`、`M = dontAsk`；工作区写入为 `T = Read,Grep,Glob,Edit,Write,MultiEdit,NotebookEdit,Bash`、`M = acceptEdits`——命令执行是开放的，且不在沙箱内运行，提示词中的权限一行会写明这一点。`--safe-mode` 不加载项目的 CLAUDE.md、hooks、插件、技能与 MCP 服务器，因此这不等于完整继承 Claude 的自定义配置。会话 ID 取事件流里的 `session_id`。
 
 Trae 使用 `traex exec --json` / `exec resume`，保留原生 provider、规则和默认模型，显式约束所选沙箱与审批设置，沙箱内命令不联网。发现顺序为 `traex`、`traecli`，不使用图形应用的 `trae` 可执行文件。`native` 权限只有 Codex 可选，服务端对其他运行时返回 400。

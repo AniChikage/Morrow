@@ -10,6 +10,7 @@ import {
 } from './channel-work.ts';
 import { cliTurnText } from './prompts/cli-turn.ts';
 import { ProjectWorkLoop } from './project-loop.ts';
+import type { Scope } from './project-loop.ts';
 import { UpgradeManager } from './upgrade.ts';
 import { AppResumeTracker } from './app-resume.ts';
 import type { UpgradeBlocker } from './upgrade.ts';
@@ -29,11 +30,22 @@ import type { EventDetail } from './protocol.ts';
 import { Store, now } from './store.ts';
 import { logError } from './log.ts';
 import { cliTurnMinutes, decodeLine, diagnoseFailure, invocation, runtimeTitles } from './runtimes.ts';
-import { projectTreeState } from './source-version.ts';
+import { projectTreeState, sourceVersion } from './source-version.ts';
+import type { Evidence } from './autonomy-types.ts';
 import { pinHelpers } from './runtime-helpers.ts';
 import { extractReport } from './reports.ts';
 /** A Morrow-orchestrated turn, as opposed to native chat or a turn the App itself started. */
 const scheduledRun = (row: Run) => !row.source || ['morrow-schedule', 'nohuman-schedule'].includes(row.source);
+/** What a report's verified/resolved claim says while the independent review it needs has not passed. */
+const reviewWaitPrefix = '等待当前版本的独立复核；';
+/** How a claimed status reads in the work log and in the evidence a reviewer receives. */
+const claimedStatusText: Record<string, string> = { verified: '已验证', resolved: '已解决' };
+/**
+ * What a report's verified/resolved claim still needs once the item has no passed review of the
+ * current source: `prefix` goes in front of `nextStep`, `queue` says the service must request the
+ * review itself, and `note` is one work-log line when the claim cannot be reviewed as reported.
+ */
+type ReviewPlan = { prefix: string; queue: boolean; note?: string };
 type Active = {
   child: ChildProcessWithoutNullStreams;
   channelId: string;
@@ -419,6 +431,21 @@ export class Engine {
     } else await this.start(id, false);
   }
   /**
+   * Whether `channel` has to wait behind the review `row`. A running reviewer owns the frozen project
+   * source, and so does a queued one that can actually start. The exception is a queued review the
+   * account usage gate is holding (`retryAt` still ahead, written by `WorkVerification.start` when
+   * the reserve line blocks or its reading is pending): that hold can last until the account's window
+   * resets, 额度门禁 reads the Codex account, and a Claude Code or Trae channel never spends it — so
+   * such a review must not freeze those channels. The consequence is deliberate: if the source moves
+   * while the review waits, `start` finds the material stale and concludes the review unknown, and
+   * the next verified claim requests a new one with fresh material. Codex channels are unchanged.
+   */
+  reviewHolds(channel: Channel, row: Omit<Verification, 'prompt'>) {
+    if (row.status === 'running') return true;
+    if (row.status !== 'queued') return false;
+    return channel.runtime === 'codex' || !row.retryAt || row.retryAt <= now();
+  }
+  /**
    * `scheduled` chooses between parking the channel and refusing; `humanAction` says whether a person
    * asked for this start, because `resume` is scheduled work a human just requested and must hear
    * about a blocking working tree instead of silently waiting.
@@ -449,7 +476,7 @@ export class Engine {
     // A queued/running reviewer owns the frozen project source. Existing
     // reassessment signals must not launch another autonomous turn that can
     // invalidate that source or spend a run just to poll the pending review.
-    if (this.loop.verification.rows(project.id).some((row) => ['queued', 'running'].includes(row.status))) {
+    if (this.loop.verification.rows(project.id).some((row) => this.reviewHolds(channel, row))) {
       if (!scheduled) throw new APIError(409, '项目独立复核尚未完成，完成后会继续原任务');
       this.store.put('channels', {
         ...channel,
@@ -719,7 +746,7 @@ export class Engine {
           run.reportError = report.error;
           if (report.result) {
             try {
-              this.finishSuccess(run, channel, report.result, runDir, itemRevisions);
+              this.finishSuccess(run, channel, report.result, runDir, itemRevisions, finalOutput);
             } catch (error) {
               run.reportStatus = 'invalid';
               run.reportError = `看板报告未同步：${error instanceof Error ? error.message : '数据无效'}`;
@@ -1012,7 +1039,15 @@ export class Engine {
     });
     this.trackUsageAfter(run);
   }
-  finishSuccess(run: Run, original: Channel, result: AgentResult, runDir: string, itemRevisions?: Map<string, number>) {
+  finishSuccess(
+    run: Run,
+    original: Channel,
+    result: AgentResult,
+    runDir: string,
+    itemRevisions?: Map<string, number>,
+    /** The turn's own final answer, kept with the report as the material a reviewer re-checks. */
+    finalOutput = ''
+  ) {
     this.recordTreeState(run);
     for (const item of result.items)
       if (item.id) {
@@ -1024,6 +1059,10 @@ export class Engine {
     const conflicts: string[] = [];
     /** Report entries refused because another channel is responsible for the item (事项归属). */
     const refused: string[] = [];
+    /** Claims whose own independent review this report has to queue, once the board write is stored. */
+    const claims: Array<{ item: WorkItem; reported: AgentResult['items'][number]; status: string }> = [];
+    /** Work-log lines about a claim that could not be reviewed now; written with the run's other notes. */
+    const notes: string[] = [];
     // This turn as the work interface sees it, so the report follows the same ownership rule as a
     // `feature.upsert` from the same turn instead of a second, looser one.
     const scope = {
@@ -1084,12 +1123,19 @@ export class Engine {
           updatedAt: time,
         };
         if (['verified', 'resolved'].includes(updated.status)) {
+          const claimed = updated.status;
           this.store.put('items', { ...updated, status: 'investigating' });
           try {
             this.loop.verification.requirePassed(scope, updated.id);
           } catch {
+            // No passed review of this source version, so the claim does not stand yet. A reporting
+            // turn has no work interface to request one with, so the service decides here what the
+            // claim still needs and, in the common case, queues that review itself below.
+            const plan = this.reviewPlan(original.projectId, updated, claimed);
             updated.status = 'investigating';
-            updated.nextStep = `等待当前版本的独立复核；${updated.nextStep}`;
+            updated.nextStep = `${plan.prefix}${updated.nextStep}`;
+            if (plan.note) notes.push(plan.note);
+            if (plan.queue) claims.push({ item: updated, reported: item, status: claimed });
           }
         }
         // The stored status decides responsibility, exactly as in the work interface: writing an item
@@ -1111,6 +1157,13 @@ export class Engine {
           before: old,
           after: updated,
         });
+      }
+      // After every board write, so the evidence row attaches to the item as it now stands and the
+      // completion held against the review records the revision actually stored. Still before the
+      // run row is closed, because a work-interface scope only exists while this turn is running.
+      for (const claim of claims) {
+        const note = this.queueReportReview(scope, run, claim.item, claim.reported, finalOutput, claim.status);
+        if (note) notes.push(note);
       }
       for (const k of result.knowledge)
         this.store.put('knowledge', {
@@ -1159,9 +1212,153 @@ export class Engine {
           'system',
           `${refused.length} 条改动因归属被拒，未写入看板：这些事项由别的频道负责，报告原文仍保留在本轮记录里。`
         );
+      for (const note of notes) this.event(run.channelId, run.id, 'system', note);
       if (needsHuman) this.event(run.channelId, run.id, 'system', '此轮需要人工输入，频道已停止自动调度。');
     });
     this.trackUsageAfter(run);
+  }
+  /**
+   * What a report's verified/resolved claim still needs, after `requirePassed` refused it. A review
+   * of this item is already on its way, or the last one found counterexamples in a source nobody has
+   * changed since — in both cases another review would decide nothing — or this turn must queue one.
+   */
+  reviewPlan(projectId: string, item: WorkItem, claimed: string): ReviewPlan {
+    const rows = this.loop.verification.rows(projectId, item.id);
+    if (rows.some((row) => ['queued', 'running'].includes(row.status)))
+      return { prefix: reviewWaitPrefix, queue: false };
+    const latest = rows.at(-1);
+    let digest = '';
+    try {
+      digest = sourceVersion(this.store.get<Project>('projects', projectId)!.path).digest;
+    } catch {
+      /* An unreadable source version decides nothing; the request below reports the real reason. */
+    }
+    if (latest?.status === 'failed' && digest && latest.version.digest === digest) {
+      const blocking = latest.findings.find((finding) => finding.severity === 'blocking');
+      return {
+        prefix: '上一次独立复核未通过且源码此后未变，先处理复核发现；',
+        queue: false,
+        note:
+          `#${item.number} 的上一次独立复核未通过，源码此后没有变化，因此没有再发起复核：先修正问题再汇报` +
+          `${claimedStatusText[claimed] || claimed}。${blocking ? `首个阻断性发现：${blocking.message}` : '复核未留下阻断性发现，请查看复核结论。'}`,
+      };
+    }
+    return { prefix: reviewWaitPrefix, queue: true };
+  }
+  /**
+   * Queue the independent review this turn's own claim needs, and hold the claimed status against it
+   * so a passing review completes the item without another turn. The report and the tool activity
+   * Morrow recorded become one `agent` evidence row: collected material, which is exactly what the
+   * reviewer prompt tells a reviewer to re-check rather than believe. Nothing here may fail the
+   * report — a refusal rolls its own writes back, keeps the item in 调查中 behind the wait prefix,
+   * and returns the work-log line that says the next turn's claim will try again.
+   */
+  queueReportReview(
+    scope: Scope,
+    run: Run,
+    item: WorkItem,
+    reported: AgentResult['items'][number],
+    finalOutput: string,
+    claimed: string
+  ): string | undefined {
+    try {
+      this.store.transaction(() => {
+        const time = now();
+        const data = this.reportEvidenceData(run, reported, finalOutput);
+        const entry: Evidence = {
+          id: randomUUID(),
+          projectId: run.projectId,
+          channelId: run.channelId,
+          runId: run.id,
+          itemId: item.id,
+          summary:
+            `${runtimeTitles[run.runtime]} 本轮自述${claimedStatusText[claimed] || claimed}的汇报材料，` +
+            `附 Morrow 为本轮记录的 ${data.tools.length} 次工具调用；执行者自述，需独立复核。`,
+          source: `run:${run.id}`,
+          observedAt: time,
+          createdAt: time,
+          origin: 'agent',
+          data,
+        };
+        this.store.put('loop_evidence', entry);
+        this.loop.linkEvidence(entry);
+        this.loop.strategy.evidenceObserved(entry);
+        this.loop.audit(
+          scope,
+          'evidence.recorded',
+          entry.summary,
+          item.id,
+          { id: entry.id, origin: entry.origin, source: entry.source },
+          'system'
+        );
+        const verification = this.loop.verification.request(scope, { itemId: item.id, evidenceIds: [entry.id] });
+        // `linkEvidence` added this row to the item, so the revision the completion is held against
+        // is the stored one, not the revision the report itself wrote a moment earlier.
+        const stored = this.store.get<WorkItem>('items', item.id)!;
+        this.loop.verification.defer(scope, verification, 'feature.complete', item.id, stored.revision, {
+          status: claimed,
+        });
+      });
+    } catch (error) {
+      return `#${item.number} 的独立复核未能自动发起：${
+        error instanceof Error ? error.message : '未知原因'
+      }；下一轮汇报时会再试`;
+    }
+  }
+  /**
+   * The turn's own report and the tool activity Morrow recorded for it, bounded so one evidence row
+   * stays well inside the 512 KB of material a review may carry. Excerpts give way before whole
+   * calls do, and the claim itself last; nothing here throws, because a row that cannot be shortened
+   * is still better reported than lost.
+   */
+  reportEvidenceData(run: Run, reported: AgentResult['items'][number], finalOutput: string) {
+    const calls = new Map<string, { tool: string; input?: unknown; output?: unknown; failed: boolean }>();
+    for (const event of this.store.eventPage({ runId: run.id, limit: 1000 }).events) {
+      const detail = event.detail;
+      if (!detail?.toolCallId) continue;
+      const call = calls.get(detail.toolCallId) || { tool: detail.tool || detail.type, failed: false };
+      if (detail.tool) call.tool = detail.tool;
+      if (detail.input !== undefined) call.input = detail.input;
+      if (detail.output !== undefined) call.output = detail.output;
+      if (detail.status === 'failed') call.failed = true;
+      calls.set(detail.toolCallId, call);
+    }
+    // A turn's last calls are the ones its claim rests on, so the cap keeps the tail, not the head.
+    const recorded = [...calls.values()].slice(-40);
+    const excerpt = (value: unknown, limit: number) => {
+      if (value === undefined) return undefined;
+      try {
+        return (typeof value === 'string' ? value : JSON.stringify(value) || '').slice(0, limit);
+      } catch {
+        return '[无法序列化]';
+      }
+    };
+    const build = (tool: number, output: number, claim: number, count: number) => ({
+      runtime: run.runtime,
+      report: {
+        status: reported.status,
+        summary: reported.summary.slice(0, claim),
+        evidence: reported.evidence.map((value) => value.slice(0, claim)),
+        nextStep: reported.nextStep.slice(0, claim),
+      },
+      tools: recorded.slice(recorded.length - count).map((call) => ({
+        tool: call.tool,
+        input: excerpt(call.input, tool),
+        output: excerpt(call.output, tool),
+        failed: call.failed,
+      })),
+      finalOutput: finalOutput.slice(0, output),
+    });
+    let data = build(2000, 4000, 10000, recorded.length);
+    for (const [tool, output, claim, count] of [
+      [500, 2000, 5000, recorded.length],
+      [200, 1000, 2000, Math.min(recorded.length, 10)],
+      [0, 0, 500, 0],
+    ] as const) {
+      if (JSON.stringify(data).length <= 512 * 1024) break;
+      data = build(tool, output, claim, count);
+    }
+    return data;
   }
   finishFailure(run: Run, status: string, summary: string) {
     this.recordTreeState(run);
