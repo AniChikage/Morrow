@@ -7,6 +7,7 @@ import type {
   ProjectUsage,
   Run,
   RunDetails,
+  WorkspaceEvent,
 } from '../../shared/types';
 import type { FeatureProps } from './types';
 import { Button, Dropdown, DropdownItem, EmptyState, Markdown } from '../components/ui';
@@ -38,6 +39,10 @@ const ready = (value: NativeConversation | null) =>
 const active = (value: NativeConversation | null) =>
   !!value?.thread?.activeTurnId || ['active', 'running', 'inProgress'].includes(value?.thread?.status || '');
 const mergeRuns = (old: Run[], next: Run[]) => mergeById(old, next, (a, b) => b.startedAt.localeCompare(a.startedAt));
+/** Notes are kept the way the service lists them, oldest first; the page reverses them to read. */
+const mergeNotes = (old: WorkspaceEvent[], next: WorkspaceEvent[]) =>
+  mergeById(old, next, (a, b) => a.createdAt.localeCompare(b.createdAt));
+const failureText = (failure: unknown, fallback: string) => (failure instanceof Error ? failure.message : fallback);
 /** One short line per App-resume state; the reason itself is the expanded body. */
 const appResumeLabel: Record<NonNullable<Channel['appResume']>['state'], string> = {
   observing: 'App 续跑：观察中',
@@ -239,6 +244,9 @@ export function ChannelView(props: FeatureProps & { id: string }) {
   // Only a Codex channel has an App conversation behind it; Claude Code and Trae channels run a
   // bounded CLI turn instead, so none of the App-task state applies to them.
   const native = channel?.runtime === 'codex' && !demo;
+  // A CLI channel reads what people leave here at the start of its next turn. A Codex channel has
+  // the App conversation instead, and a demo channel never runs, so neither takes notes.
+  const notesEnabled = !!channel && !demo && channel.runtime !== 'codex';
   const [conversation, setConversation] = useState<NativeConversation | null>(null);
   const [usage, setUsage] = useState<ProjectUsage>();
   const [runs, setRuns] = useState<Run[]>([]);
@@ -254,6 +262,12 @@ export function ChannelView(props: FeatureProps & { id: string }) {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [linkOpen, setLinkOpen] = useState(false);
   const [releasesOpen, setReleasesOpen] = useState(false);
+  const [notes, setNotes] = useState<WorkspaceEvent[]>([]);
+  const [notesError, setNotesError] = useState('');
+  const [draft, setDraft] = useState('');
+  const [noteBusy, setNoteBusy] = useState(false);
+  const [noteError, setNoteError] = useState('');
+  const [noteNotice, setNoteNotice] = useState('');
   const generation = useRef(0),
     inFlight = useRef(false),
     oldestCursor = useRef<string | undefined>(undefined);
@@ -331,6 +345,33 @@ export function ChannelView(props: FeatureProps & { id: string }) {
     );
   }, [snapshot.runs, id]);
   useEffect(() => {
+    setNotes([]);
+    setNotesError('');
+    setDraft('');
+    setNoteError('');
+    setNoteNotice('');
+    if (!notesEnabled) return;
+    let cancelled = false;
+    api.getMessages(id).then(
+      (value) => {
+        if (!cancelled) setNotes(value.messages);
+      },
+      (failure) => {
+        if (!cancelled) setNotesError(failureText(failure, '留言读取失败'));
+      }
+    );
+    return () => {
+      cancelled = true;
+    };
+  }, [api, id, notesEnabled]);
+  // A note posted from another window reaches the snapshot as a `message` event; merging it here
+  // keeps the list current without a second poll of its own.
+  useEffect(() => {
+    if (!notesEnabled) return;
+    const live = snapshot.events.filter((row) => row.channelId === id && row.kind === 'message');
+    if (live.length) setNotes((previous) => replaceIfChanged(previous, mergeNotes(previous, live)));
+  }, [snapshot.events, id, notesEnabled]);
+  useEffect(() => {
     let cancelled = false,
       pending = false;
     setConversation(null);
@@ -382,6 +423,40 @@ export function ChannelView(props: FeatureProps & { id: string }) {
     return <EmptyState icon={<Hash />} title="频道不存在" description="请从项目中重新选择频道。" />;
   const paused =
     channel.autonomyEnabled === undefined ? ['paused', 'blocked'].includes(channel.status) : !channel.autonomyEnabled;
+  const running = channel.status === 'running';
+  /** When the note was picked up: the earliest loaded turn of this channel that started after it. */
+  const noteReadAt = (createdAt: string) =>
+    runs
+      .filter((run) => run.channelId === id && run.startedAt && run.startedAt > createdAt)
+      .reduce((earliest, run) => (earliest && earliest <= run.startedAt ? earliest : run.startedAt), '');
+  const postNote = async (andRun: boolean) => {
+    const text = draft.trim();
+    if (!text || noteBusy) return;
+    setNoteBusy(true);
+    setNoteError('');
+    setNoteNotice('');
+    let saved: WorkspaceEvent;
+    try {
+      saved = await api.sendMessage(id, text);
+    } catch (failure) {
+      // The draft is the only copy of an unsaved note, so it stays in the box.
+      setNoteError(`留言未保存：${failureText(failure, '未知错误')}`);
+      setNoteBusy(false);
+      return;
+    }
+    setNotes((previous) => mergeNotes(previous, [saved]));
+    setDraft('');
+    if (!andRun) {
+      setNoteNotice('已留言，下一轮读取');
+      setNoteBusy(false);
+      return;
+    }
+    // The note is stored either way; only the turn can still be refused, and `onMutate` reports why.
+    const started = await onMutate(() => api.channelAction(id, 'run'));
+    if (started) setNoteNotice('已留言，正在开始一轮');
+    else setNoteError('已留言，但这一轮没有开始。');
+    setNoteBusy(false);
+  };
   const nativeBusy = active(conversation);
   // Approvals and follow-up questions raised inside the App are fetched with the conversation but were
   // never shown: a round stuck on one of them looked like Codex was merely slow to answer.
@@ -723,6 +798,29 @@ export function ChannelView(props: FeatureProps & { id: string }) {
               )}
             </section>
           )}
+          {notesEnabled && (
+            <section className="channel-notes" aria-label="留言">
+              <h2>留言</h2>
+              {notes.length ? (
+                <ul className="channel-note-list">
+                  {[...notes].reverse().map((note) => {
+                    const readAt = noteReadAt(note.createdAt);
+                    return (
+                      <li key={note.id}>
+                        <p className="channel-note-text">{note.text}</p>
+                        <span className="channel-note-meta">
+                          <time dateTime={note.createdAt || undefined}>{formatDate(note.createdAt)}</time>
+                          <span>{readAt ? `已在 ${formatDate(readAt)} 的轮次读取` : '等下一轮读取'}</span>
+                        </span>
+                      </li>
+                    );
+                  })}
+                </ul>
+              ) : (
+                <p className="subtle">{notesError || '还没有留言。留言会在下一轮开始时随上下文交给 CLI。'}</p>
+              )}
+            </section>
+          )}
           <div className="channel-log-heading">
             <h2>工作日志</h2>
           </div>
@@ -759,6 +857,63 @@ export function ChannelView(props: FeatureProps & { id: string }) {
             <ChannelAudit id={id} api={api} snapshot={snapshot} />
           </details>
         </div>
+        {notesEnabled && (
+          <div className="message-composer">
+            <div className="composer-box">
+              <textarea
+                aria-label="给频道留言"
+                placeholder="补充背景，或给下一轮指明方向…"
+                value={draft}
+                onChange={(event) => setDraft(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) {
+                    event.preventDefault();
+                    void postNote(false);
+                  }
+                }}
+              />
+              <div className="composer-footer">
+                <span>
+                  {running
+                    ? '本轮进行中不会读取，下一轮读取'
+                    : paused
+                      ? '频道已暂停，留言会在下一轮读取'
+                      : channel.nextRunAt
+                        ? `将在下一轮（${formatDate(channel.nextRunAt)}）读取`
+                        : '将在下一轮读取'}
+                </span>
+                <div className="composer-actions">
+                  <Button
+                    variant="primary"
+                    disabled={busy || noteBusy || !draft.trim()}
+                    onClick={() => void postNote(false)}
+                  >
+                    留言
+                  </Button>
+                  {/* The service refuses a turn that is already running or caught by the handover. */}
+                  <Button
+                    variant="secondary"
+                    disabled={busy || noteBusy || !draft.trim() || running || switching}
+                    onClick={() => void postNote(true)}
+                  >
+                    留言并运行一轮
+                  </Button>
+                </div>
+              </div>
+            </div>
+            <span className="composer-hint">⌘ Enter 留言 · 留言本身不会开始运行</span>
+            {noteError && (
+              <p role="alert" className="feature-inline-error">
+                {noteError}
+              </p>
+            )}
+            {noteNotice && (
+              <p role="status" className="composer-hint">
+                {noteNotice}
+              </p>
+            )}
+          </div>
+        )}
       </main>
     </div>
   );

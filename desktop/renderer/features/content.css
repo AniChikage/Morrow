@@ -1105,11 +1105,53 @@
   min-width: 28px;
   padding: 0 var(--space-2);
 }
+.composer-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
 .composer-hint {
   display: block;
   color: var(--muted);
   font-size: var(--text-xs);
   margin: var(--space-1) 2px 0;
+}
+/* The notes a CLI channel will read next turn, newest first, above the work log. */
+.channel-notes {
+  margin: 0 0 var(--space-5);
+}
+.channel-notes h2 {
+  font-size: var(--text-md);
+  line-height: var(--text-md-lh);
+  font-weight: 600;
+  margin: 0 0 var(--space-2);
+}
+.channel-note-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.channel-note-list > li {
+  border-bottom: 1px solid var(--line-soft);
+  padding: var(--space-2) 0;
+}
+.channel-note-list > li:last-child {
+  border-bottom: 0;
+}
+.channel-note-text {
+  margin: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-size: var(--text-sm);
+  line-height: 1.7;
+  color: var(--text);
+}
+.channel-note-meta {
+  display: flex;
+  gap: var(--space-2);
+  margin-top: 2px;
+  font-size: var(--text-xs);
+  color: var(--muted);
 }
 .feature-inline-error {
   font-size: var(--text-sm);

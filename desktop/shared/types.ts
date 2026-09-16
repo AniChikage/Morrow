@@ -473,6 +473,10 @@ export interface DesktopAPI {
   createChannel(data: CreateChannel): Promise<Channel>;
   updateChannel(id: string, data: ChannelPatch): Promise<Channel>;
   channelAction(id: string, action: 'run' | 'pause' | 'resume'): Promise<unknown>;
+  /** One note left for a CLI channel; it becomes context for the next turn and starts nothing. */
+  sendMessage(channelId: string, text: string): Promise<WorkspaceEvent>;
+  /** The channel's notes, oldest first. */
+  getMessages(channelId: string): Promise<{ messages: WorkspaceEvent[] }>;
   getNativeStatus(refreshUsage?: boolean): Promise<NativeConnectionStatus>;
   restoreNativeBackground?(): Promise<{ restartRequired: boolean; detail: string }>;
   listNativeThreads(channelId: string): Promise<{ status: NativeConnectionStatus; threads: NativeThreadSummary[] }>;

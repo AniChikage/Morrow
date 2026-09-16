@@ -1,14 +1,39 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { act, cleanup, render, screen, waitFor, within } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { ProjectView } from './ProjectView';
 import { FindingView } from './FindingView';
 import { ChannelView } from './ChannelView';
 import { ChannelAudit } from './ChannelAudit';
 import { ProjectRecords } from './ProjectRecords';
-import { event, featureProps, item, snapshot, TestProviders } from './testFixtures';
-import type { EventsPage } from '../../shared/types';
+import { event, featureProps, item, snapshot, TestProviders, timestamp } from './testFixtures';
+import type { EventsPage, Run, Snapshot } from '../../shared/types';
+
+/** A real project running Claude Code: the only shape that offers the 留言 entry. */
+function cliChannelState(): Snapshot {
+  const state = snapshot();
+  state.projects[0].isDemo = false;
+  state.channels[0].runtime = 'claude';
+  state.channels[0].permission = 'workspace-write';
+  state.channels[0].status = 'paused';
+  state.channels[0].nextRunAt = '';
+  return state;
+}
+const cliRun = (patch: Partial<Run> = {}): Run => ({
+  id: 'run-earlier',
+  projectId: 'project-atlas',
+  channelId: 'channel-system',
+  runtime: 'claude',
+  status: 'completed',
+  startedAt: '2026-09-07T03:00:00.000Z',
+  finishedAt: '2026-09-07T03:05:00.000Z',
+  summary: '',
+  sessionId: '',
+  ...patch,
+});
+const note = (id: string, text: string, createdAt = timestamp) =>
+  event(id, text, 1, { kind: 'message', runId: '', actor: 'human' as const, createdAt });
 
 beforeEach(() => {
   localStorage.clear();
@@ -147,6 +172,67 @@ describe('channel control and history', () => {
     await user.click(screen.getByRole('menuitem', { name: '暂停' }));
     expect(api.channelAction).toHaveBeenLastCalledWith('channel-system', 'pause');
     expect(api.channelAction).toHaveBeenCalledTimes(2);
+  });
+
+  it('leaves a note for the next CLI turn and says which notes a turn has already read', async () => {
+    const user = userEvent.setup();
+    const state = cliChannelState();
+    // A loaded turn that started after the stored note, and none after the one left below.
+    state.runs = [cliRun()];
+    const { props, api } = featureProps({ snapshot: state });
+    api.getMessages.mockResolvedValue({ messages: [note('note-old', '先看导入流程')] });
+    render(<ChannelView {...props} id="channel-system" />, { wrapper: TestProviders });
+    const section = within(await screen.findByRole('region', { name: '留言' }));
+    expect(api.getMessages).toHaveBeenCalledWith('channel-system');
+    await waitFor(() => expect(section.getByText('先看导入流程')).toBeTruthy());
+    expect(section.getByText(/^已在 .+ 的轮次读取$/)).toBeTruthy();
+    const box = screen.getByRole('textbox', { name: '给频道留言' }) as HTMLTextAreaElement;
+    expect((screen.getByRole('button', { name: '留言' }) as HTMLButtonElement).disabled).toBe(true);
+    await user.type(box, '再核对重试路径');
+    fireEvent.keyDown(box, { key: 'Enter', metaKey: true });
+    await waitFor(() => expect(api.sendMessage).toHaveBeenCalledWith('channel-system', '再核对重试路径'));
+    expect(api.sendMessage).toHaveBeenCalledTimes(1);
+    // A stored note clears the box; nothing about it starts a turn.
+    await waitFor(() => expect(box.value).toBe(''));
+    expect(screen.getByText('已留言，下一轮读取')).toBeTruthy();
+    expect(api.channelAction).not.toHaveBeenCalled();
+    const rows = section.getAllByRole('listitem');
+    expect(within(rows[0]).getByText('再核对重试路径')).toBeTruthy();
+    expect(within(rows[0]).getByText('等下一轮读取')).toBeTruthy();
+    expect(within(rows[1]).getByText('先看导入流程')).toBeTruthy();
+  });
+
+  it('「留言并运行一轮」 stores the note before asking for the turn, and a refused note keeps the draft', async () => {
+    const user = userEvent.setup();
+    const { props, api } = featureProps({ snapshot: cliChannelState() });
+    render(<ChannelView {...props} id="channel-system" />, { wrapper: TestProviders });
+    await screen.findByText('还没有留言。留言会在下一轮开始时随上下文交给 CLI。');
+    expect(screen.getByText('频道已暂停，留言会在下一轮读取')).toBeTruthy();
+    const box = screen.getByRole('textbox', { name: '给频道留言' }) as HTMLTextAreaElement;
+    await user.type(box, '先合并那个分支');
+    await user.click(screen.getByRole('button', { name: '留言并运行一轮' }));
+    await waitFor(() => expect(api.channelAction).toHaveBeenCalledWith('channel-system', 'run'));
+    expect(api.sendMessage).toHaveBeenCalledWith('channel-system', '先合并那个分支');
+    expect(api.sendMessage.mock.invocationCallOrder[0]).toBeLessThan(api.channelAction.mock.invocationCallOrder[0]);
+    expect(screen.getByText('已留言，正在开始一轮')).toBeTruthy();
+    // A note the service refused is not lost: the draft stays and the failure is named.
+    api.sendMessage.mockRejectedValueOnce(new Error('服务暂时不可用'));
+    await user.type(box, '再核对重试路径');
+    fireEvent.keyDown(box, { key: 'Enter', metaKey: true });
+    const alert = await screen.findByRole('alert');
+    expect(alert.textContent).toBe('留言未保存：服务暂时不可用');
+    expect(box.value).toBe('再核对重试路径');
+  });
+
+  it('offers no note entry on a Codex channel, which talks to its App task instead', async () => {
+    const state = snapshot();
+    state.projects[0].isDemo = false;
+    const { props, api } = featureProps({ snapshot: state });
+    render(<ChannelView {...props} id="channel-system" />, { wrapper: TestProviders });
+    await screen.findByRole('heading', { name: '工作日志' });
+    expect(screen.queryByRole('region', { name: '留言' })).toBeNull();
+    expect(screen.queryByRole('textbox', { name: '给频道留言' })).toBeNull();
+    expect(api.getMessages).not.toHaveBeenCalled();
   });
 
   it('during a version handover a paused channel cannot be resumed, while pausing a running one still works', async () => {

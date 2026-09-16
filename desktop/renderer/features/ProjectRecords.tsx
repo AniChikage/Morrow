@@ -55,7 +55,7 @@ const actions: Record<string, string> = {
   'channel.app-resume-observed': '记录中断后的接续条件',
   'channel.app-resume-linked': '关联 App 续跑（推断）',
   'channel.app-resume-restored': 'App 续跑后恢复等待',
-  'message.created': '补充上下文',
+  'message.created': '留言',
   'native-session-opened': '在原生 CLI 中继续',
   'native.message-submitted': '向 App 任务发送消息',
   'native.bound': '关联 App 任务',

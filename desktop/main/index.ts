@@ -197,6 +197,10 @@ function registerIPC(): void {
   handle('channel-action', 2, (channelId, action) =>
     service.request(`channels/${id(channelId)}/action`, 'POST', { action: choice(action, ['run', 'pause', 'resume']) })
   );
+  handle('send-message', 2, (channelId, value) =>
+    service.request(`channels/${id(channelId)}/messages`, 'POST', { text: text(value, '留言', 10000) })
+  );
+  handle('get-messages', 1, (channelId) => service.request(`channels/${id(channelId)}/messages`));
   handle('get-native-status', 1, (refreshUsage) => {
     if (typeof refreshUsage !== 'boolean') throw new Error('额度刷新参数必须是开或关。');
     return service.request(`native/status${refreshUsage ? '?refreshUsage=1' : ''}`);

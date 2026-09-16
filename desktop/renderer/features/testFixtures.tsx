@@ -141,6 +141,17 @@ export function featureProps(patch: Partial<FeatureProps> = {}) {
     createChannel: vi.fn(),
     updateChannel: vi.fn(),
     channelAction: vi.fn(async () => ({ ok: true })),
+    sendMessage: vi.fn(async (channelId: string, text: string) =>
+      event(`note-${text}`, text, 1, {
+        channelId,
+        kind: 'message',
+        runId: '',
+        actor: 'human' as const,
+        // Later than `timestamp`, so a note just left is not already read by a fixture turn.
+        createdAt: '2026-09-07T04:00:00.000Z',
+      })
+    ),
+    getMessages: vi.fn(async () => ({ messages: [] as WorkspaceEvent[] })),
     getNativeStatus: vi.fn(async () => nativeStatus),
     listNativeThreads: vi.fn(async () => ({ status: nativeStatus, threads: [] })),
     getNativeConversation: vi.fn(async (channelId: string) => ({

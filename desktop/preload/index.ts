@@ -23,6 +23,8 @@ const api: DesktopAPI = {
   createChannel: (data) => ipcRenderer.invoke('morrow:create-channel', data),
   updateChannel: (id, data) => ipcRenderer.invoke('morrow:update-channel', id, data),
   channelAction: (id, action) => ipcRenderer.invoke('morrow:channel-action', id, action),
+  sendMessage: (id, text) => ipcRenderer.invoke('morrow:send-message', id, text),
+  getMessages: (id) => ipcRenderer.invoke('morrow:get-messages', id),
   getNativeStatus: (refreshUsage = false) => ipcRenderer.invoke('morrow:get-native-status', refreshUsage),
   restoreNativeBackground: () => ipcRenderer.invoke('morrow:restore-native-background'),
   listNativeThreads: (id) => ipcRenderer.invoke('morrow:list-native-threads', id),

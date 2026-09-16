@@ -355,6 +355,9 @@ export function previewAPI(): DesktopAPI {
       return structuredClone(channel);
     },
     channelAction: unavailable,
+    // The preview channels never run, so a note would never be read; the list stays empty.
+    sendMessage: unavailable,
+    getMessages: async () => ({ messages: [] }),
     getNativeStatus: async () => ({
       available: false,
       connected: false,
