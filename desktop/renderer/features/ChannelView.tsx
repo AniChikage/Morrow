@@ -65,12 +65,19 @@ const normalizePath = (value: string) => value.replace(/\/+$/, '');
 const sameDirectory = (cwd: string, path: string) => !!path && !!cwd && normalizePath(cwd) === normalizePath(path);
 const sortThreads = (threads: NativeThreadSummary[], path: string) =>
   [...threads].sort((a, b) => Number(sameDirectory(b.cwd, path)) - Number(sameDirectory(a.cwd, path)));
+/**
+ * Usage is only attributed to Codex turns (`service/engine.ts` tracks nothing for other runtimes),
+ * so a CLI turn has no 额度 to report at all: undefined drops the label rather than calling it
+ * 未记录, which would read as a gap in a record that was never kept for this runtime.
+ */
 const runUsage = (run: Run) =>
-  run.usage?.delta && Object.keys(run.usage.delta).length
-    ? Object.entries(run.usage.delta)
-        .map(([key, value]) => `${usageWindowLabel(key as '5h' | 'weekly')} 估算 ${value}%`)
-        .join(' · ')
-    : '额度消耗未记录';
+  run.runtime !== 'codex'
+    ? undefined
+    : run.usage?.delta && Object.keys(run.usage.delta).length
+      ? Object.entries(run.usage.delta)
+          .map(([key, value]) => `${usageWindowLabel(key as '5h' | 'weekly')} 估算 ${value}%`)
+          .join(' · ')
+      : '额度消耗未记录';
 
 function LogCommand({ command }: { command: NonNullable<Run['log']>['commands'][number] }) {
   const [expanded, setExpanded] = useState(false);
@@ -140,13 +147,15 @@ function LogEntry({
   // reporting 尚未运行 for a finished round, or NaN 秒 for a duration nothing can be derived from.
   const started = runTime(run, run.startedAt);
   const duration = run.finishedAt ? durationSeconds(run.startedAt, run.finishedAt) : undefined;
+  const usageLabel = runUsage(run);
   return (
     <article className="channel-log-entry" data-status={run.status} aria-label={`轮次 ${started}`}>
       <header>
         <time dateTime={run.startedAt || undefined}>{started}</time>
         <span>{stateLabel(run.status)}</span>
         <span>{!run.finishedAt ? '尚未结束' : duration === undefined ? '时长未记录' : `${duration} 秒`}</span>
-        <span>{runUsage(run)}</span>
+        {/* Dropped entirely on a CLI turn: an empty span would still take a gap in this flex row. */}
+        {usageLabel && <span>{usageLabel}</span>}
       </header>
       {!log && !work ? (
         <div className="log-summary-loading" role="status" aria-label="本轮摘要尚未载入">
@@ -506,7 +515,10 @@ export function ChannelView(props: FeatureProps & { id: string }) {
       (item.channelId === id || item.sourceChannelIds?.includes(id))
   );
   const reviewingRelease = releasesOpen && pendingReleases.length > 0;
-  const usageGate = usage?.gate.blocked && !usage.gate.pending ? usage.gate : undefined;
+  // The account reserve line only holds Codex turns (`service/engine.ts` gates nothing else), so a
+  // CLI channel that the service would start must not be told it is waiting on 额度. `runtime` is
+  // the test, not `native`: a demo Codex channel keeps reading the same gate it always did.
+  const usageGate = channel.runtime === 'codex' && usage?.gate.blocked && !usage.gate.pending ? usage.gate : undefined;
   const needs =
     !!channel.work?.awaitingReply ||
     pendingReleases.length > 0 ||

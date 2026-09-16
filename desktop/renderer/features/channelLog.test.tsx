@@ -540,3 +540,49 @@ it('names the usage gate in 需要你, so a channel held by 额度 is not a sile
   await screen.findByText('工作日志');
   expect(screen.queryByRole('region', { name: '需要你' })).toBeNull();
 });
+
+/** The same reading the Codex case above is held by; the service starts a CLI turn regardless. */
+const reserveMessage = '账户每周额度已用 94%，达到保留线（保留 30%），等待 09-19 12:02 重置';
+const reserveGate: ProjectUsage = {
+  stale: false,
+  gate: {
+    blocked: true,
+    kind: 'reserve',
+    window: 'weekly',
+    until: '2026-09-19T12:02:00.000Z',
+    message: reserveMessage,
+  },
+};
+/** A CLI channel: the account gate and usage attribution are both Codex-only in `service/engine.ts`. */
+function cliChannelState() {
+  const state = snapshot();
+  state.projects[0].isDemo = false;
+  state.channels[0].runtime = 'claude';
+  state.channels[0].permission = 'workspace-write';
+  return state;
+}
+
+it('keeps the Codex account gate off a CLI channel, which is never held by the reserve line', async () => {
+  const { props, api } = featureProps({ snapshot: cliChannelState() });
+  api.getProjectUsage.mockResolvedValue(reserveGate);
+  render(<ChannelView {...props} id="channel-system" />, { wrapper: TestProviders });
+  await screen.findByText('工作日志');
+  await waitFor(() => expect(api.getProjectUsage).toHaveBeenCalled());
+  expect(screen.queryByText(reserveMessage)).toBeNull();
+  expect(screen.queryByRole('region', { name: '需要你' })).toBeNull();
+});
+
+it('leaves the 额度 line off a CLI turn rather than reporting consumption it never records', async () => {
+  const { props } = featureProps({ snapshot: cliChannelState() });
+  vi.mocked(props.api.getRuns).mockResolvedValue({
+    runs: [round('cli', { runtime: 'claude', usage: undefined })],
+    hasMore: false,
+  });
+  render(<ChannelView {...props} id="channel-system" />, { wrapper: TestProviders });
+  const entry = await screen.findByRole('article', { name: /轮次/ });
+  expect(entry.textContent).not.toContain('额度');
+  // Three facts, and no fourth empty span leaving a gap where the label used to sit.
+  const header = Array.from(entry.querySelector('header')!.children).map((node) => node.textContent);
+  expect(header).toHaveLength(3);
+  expect(header.slice(1)).toEqual(['已完成', '120 秒']);
+});
