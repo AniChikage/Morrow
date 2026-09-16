@@ -34,6 +34,16 @@ const cliRun = (patch: Partial<Run> = {}): Run => ({
 });
 const note = (id: string, text: string, createdAt = timestamp) =>
   event(id, text, 1, { kind: 'message', runId: '', actor: 'human' as const, createdAt });
+/** What `Engine.finishSuccess` stores when a turn reports `needsHuman`: the summary is the question. */
+const waitingQuestion = {
+  state: 'needs_input' as const,
+  focus: '',
+  reason: '本轮需要人工输入',
+  nextStep: '样本数据从哪里取？',
+  runId: 'run-earlier',
+  updatedAt: timestamp,
+  awaitingReply: true,
+};
 
 beforeEach(() => {
   localStorage.clear();
@@ -233,6 +243,68 @@ describe('channel control and history', () => {
     expect(screen.queryByRole('region', { name: '留言' })).toBeNull();
     expect(screen.queryByRole('textbox', { name: '给频道留言' })).toBeNull();
     expect(api.getMessages).not.toHaveBeenCalled();
+  });
+
+  it('shows a CLI turn’s question read-only and sends the answer to the composer', async () => {
+    const user = userEvent.setup();
+    const state = cliChannelState();
+    state.channels[0].status = 'blocked';
+    state.channels[0].work = waitingQuestion;
+    const { props, api } = featureProps({ snapshot: state });
+    const view = render(<ChannelView {...props} id="channel-system" />, { wrapper: TestProviders });
+    expect(screen.getByText('等你回答')).toBeTruthy();
+    expect(screen.getByText('请先回答下方问题。')).toBeTruthy();
+    // The question itself, and the one line saying how to answer it, are in 需要你.
+    const needs = within(screen.getByRole('region', { name: '需要你' }));
+    expect(needs.getByText('样本数据从哪里取？')).toBeTruthy();
+    expect(needs.getByText('在下方留言框回答，然后点「留言并运行一轮」；只留言不会开始运行。')).toBeTruthy();
+    // One box on the page, and it is the composer: 需要你 answers nothing by itself.
+    expect(needs.queryByRole('textbox')).toBeNull();
+    const boxes = screen.getAllByRole('textbox') as HTMLTextAreaElement[];
+    expect(boxes.length).toBe(1);
+    expect(boxes[0].getAttribute('aria-label')).toBe('给频道留言');
+    expect(boxes[0].placeholder).toBe('回答上一轮的问题，或补充背景…');
+    expect(screen.getByText('上一轮在等你回答：留言后点「留言并运行一轮」')).toBeTruthy();
+    // The waiting question takes the page's primary action; every entry the channel needs stays.
+    await user.type(boxes[0], '用 2026-08 的对账导出');
+    expect((screen.getByRole('button', { name: '留言' }) as HTMLButtonElement).disabled).toBe(false);
+    expect((screen.getByRole('button', { name: '留言并运行一轮' }) as HTMLButtonElement).disabled).toBe(false);
+    await user.click(screen.getByRole('button', { name: '频道选项' }));
+    expect(screen.getByRole('menuitem', { name: '继续工作' })).toBeTruthy();
+    await user.keyboard('{Escape}');
+    // Once a turn has taken the answer, the CLI channel waits for its next turn, not for Codex.
+    view.rerender(
+      <ChannelView
+        {...props}
+        snapshot={{
+          ...state,
+          channels: state.channels.map((channel) =>
+            channel.id === 'channel-system'
+              ? { ...channel, status: 'paused' as const, work: { ...waitingQuestion, awaitingReply: false } }
+              : channel
+          ),
+        }}
+        id="channel-system"
+      />
+    );
+    expect(screen.getByText('已回答，等待下一轮')).toBeTruthy();
+    expect(screen.queryByRole('region', { name: '需要你' })).toBeNull();
+    expect(screen.getByText('频道已暂停，留言会在下一轮读取')).toBeTruthy();
+    expect(api.sendNativeMessage).not.toHaveBeenCalled();
+  });
+
+  it('leaves a Codex question answerable in place, with no note entry beside it', async () => {
+    const state = snapshot();
+    state.projects[0].isDemo = false;
+    state.channels[0].status = 'blocked';
+    state.channels[0].work = waitingQuestion;
+    const { props } = featureProps({ snapshot: state });
+    render(<ChannelView {...props} id="channel-system" />, { wrapper: TestProviders });
+    const asked = within(await screen.findByRole('region', { name: 'Codex 需要你回答' }));
+    expect(asked.getByText('样本数据从哪里取？')).toBeTruthy();
+    expect(asked.getByRole('textbox', { name: '回答 Codex 的问题' })).toBeTruthy();
+    expect(screen.queryByText('在下方留言框回答，然后点「留言并运行一轮」；只留言不会开始运行。')).toBeNull();
+    expect(screen.queryByRole('textbox', { name: '给频道留言' })).toBeNull();
   });
 
   it('during a version handover a paused channel cannot be resumed, while pausing a running one still works', async () => {

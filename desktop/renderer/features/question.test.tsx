@@ -199,15 +199,18 @@ describe('the Codex question card on the channel page', () => {
     expect(screen.getByText('示例频道不能回答')).toBeTruthy();
   });
 
-  it('answers a CLI-runtime question without waiting on an App conversation', () => {
+  it('names the CLI runtime that asked and keeps its question read-only, with no App entry', () => {
     const state = waitingState(question);
     state.channels[0].runtime = 'claude';
     const { props } = featureProps({ snapshot: state });
     render(<ChannelView {...props} id="channel-system" />, { wrapper: TestProviders });
-    expect(within(card()).getByText('如果两者都要，先做哪个？')).toBeTruthy();
-    // No App task stands behind this channel, so nothing about App readiness may block the answer.
-    expect(box().disabled).toBe(false);
-    expect(screen.getByText('⌘ Enter 回答')).toBeTruthy();
+    const asked = within(screen.getByRole('region', { name: 'Claude Code 需要你回答' }));
+    expect(asked.getByText('如果两者都要，先做哪个？')).toBeTruthy();
+    // The answer to a CLI question is a note, so the box that sends to an App task is not offered
+    // at all — and there is no App conversation behind this channel to open either.
+    expect(asked.queryByRole('textbox')).toBeNull();
+    expect(screen.queryByRole('button', { name: '查看完整回复' })).toBeNull();
+    // Nothing about App readiness applies here, so none of it is reported.
     expect(screen.queryByText('原生对话尚未就绪，暂时不能回答')).toBeNull();
     expect(screen.queryByRole('note')).toBeNull();
   });

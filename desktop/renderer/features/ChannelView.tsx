@@ -654,7 +654,11 @@ export function ChannelView(props: FeatureProps & { id: string }) {
             <span>下一步</span>
             <p>
               {channel.work.state === 'needs_input'
-                ? '已回答，等待 Codex 继续'
+                ? // A CLI turn is bounded: the answer waits for the next one rather than reaching a
+                  // task that is still open, so nothing is continuing right now.
+                  channel.runtime === 'codex'
+                  ? '已回答，等待 Codex 继续'
+                  : '已回答，等待下一轮'
                 : questionExcerpt(channel.work.nextStep, 120)}
             </p>
           </div>
@@ -752,17 +756,28 @@ export function ChannelView(props: FeatureProps & { id: string }) {
             <section className="channel-needs" aria-label="需要你">
               <h2>需要你</h2>
               {channel.work?.awaitingReply && (
-                <ChannelQuestion
-                  key={`question:${id}:${channel.work.runId}`}
-                  channelId={id}
-                  work={channel.work}
-                  api={api}
-                  busy={busy}
-                  unavailable={unavailable}
-                  autoFocus={entryQuestion.current?.present}
-                  primaryAction={primary === 'answer' && !reviewingRelease}
-                  onShowConversation={openApp}
-                />
+                <>
+                  <ChannelQuestion
+                    key={`question:${id}:${channel.work.runId}`}
+                    channelId={id}
+                    work={channel.work}
+                    api={api}
+                    label={`${runtimeLabel(channel.runtime)} 需要你回答`}
+                    busy={busy}
+                    unavailable={unavailable}
+                    // A CLI channel answers through the composer at the bottom of the page, the only
+                    // reply path it has: the box in here sends to the App, which would refuse it.
+                    readOnly={notesEnabled}
+                    autoFocus={entryQuestion.current?.present}
+                    primaryAction={primary === 'answer' && !reviewingRelease}
+                    onShowConversation={channel.runtime === 'codex' ? openApp : undefined}
+                  />
+                  {notesEnabled && (
+                    <p className="channel-needs-note">
+                      在下方留言框回答，然后点「留言并运行一轮」；只留言不会开始运行。
+                    </p>
+                  )}
+                </>
               )}
               {!!pendingReleases.length && (
                 <details open={reviewingRelease} onToggle={(event) => setReleasesOpen(event.currentTarget.open)}>
@@ -874,7 +889,9 @@ export function ChannelView(props: FeatureProps & { id: string }) {
             <div className="composer-box">
               <textarea
                 aria-label="给频道留言"
-                placeholder="补充背景，或给下一轮指明方向…"
+                placeholder={
+                  channel.work?.awaitingReply ? '回答上一轮的问题，或补充背景…' : '补充背景，或给下一轮指明方向…'
+                }
                 value={draft}
                 onChange={(event) => setDraft(event.target.value)}
                 onKeyDown={(event) => {
@@ -886,13 +903,17 @@ export function ChannelView(props: FeatureProps & { id: string }) {
               />
               <div className="composer-footer">
                 <span>
-                  {running
-                    ? '本轮进行中不会读取，下一轮读取'
-                    : paused
-                      ? '频道已暂停，留言会在下一轮读取'
-                      : channel.nextRunAt
-                        ? `将在下一轮（${formatDate(channel.nextRunAt)}）读取`
-                        : '将在下一轮读取'}
+                  {/* A waiting question comes first: the channel is stopped anyway, and what this
+                      box is for right now is the answer, which only a turn will deliver. */}
+                  {channel.work?.awaitingReply
+                    ? '上一轮在等你回答：留言后点「留言并运行一轮」'
+                    : running
+                      ? '本轮进行中不会读取，下一轮读取'
+                      : paused
+                        ? '频道已暂停，留言会在下一轮读取'
+                        : channel.nextRunAt
+                          ? `将在下一轮（${formatDate(channel.nextRunAt)}）读取`
+                          : '将在下一轮读取'}
                 </span>
                 <div className="composer-actions">
                   <Button

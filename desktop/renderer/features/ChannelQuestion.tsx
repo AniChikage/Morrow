@@ -21,21 +21,25 @@ interface Props {
   channelId: string;
   work: ChannelWork;
   api: DesktopAPI;
+  /** Whose question this is: the runtime that asked, so a CLI turn is not read as Codex asking. */
+  label: string;
   busy?: boolean;
   /** Why the answer box is disabled right now; empty when the user can answer. */
   unavailable?: string;
-  /** Retired runtimes keep the question readable but never receive an answer. */
+  /** Retired runtimes, and every CLI channel, keep the question readable but never receive an answer. */
   readOnly?: boolean;
   /** Focus the box once it is usable. Only set when the page was opened with this question already waiting. */
   autoFocus?: boolean;
   primaryAction?: boolean;
-  onShowConversation: () => void;
+  /** Opens the App conversation the question came from; left out when there is none to open. */
+  onShowConversation?: () => void;
 }
 
 export function ChannelQuestion({
   channelId,
   work,
   api,
+  label,
   busy = false,
   unavailable = '',
   readOnly = false,
@@ -105,16 +109,18 @@ export function ChannelQuestion({
   return (
     <section className="channel-question" aria-labelledby={labelId}>
       <span className="channel-question-label" id={labelId}>
-        Codex 需要你回答
+        {label}
       </span>
       <div className="channel-question-body">
         <Markdown>{work.nextStep}</Markdown>
       </div>
       <div className="channel-question-meta">
         <time dateTime={work.updatedAt}>{formatDate(work.updatedAt)}</time>
-        <Button variant="ghost" onClick={onShowConversation}>
-          查看完整回复
-        </Button>
+        {onShowConversation && (
+          <Button variant="ghost" onClick={onShowConversation}>
+            查看完整回复
+          </Button>
+        )}
       </div>
       {sent ? (
         <p className="channel-question-answered" role="status">
