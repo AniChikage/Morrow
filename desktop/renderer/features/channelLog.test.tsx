@@ -15,6 +15,10 @@ const round = (id: string, patch: Partial<Run> = {}): Run => ({
   channelId: 'channel-system',
   projectId: 'project-atlas',
   runtime: 'codex',
+  // Where the turn ran, which the service records on every run. These Codex rounds are App rounds,
+  // as `sessionId: 'thread'` says; a bounded turn — a CLI runtime, or a CLI-direct Codex channel —
+  // leaves it off, and the page reads this rather than the runtime to know which it is looking at.
+  ...((patch.runtime || 'codex') === 'codex' ? { executionOwner: 'codex-app' as const } : {}),
   status: 'completed',
   startedAt: timestamp,
   finishedAt: '2026-09-07T02:02:00.000Z',
@@ -377,7 +381,8 @@ it('reports missing native timestamps honestly instead of 尚未运行 and NaN �
   vi.mocked(props.api.getRuns).mockResolvedValue({
     runs: [
       round('native-clock', { startedAt: '', executionOwner: 'codex-app' }),
-      round('cli-clock', { startedAt: '' }),
+      // A bounded turn, which is what leaving the owner off means — CLI runtime or Codex direct.
+      round('cli-clock', { startedAt: '', executionOwner: undefined }),
     ],
     hasMore: false,
   });
@@ -561,6 +566,32 @@ function cliChannelState() {
   state.channels[0].permission = 'workspace-write';
   return state;
 }
+/** The same channel, run as a Codex one that goes straight to the CLI instead of into an App task. */
+function codexDirectState() {
+  const state = cliChannelState();
+  state.channels[0].runtime = 'codex';
+  state.channels[0].transport = 'cli';
+  return state;
+}
+
+it('gives a CLI-direct Codex channel notes and no App task, and points at the CLI it needs', async () => {
+  const { props, api } = featureProps({ snapshot: codexDirectState() });
+  props.snapshot.runtimes = [
+    { id: 'codex', name: 'Codex', available: false, path: '', version: '', detail: '未检测到 CLI。', canWrite: false },
+  ];
+  render(<ChannelView {...props} id="channel-system" />, { wrapper: TestProviders });
+  await screen.findByText('工作日志');
+  // Notes are this channel's only way in, exactly as for a Claude Code one.
+  expect(screen.getByRole('textbox', { name: '给频道留言' })).toBeTruthy();
+  expect(api.getMessages).toHaveBeenCalledWith('channel-system');
+  // Nothing App-shaped: no conversation is polled, and no entry offers to open or link one.
+  expect(api.getNativeConversation).not.toHaveBeenCalled();
+  expect(screen.queryByRole('button', { name: '关联 App 任务' })).toBeNull();
+  // What is missing is the CLI on this Mac, so that is what the page names.
+  expect(screen.getByRole('alert').textContent).toContain('codex login');
+  await userEvent.setup().click(screen.getByRole('button', { name: '频道选项' }));
+  expect(screen.queryByRole('menuitem', { name: '在 Codex App 中打开对话' })).toBeNull();
+});
 
 it('keeps the Codex account gate off a CLI channel, which is never held by the reserve line', async () => {
   const { props, api } = featureProps({ snapshot: cliChannelState() });
@@ -597,6 +628,8 @@ it('shows a CLI report excerpt without work while preserving Codex, empty and st
     round('cli-empty', { runtime: 'claude', summary: '  ', log: emptyLog }),
     round('codex-summary', { summary, log: emptyLog }),
     round('cli-work', { runtime: 'claude', summary }),
+    // A CLI-direct Codex turn has no work interface either, so its own answer is all there is.
+    round('codex-cli-summary', { summary, log: emptyLog, executionOwner: undefined }),
   ];
   const original = structuredClone(runs);
   vi.mocked(props.api.getRuns).mockResolvedValue({ runs, hasMore: false });
@@ -613,5 +646,8 @@ it('shows a CLI report excerpt without work while preserving Codex, empty and st
   }
   expect(within(entries[4]).getByRole('heading', { name: '关注 cli-work' })).toBeTruthy();
   expect(entries[4].querySelector('.log-summary')!.textContent).toContain('检查下一份报告');
+  // Same runtime as entry 3, which stayed 未记录本轮关注点 because the App ran it.
+  expect(within(entries[5]).getByRole('heading', { name: '已核对导入。' })).toBeTruthy();
+  expect(entries[5].querySelector('.log-summary')!.textContent).toBe('已核对导入。 后续仍待观察。\n第二行保留。');
   expect(runs).toEqual(original);
 });

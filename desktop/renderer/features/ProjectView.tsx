@@ -13,6 +13,7 @@ import {
   Search,
   X,
 } from 'lucide-react';
+import { usesApp } from '../../shared/types';
 import type { Channel, ProjectUsage, WorkItem } from '../../shared/types';
 import type { FeatureProps } from './types';
 import {
@@ -160,15 +161,16 @@ export function ProjectView(props: FeatureProps & { id: string }) {
     setQuery('');
   };
   const openItem = (item: WorkItem) => onNavigate({ kind: 'finding', id: item.id });
-  // Only a Codex channel continues in the App; Claude Code and Trae channels run a bounded CLI turn.
-  const codexChannel = channels.find((channel) => channel.runtime === 'codex');
+  // Only a Codex channel bound to an App task continues in the App; Claude Code and Trae channels,
+  // and a CLI-direct Codex channel, run a bounded turn with no task to open.
+  const codexChannel = channels.find((channel) => usesApp(channel));
   const pendingQuestions = channels.filter((channel) => channel.work?.awaitingReply);
   if (!project) return <EmptyState title="项目不存在" description="项目可能已被移除，请在侧栏重新选择。" />;
   const pendingReleases = (snapshot.releases || []).filter(
     (release) => release.projectId === id && release.status === 'awaiting_approval'
   );
   const blocked = allItems.find((item) => item.status === 'blocked');
-  const boundChannel = channels.find((channel) => channel.runtime === 'codex' && channel.sessionId);
+  const boundChannel = channels.find((channel) => usesApp(channel) && channel.sessionId);
   const missingBrief =
     briefState?.id === id && briefState.revision === project.briefRevision
       ? !briefState.present
@@ -208,23 +210,29 @@ export function ProjectView(props: FeatureProps & { id: string }) {
                 label: '完善项目说明',
                 action: () => setTab('brief'),
               }
-            : !codexChannel
+            : !channels.length
               ? {
                   text: '添加持续频道，再关联你在 Codex App 中创建的任务',
                   label: '添加频道',
                   action: () => onNewChannel(id),
                 }
-              : !boundChannel
+              : // The App steps are only a next step for a channel that runs in an App task. A
+                // project whose channels all run bounded turns has nothing to link, so its next step
+                // is the work log, not an instruction to go create a task it will never use.
+                codexChannel && !boundChannel
                 ? {
                     text: '在 Codex App 创建任务，再到频道关联',
                     label: '关联已有任务',
                     action: () => onNavigate({ kind: 'channel', id: codexChannel.id }),
                   }
-                : {
-                    text: `${boundChannel.name} · 查看当前进展和下一步`,
-                    label: '打开工作日志',
-                    action: () => onNavigate({ kind: 'channel', id: boundChannel.id }),
-                  };
+                : (() => {
+                    const open = boundChannel || channels[0];
+                    return {
+                      text: `${open.name} · 查看当前进展和下一步`,
+                      label: '打开工作日志',
+                      action: () => onNavigate({ kind: 'channel', id: open.id }),
+                    };
+                  })();
 
   const history = !filtered && resolvedItems.length > 0 && (
     <section className="project-history" aria-label="已解决历史">

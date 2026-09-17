@@ -150,6 +150,22 @@ export interface AppResumeSummary {
   reason: string;
   recordId: string;
 }
+/**
+ * How a Codex channel's turns reach Codex. `app` hands each turn to the shared Codex App task; `cli`
+ * starts `codex exec` as a bounded subprocess, like a Claude Code or Trae channel. Only `app` has
+ * the in-app browser, Computer Use, the App's dynamic tools, App approvals and the work interface.
+ */
+export const channelTransports = ['app', 'cli'] as const;
+export type ChannelTransport = (typeof channelTransports)[number];
+/**
+ * Whether this channel has an App task behind it. A channel with no stored transport means `app`, so
+ * rows written before the field existed read as they always did. Ask this — not `runtime === 'codex'`
+ * — for anything App-shaped: the native conversation, linking and opening a task, App-resume state,
+ * approvals, and whether notes are this channel's way in. Usage is the other question: it follows the
+ * runtime, because a CLI-direct Codex turn spends the same Codex account an App one does.
+ */
+export const usesApp = (channel: Pick<Channel, 'runtime' | 'transport'>) =>
+  channel.runtime === 'codex' && (channel.transport || 'app') === 'app';
 export interface Channel {
   work?: ChannelWork;
   promptCharter?: PromptCharter;
@@ -161,6 +177,8 @@ export interface Channel {
   name: string;
   goal: string;
   runtime: RuntimeID;
+  /** Codex only, and absent means `app`; the service refuses the field on the other runtimes. */
+  transport?: ChannelTransport;
   model: string;
   status: string;
   intervalMinutes: number;
@@ -288,13 +306,16 @@ export interface CreateChannel {
   name: string;
   goal: string;
   runtime: RuntimeID;
+  transport?: ChannelTransport;
   model?: string;
   intervalMinutes?: number;
   maxRunsPerDay?: number;
   permission?: Channel['permission'];
 }
 export type ChannelPatch = Partial<
-  Pick<Channel, 'name' | 'goal' | 'model' | 'intervalMinutes' | 'maxRunsPerDay' | 'permission'> & { runtime: RuntimeID }
+  Pick<Channel, 'name' | 'goal' | 'model' | 'intervalMinutes' | 'maxRunsPerDay' | 'permission' | 'transport'> & {
+    runtime: RuntimeID;
+  }
 >;
 export interface EventsQuery {
   projectId?: string;

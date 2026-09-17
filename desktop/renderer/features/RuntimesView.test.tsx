@@ -96,7 +96,9 @@ test('CLI detection stays separate from authentication and details are progressi
   await userEvent.setup().click(row);
   const details = within(screen.getByRole('region', { name: 'Codex 详情' }));
   expect(details.getByText(installed.path)).toBeTruthy();
-  expect(details.getByText('只读 / 工作区写入，由每个频道单独设置；沿用 App 任务权限只有 Codex 可选。')).toBeTruthy();
+  expect(
+    details.getByText('只读 / 工作区写入，由每个频道单独设置；沿用 App 任务权限只有走 App 的 Codex 频道可选。')
+  ).toBeTruthy();
   expect(details.getByText(/登录状态与配额在实际执行时验证/)).toBeTruthy();
   expect(row.getAttribute('aria-expanded')).toBe('true');
   expect(screen.queryByRole('button', { name: /安装|登录|配置/ })).toBeNull();
@@ -189,6 +191,25 @@ test('a connected App guides task association without enabling a launcher', asyn
     id: props.snapshot.channels.find((c) => c.runtime === 'codex')!.id,
   });
   expect(api.openNativeApp).not.toHaveBeenCalled();
+});
+test('a CLI-direct Codex channel is never a task target and brings back the CLI login line', async () => {
+  const { props, api } = runtimeProps();
+  for (const channel of props.snapshot.channels) if (channel.runtime === 'codex') channel.transport = 'cli';
+  api.getNativeStatus.mockResolvedValue(
+    status({ connected: true, connectionMode: 'app-follower', boundThreadCount: 0, readyThreadCount: 0 })
+  );
+  render(<RuntimesView {...props} />);
+  await checklist();
+  // There is no task to link, so the page offers no shortcut into one.
+  expect(step('任务已关联')).toBe('next');
+  expect(screen.queryByRole('button', { name: '去关联任务' })).toBeNull();
+  expect(screen.getByText('还没有可关联的 Codex 频道，请先在项目里添加频道。')).toBeTruthy();
+  // What a CLI-direct channel needs is on this Mac, so the row says where the binary is and how to
+  // log in — the half the App normally answers for.
+  await userEvent.setup().click(screen.getByRole('button', { name: 'Codex，App 已连接，查看详情' }));
+  const details = within(screen.getByRole('region', { name: 'Codex 详情' }));
+  expect(details.getByText(/codex login/)).toBeTruthy();
+  expect(details.getByText(installed.path)).toBeTruthy();
 });
 test('associated tasks must actually be available before the checklist says ready', async () => {
   const { props, api } = runtimeProps();

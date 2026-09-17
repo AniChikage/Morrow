@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import { ArrowUpRight, ChevronRight, Hash, Info, Monitor, RefreshCw, Server, Terminal } from 'lucide-react';
+import { usesApp } from '../../shared/types';
 import type { Channel, ConnectionInfo, DesktopAPI, NativeConnectionStatus, Project, Runtime } from '../../shared/types';
 import type { FeatureProps } from './types';
 import { Button, EmptyState } from '../components/ui';
@@ -314,8 +315,10 @@ export function RuntimesView({
   const remote = connection?.config.mode === 'ssh';
   const appPending = native ? connectionSteps(native).findIndex((step) => !step.done) : -1;
   // A task action belongs to a project. Prefer the most recently opened one; otherwise let the
-  // user pick, rather than silently acting on whichever Codex channel happens to come first.
-  const codexChannels = snapshot.channels.filter((channel) => channel.runtime === 'codex');
+  // user pick, rather than silently acting on whichever Codex channel happens to come first. Only
+  // channels that run inside an App task are candidates: a CLI-direct one has no task to link or
+  // open, and offering it here would send the user to look for one that will never exist.
+  const codexChannels = snapshot.channels.filter((channel) => usesApp(channel));
   const scoped = projectId ? codexChannels.filter((channel) => channel.projectId === projectId) : [];
   const linkTargets = scoped.length ? scoped : codexChannels;
   const openTargets = linkTargets.filter((channel) => channel.sessionId);
@@ -384,6 +387,11 @@ export function RuntimesView({
                 const channels = snapshot.channels.filter((channel) => channel.runtime === runtime.id);
                 const running = channels.filter((channel) => channel.status === 'running').length;
                 const appRuntime = runtime.id === 'codex' && native;
+                // The CLI half of this row — where the binary is, which account it uses, what to run
+                // to log in — is hidden for Codex while the App answers all of it. A CLI-direct
+                // channel makes it load-bearing again: that channel needs `codex login` on this Mac,
+                // not an App to install, so the block comes back as soon as one exists.
+                const cliDetails = !appRuntime || channels.some((channel) => !usesApp(channel));
                 const status = appRuntime
                   ? {
                       label: native.connected ? 'App 已连接' : 'App 未连接',
@@ -486,7 +494,7 @@ export function RuntimesView({
                           )}
                           <dt>检测结果</dt>
                           <dd>{runtime.detail || '尚无详细检测结果。'}</dd>
-                          {!appRuntime && (
+                          {cliDetails && (
                             <>
                               <dt>账号登录</dt>
                               <dd>
@@ -498,7 +506,7 @@ export function RuntimesView({
                               <dd>
                                 {runtime.available
                                   ? runtime.canWrite
-                                    ? '只读 / 工作区写入，由每个频道单独设置；沿用 App 任务权限只有 Codex 可选。'
+                                    ? '只读 / 工作区写入，由每个频道单独设置；沿用 App 任务权限只有走 App 的 Codex 频道可选。'
                                     : '只读执行'
                                   : 'CLI 可用后读取支持的权限。'}
                               </dd>

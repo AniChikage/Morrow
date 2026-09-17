@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Hash, MoreHorizontal, Pause, Play } from 'lucide-react';
+import { usesApp } from '../../shared/types';
 import type {
   Channel,
   NativeConversation,
@@ -74,8 +75,10 @@ const sortThreads = (threads: NativeThreadSummary[], path: string) =>
   [...threads].sort((a, b) => Number(sameDirectory(b.cwd, path)) - Number(sameDirectory(a.cwd, path)));
 /**
  * Usage is only attributed to Codex turns (`service/engine.ts` tracks nothing for other runtimes),
- * so a CLI turn has no 额度 to report at all: undefined drops the label rather than calling it
- * 未记录, which would read as a gap in a record that was never kept for this runtime.
+ * so a Claude Code or Trae turn has no 额度 to report at all: undefined drops the label rather than
+ * calling it 未记录, which would read as a gap in a record that was never kept for this runtime.
+ * The test is the runtime and stays that way — a CLI-direct Codex turn spends the same account and
+ * carries the same reading.
  */
 const runUsage = (run: Run) =>
   run.runtime !== 'codex'
@@ -150,8 +153,11 @@ function LogEntry({
   // Older services without list projections can still supply the summary through details.
   const log = run.log || detail?.run.log;
   const work = log?.work || currentWork;
+  // A bounded turn's own answer, shown when it left no work decision. The question is where the turn
+  // ran, not which runtime it was: a CLI-direct Codex turn has no work interface either, so its
+  // answer is all there is. `executionOwner` is that fact, recorded per run.
   const cliSummary =
-    !work && run.runtime !== 'codex'
+    !work && run.executionOwner !== 'codex-app'
       ? run.summary
           .trim()
           .split(/\r?\n/)
@@ -273,12 +279,14 @@ export function ChannelView(props: FeatureProps & { id: string }) {
   const demo = !!project?.isDemo;
   // While the service steps aside for a new version, nothing may start work; pausing still can.
   const switching = upgradeSwitching(snapshot);
-  // Only a Codex channel has an App conversation behind it; Claude Code and Trae channels run a
-  // bounded CLI turn instead, so none of the App-task state applies to them.
-  const native = channel?.runtime === 'codex' && !demo;
-  // A CLI channel reads what people leave here at the start of its next turn. A Codex channel has
-  // the App conversation instead, and a demo channel never runs, so neither takes notes.
-  const notesEnabled = !!channel && !demo && channel.runtime !== 'codex';
+  // Only a channel bound to an App task has an App conversation behind it. Claude Code and Trae
+  // channels, and a Codex channel that goes straight to the CLI, run a bounded turn instead, so none
+  // of the App-task state — linking, opening, resume, approvals — applies to them.
+  const native = !!channel && usesApp(channel) && !demo;
+  // A bounded-turn channel reads what people leave here at the start of its next turn, and that is
+  // the only way in it has. A channel with an App task has the App conversation instead, and a demo
+  // channel never runs, so neither takes notes.
+  const notesEnabled = !!channel && !demo && !usesApp(channel);
   const [conversation, setConversation] = useState<NativeConversation | null>(null);
   const [usage, setUsage] = useState<ProjectUsage>();
   const [runs, setRuns] = useState<Run[]>([]);
@@ -563,8 +571,9 @@ export function ChannelView(props: FeatureProps & { id: string }) {
   );
   const reviewingRelease = releasesOpen && pendingReleases.length > 0;
   // The account reserve line only holds Codex turns (`service/engine.ts` gates nothing else), so a
-  // CLI channel that the service would start must not be told it is waiting on 额度. `runtime` is
-  // the test, not `native`: a demo Codex channel keeps reading the same gate it always did.
+  // Claude Code or Trae channel that the service would start must not be told it is waiting on 额度.
+  // `runtime` is the test, not `native`: a demo Codex channel keeps reading the same gate it always
+  // did, and a CLI-direct one is held by the same line because it spends the same account.
   const usageGate = channel.runtime === 'codex' && usage?.gate.blocked && !usage.gate.pending ? usage.gate : undefined;
   const needs =
     !!channel.work?.awaitingReply ||
@@ -573,6 +582,14 @@ export function ChannelView(props: FeatureProps & { id: string }) {
     appRequests.length > 0 ||
     !!usageGate;
   const needsLink = native && !!conversation && !conversation.threadId;
+  // A CLI-direct Codex channel needs the Codex CLI on the execution host, not the App. None of the
+  // App connection lines below apply to it, so this is the only place it can be told what is
+  // missing — and the answer is `codex login`, not an App to install and keep open.
+  const cliMissing =
+    !demo &&
+    channel.runtime === 'codex' &&
+    !usesApp(channel) &&
+    snapshot.runtimes.some((row) => row.id === 'codex' && !row.available);
   const primary = manualRunning
     ? 'pause'
     : native && !conversation && !nativeError
@@ -654,9 +671,9 @@ export function ChannelView(props: FeatureProps & { id: string }) {
                 </Button>
               }
             >
-              {/* A CLI-runtime channel has no App conversation to open; the demo one keeps the
+              {/* A channel with no App task has no conversation to open; the demo one keeps the
                   entry so the preview still shows it, disabled like every other demo action. */}
-              {primary !== 'open' && channel.runtime === 'codex' && (
+              {primary !== 'open' && usesApp(channel) && (
                 <DropdownItem disabled={busy || demo} onSelect={openApp}>
                   在 Codex App 中打开对话
                 </DropdownItem>
@@ -711,35 +728,37 @@ export function ChannelView(props: FeatureProps & { id: string }) {
             <span>下一步</span>
             <p>
               {channel.work.state === 'needs_input'
-                ? // A CLI turn is bounded: the answer waits for the next one rather than reaching a
+                ? // A bounded turn is over: the answer waits for the next one rather than reaching a
                   // task that is still open, so nothing is continuing right now.
-                  channel.runtime === 'codex'
+                  usesApp(channel)
                   ? '已回答，等待 Codex 继续'
                   : '已回答，等待下一轮'
                 : questionExcerpt(channel.work.nextStep, 120)}
             </p>
           </div>
         )}
-        <p className="channel-stage-hint" role={nativeProblem ? 'alert' : undefined}>
+        <p className="channel-stage-hint" role={nativeProblem || cliMissing ? 'alert' : undefined}>
           {channel.work?.focus && <strong>{channel.work.focus} · </strong>}
           {manualRunning
             ? '本轮进行中，结束后频道保持暂停。'
             : nativeProblem ||
-              (unloaded
-                ? '任务未在 Codex App 中打开。请先打开已关联任务，继续和回答暂不可用。'
-                : needsLink
-                  ? '先关联在 Codex App 创建的任务。'
-                  : primary === 'open'
-                    ? '请先在 Codex App 恢复连接。'
-                    : channel.work?.awaitingReply
-                      ? '请先回答下方问题。'
-                      : pendingReleases.length
-                        ? '有待批准版本，请先查看变更与风险。'
-                        : blocked.length
-                          ? '有事项受阻，请查看下一步。'
-                          : paused
-                            ? '准备好后继续工作。'
-                            : '最新进展在下方，更多信息按需展开。')}
+              (cliMissing
+                ? '本频道直连 Codex CLI：请在执行主机安装 Codex CLI 并运行 codex login，不需要 Codex App。'
+                : unloaded
+                  ? '任务未在 Codex App 中打开。请先打开已关联任务，继续和回答暂不可用。'
+                  : needsLink
+                    ? '先关联在 Codex App 创建的任务。'
+                    : primary === 'open'
+                      ? '请先在 Codex App 恢复连接。'
+                      : channel.work?.awaitingReply
+                        ? '请先回答下方问题。'
+                        : pendingReleases.length
+                          ? '有待批准版本，请先查看变更与风险。'
+                          : blocked.length
+                            ? '有事项受阻，请查看下一步。'
+                            : paused
+                              ? '准备好后继续工作。'
+                              : '最新进展在下方，更多信息按需展开。')}
         </p>
         {needsLink && (
           <details
@@ -824,12 +843,13 @@ export function ChannelView(props: FeatureProps & { id: string }) {
                     label={`${runtimeLabel(channel.runtime)} 需要你回答`}
                     busy={busy}
                     unavailable={unavailable}
-                    // A CLI channel answers through the composer at the bottom of the page, the only
-                    // reply path it has: the box in here sends to the App, which would refuse it.
+                    // A bounded-turn channel answers through the composer at the bottom of the page,
+                    // the only reply path it has: the box in here sends to the App, which would
+                    // refuse it.
                     readOnly={notesEnabled}
                     autoFocus={entryQuestion.current?.present}
                     primaryAction={primary === 'answer' && !reviewingRelease}
-                    onShowConversation={channel.runtime === 'codex' ? openApp : undefined}
+                    onShowConversation={usesApp(channel) ? openApp : undefined}
                   />
                   {notesEnabled && (
                     <p className="channel-needs-note">

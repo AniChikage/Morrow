@@ -434,9 +434,12 @@ it('creates a Codex channel that follows the App permissions by default', async 
   await user.click(screen.getByText('工作设置'));
   const engine = screen.getByRole('combobox', { name: /运行引擎/ }) as HTMLSelectElement;
   const scope = screen.getByRole('combobox', { name: /执行权限/ }) as HTMLSelectElement;
+  const transport = screen.getByRole('combobox', { name: /执行方式/ }) as HTMLSelectElement;
   expect([...engine.options].map((option) => option.value)).toEqual(['codex', 'claude', 'trae']);
   expect(engine.value).toBe('codex');
   expect(scope.value).toBe('native');
+  // The App task is the default way in, and the only one that has App settings to follow.
+  expect(transport.value).toBe('app');
   await user.click(screen.getByRole('button', { name: '创建频道' }));
   await waitFor(() =>
     expect(context.current.api.createChannel).toHaveBeenCalledWith({
@@ -444,6 +447,7 @@ it('creates a Codex channel that follows the App permissions by default', async 
       name: '性能与稳定性',
       goal: '持续改善性能',
       runtime: 'codex',
+      transport: 'app',
       model: '',
       permission: 'native',
       intervalMinutes: 60,
@@ -483,6 +487,50 @@ it('moves a new channel off the App scope when its runtime is a CLI, and never o
       name: '本机 CLI',
       goal: '用本机 CLI 持续推进',
       runtime: 'claude',
+      model: '',
+      permission: 'workspace-write',
+      intervalMinutes: 60,
+      maxRunsPerDay: 32,
+    })
+  );
+});
+
+it('offers the CLI transport only for Codex and drops the App scope and guidance with it', async () => {
+  const user = userEvent.setup(),
+    onClose = vi.fn(),
+    onNavigate = vi.fn();
+  context.current.api.createChannel.mockResolvedValue({ id: 'channel-new' });
+  render(
+    <Dialogs modal={{ kind: 'channel', projectId: 'project-other' }} onClose={onClose} onNavigate={onNavigate} />,
+    {
+      wrapper: TestProviders,
+    }
+  );
+  await user.type(screen.getByRole('textbox', { name: '频道名称' }), 'CLI 直连');
+  await user.type(screen.getByRole('textbox', { name: '工作方向' }), '不依赖 App 常驻');
+  expect(screen.getByText('创建频道后，在频道页关联已有的 App 任务。')).toBeTruthy();
+  await user.click(screen.getByText('工作设置'));
+  await user.selectOptions(screen.getByRole('combobox', { name: /执行方式/ }), 'cli');
+  const scope = screen.getByRole('combobox', { name: /执行权限/ }) as HTMLSelectElement;
+  // No App task means nothing to inherit, so the scope falls to the same default a CLI runtime gets.
+  expect(scope.value).toBe('workspace-write');
+  expect([...scope.options].map((option) => option.value)).toEqual(['read-only', 'workspace-write']);
+  expect(screen.queryByText('对话与任务设置')).toBeNull();
+  // What it costs and what it buys, and what to install: the CLI, not the App.
+  expect(screen.getByText(/不能提议上线/)).toBeTruthy();
+  expect(screen.getByText(/codex login/)).toBeTruthy();
+  // The other runtimes have exactly one way in, so the choice disappears with them.
+  await user.selectOptions(screen.getByRole('combobox', { name: /运行引擎/ }), 'trae');
+  expect(screen.queryByRole('combobox', { name: /执行方式/ })).toBeNull();
+  await user.selectOptions(screen.getByRole('combobox', { name: /运行引擎/ }), 'codex');
+  await user.click(screen.getByRole('button', { name: '创建频道' }));
+  await waitFor(() =>
+    expect(context.current.api.createChannel).toHaveBeenCalledWith({
+      projectId: 'project-other',
+      name: 'CLI 直连',
+      goal: '不依赖 App 常驻',
+      runtime: 'codex',
+      transport: 'cli',
       model: '',
       permission: 'workspace-write',
       intervalMinutes: 60,

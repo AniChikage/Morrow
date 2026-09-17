@@ -6,10 +6,11 @@ import { Button, IconButton, StatusIcon } from './ui';
 import { kindLabel, runtimeLabel, usageWindowLabel } from './format';
 import { useWorkspace } from '../state/workspace';
 import { briefPlaceholder, briefTemplate } from '../features/ProjectBrief';
-import { usageWindows } from '../../shared/types';
+import { usageWindows, usesApp } from '../../shared/types';
 import type {
   Channel,
   ChannelPatch,
+  ChannelTransport,
   ConnectionConfig,
   Route,
   RuntimeID,
@@ -22,11 +23,12 @@ import type {
 /** The runtimes a person can pick, in the order they are offered. */
 const runtimeIds: readonly RuntimeID[] = ['codex', 'claude', 'trae'];
 /**
- * A Codex channel follows the App task's own permission settings; the CLI runtimes have no such task,
- * so they start in Morrow's own workspace-write scope. The service applies the same rule.
+ * A Codex channel that runs inside an App task follows that task's own permission settings; every
+ * other channel — the CLI runtimes, and a Codex channel that goes straight to the CLI — has no such
+ * task and starts in Morrow's own workspace-write scope. The service applies the same rule.
  */
-const defaultPermission = (runtime: RuntimeID): Channel['permission'] =>
-  runtime === 'codex' ? 'native' : 'workspace-write';
+const defaultPermission = (runtime: RuntimeID, transport: ChannelTransport): Channel['permission'] =>
+  usesApp({ runtime, transport }) ? 'native' : 'workspace-write';
 
 export type ModalState =
   | { kind: 'project' }
@@ -451,10 +453,13 @@ function ChannelDialog({
   const [name, setName] = useState(channel?.name || '');
   const [goal, setGoal] = useState(channel?.goal || '');
   const [runtime, setRuntime] = useState<RuntimeID>(channel?.runtime || 'codex');
+  const [transport, setTransport] = useState<ChannelTransport>(channel?.transport || 'app');
   const [model, setModel] = useState(channel?.model || '');
   const [permission, setPermission] = useState<Channel['permission']>(
-    channel?.permission || defaultPermission(channel?.runtime || 'codex')
+    channel?.permission || defaultPermission(channel?.runtime || 'codex', channel?.transport || 'app')
   );
+  /** Whether the channel being described here would run inside an App task. */
+  const app = usesApp({ runtime, transport });
   const [interval, setInterval] = useState(channel?.intervalMinutes || 60);
   const [budget, setBudget] = useState(channel?.maxRunsPerDay || 32);
   const demo = !!snapshot.projects.find((p) => p.id === projectId)?.isDemo;
@@ -473,6 +478,8 @@ function ChannelDialog({
         };
         if (!running) {
           if (runtime !== channel.runtime) data.runtime = runtime;
+          // Only Codex takes one, and the service refuses the field on the other runtimes.
+          if (runtime === 'codex' && transport !== (channel.transport || 'app')) data.transport = transport;
           if (model !== channel.model) data.model = model.trim();
           if (permission !== channel.permission) data.permission = permission;
         }
@@ -483,6 +490,7 @@ function ChannelDialog({
           name: name.trim(),
           goal: goal.trim(),
           runtime,
+          ...(runtime === 'codex' ? { transport } : {}),
           model: model.trim(),
           permission,
           intervalMinutes: interval,
@@ -519,8 +527,11 @@ function ChannelDialog({
             required
           />
         </Field>
-        {!channel && runtime === 'codex' && <p className="form-note">创建频道后，在频道页关联已有的 App 任务。</p>}
-        {runtime === 'codex' && (
+        {!channel && app && <p className="form-note">创建频道后，在频道页关联已有的 App 任务。</p>}
+        {!channel && runtime === 'codex' && !app && (
+          <p className="form-note">直连不需要 Codex App：请在执行主机安装 Codex CLI 并运行 codex login。</p>
+        )}
+        {app && (
           <details className="feature-form-details">
             <summary>对话与任务设置</summary>
             <p className="form-note">
@@ -548,7 +559,8 @@ function ChannelDialog({
                   const next = e.target.value as RuntimeID;
                   setRuntime(next);
                   setModel('');
-                  if (next !== 'codex' && permission === 'native') setPermission('workspace-write');
+                  if (!usesApp({ runtime: next, transport }) && permission === 'native')
+                    setPermission('workspace-write');
                 }}
                 disabled={running}
               >
@@ -563,17 +575,43 @@ function ChannelDialog({
               <input
                 value={model}
                 onChange={(e) => setModel(e.target.value)}
-                placeholder={runtime === 'codex' ? 'Codex App 默认模型' : 'CLI 默认模型'}
+                placeholder={app ? 'Codex App 默认模型' : 'CLI 默认模型'}
                 disabled={running}
               />
             </Field>
           </div>
+          {/* Only Codex has two ways in; the other runtimes have exactly one, so there is nothing
+              to choose and the service refuses the field on them. */}
+          {runtime === 'codex' && (
+            <Field
+              title="执行方式"
+              hint={
+                app
+                  ? '轮次进入 Codex App 中已关联的任务：应用内浏览器、Computer Use、App 动态工具、App 审批与工作接口（可提议上线）都在这里，代价是 App 必须安装并保持运行。'
+                  : '轮次是本机的一次 codex exec，不需要 Codex App 常驻；没有应用内浏览器、Computer Use、App 动态工具和 App 审批，也没有工作接口（不能提议上线），看板通过轮次末尾的报告维护。额度仍然记在同一个 Codex 账号上。'
+              }
+            >
+              <select
+                value={transport}
+                onChange={(e) => {
+                  const next = e.target.value as ChannelTransport;
+                  setTransport(next);
+                  if (!usesApp({ runtime, transport: next }) && permission === 'native')
+                    setPermission('workspace-write');
+                }}
+                disabled={running}
+              >
+                <option value="app">Codex App 任务（默认）</option>
+                <option value="cli">直连 Codex CLI</option>
+              </select>
+            </Field>
+          )}
           <Field
             title="执行权限"
             hint={
               permission === 'workspace-write' && runtime === 'claude'
                 ? '可在项目内修改文件并执行命令；命令不在沙箱内运行。'
-                : runtime === 'codex'
+                : app
                   ? '默认沿用 Codex App 的权限设置（默认为完整访问）；需要收紧时改为只读或工作区写入。'
                   : '本机 CLI 在所选范围内执行有界轮次。'
             }
@@ -585,7 +623,8 @@ function ChannelDialog({
             >
               <option value="read-only">只读工作空间</option>
               <option value="workspace-write">允许工作区写入</option>
-              {runtime === 'codex' && <option value="native">沿用 Codex App 原生权限</option>}
+              {/* Nothing to inherit without an App task, and the service refuses the scope there. */}
+              {app && <option value="native">沿用 Codex App 原生权限</option>}
             </select>
           </Field>
           <div className="form-row">
@@ -611,7 +650,7 @@ function ChannelDialog({
             </Field>
           </div>
         </details>
-        {running && <p className="form-note">暂停频道后可以更换引擎、模型或执行权限。</p>}
+        {running && <p className="form-note">暂停频道后可以更换引擎、执行方式、模型或执行权限。</p>}
         {error && (
           <p className="form-error" role="alert">
             {error}
