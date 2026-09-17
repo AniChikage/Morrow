@@ -171,6 +171,7 @@ test('a CLI-direct Codex channel runs its own bounded turn and never creates an 
     await s.api('POST', `/api/channels/${cli.id}/messages`, { text: '先看导入流程' }, 201);
     await s.api('GET', `/api/channels/${cli.id}/native/conversation`, undefined, 409);
     await s.api('POST', `/api/channels/${cli.id}/native/bind`, { threadId: 'some-thread' }, 409);
+    await s.api('POST', `/api/channels/${cli.id}/native/ensure`, {}, 409);
     // The App-transport channel of the same project still goes to the background for its task.
     await s.api('POST', `/api/channels/${s.channel.id}/action`, { action: 'run' }).catch(() => {});
     assert.equal(background.created.length, 1);

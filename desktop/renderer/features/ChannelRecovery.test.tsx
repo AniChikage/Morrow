@@ -31,7 +31,7 @@ test('the actual conversation API drives the unloaded-task message, recovery and
   render(<ChannelView {...props} id={data.channel.id} />, { wrapper: TestProviders });
   await screen.findByText(message);
   await userEvent.setup().click(screen.getByRole('button', { name: /^在 Codex App 中打开$/ }));
-  expect(api.openNativeApp).toHaveBeenCalledWith(data.channel.id);
+  expect(api.ensureAppTask).toHaveBeenCalledWith(data.channel.id);
   expect(api.channelAction).not.toHaveBeenCalled();
   current = data.unloadedThenOffline;
   expect(current.status.available).toBe(false);

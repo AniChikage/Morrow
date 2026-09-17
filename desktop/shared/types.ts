@@ -503,6 +503,8 @@ export interface DesktopAPI {
   listNativeThreads(channelId: string): Promise<{ status: NativeConnectionStatus; threads: NativeThreadSummary[] }>;
   getNativeConversation(channelId: string, query?: NativeHistoryQuery): Promise<NativeConversation>;
   bindNativeThread(channelId: string, threadId: string): Promise<NativeConversation>;
+  /** Deep-link the App, bind the catalog row, and send the first turn. */
+  ensureAppTask(channelId: string): Promise<NativeConversation>;
   sendNativeMessage(channelId: string, input: NativeMessageInput): Promise<NativeMessageReceipt>;
   interruptNativeTurn(channelId: string, turnId: string): Promise<unknown>;
   openNativeApp(channelId: string): Promise<void>;

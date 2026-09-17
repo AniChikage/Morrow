@@ -30,6 +30,7 @@ const api: DesktopAPI = {
   listNativeThreads: (id) => ipcRenderer.invoke('morrow:list-native-threads', id),
   getNativeConversation: (id, query) => ipcRenderer.invoke('morrow:get-native-conversation', id, query || {}),
   bindNativeThread: (id, threadId) => ipcRenderer.invoke('morrow:bind-native-thread', id, threadId),
+  ensureAppTask: (id) => ipcRenderer.invoke('morrow:ensure-app-task', id),
   sendNativeMessage: (id, input) => ipcRenderer.invoke('morrow:send-native-message', id, input),
   interruptNativeTurn: (id, turnId) => ipcRenderer.invoke('morrow:interrupt-native-turn', id, turnId),
   openNativeApp: (id) => ipcRenderer.invoke('morrow:open-native-app', id),
