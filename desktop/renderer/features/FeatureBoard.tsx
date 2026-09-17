@@ -1,4 +1,5 @@
-import { useEffect, useRef, useState, type PointerEvent } from 'react';
+import { useCallback, useEffect, useRef, useState, type PointerEvent } from 'react';
+import { createPortal } from 'react-dom';
 import { Link2, MoreHorizontal } from 'lucide-react';
 import type { Channel, WorkItem } from '../../shared/types';
 import type { FeatureProps } from './types';
@@ -31,6 +32,30 @@ type Props = Pick<FeatureProps, 'api' | 'onMutate' | 'busy'> & {
   filtered: boolean;
   onOpen: (item: WorkItem) => void;
 };
+
+function CardContent({ item, channels }: { item: WorkItem; channels: Channel[] }) {
+  return (
+    <>
+      <span className="board-card-type">
+        <span>{featureNumber(item)}</span>
+        <span>{kindLabel(item.kind)}</span>
+      </span>
+      <strong>{item.title}</strong>
+      {item.nextStep && <span className="board-card-next">{item.nextStep}</span>}
+      <span className="board-card-meta">
+        <span className="feature-source-tag" title={`来源：${featureSourceLabel(item, channels)}`}>
+          {item.channelId ? '# ' : ''}
+          {featureSourceLabel(item, channels)}
+        </span>
+        <FeatureOwnerTag item={item} channels={channels} />
+        <span title={`${item.evidence.length} 条证据`}>
+          <Link2 size={12} />
+          {item.evidence.length}
+        </span>
+      </span>
+    </>
+  );
+}
 /**
  * The project's shared board: four fixed columns whose cards can be dragged between them, with a
  * per-card 移动到 menu as the keyboard equivalent. A move is only ever what the service confirmed —
@@ -38,10 +63,17 @@ type Props = Pick<FeatureProps, 'api' | 'onMutate' | 'busy'> & {
  */
 export function FeatureBoard({ items, channels, filtered, api, onMutate, busy, onOpen }: Props) {
   const root = useRef<HTMLDivElement>(null);
-  const drag = useRef<{ item: WorkItem; x: number; y: number; active: boolean } | null>(null);
+  const drag = useRef<{ item: WorkItem; x: number; y: number; active: boolean; rect: DOMRect } | null>(null);
   const suppressClick = useRef(false);
   const moving = useRef(false);
-  const [draggedId, setDraggedId] = useState('');
+  const [ghost, setGhost] = useState<{
+    item: WorkItem;
+    left: number;
+    top: number;
+    width: number;
+    height: number;
+  } | null>(null);
+  const draggedId = ghost?.item.id || '';
   const [over, setOver] = useState('');
   const [pending, setPending] = useState('');
   const [notice, setNotice] = useState('');
@@ -61,11 +93,25 @@ export function FeatureBoard({ items, channels, filtered, api, onMutate, busy, o
    * it holds something.
    */
   const columns = items.some((item) => item.status === 'resolved') ? moveTargets : boardStatuses;
-  const resetDrag = () => {
+  const resetDrag = useCallback(() => {
     drag.current = null;
-    setDraggedId('');
+    setGhost(null);
     setOver('');
-  };
+  }, []);
+  useEffect(() => {
+    if (busy) resetDrag();
+  }, [busy, resetDrag]);
+  useEffect(() => {
+    const cancel = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') resetDrag();
+    };
+    window.addEventListener('keydown', cancel);
+    window.addEventListener('blur', resetDrag);
+    return () => {
+      window.removeEventListener('keydown', cancel);
+      window.removeEventListener('blur', resetDrag);
+    };
+  }, [resetDrag]);
   const move = async (item: WorkItem, status: string) => {
     if (busy || moving.current || item.status === status) return;
     moving.current = true;
@@ -94,8 +140,15 @@ export function FeatureBoard({ items, channels, filtered, api, onMutate, busy, o
     if (!current.active && Math.hypot(event.clientX - current.x, event.clientY - current.y) < 6) return;
     current.active = true;
     suppressClick.current = true;
-    setDraggedId(current.item.id);
-    setOver(targetAt(event));
+    setGhost({
+      item: current.item,
+      left: current.rect.left + event.clientX - current.x,
+      top: current.rect.top + event.clientY - current.y,
+      width: current.rect.width,
+      height: current.rect.height,
+    });
+    const target = targetAt(event);
+    setOver(target === current.item.status ? '' : target);
     event.preventDefault();
   };
   const pointerUp = (event: PointerEvent<HTMLButtonElement>) => {
@@ -106,6 +159,22 @@ export function FeatureBoard({ items, channels, filtered, api, onMutate, busy, o
   };
   return (
     <div className="project-board-view" ref={root}>
+      {ghost &&
+        createPortal(
+          <div
+            className="board-card board-drag-ghost"
+            aria-hidden="true"
+            style={{ left: ghost.left, top: ghost.top, width: ghost.width }}
+          >
+            <div className="board-card-open">
+              <CardContent item={ghost.item} channels={channels} />
+            </div>
+            <span className="board-drag-destination">
+              {over ? `松开移至${statusLabel(over)}` : '拖到目标列 · Esc 取消'}
+            </span>
+          </div>,
+          document.body
+        )}
       {/* Always in the document, so the live region can speak the result of a move that just landed. */}
       <p className="board-notice" role="status" aria-live="polite">
         {notice}
@@ -129,6 +198,11 @@ export function FeatureBoard({ items, channels, filtered, api, onMutate, busy, o
                 <p>{descriptions[status]}</p>
               </header>
               <div className="board-column-body">
+                {ghost && over === status && (
+                  <div className="board-drop-placeholder" style={{ minHeight: ghost.height }}>
+                    松开移至{statusLabel(status)}
+                  </div>
+                )}
                 {cards.map((item) => (
                   <article
                     key={item.id}
@@ -146,7 +220,13 @@ export function FeatureBoard({ items, channels, filtered, api, onMutate, busy, o
                       onPointerDown={(event) => {
                         if (event.button !== 0 || busy || moving.current) return;
                         suppressClick.current = false;
-                        drag.current = { item, x: event.clientX, y: event.clientY, active: false };
+                        drag.current = {
+                          item,
+                          x: event.clientX,
+                          y: event.clientY,
+                          active: false,
+                          rect: event.currentTarget.closest('article')!.getBoundingClientRect(),
+                        };
                         event.currentTarget.setPointerCapture?.(event.pointerId);
                       }}
                       onPointerMove={pointerMove}
@@ -160,23 +240,7 @@ export function FeatureBoard({ items, channels, filtered, api, onMutate, busy, o
                         suppressClick.current = false;
                       }}
                     >
-                      <span className="board-card-type">
-                        <span>{featureNumber(item)}</span>
-                        <span>{kindLabel(item.kind)}</span>
-                      </span>
-                      <strong>{item.title}</strong>
-                      {item.nextStep && <span className="board-card-next">{item.nextStep}</span>}
-                      <span className="board-card-meta">
-                        <span className="feature-source-tag" title={`来源：${featureSourceLabel(item, channels)}`}>
-                          {item.channelId ? '# ' : ''}
-                          {featureSourceLabel(item, channels)}
-                        </span>
-                        <FeatureOwnerTag item={item} channels={channels} />
-                        <span title={`${item.evidence.length} 条证据`}>
-                          <Link2 size={12} />
-                          {item.evidence.length}
-                        </span>
-                      </span>
+                      <CardContent item={item} channels={channels} />
                     </button>
                     <Dropdown
                       trigger={
@@ -204,7 +268,7 @@ export function FeatureBoard({ items, channels, filtered, api, onMutate, busy, o
                     </Dropdown>
                   </article>
                 ))}
-                {!cards.length && (
+                {!cards.length && over !== status && (
                   <div className="board-column-empty">
                     {draggedId ? '放到此列' : filtered ? '没有匹配的事项' : '暂无事项'}
                   </div>

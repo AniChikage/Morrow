@@ -117,6 +117,87 @@ describe('shared project board', () => {
     expect(onOpen).toHaveBeenCalledTimes(1);
   });
 
+  it('keeps the grab offset in a non-interactive ghost and previews the target without moving the source', () => {
+    const { api } = setup();
+    const source = screen.getByRole('article');
+    vi.spyOn(source, 'getBoundingClientRect').mockReturnValue({
+      left: 10,
+      top: 15,
+      width: 220,
+      height: 120,
+    } as DOMRect);
+    const open = screen.getByRole('button', { name: /^打开/ });
+    const target = screen.getByRole('region', { name: '调查中列' });
+    hitTest.mockReturnValue(target);
+    fireEvent.pointerDown(open, { button: 0, clientX: 30, clientY: 40 });
+    fireEvent.pointerMove(open, { clientX: 32, clientY: 42 });
+    expect(document.querySelector('.board-drag-ghost')).toBeNull();
+    fireEvent.pointerMove(open, { clientX: 330, clientY: 140 });
+    const ghost = document.querySelector<HTMLElement>('.board-drag-ghost')!;
+    expect(ghost.parentElement).toBe(document.body);
+    expect(ghost.getAttribute('aria-hidden')).toBe('true');
+    expect(ghost.querySelector('button')).toBeNull();
+    expect([ghost.style.left, ghost.style.top, ghost.style.width]).toEqual(['310px', '115px', '220px']);
+    expect(target.querySelector('.board-drop-placeholder')?.textContent).toBe('松开移至调查中');
+    expect(source.closest('[data-status]')?.getAttribute('data-status')).toBe('open');
+    expect(api.patchItem).not.toHaveBeenCalled();
+    hitTest.mockReturnValue(source);
+    fireEvent.pointerMove(open, { clientX: 40, clientY: 40 });
+    expect(document.querySelector('.board-drop-placeholder')).toBeNull();
+    hitTest.mockReturnValue(document.body);
+    fireEvent.pointerMove(open, { clientX: 0, clientY: 0 });
+    expect(document.querySelector('.board-column-over')).toBeNull();
+    fireEvent.pointerUp(open, { clientX: 0, clientY: 0 });
+    expect(document.querySelector('.board-drag-ghost')).toBeNull();
+    expect(api.patchItem).not.toHaveBeenCalled();
+  });
+
+  it.each(['escape', 'cancel', 'capture', 'blur', 'busy', 'unmount'])(
+    'cleans up drag feedback on %s without saving',
+    (reason) => {
+      const { api, view, board } = setup();
+      const open = screen.getByRole('button', { name: /^打开/ });
+      hitTest.mockReturnValue(screen.getByRole('region', { name: '调查中列' }));
+      fireEvent.pointerDown(open, { button: 0, clientX: 20, clientY: 20 });
+      fireEvent.pointerMove(open, { clientX: 320, clientY: 30 });
+      expect(document.querySelector('.board-drag-ghost')).toBeTruthy();
+      if (reason === 'escape') fireEvent.keyDown(window, { key: 'Escape' });
+      if (reason === 'cancel') fireEvent.pointerCancel(open);
+      if (reason === 'capture') fireEvent.lostPointerCapture(open);
+      if (reason === 'blur') fireEvent.blur(window);
+      if (reason === 'busy') view.rerender(<FeatureBoard {...board} busy />);
+      if (reason === 'unmount') view.unmount();
+      expect(document.querySelector('.board-drag-ghost')).toBeNull();
+      expect(document.querySelector('.board-drop-placeholder')).toBeNull();
+      expect(document.querySelector('.board-column-over')).toBeNull();
+      fireEvent.pointerUp(open, { clientX: 320, clientY: 30 });
+      expect(api.patchItem).not.toHaveBeenCalled();
+    }
+  );
+
+  it('previews and saves a move to resolved history, then clears its highlight', async () => {
+    const { api, card } = setup();
+    const history = document.createElement('section');
+    history.className = 'project-history';
+    history.innerHTML = '<button data-status="resolved">已解决历史</button>';
+    document.body.append(history);
+    try {
+      const heading = history.querySelector('button')!;
+      const open = screen.getByRole('button', { name: /^打开/ });
+      hitTest.mockReturnValue(heading);
+      fireEvent.pointerDown(open, { button: 0, clientX: 20, clientY: 20 });
+      fireEvent.pointerMove(open, { clientX: 320, clientY: 30 });
+      expect(heading.classList.contains('board-drop-over')).toBe(true);
+      expect(document.querySelector('.board-drag-destination')?.textContent).toBe('松开移至已解决');
+      fireEvent.pointerUp(open, { clientX: 320, clientY: 30 });
+      expect(heading.classList.contains('board-drop-over')).toBe(false);
+      expect(document.querySelector('.board-drag-ghost')).toBeNull();
+      await waitFor(() => expect(api.patchItem).toHaveBeenCalledWith(card.id, { status: 'resolved', revision: 7 }));
+    } finally {
+      history.remove();
+    }
+  });
+
   it('reaches the card and its 移动到 menu by keyboard, 已解决 included', async () => {
     const { api, card, onOpen } = setup();
     const user = userEvent.setup();

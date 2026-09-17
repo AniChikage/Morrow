@@ -369,6 +369,39 @@
 .board-card-dragging {
   opacity: 0.4;
 }
+/* The visual copy lives outside scroll containers and never participates in hit testing. */
+.board-drag-ghost {
+  position: fixed;
+  z-index: 1000;
+  pointer-events: none;
+  box-shadow: var(--shadow-pop);
+  opacity: 0.92;
+  transition: none;
+}
+.board-drag-destination {
+  display: block;
+  padding: var(--space-2) var(--space-3);
+  border-top: 1px solid var(--line);
+  color: var(--accent);
+  font-size: var(--text-xs);
+}
+.board-drop-placeholder {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px dashed var(--accent);
+  border-radius: var(--radius);
+  color: var(--accent);
+  font-size: var(--text-xs);
+  background: var(--surface);
+  pointer-events: none;
+}
+.project-history .board-drop-over::after {
+  content: '松开移至已解决历史';
+  margin-left: auto;
+  color: var(--accent);
+  font-size: var(--text-xs);
+}
 .board-card-pending {
   opacity: 0.65;
 }
@@ -383,6 +416,10 @@
   color: var(--text);
   font: inherit;
   cursor: grab;
+}
+.board-card-open {
+  touch-action: none;
+  user-select: none;
 }
 .board-card-open:active {
   cursor: grabbing;
