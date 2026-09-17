@@ -46,7 +46,8 @@ const failureText = (failure: unknown, fallback: string) => (failure instanceof 
 /**
  * How many of the newest notes stay expanded once a channel has collected a few. Everything older
  * that a turn has already read folds behind one entry, so the notes cannot push the work log off
- * the page; a note no turn has read yet is never folded, whatever its position.
+ * the page; a note no turn has read yet is never folded, whatever its position, and a lone note is
+ * left in place rather than hidden behind an entry longer than itself.
  */
 const notesPreview = 3;
 /** One short line per App-resume state; the reason itself is the expanded body. */
@@ -465,11 +466,11 @@ export function ChannelView(props: FeatureProps & { id: string }) {
       .filter((run) => run.channelId === id && run.startedAt && run.startedAt > createdAt)
       .reduce((earliest, run) => (earliest && earliest <= run.startedAt ? earliest : run.startedAt), '');
   // Newest first, then split so a long list cannot push the work log off the page: the newest few
-  // stay open, and so does anything still waiting to be read, wherever it sits. The rest fold.
+  // stay open, and so does anything still waiting to be read, wherever it sits. The rest fold —
+  // unless that is a single note, which costs more attention behind an entry than in the list.
   const orderedNotes = [...notes].reverse();
-  const folded = new Set(
-    orderedNotes.filter((note, index) => index >= notesPreview && !!noteReadAt(note.createdAt)).map((note) => note.id)
-  );
+  const foldable = orderedNotes.filter((note, index) => index >= notesPreview && !!noteReadAt(note.createdAt));
+  const folded = new Set(foldable.length > 1 ? foldable.map((note) => note.id) : []);
   const openNotes = orderedNotes.filter((note) => !folded.has(note.id));
   const foldedNotes = orderedNotes.filter((note) => folded.has(note.id));
   const noteRow = (note: WorkspaceEvent) => {

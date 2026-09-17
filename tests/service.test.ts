@@ -1094,6 +1094,90 @@ test('an ordinary rate-limit notice never becomes the reason a failed Claude tur
     await s.cleanup();
   }
 });
+test('what a tool read in the workspace never becomes the reason a failed turn is reported', async () => {
+  const s = await setup();
+  try {
+    const channel = await s.api(
+      'POST',
+      '/api/channels',
+      { projectId: s.project.id, name: 'Claude 工具失败轮次', goal: '检查工具内容不参与归因', runtime: 'claude' },
+      201
+    );
+    const failures = () => s.store.all<any>('runs').filter((r) => r.channelId === channel.id && r.status === 'failed');
+    // Ordinary project bytes that `quotaFailure` matches word for word: a passing test count, and a
+    // grep that hit the very file the patterns live in. A real turn did exactly this second one.
+    const workspaceLines = [
+      {
+        type: 'assistant',
+        message: { content: [{ type: 'tool_use', id: 'bash-1', name: 'Bash', input: { command: 'npm test' } }] },
+      },
+      {
+        type: 'user',
+        message: {
+          content: [{ type: 'tool_result', tool_use_id: 'bash-1', content: '429 tests passed', is_error: false }],
+        },
+      },
+      {
+        type: 'assistant',
+        message: {
+          content: [
+            {
+              type: 'tool_use',
+              id: 'grep-1',
+              name: 'Grep',
+              input: { pattern: 'cliTurnMinutes', path: 'service/runtimes.ts' },
+            },
+          ],
+        },
+      },
+      {
+        type: 'user',
+        message: {
+          content: [
+            {
+              type: 'tool_result',
+              tool_use_id: 'grep-1',
+              content: 'quotaFailure = /insufficient_quota|quota exceeded|usage limit|rate_limit|429|credit balance/i',
+              is_error: false,
+            },
+          ],
+        },
+      },
+    ];
+    // The turn then fails for a reason of its own, and one the runtime states at a lower priority
+    // than a quota failure: reading the tool lines would outrank and hide it.
+    s.config({
+      failAfterEvents: true,
+      events: [
+        ...workspaceLines,
+        { type: 'result', is_error: true, result: 'ECONNREFUSED while contacting the model service' },
+      ],
+    });
+    await s.api('POST', `/api/channels/${channel.id}/action`, { action: 'run' });
+    await until(() => failures().length === 1);
+    const network = failures()[0];
+    assert(network.summary.includes('无法连接模型服务'), network.summary);
+    assert(!network.summary.includes('配额不足或触发速率限制'), network.summary);
+    // Nothing was hidden from the work log: the tool calls and their output are still events.
+    const page = await s.api('GET', `/api/events?channelId=${channel.id}&runId=${network.id}`);
+    assert(page.events.some((e: any) => e.detail?.output === '429 tests passed'));
+    assert.equal(page.events.filter((e: any) => e.detail?.type === 'tool_use').length, 2);
+    // A quota failure the runtime itself reports is still diagnosed, past the same tool lines.
+    s.config({
+      failAfterEvents: true,
+      events: [
+        ...workspaceLines,
+        { type: 'rate_limit_event', rate_limit_info: { status: 'rejected', rateLimitType: 'five_hour' } },
+      ],
+    });
+    await s.api('POST', `/api/channels/${channel.id}/action`, { action: 'run' });
+    await until(() => failures().length === 2);
+    const quota = failures().find((r) => r.id !== network.id)!;
+    assert(quota.summary.includes('配额不足或触发速率限制'), quota.summary);
+  } finally {
+    await s.cleanup();
+  }
+});
 test('streamed Codex tool items persist details, matched names and sanitized output', async () => {
   const s = await setup();
   try {

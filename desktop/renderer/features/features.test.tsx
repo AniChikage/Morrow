@@ -246,7 +246,7 @@ describe('channel control and history', () => {
     );
     api.getMessages
       .mockResolvedValueOnce({ messages: many })
-      .mockResolvedValueOnce({ messages: many.slice(0, 2) })
+      .mockResolvedValueOnce({ messages: many.slice(0, 4) })
       .mockResolvedValueOnce({ messages: many });
     const view = render(<ChannelView {...props} id="channel-system" />, { wrapper: TestProviders });
     const notes = () => within(screen.getByRole('region', { name: '留言' }));
@@ -269,10 +269,11 @@ describe('channel control and history', () => {
     expect(texts()).toHaveLength(3);
     await user.click(screen.getByText('更早的留言 · 还有 3 条'));
     await screen.findByText('第 1 条留言');
-    // A channel with only a couple of notes shows them all and offers no entry at all.
+    // A channel holding four notes keeps them all open: one note behind an entry saying 「还有 1
+    // 条」 reads longer than the note it would hide, so the entry only appears from two up.
     view.rerender(<ChannelView {...props} snapshot={state} id="channel-growth" />);
-    await screen.findByText('第 2 条留言');
-    expect(texts()).toEqual(['第 2 条留言', '第 1 条留言']);
+    await screen.findByText('第 4 条留言');
+    expect(texts()).toEqual(['第 4 条留言', '第 3 条留言', '第 2 条留言', '第 1 条留言']);
     expect(screen.queryByText(/^更早的留言/)).toBeNull();
     // Coming back opens folded again: one channel's expansion is not another's.
     view.rerender(<ChannelView {...props} snapshot={state} id="channel-system" />);

@@ -670,7 +670,18 @@ export class Engine {
       // failed Claude turn as a spent account and hide the real cause. Nothing is lost: every line
       // that carries state (`system/init`, a refused rate limit, results) is not skipped.
       if (decoded.skip) return;
-      diagnose(text);
+      // A failure diagnosis reads what the runtime says about this turn, never what the workspace
+      // contains. A tool line carries the project's own bytes — a command's output, a file's
+      // contents, a grep hit — and `quotaFailure` matches ordinary text like `429 tests passed` or
+      // a source line that merely names the patterns, so reading one would outrank the real reason
+      // and report the turn as a spent account. Results, system lines, a refused rate limit and
+      // stderr still reach the diagnosis: that is where a real account failure is stated.
+      const carriesWorkspaceContent =
+        decoded.kind === 'tool' ||
+        [decoded.detail, ...(decoded.additionalDetails || [])].some(
+          (detail) => detail?.type === 'tool_use' || detail?.type === 'tool_result'
+        );
+      if (!carriesWorkspaceContent) diagnose(text);
       if (decoded.sessionId && /^[a-zA-Z0-9_-]{1,200}$/.test(decoded.sessionId)) {
         run.sessionId = decoded.sessionId;
         this.store.put('runs', run);
