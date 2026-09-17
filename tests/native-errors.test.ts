@@ -46,7 +46,8 @@ test('unloaded native tasks have actionable API errors and redacted stacks; inte
       assert.equal(native.boundThreadCount, 1);
       assert.equal(native.readyThreadCount, 0);
       for (const [path, body] of [
-        ['action', { action: 'resume' }],
+        // A manual single turn still reports a connection error; autonomous resume now waits.
+        ['action', { action: 'run' }],
         ['native/messages', { text: 'private-message-body', requestId: randomUUID() }],
       ] as const) {
         const response = await s.api(

@@ -1632,6 +1632,27 @@ export class NativeConversations {
     }
     return true;
   }
+  /** A transport read may recover; a permission/protocol fault or an unknown mutation must not retry. */
+  retryableStartRead(error: unknown): string | undefined {
+    const value = error as { code?: string; outcomeUnknown?: boolean; message?: string } | null;
+    if (value?.outcomeUnknown || /\bE(?:ACCES|PERM)\b/.test(value?.message || '')) return;
+    const code = value?.code;
+    if (
+      code &&
+      [
+        'desktop_unavailable',
+        'resyncing',
+        'request_timeout',
+        'no-client-found',
+        'ECONNREFUSED',
+        'ECONNRESET',
+        'ETIMEDOUT',
+        'EPIPE',
+        'ENOENT',
+      ].includes(code)
+    )
+      return code;
+  }
   async startScheduled(id: string, scheduled: boolean) {
     const { channel: opening, project } = this.channel(id);
     const binding = this.bound(id);
@@ -1639,8 +1660,28 @@ export class NativeConversations {
       throw new APIError(409, '旧转接仍在运行；请在当前任务结束后重开 Codex App，再开始自动工作。');
     if (this.starting.has(id) || this.scheduled.has(id)) throw new APIError(409, '该频道正在执行原生轮次');
     this.starting.add(id);
+    const generation = this.engine.appResume.intent(id).generation;
+    const currentIntent = () =>
+      !this.closed &&
+      !this.engine.closed &&
+      this.engine.appResume.intent(id).generation === generation &&
+      this.binding(id)?.threadId === binding.threadId;
+    // Keep retry handling strictly before run creation and send(). A lost send acknowledgement is
+    // handled by the existing outbox reconciliation and must never come through this path.
+    const readBeforeStart = async () => {
+      try {
+        const snapshot = await this.sync(binding.threadId);
+        return currentIntent() ? snapshot : undefined;
+      } catch (error) {
+        if (!currentIntent()) return;
+        const code = this.retryableStartRead(error);
+        if (!scheduled || !code) throw error;
+        this.engine.deferNativeStart(id, code, generation);
+      }
+    };
     try {
-      let snapshot = await this.sync(binding.threadId);
+      let snapshot = await readBeforeStart();
+      if (!snapshot) return;
       // `sync` awaits the App, and ingesting that very snapshot — or a PATCH, or feedback arriving —
       // can edit this channel meanwhile. Everything below therefore reads the row as it is now and
       // writes back only the fields that starting a turn owns.
@@ -1661,7 +1702,8 @@ export class NativeConversations {
       // The first boundary: a nearly full context is compacted before the model, permissions and
       // prompt of this turn are read, so the run below starts from the compacted task.
       if (await this.compactIfNeeded(binding, snapshot, channel, { wait: true })) {
-        snapshot = await this.sync(binding.threadId);
+        snapshot = await readBeforeStart();
+        if (!snapshot) return;
         channel = this.store.get<Channel>('channels', id)!;
         // A compaction still running after `compactWaitMs` leaves the task busy — the same reading
         // as above, answered the same way rather than by failing this turn.
@@ -1696,6 +1738,7 @@ export class NativeConversations {
           409,
           '原生任务权限尚无法确认符合频道的自动执行范围；请在 Codex App 中设置只读或工作区权限后重试。普通对话可直接继续。'
         );
+      this.engine.clearNativeStartRetry(id);
       const run: Run = {
         id: randomUUID(),
         projectId: project.id,

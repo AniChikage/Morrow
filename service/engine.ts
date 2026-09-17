@@ -144,7 +144,11 @@ export class Engine {
     );
   }
   setControl(id: string, fields: Partial<Control>) {
-    return this.store.put('controls', { ...this.control(id), ...fields });
+    return this.store.put('controls', {
+      ...this.control(id),
+      ...fields,
+      ...(fields.enabled === false ? { startRetry: undefined } : {}),
+    });
   }
   redact(text: string) {
     return text.replaceAll(this.token, '[REDACTED]');
@@ -281,6 +285,30 @@ export class Engine {
           this.failScheduled(channel.id, e);
         }
     }
+  }
+  /** Only called after a read-only native preflight failed, before a run/outbox was created. */
+  deferNativeStart(id: string, code: string, generation: number) {
+    const control = this.control(id);
+    const channel = this.store.get<Channel>('channels', id);
+    if (!channel || !control.enabled || this.appResume.intent(id).generation !== generation) return;
+    const prior = control.startRetry;
+    const attempts = Math.min((prior?.generation === generation ? prior.attempts : 0) + 1, 7);
+    const seconds = Math.min(5 * 2 ** (attempts - 1), 300);
+    this.store.transaction(() => {
+      this.setControl(id, { startRetry: { attempts, code, generation } });
+      this.store.put('channels', {
+        ...channel,
+        status: 'waiting',
+        nextRunAt: new Date(Date.now() + seconds * 1000).toISOString(),
+      });
+      if (!prior || prior.code !== code || prior.generation !== generation)
+        this.event(id, '', 'system', 'Codex App 连接暂不可用；尚未提交新轮次，将自动重试，恢复后继续原任务。');
+    });
+  }
+  clearNativeStartRetry(id: string) {
+    if (!this.control(id).startRetry) return;
+    this.setControl(id, { startRetry: undefined });
+    this.event(id, '', 'system', 'Codex App 连接已恢复，继续原任务。');
   }
   failScheduled(id: string, error: unknown) {
     const c = this.store.get<Channel>('channels', id);
