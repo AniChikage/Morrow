@@ -22,9 +22,9 @@ Morrow 支持 Codex（通过 Codex App）、Claude Code 与 Trae（本机已登�
 
 ## 这条分支与 main 的区别
 
-这是 `yukun` 分支（0.14.2）。远端 `main`（0.10.0）自 `6246930` 起改为「直接用 Codex CLI、去掉与桌面 App 的耦合」；本分支是另一条线，执行入口以 Codex App follower 为准。两条线在执行路线上互斥，本 README 其余部分描述的都是本分支的行为。
+这是 `yukun` 分支（0.15.0）。远端 `main`（0.10.0）自 `6246930` 起改为「直接用 Codex CLI、去掉与桌面 App 的耦合」；本分支是另一条线，执行入口以 Codex App follower 为准。两条线在执行路线上互斥，本 README 其余部分描述的都是本分支的行为。
 
-| 差异 | main（0.10.0） | 本分支 yukun（0.14.2） |
+| 差异 | main（0.10.0） | 本分支 yukun（0.15.0） |
 | --- | --- | --- |
 | 执行入口 | Morrow 自己启动 `codex app-server --listen stdio://`，不查找或唤醒 Codex App | 通过 Codex App 的本地 IPC 以 follower 身份，复用 App 已创建、已加载并明确关联的任务 |
 | 需要安装什么 | 安装 Codex CLI，在终端 `codex login` | Codex 频道：安装并登录 Codex Mac App；在 App 里为项目目录建任务、发送首条消息并保持打开，再回到频道点「关联 App 任务」，App 须保持运行。Claude Code 频道：安装 Claude Code，在终端 `claude auth login`。Trae 频道：安装 `traex`，在终端 `traex login` |
