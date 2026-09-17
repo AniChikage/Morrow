@@ -83,6 +83,9 @@ test('the non-native CLI turn prompt text is unchanged', async () => {
     assert(prompt.includes('测试、构建等命令结果只作为证据附上，不作为 verified 的依据'));
     assert.equal(
       digest(prompt),
+      // The review sentence no longer names Codex. Since 0.15.0 a review is given to a runtime that
+      // did not do the work — Claude Code reviews a Codex or Trae turn, Codex reviews a Claude Code
+      // turn — so the prompt names no runtime and says another one, absent from this turn, runs it.
       // Changed deliberately for #45: verified/resolved claims must be independently reproducible
       // read-only facts. Test/build results remain supporting material, not grounds for verified;
       // the prompt no longer asks a read-only reviewer to rerun commands that write files.
@@ -93,7 +96,7 @@ test('the non-native CLI turn prompt text is unchanged', async () => {
       // 0.12.1 changed the two edits after the permission line: the 45-minute limit the turn now
       // states, and the working-tree line the native charter already had. `fixedProject.path` is not
       // a repository, so the tree line stays empty here.)
-      '68c357f0a89f129d610d52fc91cdf663d3b2fff3085aca2c180205b273efe82f'
+      'f176f3442a36d14d99c4d327a676e497361eb3e82acef3cddf9d994e671e0dc2'
     );
   } finally {
     await s.cleanup();
