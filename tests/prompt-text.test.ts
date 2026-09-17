@@ -77,18 +77,22 @@ test('the non-native CLI turn prompt text is unchanged', async () => {
     // Ids no row uses: the board, notes, knowledge and prior runs the prompt reads are all empty,
     // so every byte of the result comes from the fixed literals above and the prompt text itself.
     assert.equal(s.engine.loop.channelNames(fixedProject.id)[fixedChannel.id], undefined);
+    const prompt = s.engine.prompt(fixedProject, fixedChannel);
+    assert(prompt.includes('verified/resolved 只用于复核者能在只读环境独立重现的事实'));
+    assert(prompt.includes('测试、构建等命令结果只作为证据附上，不作为 verified 的依据'));
     assert.equal(
-      digest(s.engine.prompt(fixedProject, fixedChannel)),
-      // Changed deliberately in 0.14.0, in the evidence sentence: a report's verified/resolved now
-      // queues one independent read-only Codex review by itself and only takes effect when that
-      // review passes, so the turn is told to write evidence a reviewer can re-run and re-read.
+      digest(prompt),
+      // Changed deliberately for #45: verified/resolved claims must be independently reproducible
+      // read-only facts. Test/build results remain supporting material, not grounds for verified;
+      // the prompt no longer asks a read-only reviewer to rerun commands that write files.
+      // 0.14.0 introduced the automatic independent read-only review before claims take effect.
       // (0.13.0 changed the sentence that introduces the JSON context: it now
       // names `humanNotes` as notes people left for the channel rather than live input, and says the
       // ones marked `new` arrived after the previous turn started and must be answered this turn.
       // 0.12.1 changed the two edits after the permission line: the 45-minute limit the turn now
       // states, and the working-tree line the native charter already had. `fixedProject.path` is not
       // a repository, so the tree line stays empty here.)
-      '23bac230fa2d874bd6c23a8d5f6911a615849e08dac693519020e6cdb5f0acf0'
+      '68c357f0a89f129d610d52fc91cdf663d3b2fff3085aca2c180205b273efe82f'
     );
   } finally {
     await s.cleanup();

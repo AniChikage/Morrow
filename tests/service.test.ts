@@ -385,12 +385,30 @@ test('a report claiming verified records the turn as evidence, queues its own re
     assert.equal(evidence[0].source, `run:${run.id}`);
     assert.equal(evidence[0].data.runtime, 'claude');
     assert.equal(evidence[0].data.report.status, 'verified');
+    assert.equal(evidence[0].data.reportedBy, 'model');
+    assert.match(evidence[0].data.reportNote, /report 与 finalOutput 为模型自述/);
+    assert.equal(evidence[0].data.tools, undefined);
+    const recorded = evidence[0].data.recordedTools;
+    assert.equal(recorded.recordedBy, 'morrow-cli-stream');
+    assert.match(recorded.note, /由 Morrow 从 CLI 事件流记录，非模型自述；无退出码与版本绑定/);
     assert.deepEqual(
-      evidence[0].data.tools.map((tool: any) => [tool.tool, tool.failed]),
+      recorded.calls.map((tool: any) => [tool.tool, tool.failed]),
       [['Bash', false]]
     );
-    assert(evidence[0].data.tools[0].input.includes('npm test'));
-    assert(evidence[0].data.tools[0].output.includes('3 tests passed'));
+    assert(recorded.calls[0].input.includes('npm test'));
+    assert(recorded.calls[0].output.includes('3 tests passed'));
+    assert.match(evidence[0].summary, /模型自述/);
+    assert.match(evidence[0].summary, /Morrow 从 CLI 事件流记录的 1 次工具调用/);
+    assert.match(evidence[0].summary, /无退出码与版本绑定/);
+    // The shared report path must not call App-owned run events a CLI stream.
+    const nativeData = s.engine.reportEvidenceData(
+      { ...run, executionOwner: 'codex-app' },
+      evidence[0].data.report,
+      evidence[0].data.finalOutput
+    );
+    assert.equal(nativeData.recordedTools.recordedBy, 'morrow-run-events');
+    assert.match(nativeData.recordedTools.note, /本轮事件/);
+    assert(!nativeData.recordedTools.note.includes('CLI'));
     assert(item.evidence.some((line: string) => line.startsWith(`[${evidence[0].id}]`)));
     // One queued review citing exactly that row, and one completion held against the stored revision.
     const reviews = s.store.all<any>('loop_verifications').filter((row) => row.itemId === item.id);

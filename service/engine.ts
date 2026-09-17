@@ -1271,9 +1271,10 @@ export class Engine {
   /**
    * Queue the independent review this turn's own claim needs, and hold the claimed status against it
    * so a passing review completes the item without another turn. The report and the tool activity
-   * Morrow recorded become one `agent` evidence row: collected material, which is exactly what the
-   * reviewer prompt tells a reviewer to re-check rather than believe. Nothing here may fail the
-   * report — a refusal rolls its own writes back, keeps the item in 调查中 behind the wait prefix,
+   * Morrow recorded become one `agent` evidence row with separately labelled sources. Recorded
+   * calls have neither exit codes nor source-version binding; they are not execution evidence.
+   * Nothing here may fail the report — a refusal rolls its own writes back, keeps the item in
+   * 调查中 behind the wait prefix,
    * and returns the work-log line that says the next turn's claim will try again.
    */
   queueReportReview(
@@ -1295,8 +1296,9 @@ export class Engine {
           runId: run.id,
           itemId: item.id,
           summary:
-            `${runtimeTitles[run.runtime]} 本轮自述${claimedStatusText[claimed] || claimed}的汇报材料，` +
-            `附 Morrow 为本轮记录的 ${data.tools.length} 次工具调用；执行者自述，需独立复核。`,
+            `${runtimeTitles[run.runtime]} 本轮汇报与最终答复为模型自述（声称${claimedStatusText[claimed] || claimed}）；` +
+            `另附 Morrow 从${run.executionOwner === 'codex-app' ? '本轮事件' : ' CLI 事件流'}记录的 ` +
+            `${data.recordedTools.calls.length} 次工具调用（非模型自述；无退出码与版本绑定），需独立复核。`,
           source: `run:${run.id}`,
           observedAt: time,
           createdAt: time,
@@ -1358,18 +1360,27 @@ export class Engine {
     };
     const build = (tool: number, output: number, claim: number, count: number) => ({
       runtime: run.runtime,
+      reportedBy: 'model',
+      reportNote: 'report 与 finalOutput 为模型自述，未经独立复核。',
       report: {
         status: reported.status,
         summary: reported.summary.slice(0, claim),
         evidence: reported.evidence.map((value) => value.slice(0, claim)),
         nextStep: reported.nextStep.slice(0, claim),
       },
-      tools: recorded.slice(recorded.length - count).map((call) => ({
-        tool: call.tool,
-        input: excerpt(call.input, tool),
-        output: excerpt(call.output, tool),
-        failed: call.failed,
-      })),
+      recordedTools: {
+        recordedBy: run.executionOwner === 'codex-app' ? 'morrow-run-events' : 'morrow-cli-stream',
+        note:
+          run.executionOwner === 'codex-app'
+            ? '由 Morrow 从本轮事件记录，非模型自述；无退出码与版本绑定。'
+            : '由 Morrow 从 CLI 事件流记录，非模型自述；无退出码与版本绑定。',
+        calls: recorded.slice(recorded.length - count).map((call) => ({
+          tool: call.tool,
+          input: excerpt(call.input, tool),
+          output: excerpt(call.output, tool),
+          failed: call.failed,
+        })),
+      },
       finalOutput: finalOutput.slice(0, output),
     });
     let data = build(2000, 4000, 10000, recorded.length);
