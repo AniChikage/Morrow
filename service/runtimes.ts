@@ -275,6 +275,27 @@ export function decodeLine(line: string): {
     if (tools.length) parts.push(`工具 ${tools.join(' / ')}`);
     return { kind: 'system', text: parts.join(' · '), sessionId };
   }
+  // A background task (Claude Code's `run_in_background`) reports its own start and finish on these
+  // two lines. The Bash call that launched one is already an entry of its own, so the wording names
+  // the background task's lifecycle instead of repeating the command. Every field here is provider
+  // data: a missing or non-string one drops its own part, and never falls back to the raw line.
+  if (data.type === 'system' && (data.subtype === 'task_started' || data.subtype === 'task_notification')) {
+    const started = data.subtype === 'task_started';
+    const phrase = (value: unknown) =>
+      typeof value === 'string' ? value.replace(/\s+/g, ' ').trim().slice(0, 300) : '';
+    const status = phrase(data.status);
+    const head = started
+      ? '后台任务已开始'
+      : status === 'completed'
+        ? '后台任务已完成'
+        : status === 'failed'
+          ? '后台任务失败'
+          : status
+            ? `后台任务已结束（${status}）`
+            : '后台任务已结束';
+    const what = phrase(started ? data.description : data.summary);
+    return { kind: 'system', text: what ? `${head} · ${what}` : head, sessionId };
+  }
   // Claude Code's terminal line for the whole turn: the answer text, and structured output when a
   // schema was in force. `is_error` is the turn's own verdict, not a single failed tool call.
   if (data.type === 'result')

@@ -205,6 +205,71 @@ test('Claude progress chatter is skipped and the session announcement becomes on
   );
 });
 
+test('Claude background task notices read as the task starting and ending, never as raw JSON', () => {
+  // Both lines are verbatim from a real Claude Code turn, with ids shortened: one background Bash
+  // task, announced when it starts and again when it ends. The Bash call itself is a separate log
+  // entry, so neither of these repeats the command.
+  const started = decodeLine(
+    JSON.stringify({
+      type: 'system',
+      subtype: 'task_started',
+      task_id: 'bwnbmyovp',
+      tool_use_id: 'toolu_01D9',
+      description: 'Run UI test suite with one worker',
+      task_type: 'local_bash',
+      uuid: '6c0c',
+      session_id: '42c9',
+    })
+  );
+  assert.equal(started.skip, undefined, '后台任务事件有信息量，不属于被跳过的进度噪声');
+  assert.equal(started.kind, 'system');
+  assert.equal(started.sessionId, '42c9');
+  assert.equal(started.detail, undefined);
+  assert.equal(started.text, '后台任务已开始 · Run UI test suite with one worker');
+  const finished = decodeLine(
+    JSON.stringify({
+      type: 'system',
+      subtype: 'task_notification',
+      task_id: 'bwnbmyovp',
+      tool_use_id: 'toolu_01D9',
+      status: 'completed',
+      output_file: '',
+      summary: 'Run UI test suite with one worker',
+      uuid: '8a9a',
+      session_id: '42c9',
+    })
+  );
+  assert.equal(finished.skip, undefined);
+  assert.equal(finished.kind, 'system');
+  assert.equal(finished.sessionId, '42c9');
+  assert.equal(finished.text, '后台任务已完成 · Run UI test suite with one worker');
+  // A failure says so, and an unfamiliar status is quoted rather than assumed to be success.
+  assert.equal(
+    decodeLine(
+      JSON.stringify({ type: 'system', subtype: 'task_notification', status: 'failed', summary: '构建后台任务' })
+    ).text,
+    '后台任务失败 · 构建后台任务'
+  );
+  assert.equal(
+    decodeLine(JSON.stringify({ type: 'system', subtype: 'task_notification', status: 'killed', summary: '长跑脚本' }))
+      .text,
+    '后台任务已结束（killed） · 长跑脚本'
+  );
+  // Missing or mistyped fields drop their own part; none of them puts the raw line back in the log.
+  for (const [line, text] of [
+    [{ type: 'system', subtype: 'task_started' }, '后台任务已开始'],
+    [{ type: 'system', subtype: 'task_started', description: 42, session_id: 'x' }, '后台任务已开始'],
+    [{ type: 'system', subtype: 'task_notification', task_id: 'b' }, '后台任务已结束'],
+    [{ type: 'system', subtype: 'task_notification', status: '', summary: null }, '后台任务已结束'],
+    [{ type: 'system', subtype: 'task_started', description: ' 跑一遍\n UI 用例 ' }, '后台任务已开始 · 跑一遍 UI 用例'],
+  ] as const) {
+    const decoded = decodeLine(JSON.stringify(line));
+    assert.equal(decoded.text, text);
+    assert.equal(decoded.kind, 'system');
+    assert.equal(decoded.skip, undefined);
+  }
+});
+
 test('structured payloads redact bearer and credential fields, strip controls, bound nesting/size and ignore provider sequence', () => {
   const bearer = 'f'.repeat(64);
   const detail = sanitizeEventDetail(
