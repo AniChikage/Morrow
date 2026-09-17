@@ -53,8 +53,13 @@ export type Verification = {
   threadId?: string;
   turnId?: string;
   model?: string;
-  /** CLI reviews have an actual session ID but may not expose a native turn ID. */
-  executionOwner?: 'codex-cli';
+  /**
+   * Which CLI ran this review, absent for one the Codex App's own background task ran. CLI reviews
+   * have an actual session ID but may not expose a native turn ID. A review never runs on the
+   * runtime that did the work, so the value also says which account paid for it: only `codex-cli`
+   * spends the Codex quota the usage gate reads.
+   */
+  executionOwner?: 'codex-cli' | 'claude-cli';
   interruptPending?: boolean;
   /** A queued review held by the usage gate is not re-attempted before this time. */
   retryAt?: string;

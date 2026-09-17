@@ -314,6 +314,14 @@ describe('AI work and release review', () => {
     await userEvent.setup().click(screen.getByTitle('源码或核验材料已变化，需要重新复核'));
     expect(screen.getByText('尚未验证业务收益')).not.toBeNull();
     expect(screen.getByText(/原生任务：independent-native-task/)).not.toBeNull();
+    // A review never runs on the runtime that did the work, so the record says which one it used.
+    f.data.verifications[0] = { ...f.data.verifications[0], executionOwner: 'claude-cli' };
+    view.rerender(
+      <TestProviders>
+        <FeatureWork api={f.api} projectId="project-atlas" itemId="reviewed-by-claude" />
+      </TestProviders>
+    );
+    expect(await screen.findByText(/Claude Code 复核会话：independent-native-task/)).not.toBeNull();
   });
   it('puts active work before latest reviews and preserves superseded failures in collapsed history', async () => {
     const f = fixture();

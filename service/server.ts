@@ -1,4 +1,5 @@
 import { CodexCliReviewRunner, type ReviewRunner } from './codex-cli-review.ts';
+import { ClaudeCliReviewRunner } from './claude-cli-review.ts';
 import { createServer } from 'node:http';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { AddressInfo } from 'node:net';
@@ -208,10 +209,15 @@ export async function startServer(
   const native = new NativeConversations(store, engine, options.nativeTransport, options.restoreBridge);
   engine.native = native;
   engine.loop.verification.connect(options.reviewTransport ?? native.transport, (value) => engine.redact(value));
-  if (!options.reviewTransport)
-    engine.loop.verification.connectRunner(
-      options.reviewRunner ?? new CodexCliReviewRunner({ worker: () => engine.loop.helpers['codex-cli-worker.ts'] })
-    );
+  if (!options.reviewTransport) {
+    // Both review CLIs are wired; `WorkVerification.reviewRunner` picks the one that is not the
+    // runtime under review, so a review is independent of the work and of the account that paid
+    // for it. A supplied runner is a test's own and stays the only one.
+    const worker = () => engine.loop.helpers['codex-cli-worker.ts'];
+    engine.loop.verification.connectRunner(options.reviewRunner ?? new CodexCliReviewRunner({ worker }), 'codex-cli');
+    if (!options.reviewRunner)
+      engine.loop.verification.connectRunner(new ClaudeCliReviewRunner({ worker }), 'claude-cli');
+  }
   engine.usage.connect(native.transport);
   // Counted before recovery runs, since recovery is what turns these rows into `interrupted`.
   const interruptedRuns = Number(

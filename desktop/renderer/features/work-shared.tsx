@@ -233,6 +233,16 @@ export const verificationLabels = {
 };
 export type VerificationRow = NonNullable<ProjectLoop['verifications']>[number];
 /**
+ * Which runtime actually ran a review. A review never runs on the runtime that did the work, so
+ * this also says which account paid for it; rows written before reviews could pick a runtime, and
+ * reviews the Codex App's own background task ran, carry no owner and stay 「原生任务」.
+ */
+export const reviewOwnerLabels = {
+  native: '原生任务',
+  'codex-cli': 'Codex 复核会话',
+  'claude-cli': 'Claude Code 复核会话',
+};
+/**
  * What a review says now. A pass only ever covered the source version it ran against, so once that
  * version has moved on the label says so instead of reading as a standing pass.
  */
@@ -312,7 +322,7 @@ export function VerificationRecord({
         </p>
         <p className="work-source">
           源版本：{row.version.digest.slice(0, 16)} · {row.version.files} 个文件
-          {row.threadId ? ` · 原生任务：${row.threadId}` : ''}
+          {row.threadId ? ` · ${reviewOwnerLabels[row.executionOwner || 'native']}：${row.threadId}` : ''}
         </p>
         <EvidenceReferences ids={row.evidenceIds} data={data} />
       </div>

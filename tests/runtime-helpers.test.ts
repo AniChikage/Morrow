@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { BuildIdentity } from '../service/build-identity.ts';
 import { CodexCliReviewRunner } from '../service/codex-cli-review.ts';
+import { ClaudeCliReviewRunner } from '../service/claude-cli-review.ts';
 import { helperDirectory, pinHelpers, pruneHelpers } from '../service/runtime-helpers.ts';
 import { startIsolated } from './harness/service.ts';
 import { grantFor } from './harness/grant.ts';
@@ -92,14 +93,19 @@ test('a copy already in place survives a new install, and other builds are prune
   }
 });
 
-test('the review runner the daemon connects starts the supervisor from the pinned copy', async () => {
-  // No review transport double here, so this is the runner the real daemon builds for itself.
+test('both review runners the daemon connects start the supervisor from the pinned copy', async () => {
+  // No review transport double here, so these are the runners the real daemon builds for itself:
+  // one per reviewing runtime, sharing the one supervisor that owns a review's process group.
   const s = await startIsolated({ identity: identity(), project: false });
   try {
-    const runner = s.engine.loop.verification.runner;
-    assert(runner instanceof CodexCliReviewRunner, 'the daemon reviews through the official CLI runner');
-    assert.equal(runner.worker, join(helperDirectory(s.home, fingerprint), 'codex-cli-worker.ts'));
-    assert.notEqual(runner.worker, workerSource);
+    const codex = s.engine.loop.verification.runners.get('codex-cli');
+    const claude = s.engine.loop.verification.runners.get('claude-cli');
+    assert(codex instanceof CodexCliReviewRunner, 'the daemon reviews through the official CLI runner');
+    assert(claude instanceof ClaudeCliReviewRunner, 'and through Claude Code, which spends no Codex quota');
+    for (const runner of [codex, claude]) {
+      assert.equal(runner.worker, join(helperDirectory(s.home, fingerprint), 'codex-cli-worker.ts'));
+      assert.notEqual(runner.worker, workerSource);
+    }
   } finally {
     await s.cleanup();
   }

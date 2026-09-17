@@ -106,7 +106,12 @@ const recordingRunner = (projectPath: string, outcome: 'completed' | 'failed' = 
   return { seen, runner };
 };
 
-type Fixture = IsolatedService & { call: Grant['call']; requestReview: () => Promise<any> };
+type Fixture = IsolatedService & {
+  call: Grant['call'];
+  requestReview: () => Promise<any>;
+  /** Makes `runner` the only review runner, in place of the two CLI runners the daemon wires. */
+  useRunner: (runner: ReviewRunner) => void;
+};
 /** A project with two source files and a gitignored dependency directory; the repository is optional. */
 async function fixture(options: { repository: boolean }): Promise<Fixture> {
   const s = await startIsolated({
@@ -142,14 +147,18 @@ async function fixture(options: { repository: boolean }): Promise<Fixture> {
     const evidence = await call('evidence.capture', { summary: '实际文件内容', path: 'result.json' });
     return call('verification.request', { itemId: item.id, evidenceIds: [evidence.id] });
   };
-  return Object.assign(s, { call, requestReview });
+  const useRunner = (runner: ReviewRunner) => {
+    s.engine.loop.verification.runners.clear();
+    s.engine.loop.verification.connectRunner(runner);
+  };
+  return Object.assign(s, { call, requestReview, useRunner });
 }
 
 test('a committed source version is reviewed in a disposable checkout that the prompt describes', async () => {
   const f = await fixture({ repository: true });
   try {
     const { seen, runner } = recordingRunner(f.path);
-    f.engine.loop.verification.connectRunner(runner);
+    f.useRunner(runner);
     const request = await f.requestReview();
     const stored = f.store.get<any>('loop_verifications', request.id).prompt;
     await f.engine.loop.verification.start(request.id);
@@ -185,7 +194,7 @@ test('a review that reaches no verdict still leaves no checkout behind', async (
   const f = await fixture({ repository: true });
   try {
     const { seen, runner } = recordingRunner(f.path, 'failed');
-    f.engine.loop.verification.connectRunner(runner);
+    f.useRunner(runner);
     const request = await f.requestReview();
     await f.engine.loop.verification.start(request.id);
     assert.equal(f.store.get<any>('loop_verifications', request.id).status, 'unknown');
@@ -202,7 +211,7 @@ test('a plain folder and an uncommitted change keep the review in the project di
     try {
       if (kind === 'dirty') writeFileSync(join(f.path, 'source.js'), 'export const value=2;\n');
       const { seen, runner } = recordingRunner(f.path);
-      f.engine.loop.verification.connectRunner(runner);
+      f.useRunner(runner);
       const request = await f.requestReview();
       const stored = f.store.get<any>('loop_verifications', request.id).prompt;
       await f.engine.loop.verification.start(request.id);

@@ -1,14 +1,15 @@
 import type { ReviewRunner, ReviewObservation } from './codex-cli-review.ts';
+import type { ReviewStart } from './claude-cli-review.ts';
 import { createHash, randomUUID } from 'node:crypto';
 import { APIError, choice, keys, string } from './protocol.ts';
-import type { Channel, Control, Project, Run, WorkItem } from './protocol.ts';
+import type { Channel, Control, Project, Run, RuntimeID, WorkItem } from './protocol.ts';
 import type { Evidence } from './autonomy-types.ts';
 import type { StrategyDecision } from './strategy-types.ts';
 import type { ProjectWorkLoop, Scope } from './project-loop.ts';
 import type { NativeSnapshot, NativeTransport } from './native-conversations.ts';
 import { nativeTurns } from './native-conversations.ts';
 import { now, parseRows } from './store.ts';
-import { quotaFailure } from './runtimes.ts';
+import { quotaFailure, runtimePath } from './runtimes.ts';
 import { clock, usageResetAt } from './usage.ts';
 import { readSourceVersion, sourceVersion } from './source-version.ts';
 import { evidenceData } from './measurement.ts';
@@ -107,10 +108,14 @@ const itemIdsOf = (raw: string | null | undefined): string[] => {
     return [];
   }
 };
+/** Which CLI a review runs on, and the runtime each one drives. */
+const reviewRuntimes: Record<ReviewOwner, RuntimeID> = { 'codex-cli': 'codex', 'claude-cli': 'claude' };
+type ReviewOwner = NonNullable<Verification['executionOwner']>;
 /** Independent native task; no agent grant, no approval/escalation, no write permission. */
 export class WorkVerification {
   transport?: NativeTransport;
-  runner?: ReviewRunner;
+  /** The review CLIs this service can start, by the runtime each one drives. */
+  runners = new Map<ReviewOwner, ReviewRunner>();
   redact = (value: string) => value;
   active = new Map<
     string,
@@ -130,11 +135,28 @@ export class WorkVerification {
   }
   connect(transport: NativeTransport, redact: (value: string) => string) {
     this.transport = transport;
-    this.runner = undefined;
+    this.runners.clear();
     this.redact = redact;
   }
-  connectRunner(runner: ReviewRunner) {
-    this.runner = runner;
+  connectRunner(runner: ReviewRunner, owner: ReviewOwner = 'codex-cli') {
+    this.runners.set(owner, runner);
+  }
+  /**
+   * Which CLI reviews this channel's work. A review is only independent if it is not the runtime
+   * that did the work, so the implementer's runtime is the last choice, never the first: a Codex
+   * channel is reviewed by Claude Code and a Claude Code channel by Codex. A runtime that is not
+   * installed on this Mac is skipped, which falls back to whichever review CLI is left.
+   */
+  reviewRunner(channel?: Channel): { owner: ReviewOwner; runner: ReviewRunner } | undefined {
+    // Claude Code comes first wherever it is allowed: a review on it spends no Codex quota at all.
+    const order: ReviewOwner[] =
+      channel?.runtime === 'claude' ? ['codex-cli', 'claude-cli'] : ['claude-cli', 'codex-cli'];
+    for (const owner of order) {
+      const runner = this.runners.get(owner);
+      // A service wired with one runner uses it; its own start reports a CLI that is not installed.
+      if (runner && (this.runners.size === 1 || runtimePath(reviewRuntimes[owner]))) return { owner, runner };
+    }
+    return undefined;
   }
   rows(projectId: string, itemId?: string) {
     return this.loop
@@ -956,8 +978,13 @@ export class WorkVerification {
       this.finish(id, 'unknown', '复核前源版本或目标已变化，请准备新材料');
       return;
     }
-    // The usage gate holds a queued review in place; it is re-attempted by the tick, never finished as unknown.
-    const gate = this.loop.usage?.gate(project);
+    const channel = this.loop.store.get<Channel>('channels', row.channelId);
+    const selected = this.reviewRunner(channel);
+    // The usage gate holds a queued review in place; it is re-attempted by the tick, never finished
+    // as unknown. It reads the Codex account, so a review that does not spend it — one running on
+    // Claude Code — is not held by the Codex reserve, this project's Codex budget or a spent Codex
+    // account, exactly as a Claude Code or Trae turn is not.
+    const gate = selected?.owner === 'claude-cli' ? undefined : this.loop.usage?.gate(project);
     if (gate?.blocked) {
       if (gate.pending) {
         this.update(id, { retryAt: gate.until });
@@ -984,14 +1011,14 @@ export class WorkVerification {
         );
       return;
     }
-    if (!this.runner && !this.transport?.createThread) {
+    if (!selected && !this.transport?.createThread) {
       this.finish(id, 'unknown', '原生后台暂不支持独立只读复核');
       return;
     }
     this.loop.store.put('loop_verifications', {
       ...row,
       status: 'running',
-      ...(this.runner ? { executionOwner: 'codex-cli' as const } : {}),
+      ...(selected ? { executionOwner: selected.owner } : {}),
       startedAt: now(),
       summary: '独立检查源文件、原始证据与反例',
       retryAt: undefined,
@@ -1016,12 +1043,16 @@ export class WorkVerification {
     };
     this.active.set(id, active);
     try {
-      if (this.runner) {
-        const execution = this.runner.start({
+      if (selected) {
+        // The channel's model belongs to the channel's runtime; a review on the other one takes the
+        // default of the CLI it actually runs. `id` and `isolated` are context a runner may use.
+        const options: ReviewStart = {
+          id,
           cwd,
           prompt,
+          isolated: !!checkout,
           timeoutMs: row.timeoutSeconds * 1000,
-          model: this.loop.store.get<Channel>('channels', row.channelId)?.model || undefined,
+          model: (channel?.runtime === reviewRuntimes[selected.owner] ? channel?.model : '') || undefined,
           observe: (observation) => {
             try {
               this.ingestObservation(id, observation);
@@ -1029,7 +1060,8 @@ export class WorkVerification {
               this.stop(id, `复核记录不可用：${this.redact(error instanceof Error ? error.message : '记录失败')}`);
             }
           },
-        });
+        };
+        const execution = selected.runner.start(options);
         active.cancel = execution.cancel;
         if (!this.active.has(id)) execution.cancel();
         try {
@@ -1285,7 +1317,10 @@ export class WorkVerification {
     const until = new Date(
       Math.max(named ? Date.parse(named) : Date.now() + blindAccountWaitMs, Date.now() + minAccountWaitMs)
     ).toISOString();
-    this.loop.usage?.noteAccountExhausted(until);
+    // Only a Codex review's message is about the Codex account the rest of the service waits on;
+    // a Claude Code review's own limit holds this row alone and stops no Codex turn.
+    if (this.loop.store.get<Verification>('loop_verifications', id)?.executionOwner !== 'claude-cli')
+      this.loop.usage?.noteAccountExhausted(until);
     this.update(id, {
       retryAt: until,
       usageWait: { kind: 'account', until, since: now() },
@@ -1318,7 +1353,8 @@ export class WorkVerification {
     if (!row || terminal(row)) return;
     this.active.get(id)?.cancel?.();
     this.finish(id, 'unknown', reason);
-    if (row.threadId && row.executionOwner !== 'codex-cli') {
+    // A CLI review owns its own process; only the shared App task has a turn to interrupt.
+    if (row.threadId && !row.executionOwner) {
       this.update(id, { interruptPending: true });
       this.loop.track(this.interrupt(id));
     }
@@ -1328,7 +1364,7 @@ export class WorkVerification {
     this.interrupting.add(id);
     try {
       const row = this.loop.store.get<Verification>('loop_verifications', id)!;
-      if (row.executionOwner === 'codex-cli') {
+      if (row.executionOwner) {
         this.update(id, { interruptPending: false });
         return;
       }
