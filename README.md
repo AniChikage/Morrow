@@ -9,7 +9,7 @@
   <a href="docs/CORE-MECHANISM.md">核心机制</a>
 </p>
 
-Morrow 是一个本地优先的 Mac 应用。打开已有项目，说明想达到的结果，Codex 就能在同一个原生任务中持续理解现状、选择行动、执行验证，并根据反馈调整下一步。你可以随时通过对话指导它，在上线前审阅并确认具体版本。
+Morrow 是一个本地优先的 Mac 应用。打开已有项目，说明想达到的结果，Codex 就能持续理解现状、选择行动、执行验证，并根据反馈调整下一步。你可以随时通过对话指导它，在上线前审阅并确认具体版本。
 
 - **围绕目标持续工作**：保留项目认识、行动依据和经验，支持反馈唤醒、等待与预算约束。
 - **一个项目，一份共享看板**：待处理、调查中、需要关注、已验证四列固定，已解决收进下方历史区；卡片可拖动或用「移动到」菜单改状态。AI 自动维护每个事项的来源频道、尝试、证据、发布与后续效果。
@@ -22,22 +22,17 @@ Morrow 支持 Codex、Claude Code 与 Trae（后两者是本机已登录的 CLI�
 
 框架已提供持续工作与反馈闭环的支撑机制；实际项目仍需接入自己的监控和发布能力，长期自主效果需要真实环境验证。详见 [能力边界](docs/RUNTIMES.md)。
 
-## 这条分支与 main 的区别
+## CLI 直连的来历
 
-这是 `yukun` 分支（0.16.0）。远端 `main`（0.10.0）自 `6246930` 起改为「直接用 Codex CLI、去掉与桌面 App 的耦合」；本分支的默认执行入口是 Codex App follower，同时也提供 CLI 直连作为可选的第二传输方式，由每个频道自己选。区别因此不是「两条互斥的线」，而是 main 只有 CLI 直连一种、且没有 App 相关能力，本分支两种都有、默认走 App。
+仓库早期有过一条只走 Codex CLI 的线：0.10.0 的提交 `6246930`「直接用 Codex CLI、去掉与桌面 App 的耦合」。那些提交已作为历史接进本仓库（合并提交 `de496e9` 只接历史，没有带进它们的改动），所以在 `git log` 里查得到，在工作树里找不到。
 
-| 差异 | main（0.10.0） | 本分支 yukun（0.16.0） |
-| --- | --- | --- |
-| 执行入口 | Morrow 自己启动 `codex app-server --listen stdio://`，不查找或唤醒 Codex App | 由频道的「执行方式」决定：默认通过 Codex App 的本地 IPC 以 follower 身份复用 App 已创建、已加载并明确关联的任务；选「直连 Codex CLI」则每轮起一次本机 `codex exec`，与 Claude Code / Trae 同形 |
-| 需要安装什么 | 安装 Codex CLI，在终端 `codex login` | 走 App 任务的 Codex 频道：安装并登录 Codex Mac App；在 App 里为项目目录建任务、发送首条消息并保持打开，再回到频道点「关联 App 任务」，App 须保持运行。CLI 直连的 Codex 频道：安装 Codex CLI，在终端 `codex login`，不需要 App。Claude Code 频道：安装 Claude Code，在终端 `claude auth login`。Trae 频道：安装 `traex`，在终端 `traex login` |
-| 支持的运行时 | Codex、Claude Code、Trae | Codex、Claude Code、Trae；差别只在 Codex 多一种执行方式可选（App follower 默认，CLI 直连可选；main 只有 CLI 直连），Claude Code 与 Trae 两边都是本机 CLI 的有界轮次 |
-| 审批与权限在哪里处理 | 登录、模型、MCP 和工具配置来自 CLI，界面内指导和审批，不再提供 App 打开或桥接配置入口 | 走 App 任务时由 App 管理：频道默认沿用 App 的沙箱与审批设置，不自动提升为完整访问，审批请求在 Codex App 里处理。CLI 直连没有 App 可沿用，只有只读或工作区写入沙箱，`approval_policy="never"`，与 Claude Code / Trae 一致 |
-| 应用内浏览器 / Computer Use / App 动态工具 | Morrow 启动的 CLI 不连接 App，文档未列这些能力 | 2026-09-09 follower 实测可用：真实点击页面、`sky.list_apps()`、`get_usage_limits`。这三项依赖 App，也是 App follower 仍是默认传输方式的原因；CLI 直连的频道同样没有它们 |
-| 看板形态 | 待处理、调查中、需要关注、已验证、已解决五列固定 | 前四列固定，已解决收进下方「已解决历史」折叠区，该区标题同时是第五个放置目标 |
-| 独立复核方式 | 与执行共用同一个 CLI app-server 入口 | 官方 `codex exec` 的一次性只读会话（`--sandbox read-only`、`--ephemeral`、`--ignore-user-config`），不带执行者的权限和 App 本地工具管道 |
-| 历史关系 | — | `main` 已作为历史合入本分支（合并提交 `de496e9`，未带入其改动），因此 `main` 是本分支的祖先；CLI 直连是本分支自己实现的第二传输方式，不是合入 `main` 的改动，旧 `CODEX_CLI_PATH` 转接也已退役 |
+它没有被采纳为**唯一**的执行入口：那条线把 App 整个去掉，而应用内浏览器、Computer Use、App 动态工具、App 内审批和 Morrow 工作接口都依赖 App follower。它的思路最终落在频道的「执行方式」里，作为可选的第二传输方式（频道字段 `transport`，默认 `app`），由每个 Codex 频道自己选；现在这版 CLI 直连是本仓库自己实现的，不是那条线的代码。旧的 `CODEX_CLI_PATH` 转接与两条路都无关，已经退役。
 
-本分支相对 `main` 还多出下面这些机制：
+当时的判断与这条可选传输方式的定位，记在 [产品方向](docs/PRODUCT-DIRECTION.md) 的 2026-09-15 分支合并说明。
+
+## 配套机制
+
+围绕持续工作，仓库里还有这些机制：
 
 - 装上新版本后等当前工作真正结束再自动切换，不打断任何轮次，见 [升级与数据迁移](docs/UPGRADING.md)。
 - 额度门槛：全局的「保留给自己的额度」按账户读数判断，项目的「额度上限」按归因估算判断；账号额度用尽时频道转为等待，到窗口重置再继续。见 [能力边界](docs/RUNTIMES.md) 与 [执行服务文档](service/README.md)。
