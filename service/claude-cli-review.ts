@@ -43,6 +43,11 @@ export function claudeReviewArguments(options: { id: string; isolated?: boolean;
     ...(options.model ? ['--model', options.model] : []),
   ];
 }
+/**
+ * What a review says when stdout was not the stream it must be. `WorkVerification` reads it to tell
+ * an unusable runtime apart from a review that actually looked at the work and concluded nothing.
+ */
+export const unreadableOutput = 'CLI 返回了无法解析的事件，不能核验完整结果';
 /** A tool result arrives as a string or as content blocks; both become the one string a check reads. */
 const resultText = (content: unknown): string =>
   typeof content === 'string'
@@ -124,7 +129,7 @@ export class ClaudeCliReviewRunner implements ReviewRunner {
       try {
         event = JSON.parse(text);
       } catch {
-        fail('CLI 返回了无法解析的事件，不能核验完整结果');
+        fail(unreadableOutput);
         return;
       }
       if (typeof event?.session_id === 'string' && event.session_id) threadId = event.session_id;

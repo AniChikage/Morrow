@@ -1,4 +1,5 @@
 import type { ReviewRunner, ReviewObservation } from './codex-cli-review.ts';
+import { unreadableOutput } from './claude-cli-review.ts';
 import type { ReviewStart } from './claude-cli-review.ts';
 import { createHash, randomUUID } from 'node:crypto';
 import { APIError, choice, keys, string } from './protocol.ts';
@@ -9,8 +10,9 @@ import type { ProjectWorkLoop, Scope } from './project-loop.ts';
 import type { NativeSnapshot, NativeTransport } from './native-conversations.ts';
 import { nativeTurns } from './native-conversations.ts';
 import { now, parseRows } from './store.ts';
-import { quotaFailure, runtimePath } from './runtimes.ts';
+import { diagnoseFailure, quotaFailure, runtimePath } from './runtimes.ts';
 import { clock, usageResetAt } from './usage.ts';
+import type { UsageGate } from './usage.ts';
 import { readSourceVersion, sourceVersion } from './source-version.ts';
 import { evidenceData } from './measurement.ts';
 import type { Verification, Finalization, SourceVersion } from './verification-types.ts';
@@ -107,6 +109,23 @@ const itemIdsOf = (raw: string | null | undefined): string[] => {
   } catch {
     return [];
   }
+};
+/**
+ * A review failure that is about this Mac rather than about the work: the CLI could not be started,
+ * its login is gone, or its output was not the stream it must be and nothing at all was read from
+ * it. Such a review examined nothing, so recording it as a verdict would stop every item behind
+ * what reads like a review result — and a person would go looking at the work instead of logging
+ * in again. The other runtime reviews the same row instead.
+ */
+const runtimeUnavailable = (observation: ReviewObservation) => {
+  const error = observation.error || '';
+  if (observation.status !== 'failed' || !error) return false;
+  // The CLI was never found, never started, or the launcher itself failed.
+  if (/\bENOENT\b|\bEACCES\b|\bspawn\b|未找到 Claude Code 命令行/.test(error)) return true;
+  // An invalid or expired login: the runtime cannot review anything until a person logs in again.
+  if (diagnoseFailure('claude', error)?.priority === 100) return true;
+  // Nothing readable came back at all — not one item was parsed out of stdout.
+  return !observation.items.length && error.includes(unreadableOutput);
 };
 /** Which CLI a review runs on, and the runtime each one drives. */
 const reviewRuntimes: Record<ReviewOwner, RuntimeID> = { 'codex-cli': 'codex', 'claude-cli': 'claude' };
@@ -970,6 +989,66 @@ export class WorkVerification {
       'system'
     );
   }
+  /**
+   * Keeps a queued review waiting for the moment a blocked gate named, instead of concluding
+   * anything: the tick re-attempts it, and the wait is audited the first time it changes.
+   */
+  holdForUsage(id: string, gate: UsageGate & { blocked: true }) {
+    const row = this.loop.store.get<Verification>('loop_verifications', id)!;
+    if (gate.pending) {
+      this.update(id, { retryAt: gate.until });
+      return;
+    }
+    const changed = !row.usageWait || row.usageWait.kind !== gate.kind || row.usageWait.window !== gate.window;
+    this.update(id, {
+      // Bounded: re-check within a minute so a cleared limit takes effect, and at the reset at the latest.
+      retryAt: new Date(Math.min(Date.parse(gate.until), Date.now() + 60_000)).toISOString(),
+      usageWait: {
+        kind: gate.kind,
+        ...(gate.window ? { window: gate.window } : {}),
+        since: changed ? now() : row.usageWait!.since,
+      },
+    });
+    if (changed)
+      this.loop.audit(
+        row,
+        'verification.usage-wait',
+        `独立复核等待额度：${gate.message}`,
+        row.itemId,
+        { verificationId: id, kind: gate.kind },
+        'system'
+      );
+  }
+  /**
+   * One review attempt on one CLI. Returns the observation proving the runtime could not run at
+   * all — only when `watch` says another runtime is standing by, and then nothing has been recorded
+   * against the row, so that runtime may still review it. Otherwise `undefined`, and the row has
+   * already reached whatever conclusion this attempt reached.
+   */
+  async attempt(id: string, runner: ReviewRunner, options: Omit<ReviewStart, 'observe'>, watch: boolean) {
+    let unavailable: ReviewObservation | undefined;
+    const input: ReviewStart = {
+      ...options,
+      observe: (observation) => {
+        if (unavailable) return;
+        if (watch && runtimeUnavailable(observation)) {
+          unavailable = observation;
+          return;
+        }
+        try {
+          this.ingestObservation(id, observation);
+        } catch (error) {
+          this.stop(id, `复核记录不可用：${this.redact(error instanceof Error ? error.message : '记录失败')}`);
+        }
+      },
+    };
+    const execution = runner.start(input);
+    const active = this.active.get(id);
+    if (active) active.cancel = execution.cancel;
+    else execution.cancel();
+    await execution.done;
+    return unavailable;
+  }
   async start(id: string) {
     const row = this.loop.store.get<Verification>('loop_verifications', id)!;
     if (row.status !== 'queued' || this.active.has(id) || this.loop.closed) return;
@@ -986,29 +1065,7 @@ export class WorkVerification {
     // account, exactly as a Claude Code or Trae turn is not.
     const gate = selected?.owner === 'claude-cli' ? undefined : this.loop.usage?.gate(project);
     if (gate?.blocked) {
-      if (gate.pending) {
-        this.update(id, { retryAt: gate.until });
-        return;
-      }
-      const changed = !row.usageWait || row.usageWait.kind !== gate.kind || row.usageWait.window !== gate.window;
-      this.update(id, {
-        // Bounded: re-check within a minute so a cleared limit takes effect, and at the reset at the latest.
-        retryAt: new Date(Math.min(Date.parse(gate.until), Date.now() + 60_000)).toISOString(),
-        usageWait: {
-          kind: gate.kind,
-          ...(gate.window ? { window: gate.window } : {}),
-          since: changed ? now() : row.usageWait!.since,
-        },
-      });
-      if (changed)
-        this.loop.audit(
-          row,
-          'verification.usage-wait',
-          `独立复核等待额度：${gate.message}`,
-          row.itemId,
-          { verificationId: id, kind: gate.kind },
-          'system'
-        );
+      this.holdForUsage(id, gate);
       return;
     }
     if (!selected && !this.transport?.createThread) {
@@ -1046,26 +1103,62 @@ export class WorkVerification {
       if (selected) {
         // The channel's model belongs to the channel's runtime; a review on the other one takes the
         // default of the CLI it actually runs. `id` and `isolated` are context a runner may use.
-        const options: ReviewStart = {
+        const options = (owner: ReviewOwner): Omit<ReviewStart, 'observe'> => ({
           id,
           cwd,
           prompt,
           isolated: !!checkout,
           timeoutMs: row.timeoutSeconds * 1000,
-          model: (channel?.runtime === reviewRuntimes[selected.owner] ? channel?.model : '') || undefined,
-          observe: (observation) => {
-            try {
-              this.ingestObservation(id, observation);
-            } catch (error) {
-              this.stop(id, `复核记录不可用：${this.redact(error instanceof Error ? error.message : '记录失败')}`);
-            }
-          },
-        };
-        const execution = selected.runner.start(options);
-        active.cancel = execution.cancel;
-        if (!this.active.has(id)) execution.cancel();
+          model: (channel?.runtime === reviewRuntimes[owner] ? channel?.model : '') || undefined,
+        });
+        // One bounded fallback, and only this way round: a Claude Code that cannot run on this Mac
+        // leaves the Codex review it replaced, rather than an item nothing can ever verify.
+        const spare = selected.owner === 'claude-cli' ? this.runners.get('codex-cli') : undefined;
         try {
-          await execution.done;
+          let unavailable: ReviewObservation | undefined;
+          try {
+            unavailable = await this.attempt(id, selected.runner, options(selected.owner), !!spare);
+          } catch (error) {
+            // A runner that cannot even reach its CLI throws instead of observing; same fault, and
+            // anything else is still the outer failure this always was.
+            const failure: ReviewObservation = {
+              items: [],
+              status: 'failed',
+              error: error instanceof Error ? error.message : '复核运行时无法启动',
+            };
+            if (!spare || !runtimeUnavailable(failure)) throw error;
+            unavailable = failure;
+          }
+          if (!unavailable || !spare) return;
+          this.loop.audit(
+            row,
+            'verification.runtime-unavailable',
+            `Claude Code 复核运行时无法在本机运行，改由 Codex 复核本次：${this.redact(unavailable.error || '').slice(0, 500)}。这是本机环境问题，不是复核结论。`,
+            row.itemId,
+            { verificationId: id, from: selected.owner, to: 'codex-cli' },
+            'system'
+          );
+          if (terminal(this.loop.store.get<Verification>('loop_verifications', id)!)) return;
+          // The next runtime's verdict rests on what it observes itself, not on the failed attempt.
+          active.seen.clear();
+          this.update(id, { bytes: 0, commandCount: 0, executionOwner: 'codex-cli' });
+          // A Codex review spends the Codex account, so it faces the gate the first attempt skipped.
+          const codexGate = this.loop.usage?.gate(project);
+          if (codexGate?.blocked) {
+            // Back to the queue with the wait, exactly like a review the gate stopped before it ran.
+            this.releaseCheckout(id);
+            clearTimeout(active.timer);
+            this.active.delete(id);
+            this.update(id, {
+              status: 'queued',
+              summary: '等待额度后由 Codex 复核',
+              startedAt: undefined,
+              executionOwner: undefined,
+            });
+            this.holdForUsage(id, codexGate);
+            return;
+          }
+          await this.attempt(id, spare, options('codex-cli'), false);
         } finally {
           // Success, refusal, cancellation, the cap or a throw all end here; `finish` has normally
           // released it already, and this covers a runner that resolves without a verdict at all.

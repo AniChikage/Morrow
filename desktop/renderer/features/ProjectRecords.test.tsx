@@ -73,6 +73,7 @@ it.each([undefined, 'finding-import'])(
       'native.empty-recreated': '重建未保留的空白 App 任务',
       'verification.requeued': '额度恢复，重新复核',
       'verification.usage-wait': '复核等待额度',
+      'verification.runtime-unavailable': '复核运行时不可用，改用其它运行时',
       'upgrade.requested': '等待切换新版本',
       'future.unknown': 'future.unknown',
     };

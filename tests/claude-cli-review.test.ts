@@ -4,7 +4,12 @@ import assert from 'node:assert/strict';
 import { writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
-import { ClaudeCliReviewRunner, claudeReviewArguments, type ReviewStart } from '../service/claude-cli-review.ts';
+import {
+  ClaudeCliReviewRunner,
+  claudeReviewArguments,
+  unreadableOutput,
+  type ReviewStart,
+} from '../service/claude-cli-review.ts';
 import type { ReviewObservation, ReviewRunner } from '../service/codex-cli-review.ts';
 import { quotaFailure } from '../service/runtimes.ts';
 import type { Channel } from '../service/protocol.ts';
@@ -109,10 +114,12 @@ test("a spent Claude account is reported in the CLI's own words, which the quota
  */
 const scriptedRunner = () => {
   const seen: ReviewStart[] = [];
-  const state: { error?: string } = {};
+  const state: { error?: string; throws?: string } = {};
   const runner: ReviewRunner = {
     start: (input) => {
       seen.push(input as ReviewStart);
+      // A runner that cannot reach its CLI at all throws instead of observing anything.
+      if (state.throws) throw new Error(state.throws);
       return {
         cancel: () => {},
         done: Promise.resolve().then(() =>
@@ -280,6 +287,149 @@ test("a Claude review's own spent account waits on its own row and stops no Code
     // But the Codex account is untouched: no Codex turn or review is held by someone else's limit.
     assert.equal(f.engine.usage.exhaustedUntil, '');
     assert.equal(f.engine.usage.gate(f.store.get<any>('projects', f.project.id)).blocked, false);
+  } finally {
+    await f.cleanup();
+  }
+});
+
+/**
+ * A review is the only way an item is ever certified, so a Claude Code that cannot run on this Mac
+ * must not read as a verdict: every item would stop in 调查中 behind what looks like a conclusion,
+ * and a person would go looking at the work rather than at the login. Codex reviews the same row.
+ */
+const unavailableReasons = [
+  ['the CLI is not there', 'spawn /usr/local/bin/claude ENOENT'],
+  ['the login is gone', 'Invalid API key · Please run /login'],
+  ['stdout was unreadable', unreadableOutput],
+] as const;
+
+for (const [reason, error] of unavailableReasons)
+  test(`Codex reviews the same row when ${reason}, and the record says it was the environment`, async () => {
+    const f = await selectionFixture();
+    try {
+      const codex = scriptedRunner(),
+        claude = scriptedRunner();
+      claude.state.error = error;
+      f.engine.loop.verification.runners.clear();
+      f.engine.loop.verification.connectRunner(codex.runner, 'codex-cli');
+      f.engine.loop.verification.connectRunner(claude.runner, 'claude-cli');
+      const request = await f.request();
+      await f.engine.loop.verification.start(request.id);
+      const row = f.store.get<any>('loop_verifications', request.id);
+      // Not unknown: the row carries the verdict the runtime that could run reached.
+      assert.equal(row.status, 'passed');
+      assert.equal(row.summary, '脚本化复核完成');
+      assert.equal(row.executionOwner, 'codex-cli');
+      assert.equal(claude.seen.length, 1);
+      assert.equal(codex.seen.length, 1);
+      // The same review: same material, same working directory, same id.
+      assert.equal(codex.seen[0].prompt, claude.seen[0].prompt);
+      assert.equal(codex.seen[0].cwd, claude.seen[0].cwd);
+      assert.equal(codex.seen[0].id, request.id);
+      const events = f.store.all<any>('events').filter((e) => e.action === 'verification.runtime-unavailable');
+      assert.equal(events.length, 1);
+      assert(events[0].text.includes(error));
+      assert(events[0].text.includes('这是本机环境问题，不是复核结论'));
+    } finally {
+      await f.cleanup();
+    }
+  });
+
+test('a runner that cannot even start its CLI is the same environment fault, not a verdict', async () => {
+  const f = await selectionFixture();
+  try {
+    const codex = scriptedRunner(),
+      claude = scriptedRunner();
+    claude.state.throws = '未找到 Claude Code 命令行，无法启动独立复核。';
+    f.engine.loop.verification.runners.clear();
+    f.engine.loop.verification.connectRunner(codex.runner, 'codex-cli');
+    f.engine.loop.verification.connectRunner(claude.runner, 'claude-cli');
+    const request = await f.request();
+    await f.engine.loop.verification.start(request.id);
+    const row = f.store.get<any>('loop_verifications', request.id);
+    assert.equal(row.status, 'passed');
+    assert.equal(row.executionOwner, 'codex-cli');
+    assert.equal(codex.seen.length, 1);
+  } finally {
+    await f.cleanup();
+  }
+});
+
+test('a review that ran keeps its own result, whether it concluded nothing or ran out of quota', async () => {
+  for (const error of ['CLI 未正常完成，结果保留未知', 'Claude usage limit reached. Your limit resets at 3pm.']) {
+    const f = await selectionFixture();
+    try {
+      const codex = scriptedRunner(),
+        claude = scriptedRunner();
+      claude.state.error = error;
+      f.engine.loop.verification.runners.clear();
+      f.engine.loop.verification.connectRunner(codex.runner, 'codex-cli');
+      f.engine.loop.verification.connectRunner(claude.runner, 'claude-cli');
+      const request = await f.request();
+      await f.engine.loop.verification.start(request.id);
+      const row = f.store.get<any>('loop_verifications', request.id);
+      // The runtime ran and this is what it reported, so nothing is handed to another runtime.
+      assert.equal(row.status, 'unknown', error);
+      assert.equal(row.executionOwner, 'claude-cli', error);
+      assert.equal(codex.seen.length, 0, error);
+      assert.equal(f.store.all<any>('events').filter((e) => e.action === 'verification.runtime-unavailable').length, 0);
+      // A spent Claude account still waits on its own row, and still leaves Codex alone.
+      if (quotaFailure.test(error)) {
+        assert.equal(row.usageWait.kind, 'account');
+        assert.equal(f.engine.usage.exhaustedUntil, '');
+      }
+    } finally {
+      await f.cleanup();
+    }
+  }
+});
+
+test('the fallback happens once: what Codex then reports is the result', async () => {
+  const f = await selectionFixture();
+  try {
+    const codex = scriptedRunner(),
+      claude = scriptedRunner();
+    claude.state.error = 'spawn claude ENOENT';
+    codex.state.error = 'CLI 未正常完成，结果保留未知';
+    f.engine.loop.verification.runners.clear();
+    f.engine.loop.verification.connectRunner(codex.runner, 'codex-cli');
+    f.engine.loop.verification.connectRunner(claude.runner, 'claude-cli');
+    const request = await f.request();
+    await f.engine.loop.verification.start(request.id);
+    const row = f.store.get<any>('loop_verifications', request.id);
+    assert.equal(row.status, 'unknown');
+    assert.match(row.summary, /复核未正常完成/);
+    assert.equal(row.executionOwner, 'codex-cli');
+    assert.equal(codex.seen.length, 1);
+    assert.equal(claude.seen.length, 1);
+  } finally {
+    await f.cleanup();
+  }
+});
+
+test('a Codex account the gate is holding queues the fallback for its retry instead of failing it', async () => {
+  const f = await selectionFixture();
+  try {
+    const codex = scriptedRunner(),
+      claude = scriptedRunner();
+    claude.state.error = 'spawn claude ENOENT';
+    const until = new Date(Date.now() + 90 * 60_000).toISOString();
+    f.engine.usage.noteAccountExhausted(until);
+    f.engine.loop.verification.runners.clear();
+    f.engine.loop.verification.connectRunner(codex.runner, 'codex-cli');
+    f.engine.loop.verification.connectRunner(claude.runner, 'claude-cli');
+    const request = await f.request();
+    await f.engine.loop.verification.start(request.id);
+    const row = f.store.get<any>('loop_verifications', request.id);
+    // The Codex review it fell back to has to wait for the account, which is not a result.
+    assert.equal(row.status, 'queued');
+    assert.equal(row.usageWait.kind, 'account');
+    assert.equal(row.executionOwner, undefined);
+    assert.equal(row.startedAt, undefined);
+    assert.equal(codex.seen.length, 0);
+    assert.equal(f.engine.loop.verification.active.size, 0);
+    assert.equal(f.store.all<any>('events').filter((e) => e.action === 'verification.usage-wait').length, 1);
+    assert.equal(f.store.all<any>('events').filter((e) => e.action === 'verification.runtime-unavailable').length, 1);
   } finally {
     await f.cleanup();
   }

@@ -50,8 +50,11 @@ type Seen = {
   modules: boolean;
   registered: boolean;
 };
-/** A `ReviewRunner` with a scripted outcome that records where it was told to run. No CLI, no model. */
-const recordingRunner = (projectPath: string, outcome: 'completed' | 'failed' = 'completed') => {
+/**
+ * A `ReviewRunner` with a scripted outcome that records where it was told to run. No CLI, no model.
+ * `unavailable` is the failure of a runtime that could not run at all, which hands the review on.
+ */
+const recordingRunner = (projectPath: string, outcome: 'completed' | 'failed' | 'unavailable' = 'completed') => {
   const seen: Seen[] = [];
   const runner: ReviewRunner = {
     start: ({ cwd, prompt, observe }) => {
@@ -68,9 +71,8 @@ const recordingRunner = (projectPath: string, outcome: 'completed' | 'failed' = 
           observe({
             threadId: 'scripted-cli-session',
             items:
-              outcome === 'failed'
-                ? []
-                : [
+              outcome === 'completed'
+                ? [
                     {
                       id: 'check',
                       type: 'commandExecution',
@@ -95,9 +97,11 @@ const recordingRunner = (projectPath: string, outcome: 'completed' | 'failed' = 
                         }) +
                         '\n```',
                     },
-                  ],
-            status: outcome,
+                  ]
+                : [],
+            status: outcome === 'completed' ? 'completed' : 'failed',
             ...(outcome === 'failed' ? { error: '脚本化运行器按要求失败' } : {}),
+            ...(outcome === 'unavailable' ? { error: 'spawn /usr/local/bin/claude ENOENT' } : {}),
           })
         ),
       };
@@ -109,8 +113,8 @@ const recordingRunner = (projectPath: string, outcome: 'completed' | 'failed' = 
 type Fixture = IsolatedService & {
   call: Grant['call'];
   requestReview: () => Promise<any>;
-  /** Makes `runner` the only review runner, in place of the two CLI runners the daemon wires. */
-  useRunner: (runner: ReviewRunner) => void;
+  /** Makes these the only review runners, in place of the two CLI runners the daemon wires. */
+  useRunners: (runners: { 'codex-cli'?: ReviewRunner; 'claude-cli'?: ReviewRunner }) => void;
 };
 /** A project with two source files and a gitignored dependency directory; the repository is optional. */
 async function fixture(options: { repository: boolean }): Promise<Fixture> {
@@ -147,18 +151,19 @@ async function fixture(options: { repository: boolean }): Promise<Fixture> {
     const evidence = await call('evidence.capture', { summary: '实际文件内容', path: 'result.json' });
     return call('verification.request', { itemId: item.id, evidenceIds: [evidence.id] });
   };
-  const useRunner = (runner: ReviewRunner) => {
+  const useRunners = (runners: { 'codex-cli'?: ReviewRunner; 'claude-cli'?: ReviewRunner }) => {
     s.engine.loop.verification.runners.clear();
-    s.engine.loop.verification.connectRunner(runner);
+    for (const [owner, runner] of Object.entries(runners))
+      s.engine.loop.verification.connectRunner(runner, owner as 'codex-cli' | 'claude-cli');
   };
-  return Object.assign(s, { call, requestReview, useRunner });
+  return Object.assign(s, { call, requestReview, useRunners });
 }
 
 test('a committed source version is reviewed in a disposable checkout that the prompt describes', async () => {
   const f = await fixture({ repository: true });
   try {
     const { seen, runner } = recordingRunner(f.path);
-    f.useRunner(runner);
+    f.useRunners({ 'codex-cli': runner });
     const request = await f.requestReview();
     const stored = f.store.get<any>('loop_verifications', request.id).prompt;
     await f.engine.loop.verification.start(request.id);
@@ -194,7 +199,7 @@ test('a review that reaches no verdict still leaves no checkout behind', async (
   const f = await fixture({ repository: true });
   try {
     const { seen, runner } = recordingRunner(f.path, 'failed');
-    f.useRunner(runner);
+    f.useRunners({ 'codex-cli': runner });
     const request = await f.requestReview();
     await f.engine.loop.verification.start(request.id);
     assert.equal(f.store.get<any>('loop_verifications', request.id).status, 'unknown');
@@ -211,7 +216,7 @@ test('a plain folder and an uncommitted change keep the review in the project di
     try {
       if (kind === 'dirty') writeFileSync(join(f.path, 'source.js'), 'export const value=2;\n');
       const { seen, runner } = recordingRunner(f.path);
-      f.useRunner(runner);
+      f.useRunners({ 'codex-cli': runner });
       const request = await f.requestReview();
       const stored = f.store.get<any>('loop_verifications', request.id).prompt;
       await f.engine.loop.verification.start(request.id);
@@ -237,6 +242,34 @@ test('a restart removes the checkouts and registrations a killed service left be
     assert.equal(worktrees(f.path).length, 2);
     await f.restart();
     assert.equal(existsSync(stray), false);
+    assert.deepEqual(worktrees(f.path), [realpathSync(f.path)]);
+    assert.deepEqual(readdirSync(join(f.home, 'reviews')), []);
+  } finally {
+    await f.cleanup();
+  }
+});
+
+test('a runtime that cannot run hands its checkout to the other one, which is still removed once', async () => {
+  const f = await fixture({ repository: true });
+  try {
+    const claude = recordingRunner(f.path, 'unavailable'),
+      codex = recordingRunner(f.path);
+    f.useRunners({ 'claude-cli': claude.runner, 'codex-cli': codex.runner });
+    const request = await f.requestReview();
+    await f.engine.loop.verification.start(request.id);
+    assert.equal(claude.seen.length, 1);
+    assert.equal(codex.seen.length, 1);
+    // The same disposable checkout, still live for the second attempt: not rebuilt, not leaked.
+    assert.equal(claude.seen[0].cwd, join(f.home, 'reviews', request.id));
+    assert.equal(codex.seen[0].cwd, claude.seen[0].cwd);
+    assert.equal(codex.seen[0].prompt, claude.seen[0].prompt);
+    assert.equal(codex.seen[0].registered, true);
+    assert.equal(codex.seen[0].source, 'export const value=1;\n');
+    assert.equal(codex.seen[0].modules, true);
+    const result = f.store.get<any>('loop_verifications', request.id);
+    assert.equal(result.status, 'passed');
+    assert.equal(result.executionOwner, 'codex-cli');
+    assert.equal(existsSync(codex.seen[0].cwd), false);
     assert.deepEqual(worktrees(f.path), [realpathSync(f.path)]);
     assert.deepEqual(readdirSync(join(f.home, 'reviews')), []);
   } finally {

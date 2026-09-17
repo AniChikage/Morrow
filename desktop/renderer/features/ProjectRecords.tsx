@@ -15,6 +15,7 @@ const actions: Record<string, string> = {
   'verification.retried': '重新核验未知结果',
   'verification.requeued': '额度恢复，重新复核',
   'verification.usage-wait': '复核等待额度',
+  'verification.runtime-unavailable': '复核运行时不可用，改用其它运行时',
   'finalization.applied': '采纳复核结论',
   'finalization.rejected': '未采纳复核结论',
   'finalization.stale': '复核结论未应用：内容已变化',
