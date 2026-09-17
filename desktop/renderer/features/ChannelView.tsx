@@ -143,6 +143,18 @@ function LogEntry({
   // Older services without list projections can still supply the summary through details.
   const log = run.log || detail?.run.log;
   const work = log?.work || currentWork;
+  const cliSummary =
+    !work && run.runtime !== 'codex'
+      ? run.summary
+          .trim()
+          .split(/\r?\n/)
+          .slice(0, 2)
+          .map((line) => questionExcerpt(line, 200))
+          .join('\n')
+      : '';
+  const cliCharacters = Array.from(cliSummary);
+  const cliExcerpt = cliCharacters.slice(0, 200).join('') + (cliCharacters.length > 200 ? '…' : '');
+  const cliTitle = questionExcerpt(cliSummary.split(/(?<=[。！？!?])|(?<=\.)\s|\n/)[0], 100);
   // A round owned by the Codex App may carry no native timestamps at all: say so rather than
   // reporting 尚未运行 for a finished round, or NaN 秒 for a duration nothing can be derived from.
   const started = runTime(run, run.startedAt);
@@ -157,20 +169,24 @@ function LogEntry({
         {/* Dropped entirely on a CLI turn: an empty span would still take a gap in this flex row. */}
         {usageLabel && <span>{usageLabel}</span>}
       </header>
-      {!log && !work ? (
+      {!log && !work && !cliSummary ? (
         <div className="log-summary-loading" role="status" aria-label="本轮摘要尚未载入">
           <div className="skeleton-line" aria-hidden="true" />
           <div className="skeleton-line" aria-hidden="true" />
         </div>
       ) : (
         <>
-          <h3>{work?.focus || log?.direction || '未记录本轮关注点'}</h3>
+          <h3>{work?.focus || cliTitle || log?.direction || '未记录本轮关注点'}</h3>
           <p className="log-summary">
-            {questionAbove
-              ? '需要回答 · 问题见上方'
-              : work
-                ? `${stateLabel(work.state)} · ${questionExcerpt(work.nextStep, 100)}`
-                : '结论未记录'}
+            {questionAbove ? (
+              '需要回答 · 问题见上方'
+            ) : work ? (
+              `${stateLabel(work.state)} · ${questionExcerpt(work.nextStep, 100)}`
+            ) : cliExcerpt ? (
+              <span style={{ whiteSpace: 'pre-line' }}>{cliExcerpt}</span>
+            ) : (
+              '结论未记录'
+            )}
           </p>
         </>
       )}

@@ -586,3 +586,32 @@ it('leaves the 额度 line off a CLI turn rather than reporting consumption it n
   expect(header).toHaveLength(3);
   expect(header.slice(1)).toEqual(['已完成', '120 秒']);
 });
+
+it('shows a CLI report excerpt without work while preserving Codex, empty and structured summaries', async () => {
+  const summary = '**已核对导入。** 后续仍待观察。\r\n第二行保留。\r\n第三行只在全文中';
+  const { props } = featureProps({ snapshot: cliChannelState() });
+  const emptyLog = { commands: [], files: [], outputs: [], truncated: false };
+  const runs = [
+    round('claude-summary', { runtime: 'claude', summary, log: emptyLog }),
+    round('trae-summary', { runtime: 'trae', summary: '🙂'.repeat(230), log: undefined }),
+    round('cli-empty', { runtime: 'claude', summary: '  ', log: emptyLog }),
+    round('codex-summary', { summary, log: emptyLog }),
+    round('cli-work', { runtime: 'claude', summary }),
+  ];
+  const original = structuredClone(runs);
+  vi.mocked(props.api.getRuns).mockResolvedValue({ runs, hasMore: false });
+  render(<ChannelView {...props} id="channel-system" />, { wrapper: TestProviders });
+  const entries = await screen.findAllByRole('article', { name: /轮次/ });
+  expect(within(entries[0]).getByRole('heading', { name: '已核对导入。' })).toBeTruthy();
+  expect(entries[0].querySelector('.log-summary')!.textContent).toBe('已核对导入。 后续仍待观察。\n第二行保留。');
+  expect(entries[0].querySelector('.log-summary')!.textContent).not.toContain('第三行');
+  expect(Array.from(entries[1].querySelector('.log-summary')!.textContent!)).toHaveLength(201);
+  expect(entries[1].querySelector('.log-summary')!.textContent).toBe('🙂'.repeat(200) + '…');
+  for (const index of [2, 3]) {
+    expect(within(entries[index]).getByRole('heading', { name: '未记录本轮关注点' })).toBeTruthy();
+    expect(entries[index].querySelector('.log-summary')!.textContent).toBe('结论未记录');
+  }
+  expect(within(entries[4]).getByRole('heading', { name: '关注 cli-work' })).toBeTruthy();
+  expect(entries[4].querySelector('.log-summary')!.textContent).toContain('检查下一份报告');
+  expect(runs).toEqual(original);
+});
