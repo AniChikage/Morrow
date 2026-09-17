@@ -1090,6 +1090,12 @@ export class WorkVerification {
       version: row.version,
     });
     const cwd = checkout?.path || project.path;
+    // Only the CLI reviewers are told they may run commands that write, because only their sandbox
+    // is opened for it (`reviewArguments`, `claudeReviewArguments`). The App task keeps the
+    // read-only permissions it always sent: its own writable roots are merged with what the App
+    // retains rather than being exactly what Morrow passes, so a writable review there could reach
+    // the project it is reviewing. It still reads the version under review inside the checkout, and
+    // a prompt must never promise what the runtime it runs on will refuse.
     const prompt = row.prompt + (checkout ? this.redact(isolatedReviewText(checkout)) : '');
     const active = {
       timer: setTimeout(() => this.stop(id, capReached(row.timeoutSeconds)), row.timeoutSeconds * 1000),
@@ -1190,7 +1196,7 @@ export class WorkVerification {
         return;
       }
       active.stop = unsubscribe;
-      const response = (await this.transport!.sendMessage(snapshot.threadId, prompt, id, [], {
+      const response = (await this.transport!.sendMessage(snapshot.threadId, row.prompt, id, [], {
         approvalPolicy: 'never',
         sandboxPolicy: { type: 'readOnly', networkAccess: false },
       })) as { turn?: { id?: string }; turnId?: string } | undefined;

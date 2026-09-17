@@ -5,7 +5,7 @@ import { copyFileSync, mkdtempSync, readFileSync, existsSync, rmSync } from 'nod
 import { join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { spawn } from 'node:child_process';
-import { CodexCliReviewRunner, type ReviewObservation } from '../service/codex-cli-review.ts';
+import { CodexCliReviewRunner, reviewArguments, type ReviewObservation } from '../service/codex-cli-review.ts';
 import { CodexUsageReader, parseUsageReading } from '../service/codex-usage.ts';
 import { reviewTimeoutSeconds } from '../service/work-verification.ts';
 import { until } from './harness/wait.ts';
@@ -213,5 +213,77 @@ test('usage is read without creating a task, unknown percentages stay unknown, a
     assert.equal(parseUsageReading({ rateLimits: { primary: { usedPercent: null } } }), undefined);
   } finally {
     reader.close();
+  }
+});
+
+/**
+ * The sandbox one review runs under. Without a checkout of its own a reviewer shares the
+ * implementer's working tree, so it stays read-only and cannot rerun the project's checks — the
+ * gap board item #43 hit. Inside a disposable checkout the same session may write, because what it
+ * writes is thrown away with the checkout; `read-only` implies no network, so the writable variant
+ * has to say so itself.
+ */
+const sharedTreeArguments = [
+  'exec',
+  '--json',
+  '--ephemeral',
+  '--ignore-user-config',
+  '--ignore-rules',
+  '--skip-git-repo-check',
+  '--color',
+  'never',
+  '--sandbox',
+  'read-only',
+  '-c',
+  'approval_policy="never"',
+  '-c',
+  'web_search="disabled"',
+  '-c',
+  'mcp_servers={}',
+  '-c',
+  'features.apps=false',
+  '-',
+];
+test('a review of the shared project directory is byte for byte the read-only session it always was', () => {
+  assert.deepEqual(reviewArguments(), sharedTreeArguments);
+  assert.deepEqual(reviewArguments(undefined, false), sharedTreeArguments);
+  assert.deepEqual(reviewArguments('gpt-5-codex'), [
+    ...sharedTreeArguments.slice(0, -1),
+    '--model',
+    'gpt-5-codex',
+    '-',
+  ]);
+});
+test('a review inside a disposable checkout may write there, and is still offline', () => {
+  const isolated = reviewArguments(undefined, true);
+  assert.equal(isolated[isolated.indexOf('--sandbox') + 1], 'workspace-write');
+  assert.equal(isolated.includes('read-only'), false);
+  // `read-only` implied it; the writable sandbox must state it, or a review could reach the network.
+  assert.equal(isolated.includes('sandbox_workspace_write.network_access=false'), true);
+  assert.equal(isolated[isolated.indexOf('sandbox_workspace_write.network_access=false') - 1], '-c');
+  // Nothing else moves: drop the one added pair, put the sandbox name back, and it is the same line.
+  const network = isolated.indexOf('sandbox_workspace_write.network_access=false');
+  assert.deepEqual(
+    [...isolated.slice(0, network - 1), ...isolated.slice(network + 1)].map((value) =>
+      value === 'workspace-write' ? 'read-only' : value
+    ),
+    sharedTreeArguments
+  );
+  assert.deepEqual(reviewArguments('gpt-5-codex', true), [...isolated.slice(0, -1), '--model', 'gpt-5-codex', '-']);
+});
+test('the sandbox a review asks for is the one its CLI is actually started with', async () => {
+  const argv = resolve('tests/fixtures/codex-review-argv.mjs');
+  for (const isolated of [false, true]) {
+    const observations: ReviewObservation[] = [];
+    await new CodexCliReviewRunner({ executable: () => argv }).start({
+      cwd: tmpdir(),
+      prompt: 'report the command line',
+      timeoutMs: 5000,
+      isolated,
+      observe: (o) => observations.push(o),
+    }).done;
+    const last = observations.at(-1)!;
+    assert.equal(last.status, 'completed', last.error);
+    assert.deepEqual(JSON.parse(last.items[0].text), reviewArguments(undefined, isolated));
   }
 });

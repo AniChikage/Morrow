@@ -16,10 +16,27 @@ export interface ReviewRunner {
     prompt: string;
     timeoutMs: number;
     model?: string;
+    /** The review's own id, for a CLI that names its session; a runner that has no use for it ignores it. */
+    id?: string;
+    /**
+     * Whether `cwd` is a disposable checkout of the version under review
+     * (`service/review-checkout.ts`) rather than the shared project directory. It is the one
+     * condition under which a reviewer may run commands that write: what it writes lands in the
+     * checkout and is thrown away with it, and the project directory stays outside that scope.
+     */
+    isolated?: boolean;
     observe: (snapshot: ReviewObservation) => void;
   }): { cancel(): void; done: Promise<void> };
 }
-export function reviewArguments(model?: string): string[] {
+/**
+ * One ephemeral `codex exec` session. Sharing the implementer's working tree it stays `read-only`,
+ * which is also the exact line it has always sent; in a disposable checkout of its own it may write
+ * there instead, because without that a reviewer cannot run the project's own tests and has to
+ * leave every 「测试通过」 claim unknown. `read-only` implies no network of its own, so the
+ * workspace-write variant states the same offline rule explicitly. Approvals, user config, MCP
+ * servers, web search and App tools stay off either way.
+ */
+export function reviewArguments(model?: string, isolated = false): string[] {
   return [
     'exec',
     '--json',
@@ -30,9 +47,10 @@ export function reviewArguments(model?: string): string[] {
     '--color',
     'never',
     '--sandbox',
-    'read-only',
+    isolated ? 'workspace-write' : 'read-only',
     '-c',
     'approval_policy="never"',
+    ...(isolated ? ['-c', 'sandbox_workspace_write.network_access=false'] : []),
     '-c',
     'web_search="disabled"',
     '-c',
@@ -207,7 +225,7 @@ export class CodexCliReviewRunner implements ReviewRunner {
     child.send(
       {
         executable,
-        args: reviewArguments(input.model),
+        args: reviewArguments(input.model, input.isolated),
         cwd: input.cwd,
         prompt: input.prompt,
         timeoutMs: input.timeoutMs,

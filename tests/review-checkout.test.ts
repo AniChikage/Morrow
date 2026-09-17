@@ -6,6 +6,7 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, writeFi
 import { join } from 'node:path';
 import type { ReviewRunner } from '../service/codex-cli-review.ts';
 import { projectTreeState } from '../service/source-version.ts';
+import { FakeReviewer } from './harness/fake-reviewer.ts';
 import { startIsolated, type IsolatedService } from './harness/service.ts';
 import { grantFor, type Grant } from './harness/grant.ts';
 
@@ -46,6 +47,7 @@ const registered = (root: string, path: string) => {
 type Seen = {
   cwd: string;
   prompt: string;
+  isolated: boolean;
   source: string;
   modules: boolean;
   registered: boolean;
@@ -57,10 +59,11 @@ type Seen = {
 const recordingRunner = (projectPath: string, outcome: 'completed' | 'failed' | 'unavailable' = 'completed') => {
   const seen: Seen[] = [];
   const runner: ReviewRunner = {
-    start: ({ cwd, prompt, observe }) => {
+    start: ({ cwd, prompt, isolated, observe }) => {
       seen.push({
         cwd,
         prompt,
+        isolated: !!isolated,
         source: existsSync(join(cwd, 'source.js')) ? readFileSync(join(cwd, 'source.js'), 'utf8') : '',
         modules: existsSync(join(cwd, 'node_modules', 'installed.txt')),
         registered: registered(projectPath, cwd),
@@ -117,9 +120,10 @@ type Fixture = IsolatedService & {
   useRunners: (runners: { 'codex-cli'?: ReviewRunner; 'claude-cli'?: ReviewRunner }) => void;
 };
 /** A project with two source files and a gitignored dependency directory; the repository is optional. */
-async function fixture(options: { repository: boolean }): Promise<Fixture> {
+async function fixture(options: { repository: boolean; native?: FakeReviewer }): Promise<Fixture> {
   const s = await startIsolated({
     scheduler: false,
+    ...(options.native ? { nativeTransport: options.native } : {}),
     project: {
       name: '隔离检出复核',
       goal: '让复核者自己重跑检查',
@@ -173,6 +177,7 @@ test('a committed source version is reviewed in a disposable checkout that the p
     assert.equal(only.cwd, join(f.home, 'reviews', request.id));
     assert.notEqual(only.cwd, f.path);
     assert.equal(only.registered, true);
+    assert.equal(only.isolated, true);
     assert.equal(only.source, 'export const value=1;\n');
     // Linked dependencies are what lets the reviewer run the project's own checks.
     assert.equal(only.modules, true);
@@ -222,6 +227,8 @@ test('a plain folder and an uncommitted change keep the review in the project di
       await f.engine.loop.verification.start(request.id);
       // The fallback is the behaviour that shipped: the shared tree, and the read-only wording.
       assert.equal(seen[0].cwd, realpathSync(f.path), kind);
+      // No checkout, so the runner is told not to open its sandbox for writes.
+      assert.equal(seen[0].isolated, false, kind);
       assert.equal(seen[0].prompt, stored, kind);
       assert(seen[0].prompt.includes('不能写文件、联网、安装依赖'), kind);
       assert(!seen[0].prompt.includes('一次性隔离检出'), kind);
@@ -270,6 +277,41 @@ test('a runtime that cannot run hands its checkout to the other one, which is st
     assert.equal(result.status, 'passed');
     assert.equal(result.executionOwner, 'codex-cli');
     assert.equal(existsSync(codex.seen[0].cwd), false);
+    assert.deepEqual(worktrees(f.path), [realpathSync(f.path)]);
+    assert.deepEqual(readdirSync(join(f.home, 'reviews')), []);
+  } finally {
+    await f.cleanup();
+  }
+});
+
+/**
+ * The App task reviews through the native protocol instead of a CLI, and Morrow does not control
+ * what that sandbox finally allows: the App merges the writable roots it is passed with the ones it
+ * retains, so a writable review there could reach the very project it is reviewing. It keeps the
+ * read-only permissions it always sent, and therefore is not told it may run anything that writes —
+ * it still reads the version under review, in the checkout.
+ */
+test('the App review reads the checkout under the read-only permissions it always sent', async () => {
+  const native = new FakeReviewer();
+  const f = await fixture({ repository: true, native });
+  try {
+    const request = await f.requestReview();
+    const stored = f.store.get<any>('loop_verifications', request.id).prompt;
+    await f.engine.loop.verification.start(request.id);
+    assert.equal(native.sent.length, 1);
+    assert.equal(native.snapshots.get(native.sent[0].threadId)!.state.cwd, join(f.home, 'reviews', request.id));
+    assert.deepEqual(native.sent[0].options, {
+      approvalPolicy: 'never',
+      sandboxPolicy: { type: 'readOnly', networkAccess: false },
+    });
+    // The prompt promises exactly what this runtime can do, and nothing more.
+    assert.equal(native.sent[0].text, stored);
+    assert.equal(native.sent[0].text.includes('一次性隔离检出'), false);
+    assert(native.sent[0].text.includes('不能写文件、联网、安装依赖'));
+    native.complete();
+    assert.equal(f.store.get<any>('loop_verifications', request.id).status, 'passed');
+    // The checkout is still used up and removed when an App review ends.
+    assert.equal(existsSync(join(f.home, 'reviews', request.id)), false);
     assert.deepEqual(worktrees(f.path), [realpathSync(f.path)]);
     assert.deepEqual(readdirSync(join(f.home, 'reviews')), []);
   } finally {

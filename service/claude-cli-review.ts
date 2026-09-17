@@ -6,14 +6,8 @@ import { runtimePath } from './runtimes.ts';
 import { reviewEnvironment } from './codex-cli-review.ts';
 import type { ReviewObservation, ReviewRunner } from './codex-cli-review.ts';
 
-/**
- * What one review is started with. `ReviewRunner` fixes the fields every runner needs; these two are
- * extra context this one uses and the others ignore: the review's own id names the CLI session, and
- * `isolated` says whether the working directory is the disposable checkout of the reviewed version
- * (`service/review-checkout.ts`) — the only condition under which a reviewer may run commands that
- * write, because everything it writes is thrown away with the checkout.
- */
-export type ReviewStart = Parameters<ReviewRunner['start']>[0] & { id?: string; isolated?: boolean };
+/** What one review is started with: the `ReviewRunner` contract itself, named for convenience. */
+export type ReviewStart = Parameters<ReviewRunner['start']>[0];
 /** Built-in tools a review may use, stated twice below: what exists, and what runs without asking. */
 export const claudeReviewTools = { isolated: 'Read,Grep,Glob,Bash', shared: 'Read,Grep,Glob' };
 /**
