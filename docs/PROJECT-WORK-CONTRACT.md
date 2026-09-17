@@ -1,4 +1,4 @@
-# Project work loop (0.14.1)
+# Project work loop (0.14.2)
 
 ## Task charter, turn notes and compact responses
 
