@@ -212,7 +212,10 @@ export function ProjectView(props: FeatureProps & { id: string }) {
               }
             : !channels.length
               ? {
-                  text: '添加持续频道，再关联你在 Codex App 中创建的任务',
+                  // Nothing is decided yet — not even the runtime — so this cannot name the App:
+                  // linking a task is a step that comes after the channel exists, and only for a
+                  // channel that runs inside an App task.
+                  text: '添加持续频道，写下它长期负责的方向',
                   label: '添加频道',
                   action: () => onNewChannel(id),
                 }

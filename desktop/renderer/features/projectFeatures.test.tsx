@@ -80,6 +80,21 @@ describe('project next step and secondary properties', () => {
     expect(screen.getAllByRole('tabpanel')).toHaveLength(1);
   });
 
+  it('asks an empty project for a channel without assuming which way it will reach Codex', async () => {
+    const { props, api } = featureProps();
+    props.snapshot.channels = [];
+    props.snapshot.items = [];
+    api.getProjectBrief.mockResolvedValue({ goal: '目标', brief: '真实说明', briefRevision: 4 });
+    props.snapshot.projects[0].briefRevision = 4;
+    render(<ProjectView {...props} id="project-atlas" />, { wrapper: TestProviders });
+    // Neither the runtime nor the transport has been chosen yet, and linking an App task is a step
+    // that comes after the channel exists — and only for a channel that runs inside one.
+    await screen.findByText('添加持续频道，写下它长期负责的方向');
+    expect(screen.queryByText(/Codex App/)).toBeNull();
+    await userEvent.setup().click(screen.getByRole('button', { name: '添加频道' }));
+    expect(props.onNewChannel).toHaveBeenCalledWith('project-atlas');
+  });
+
   it('uses actual brief content before guiding the user to an existing App task', async () => {
     const { props, api } = featureProps();
     props.snapshot.projects[0].briefRevision = 3;
