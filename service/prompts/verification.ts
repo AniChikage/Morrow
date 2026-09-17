@@ -33,6 +33,21 @@ expectations 的所有 ID；无 expectations 时使用唯一 ID "feature"。pass
 源版本：${p.version}（不包含 Git 忽略的依赖/产物；不要把源版本当作部署或依赖版本证明）
 实际保存的证据：${p.evidence}
 `;
+/**
+ * Appended to either review prompt, and only when the review really runs in a disposable checkout
+ * of the version under review (`service/review-checkout.ts`). It is the one place that lifts the
+ * read-only wording above: a reviewer with its own copy of the source can rerun the project's own
+ * checks, so 「测试通过」 can be verified instead of staying unknown because only the implementer
+ * ever ran them. Without a checkout this text is not sent and the shared-tree wording stands.
+ */
+export const isolatedReviewText = (p: { path: string; commit: string }) => `\
+环境更正（本次生效，优先于上文关于只读和临时文件的限制）：本次复核运行在被核验源版本的一次性隔离检出里，\
+目录 ${p.path}，提交 ${p.commit}。它与原项目目录分离，复核结束即删除，项目的 node_modules 已链接就位。\
+因此你可以在这个目录内自行运行格式检查、类型检查、测试与构建等会写文件的命令，并把你亲自运行得到的结果\
+作为结论依据；执行者自述跑过的检查请自己重跑一遍再判断，不要照抄它的结论。仍然不能联网、安装依赖或改动\
+原项目目录：写入只能落在这个检出里，检出里的改动不会回到项目，也不构成通过的理由。若运行时仍拒绝写入或\
+命令无法完成，按上文保留 unknown 并写明缺口，不要把环境问题当成业务失败。
+`;
 /** One release candidate under review; every field is already serialized. `minutes` is the row's own cap. */
 export type ReleaseReviewFields = {
   version: string;

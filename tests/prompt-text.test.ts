@@ -6,6 +6,7 @@ import { autonomousCharter, type PromptContext } from '../service/channel-work.t
 import type { Scope } from '../service/project-loop.ts';
 import type { Channel, Project } from '../service/protocol.ts';
 import type { Verification } from '../service/verification-types.ts';
+import { isolatedReviewText } from '../service/prompts/verification.ts';
 import { startIsolated } from './harness/service.ts';
 import { grantFor } from './harness/grant.ts';
 import { startReleaseFixture } from './harness/release.ts';
@@ -149,6 +150,19 @@ const stable = (text: string, root: string) =>
     .replace(/\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z/g, '<time>')
     .replace(/\b[0-9a-f]{64}\b/g, '<digest>')
     .replace(/\b[0-9a-f]{40}\b/g, '<commit>');
+
+/**
+ * The paragraph appended to a review prompt only when the review runs in a disposable checkout of
+ * the version under review. It is the only place a reviewer is told it may run commands that write,
+ * so its bytes are pinned like every other prompt; the two review prompts above stay the wording a
+ * review of the shared project directory gets.
+ */
+test('the isolated-checkout review paragraph is unchanged', () => {
+  const text = isolatedReviewText({ path: '/tmp/morrow/reviews/prompt-text-review', commit: '0'.repeat(40) });
+  assert(text.includes('你可以在这个目录内自行运行格式检查、类型检查、测试与构建'));
+  assert(text.includes('把你亲自运行得到的结果作为结论依据'));
+  assert.equal(digest(text), '6b102c658cf49cbef52eb134f1b4f2135123b075ee52d6c3dad7f06b353962ad');
+});
 
 test('the release and item review prompt text is unchanged', async () => {
   const s = await startReleaseFixture();

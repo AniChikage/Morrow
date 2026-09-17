@@ -13,7 +13,9 @@ import { clock, usageResetAt } from './usage.ts';
 import { readSourceVersion, sourceVersion } from './source-version.ts';
 import { evidenceData } from './measurement.ts';
 import type { Verification, Finalization, SourceVersion } from './verification-types.ts';
-import { itemReviewText, releaseReviewText } from './prompts/verification.ts';
+import { isolatedReviewText, itemReviewText, releaseReviewText } from './prompts/verification.ts';
+import { createReviewCheckout, pruneReviewCheckouts, removeReviewCheckout } from './review-checkout.ts';
+import type { ReviewCheckout } from './review-checkout.ts';
 
 const hash = (v: unknown) =>
   createHash('sha256')
@@ -117,6 +119,8 @@ export class WorkVerification {
       cancel?: () => void;
       timer: ReturnType<typeof setTimeout>;
       seen: Map<string, Record<string, any>>;
+      /** The disposable checkout this review runs in, removed when it reaches any terminal state. */
+      checkout?: ReviewCheckout;
     }
   >();
   interrupting = new Set<string>();
@@ -993,18 +997,29 @@ export class WorkVerification {
       retryAt: undefined,
       usageWait: undefined,
     });
+    // The reviewer reads and runs the reviewed version in a copy of its own, when one can be made
+    // that provably holds exactly that version; otherwise it keeps reading the project directory.
+    const checkout = createReviewCheckout({
+      home: this.loop.home,
+      projectPath: project.path,
+      verificationId: id,
+      version: row.version,
+    });
+    const cwd = checkout?.path || project.path;
+    const prompt = row.prompt + (checkout ? this.redact(isolatedReviewText(checkout)) : '');
     const active = {
       timer: setTimeout(() => this.stop(id, capReached(row.timeoutSeconds)), row.timeoutSeconds * 1000),
       seen: new Map<string, Record<string, any>>(),
       stop: undefined as (() => void) | undefined,
       cancel: undefined as (() => void) | undefined,
+      checkout,
     };
     this.active.set(id, active);
     try {
       if (this.runner) {
         const execution = this.runner.start({
-          cwd: project.path,
-          prompt: row.prompt,
+          cwd,
+          prompt,
           timeoutMs: row.timeoutSeconds * 1000,
           model: this.loop.store.get<Channel>('channels', row.channelId)?.model || undefined,
           observe: (observation) => {
@@ -1017,7 +1032,13 @@ export class WorkVerification {
         });
         active.cancel = execution.cancel;
         if (!this.active.has(id)) execution.cancel();
-        await execution.done;
+        try {
+          await execution.done;
+        } finally {
+          // Success, refusal, cancellation, the cap or a throw all end here; `finish` has normally
+          // released it already, and this covers a runner that resolves without a verdict at all.
+          this.releaseCheckout(id);
+        }
         return;
       }
       await this.transport!.connect();
@@ -1026,7 +1047,7 @@ export class WorkVerification {
         this.stop(id, '原生后台暂不支持独立只读复核');
         return;
       }
-      const snapshot = await this.transport!.createThread!(project.path);
+      const snapshot = await this.transport!.createThread!(cwd);
       this.update(id, {
         threadId: snapshot.threadId,
         model: snapshot.state.latestThreadSettings?.model || snapshot.state.model,
@@ -1044,7 +1065,7 @@ export class WorkVerification {
         return;
       }
       active.stop = unsubscribe;
-      const response = (await this.transport!.sendMessage(snapshot.threadId, row.prompt, id, [], {
+      const response = (await this.transport!.sendMessage(snapshot.threadId, prompt, id, [], {
         approvalPolicy: 'never',
         sandboxPolicy: { type: 'readOnly', networkAccess: false },
       })) as { turn?: { id?: string }; turnId?: string } | undefined;
@@ -1068,6 +1089,28 @@ export class WorkVerification {
   update(id: string, patch: Partial<Verification>) {
     const row = this.loop.store.get<Verification>('loop_verifications', id)!;
     this.loop.store.put('loop_verifications', { ...row, ...patch });
+  }
+  /** Removes this review's disposable checkout, once. A review that made none releases nothing. */
+  releaseCheckout(id: string) {
+    const active = this.active.get(id);
+    if (!active?.checkout) return;
+    const { projectPath, path } = active.checkout;
+    active.checkout = undefined;
+    removeReviewCheckout(projectPath, path);
+  }
+  /**
+   * Boot-time cleanup of checkouts a killed service left behind. Called after the running rows have
+   * been recorded, so every directory there belongs to a review that is over.
+   */
+  pruneCheckouts() {
+    const running = new Set(
+      this.loop.store
+        .all<Verification>('loop_verifications')
+        .filter((row) => row.status === 'running')
+        .map((row) => row.id)
+    );
+    const paths = [...new Set(this.loop.store.all<Project>('projects').map((project) => project.path))];
+    pruneReviewCheckouts(this.loop.home, paths, running);
   }
   ingest(id: string, snapshot: NativeSnapshot) {
     const row = this.loop.store.get<Verification>('loop_verifications', id)!;
@@ -1261,6 +1304,7 @@ export class WorkVerification {
     if (active) {
       clearTimeout(active.timer);
       active.stop?.();
+      this.releaseCheckout(id);
       this.active.delete(id);
     }
     // A release review has no single item, so its result is recorded against each item it covered.
@@ -1313,6 +1357,7 @@ export class WorkVerification {
         this.finish(row.id, 'unknown', '服务重启导致复核回执不完整；保留历史，不重复启动');
         if (row.threadId) this.update(row.id, { interruptPending: true });
       }
+    this.pruneCheckouts();
   }
   close() {
     for (const id of this.active.keys()) this.stop(id, '服务关闭，复核未完成，结果保留未知');
