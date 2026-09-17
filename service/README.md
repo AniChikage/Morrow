@@ -83,6 +83,12 @@ MORROW_HOME="$HOME/.local/share/morrow" npm start
 
 ## 原生运行时
 
+Codex 频道有两种传输方式，记在频道行的 `transport` 上（`'app' | 'cli'`，缺省视为 `'app'`，既有频道无需迁移）。`app` 是默认，走下面的 Codex App follower；`cli` 直连本机 Codex CLI，走后面「运行时适配器」那条有界子进程路径。`Engine.start` 与 `Engine.action` 按 `usesApp(channel)`（`service/protocol.ts`）分流，不再按运行时分流：CLI 直连的频道不创建也不需要 App 绑定。`MORROW_TEST_MODE=1` 下的既有行为不变——走 App 的频道在没有绑定时仍然落到夹具 CLI 上，这是服务测试驱动 Codex 频道的方式。
+
+服务端只允许 Codex 频道带 `transport`，其它运行时给了返回 400；轮次进行中不能改（与运行时、模型、权限同一条 409）；已绑定 App 任务的频道不能切走（与换运行时同一条 409，避免丢失会话关联）；切换会清空 `sessionId`（App 线程 ID 与 `codex exec` 会话 ID 共用这一个字段）并写一条系统事件。`/api/channels/:id/native/*` 与原生图片导入对 CLI 直连的频道返回 409/404；留言接口照常开放，那是它唯一的入口。
+
+**按运行时判断还是按传输方式判断**，是这块最容易搞错的地方。问「这条频道背后有没有 App 任务」时按传输方式：路由、绑定、原生对话、留言、`WorkVerification.tick()` 的控制位门禁、界面上一切 App 形状的东西。问「这条频道花不花 Codex 额度」时按运行时：`Engine.reviewHolds`、`usage.gate`、`trackUsageBefore/After`、复核运行器的选择（复核不与执行者同一运行时，CLI 直连的执行者仍然是 Codex）。`executionOwner` 是每条运行记录自己的事实（在哪跑的），不能拿来推断花的是哪个账号。
+
 ### Codex App
 
 生产 `CodexNativeTransport` 只使用 App 的 owner/follower IPC，不替换 `CODEX_CLI_PATH`，不拉起替代 App 后台。旧启动转接程序及共享 transport 保留为历史隔离夹具，生产入口不会选择它们，配置接口返回 410。
@@ -103,17 +109,19 @@ MORROW_HOME="$HOME/.local/share/morrow" npm start
 
 ### 运行时适配器
 
-Claude Code 与 Trae 的频道走有界 CLI 子进程：一次 `spawn`，提示从 stdin 进入，结束时可选的 `morrow-report` 代码块写看板。它们不获得 Morrow 工作接口（`release.propose`、`evidence.native`、`memory.search` 等只属于 Codex 频道），额度门禁与用量归因也不对它们生效（那些读数来自 Codex 账户）；每日运行次数上限照旧对所有运行时生效。verified/resolved 与 Codex 频道一样，先进入一次不与执行者同运行时的独立复核。
+Claude Code、Trae 以及 `transport: 'cli'` 的 Codex 频道走有界 CLI 子进程：一次 `spawn`，提示从 stdin 进入，结束时可选的 `morrow-report` 代码块写看板。它们都不获得 Morrow 工作接口（`release.propose`、`evidence.native`、`memory.search` 等只属于走 App 任务的 Codex 频道）。额度门禁与用量归因按运行时判断：对 Claude Code 与 Trae 不生效（那些读数来自 Codex 账户），对 CLI 直连的 Codex 频道照常生效，它花的是同一个账号。每日运行次数上限照旧对所有运行时生效。verified/resolved 与走 App 的 Codex 频道一样，先进入一次不与执行者同运行时的独立复核。
 
-这一步由服务自己发起，轮次不需要（也没有）工作接口：报告把某个事项报为 verified/resolved 时，事项先存为 `investigating`，随后服务把本轮的报告条目与 Morrow 为该轮记录的工具调用写成一条 `origin: 'agent'`、`source: run:<runId>` 的 `loop_evidence`（`data` 为 `{runtime, reportedBy, reportNote, report, recordedTools, finalOutput}`；最多 40 次调用、每段输入/输出摘录 2000 字符、最终答复 4000 字符，整条 `data` 压到 512 KB 以内，只截断不报错），按 `linkEvidence` / `strategy.evidenceObserved` 入账并审计 `evidence.recorded`（actor `system`），再用它请求一次事项级复核，同时把所报状态作为 `feature.complete` 意图挂在这次复核上——复核通过即自动完成该事项，不必再跑一轮。该事项已有排队/进行中的复核时不重复请求、也不再记一条证据；上一次复核未通过且源码此后没有变化时同样不请求，只在 `nextStep` 与工作日志里写明先处理复核发现（含首条阻断性发现）。请求被拒（项目已有复核待完成、正在切换版本、证据被拒等）不会让报告失败：该次证据与请求整体回滚，事项留在 `调查中` 并保留「等待当前版本的独立复核；」前缀，工作日志记一条说明，下一轮汇报再试。复核走哪个运行时按上面的规则挑：CLI 频道的复核通常落在 Claude Code 上，不花 Codex 额度，也就不被账户保留线挡住；回退成 Codex 复核时，它和其它 Codex 复核一样等待额度。 `report` 与 `finalOutput` 明确标为模型自述；`recordedTools` 的 `recordedBy: morrow-cli-stream`、说明与 `calls` 表明它由 Morrow 从 CLI 事件流记录，非模型自述，但无退出码与版本绑定，不能当作原生执行证据（App 轮次共用此路径时标为 `morrow-run-events`）；CLI 提示只允许用只读可重现的文件、静态检查与 Git 事实声明 verified/resolved，测试和构建结果仅作附带证据。
+CLI 直连的 Codex 频道用 `invocation()` 早就能拼的那条 `codex exec` 命令行，与 Trae 同形：`resume`、`sandbox_mode`、`approval_policy="never"`、`sandbox_workspace_write.network_access=false`、`--output-last-message`、可选 `--model`，提示从 stdin 进入。`native` 权限映射到 `danger-full-access` 的那一行按 `usesApp` 判断，所以这种频道拿不到完整访问；服务端本来也不允许它带 `native`。
 
-这次复核在下一次心跳就开始，不要求该频道处于持续运行：`WorkVerification.tick()` 对 `runtime !== 'codex'` 的频道跳过控制位判断（请求它的那一轮已经结束，也已经由人或调度付过了；CLI 频道平时就是暂停的），每日运行次数上限与「同一时间只跑一个复核」照旧。反过来，`Engine.start` 的待复核门禁对 CLI 频道忽略被额度门禁按住的排队复核（`retryAt` 尚未到期，由 `WorkVerification.start` 在保留线挡住或读数待定时写入）：保留线是 Codex 账户的读数，不该冻结不花这份额度的频道；`running` 的复核和没有被按住的排队复核照旧拦截，Codex 频道的行为完全不变。代价是明确的：等待期间源码若发生变化，这次复核开始时会因材料过期判为 unknown，下一次声明重新请求。
+这一步由服务自己发起，轮次不需要（也没有）工作接口：报告把某个事项报为 verified/resolved 时，事项先存为 `investigating`，随后服务把本轮的报告条目与 Morrow 为该轮记录的工具调用写成一条 `origin: 'agent'`、`source: run:<runId>` 的 `loop_evidence`（`data` 为 `{runtime, reportedBy, reportNote, report, recordedTools, finalOutput}`；最多 40 次调用、每段输入/输出摘录 2000 字符、最终答复 4000 字符，整条 `data` 压到 512 KB 以内，只截断不报错），按 `linkEvidence` / `strategy.evidenceObserved` 入账并审计 `evidence.recorded`（actor `system`），再用它请求一次事项级复核，同时把所报状态作为 `feature.complete` 意图挂在这次复核上——复核通过即自动完成该事项，不必再跑一轮。该事项已有排队/进行中的复核时不重复请求、也不再记一条证据；上一次复核未通过且源码此后没有变化时同样不请求，只在 `nextStep` 与工作日志里写明先处理复核发现（含首条阻断性发现）。请求被拒（项目已有复核待完成、正在切换版本、证据被拒等）不会让报告失败：该次证据与请求整体回滚，事项留在 `调查中` 并保留「等待当前版本的独立复核；」前缀，工作日志记一条说明，下一轮汇报再试。复核走哪个运行时按上面的规则挑（按运行时，不按传输方式——CLI 直连的执行者仍然是 Codex）：Claude Code 与 Trae 频道的复核通常落在 Claude Code 上，不花 Codex 额度，也就不被账户保留线挡住；回退成 Codex 复核时，它和其它 Codex 复核一样等待额度。 `report` 与 `finalOutput` 明确标为模型自述；`recordedTools` 的 `recordedBy: morrow-cli-stream`、说明与 `calls` 表明它由 Morrow 从 CLI 事件流记录，非模型自述，但无退出码与版本绑定，不能当作原生执行证据（App 轮次共用此路径时标为 `morrow-run-events`）；CLI 提示只允许用只读可重现的文件、静态检查与 Git 事实声明 verified/resolved，测试和构建结果仅作附带证据。
+
+这次复核在下一次心跳就开始，不要求该频道处于持续运行：`WorkVerification.tick()` 对 `!usesApp(channel)` 的频道跳过控制位判断（请求它的那一轮已经结束，也已经由人或调度付过了；这些频道平时就是暂停的），每日运行次数上限与「同一时间只跑一个复核」照旧。**这里必须按传输方式判断**：CLI 直连的 Codex 频道处境与 Claude Code 频道完全相同，按运行时判断会让它的复核永远不开始，同时被 `Engine.start` 的待复核门禁把整个项目的手动运行 409 掉。反过来，`Engine.start` 的待复核门禁（`reviewHolds`）对不花 Codex 额度的频道忽略被额度门禁按住的排队复核（`retryAt` 尚未到期，由 `WorkVerification.start` 在保留线挡住或读数待定时写入）：保留线是 Codex 账户的读数，不该冻结不花这份额度的频道；`running` 的复核和没有被按住的排队复核照旧拦截。**这一条按运行时判断**，所以 Codex 频道（含 CLI 直连）的行为完全不变：它们照样花这份额度，就该被同一条保留线挡住。代价是明确的：等待期间源码若发生变化，这次复核开始时会因材料过期判为 unknown，下一次声明重新请求。
 
 Claude 使用 `--print --verbose --output-format stream-json --safe-mode --strict-mcp-config --mcp-config {"mcpServers":{}} --tools <T> --allowedTools <T> --permission-mode <M> --name Morrow:<runId>`，有模型时加 `--model`，有会话时加 `--resume <sessionId>`。只读为 `T = Read,Grep,Glob`、`M = dontAsk`；工作区写入为 `T = Read,Grep,Glob,Edit,Write,MultiEdit,NotebookEdit,Bash`、`M = acceptEdits`——命令执行是开放的，且不在沙箱内运行，提示词中的权限一行会写明这一点。`--safe-mode` 不加载项目的 CLAUDE.md、hooks、插件、技能与 MCP 服务器，因此这不等于完整继承 Claude 的自定义配置。会话 ID 取事件流里的 `session_id`。
 
-Trae 使用 `traex exec --json` / `exec resume`，保留原生 provider、规则和默认模型，显式约束所选沙箱与审批设置，沙箱内命令不联网。发现顺序为 `traex`、`traecli`，不使用图形应用的 `trae` 可执行文件。`native` 权限只有 Codex 可选，服务端对其他运行时返回 400。
+Trae 使用 `traex exec --json` / `exec resume`，保留原生 provider、规则和默认模型，显式约束所选沙箱与审批设置，沙箱内命令不联网。发现顺序为 `traex`、`traecli`，不使用图形应用的 `trae` 可执行文件。`native` 权限只有走 App 任务的 Codex 频道可选，服务端对其他运行时和 CLI 直连的 Codex 频道都返回 400。
 
-这两个适配器的人工备注是下一轮上下文，不是实时 App 对话。`GET /api/channels/:id/messages` 返回该频道的留言（按时间从旧到新，最多 100 条，已绑定原生任务的频道也能读）；`POST` 同一路径写入一条。留言以 `humanNotes` 进入下一轮提示，其中上一轮开始之后留下的那几条带 `new: true`，提示词要求本轮处理并在汇报中回应，其余是仍然适用的既往交代。运行时发现按 `codex`、`claude`、`trae` 逐个探测：Codex 优先使用 Codex App 自带的可执行文件，其次查找 PATH；Claude 另外查找 `~/.claude/local`，用 `--version` 与 `--help` 核对上面用到的参数；Trae 用 `exec --help` 核对 `--json`、`--sandbox`、`--output-last-message`。CLI 安装检测不等于登录或额度验证；实际失败与原始输出会落库，登录失效时分别提示 `codex login`、`claude auth login`、`traex login`。
+这两个适配器的人工备注是下一轮上下文，不是实时 App 对话。`GET /api/channels/:id/messages` 返回该频道的留言（按时间从旧到新，最多 100 条，已绑定原生任务的频道也能读）；`POST` 同一路径写入一条（只有已绑定原生任务的频道被拒，CLI 直连的 Codex 频道照常写入——留言是它唯一的入口）。留言以 `humanNotes` 进入下一轮提示，其中上一轮开始之后留下的那几条带 `new: true`，提示词要求本轮处理并在汇报中回应，其余是仍然适用的既往交代。运行时发现按 `codex`、`claude`、`trae` 逐个探测：Codex 优先使用 Codex App 自带的可执行文件，其次查找 PATH；Claude 另外查找 `~/.claude/local`，用 `--version` 与 `--help` 核对上面用到的参数；Trae 用 `exec --help` 核对 `--json`、`--sandbox`、`--output-last-message`。CLI 安装检测不等于登录或额度验证；实际失败与原始输出会落库，登录失效时分别提示 `codex login`、`claude auth login`、`traex login`。
 
 测试模式（`MORROW_TEST_MODE=1`）用 `MORROW_TEST_CODEX_PATH`、`MORROW_TEST_CLAUDE_PATH`、`MORROW_TEST_TRAE_PATH` 指向夹具，不探测本机安装。
 
@@ -129,7 +137,7 @@ Trae 使用 `traex exec --json` / `exec resume`，保留原生 provider、规则
 
 每日上限之后还有额度门禁：全局的「保留给自己的额度」按共享后台读到的精确账户用量判断，项目的「额度上限」按 Morrow 归因到该项目的轮次估算判断。达到任一条时，新的自动轮次和走 Codex 的独立复核不再发起（走 Claude Code 的复核不花 Codex 额度，不受此门禁）（频道 `waiting`，`nextRunAt` 取窗口重置时间或下一个 UTC 日，写一条系统事件，不计入运行次数；排队中的复核保留 `queued` 并按 `retryAt` 重试），手动运行返回 429。读数不可用时默认放行，设置 `stopWhenUsageUnknown` 后阻断并每 10 分钟重试；进行中的轮次不打断，普通对话不受影响。读数与限制通过 `context.budget` 和每轮的轮次提示提供给 Codex。
 
-有界 CLI 子进程路径是 Claude Code 与 Trae 频道的生产路径，Codex 频道只在 `MORROW_TEST_MODE=1` 下经由夹具走到这里：单轮超时 45 分钟（`cliTurnMinutes`，同一个数字写进轮次提示），stdout/stderr 合计上限 20 MiB，组装提示上限 1 MiB；这些子进程限制不套用到共享 Codex App 轮次。CLI 轮次提示与原生轮次一样带上工作树里未提交的文件。工作日志过滤掉 CLI 的进度噪音（`system/thinking_tokens`、`tool_progress`、只含 thinking 块的 assistant 消息，以及 `status` 为 `allowed*` 的 `rate_limit_event`），`system/init` 收敛成一行摘要；被跳过的行只写入该轮 `stdout.jsonl`，既不产生事件也不进入失败诊断（否则每轮都有的速率限制通知会让所有失败轮次都被归因为配额不足）。非 `allowed` 的速率限制通知不跳过，照常入库并参与诊断。暂停原生自动工作只中断属于该责任轮次的精确 turn ID。
+有界 CLI 子进程路径是 Claude Code、Trae 与 `transport: 'cli'` 的 Codex 频道的生产路径，走 App 任务的 Codex 频道只在 `MORROW_TEST_MODE=1` 下未绑定时经由夹具走到这里：单轮超时 45 分钟（`cliTurnMinutes`，同一个数字写进轮次提示），stdout/stderr 合计上限 20 MiB，组装提示上限 1 MiB；这些子进程限制不套用到共享 Codex App 轮次。CLI 轮次提示与原生轮次一样带上工作树里未提交的文件。工作日志过滤掉 CLI 的进度噪音（`system/thinking_tokens`、`tool_progress`、只含 thinking 块的 assistant 消息，以及 `status` 为 `allowed*` 的 `rate_limit_event`），`system/init` 收敛成一行摘要；被跳过的行只写入该轮 `stdout.jsonl`，既不产生事件也不进入失败诊断（否则每轮都有的速率限制通知会让所有失败轮次都被归因为配额不足）。非 `allowed` 的速率限制通知不跳过，照常入库并参与诊断。暂停原生自动工作只中断属于该责任轮次的精确 turn ID。
 
 反馈监测支持 HTTP(S) GET JSON、JSON Pointer 和 `changed/equals/gte/lte` 条件。新反馈、质量变化、采集故障和复查期限可唤醒启用的频道；重复相同状态不反复触发。与发布关联的观测在确认发布后开始采集。当前不包含文件变化触发器。
 

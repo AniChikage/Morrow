@@ -2,11 +2,12 @@
 
 [文档首页](README.md) · [连接与安装](GETTING-STARTED.md) · [服务配置](../service/README.md)
 
-Morrow 支持三种运行时。Codex 频道的自动工作通过 App 本地 IPC 作为 follower 发送轮次，复用 App 已创建并加载的任务；登录、模型、工具和实际权限继续由 App 管理。旧 `CODEX_CLI_PATH` 转接方案已退役，生产连接不再使用共享后台转接程序。Claude Code 与 Trae 频道不连接 App，用本机已登录的 CLI 执行有界轮次。
+Morrow 支持三种运行时。Codex 频道还要选一种**执行方式**（频道行上的 `transport`，缺省视为 `app`，已有频道无需迁移）：`app` 通过 App 本地 IPC 作为 follower 发送轮次，复用 App 已创建并加载的任务，登录、模型、工具和实际权限继续由 App 管理；`cli` 直连本机 Codex CLI，每轮起一次 `codex exec`，不连接 App。旧 `CODEX_CLI_PATH` 转接方案已退役，两种方式都不使用共享后台转接程序。Claude Code 与 Trae 频道不连接 App，用本机已登录的 CLI 执行有界轮次。**CLI 直连的 Codex 频道与 Claude Code / Trae 频道同级**：没有工作接口、应用内浏览器、Computer Use、App 动态工具和 App 审批，看板靠轮次末尾的可选报告维护，权限只有只读或工作区写入。选择哪一种由每个频道单独决定，服务端只允许 Codex 频道带这个字段，且轮次进行中不能切换；切换会清空会话 ID（App 线程 ID 与 `codex exec` 会话 ID 共用同一字段），并写一条系统事件。已绑定 App 任务的频道不能切走，需要新建频道。
 
 | 运行时 | 执行方式 | 权限映射 |
 | --- | --- | --- |
-| Codex | Codex App follower：复用 App 中已关联并打开的任务 | 默认沿用 App 设置（`native`），也可收紧为只读或工作区写入沙箱 |
+| Codex（`transport: app`，默认） | Codex App follower：复用 App 中已关联并打开的任务 | 默认沿用 App 设置（`native`），也可收紧为只读或工作区写入沙箱 |
+| Codex（`transport: cli`） | 与下面 Trae 同形的一次 `codex exec`：`exec [resume <id>] --json --skip-git-repo-check -c sandbox_mode=… -c approval_policy="never" -c sandbox_workspace_write.network_access=false --output-last-message <file> [--sandbox …] [--model …]`，提示从 stdin 进入 | 只读或工作区写入沙箱，沙箱内命令不联网；**没有 `native`**——没有 App 设置可沿用，服务端对该组合返回 400 |
 | Claude Code | `claude -p` 一次有界轮次：`--print --verbose --output-format stream-json --safe-mode --strict-mcp-config --mcp-config {"mcpServers":{}} --tools <T> --allowedTools <T> --permission-mode <M> --name Morrow:<runId>`，有模型加 `--model`，有会话加 `--resume`；提示从 stdin 进入 | 只读 → `Read,Grep,Glob` + `dontAsk`；工作区写入 → 另加 `Edit,Write,MultiEdit,NotebookEdit,Bash` + `acceptEdits`。**工作区写入包含命令执行，且这些命令不在 Morrow 的沙箱内运行**，边界由提示词和项目目录约定，不是系统级隔离 |
 | Trae | `traex exec --json …` / `exec resume <id>`，`--output-last-message` 取最终答复 | 只读或工作区写入沙箱，`approval_policy="never"`，沙箱内命令不联网 |
 
@@ -14,13 +15,15 @@ CLI 轮次的共同边界：单轮 45 分钟上限（`cliTurnMinutes`，超时�
 
 工作日志只保留一轮里可读的部分：Claude Code 每秒一条的 `system/thinking_tokens`、`tool_progress`、只含 thinking 块的 assistant 消息，以及 `rate_limit_info.status` 以 `allowed` 开头的 `rate_limit_event`（每轮都有，只是说账户没问题），都被跳过；`system/init` 收敛成一行「会话已开始 · 模型 … · 权限 … · 工具 …」。跳过的行只写进该轮的 `stdout.jsonl`，不产生事件，也**不进入失败诊断**——诊断的配额规则会命中 `rate_limit_event` 字面量本身，读它会把每一次因别的原因失败的 Claude 轮次都报成「配额不足」。其余状态（`rejected`、缺失、无法识别）不跳过，会以「速率限制：<status>（<窗口>）」一行留在日志里，并照常参与失败诊断。
 
-**工作接口只属于 Codex 频道**：`release.propose`、`evidence.native`、`memory.search` 等 `agent-cli.ts` 操作需要轮次能访问本机 HTTP 接口，当前只有 Codex 的原生轮次具备；Claude Code 与 Trae 频道通过可选报告维护看板。**独立复核不与执行者同一运行时**：这两种运行时汇报的 verified/resolved 与 Codex 频道一样，先进入一次独立复核，通过后才算数——而且由服务自己发起，因为这些轮次没有工作接口，无法自己请求。事项先留在调查中，服务把本轮的报告条目、最终答复和它为这一轮记录的工具调用存成一条证据，据此排一次只读复核，并把所报状态挂在这次复核上：通过就自动落到 verified/resolved，不必再跑一轮；未通过则事项留在调查中，下一步和工作日志写明先处理哪条复核发现，源码没有变化之前不会再买一次复核。复核走哪个运行时由 `WorkVerification.reviewRunner` 决定：执行者是 Codex（App follower 或 codex-cli）时用 Claude Code 复核，执行者是 Claude Code 时用 Codex 复核，Trae 与 Codex 同样优先用 Claude Code；目标运行时没装在本机就回退到 Codex 复核。走 Claude Code 的复核不花 Codex 账户，因此**不受 Codex 额度门禁**（保留线、项目预算、账户用尽）约束；它自己的额度用尽只让这一行复核等待重试，不会停下任何 Codex 轮次。走 Codex 的复核和以前一样，保留线挡住时与别的复核一起等额度。实际用了哪个运行时记在复核行的 `executionOwner`（`codex-cli` / `claude-cli`）上，界面的复核记录也据此显示会话来源。材料中的 `report` 与 `finalOutput` 标为模型自述；`recordedTools` 则标明由 Morrow 从 CLI 事件流记录（`recordedBy: morrow-cli-stream`），非模型自述，但无退出码与版本绑定，不能当作原生执行证据。CLI 提示词限定 verified/resolved 只用于只读环境能独立重现的文件、静态检查或 Git 历史事实，测试和构建结果只作为附带证据，不作为 verified 的依据。这次复核在下一次调度心跳就开始，不要求频道开着持续运行——CLI 频道平时是暂停的（「留言并运行一轮」就是一次手动运行），而请求它的那一轮已经结束、也已经付过了。账户保留线按住复核时，等待只落在复核这一行上：额度门禁读的是 Codex 账户，Claude Code 与 Trae 频道本来就不花它，照常继续运行；等待期间源码若发生变化，这次复核真正开始时会因材料已过期判为 unknown，下一次 verified/resolved 声明带着新材料重新请求。**额度门禁与用量归因只对 Codex 生效**（读数来自 Codex 账户），对走 Claude Code 的复核同样不生效；每日运行次数上限对所有运行时生效。
+**工作接口只属于走 App 任务的 Codex 频道**：`release.propose`、`evidence.native`、`memory.search` 等 `agent-cli.ts` 操作需要轮次能访问本机 HTTP 接口，当前只有 App 中的原生轮次具备；Claude Code、Trae 与 CLI 直连的 Codex 频道通过可选报告维护看板。**独立复核不与执行者同一运行时**：这两种运行时汇报的 verified/resolved 与 Codex 频道一样，先进入一次独立复核，通过后才算数——而且由服务自己发起，因为这些轮次没有工作接口，无法自己请求。事项先留在调查中，服务把本轮的报告条目、最终答复和它为这一轮记录的工具调用存成一条证据，据此排一次只读复核，并把所报状态挂在这次复核上：通过就自动落到 verified/resolved，不必再跑一轮；未通过则事项留在调查中，下一步和工作日志写明先处理哪条复核发现，源码没有变化之前不会再买一次复核。复核走哪个运行时由 `WorkVerification.reviewRunner` 决定：执行者是 Codex（App follower 或 codex-cli）时用 Claude Code 复核，执行者是 Claude Code 时用 Codex 复核，Trae 与 Codex 同样优先用 Claude Code；目标运行时没装在本机就回退到 Codex 复核。走 Claude Code 的复核不花 Codex 账户，因此**不受 Codex 额度门禁**（保留线、项目预算、账户用尽）约束；它自己的额度用尽只让这一行复核等待重试，不会停下任何 Codex 轮次。走 Codex 的复核和以前一样，保留线挡住时与别的复核一起等额度。实际用了哪个运行时记在复核行的 `executionOwner`（`codex-cli` / `claude-cli`）上，界面的复核记录也据此显示会话来源。材料中的 `report` 与 `finalOutput` 标为模型自述；`recordedTools` 则标明由 Morrow 从 CLI 事件流记录（`recordedBy: morrow-cli-stream`），非模型自述，但无退出码与版本绑定，不能当作原生执行证据。CLI 提示词限定 verified/resolved 只用于只读环境能独立重现的文件、静态检查或 Git 历史事实，测试和构建结果只作为附带证据，不作为 verified 的依据。这次复核在下一次调度心跳就开始，不要求频道开着持续运行——有界轮次的频道平时是暂停的（「留言并运行一轮」就是一次手动运行），而请求它的那一轮已经结束、也已经付过了。这个判断按**传输方式**而不是运行时来做：CLI 直连的 Codex 频道处境和 Claude Code 频道完全一样，按运行时判断会让它的复核永远不开始，同时 `Engine.start` 的待复核门禁把整个项目的手动运行 409 掉。只有走 App 任务的频道保留原来的控制位判断。账户保留线按住复核时，等待只落在复核这一行上：额度门禁读的是 Codex 账户，Claude Code 与 Trae 频道本来就不花它，照常继续运行；等待期间源码若发生变化，这次复核真正开始时会因材料已过期判为 unknown，下一次 verified/resolved 声明带着新材料重新请求。**额度门禁与用量归因按运行时判断，只对 Codex 生效**（读数来自 Codex 账户），对走 Claude Code 的复核同样不生效；CLI 直连的 Codex 轮次照样花这份额度，因此照样受保留线、项目预算和账户用尽约束，用量也照常归因到运行记录。每日运行次数上限对所有运行时生效。
 
-CLI 安装检测不等于登录或配额验证。登录失效时，运行时页与失败轮次分别提示 `codex login`、`claude auth login`、`traex login`。
+CLI 安装检测不等于登录或配额验证。登录失效时，运行时页与失败轮次分别提示 `codex login`、`claude auth login`、`traex login`。运行时页的 Codex 行在有 CLI 直连频道时会把这半边（可执行文件路径、账号登录、执行权限）重新显示出来——平时它被 App 连接状态取代，但直连频道需要的是本机的 `codex login`，不是装 App。频道页同理：CLI 直连频道检测不到 Codex CLI 时提示装 CLI 并 `codex login`，不提示关联 App 任务。
 
 ## 连接
 
 运行时页的四步是：App 已安装 → App 已连接 → 任务已关联 → 关联任务可用。先在 Morrow 添加项目目录，再在 Codex App 为同一目录创建任务、发送首条消息并保持打开，最后回到频道关联。Morrow 暂不直接新建 App 任务；项目管理、看板、持续调度和既有任务内的连续轮次仍由 Morrow 负责。
+
+**这四步只属于走 App 任务的频道。** CLI 直连的频道不出现在「去关联任务」「在 Codex App 中打开」的候选里，频道页也没有关联、打开、App 续跑和「任务未加载」这些区块；它需要的是执行主机上装好 Codex CLI 并 `codex login`，服务端对它的 `/api/channels/:id/native/*` 请求返回 409。
 
 App 必须保持运行。连接不兼容、任务未加载或发送回执不明确时，保留历史与未知回执，不自动另建任务或盲目重发。App 升级后需要验证其内部 IPC 兼容性。运行时页显示已安装 App 与 CLI 的版本，不把 CLI 版本冒充 IPC 未提供的后台握手版本。
 
@@ -29,6 +32,8 @@ App 必须保持运行。连接不兼容、任务未加载或发送回执不明�
 ## 权限与独立复核
 
 新的 Codex 频道默认「沿用 App 设置」：普通消息和自动轮次都不附带新的权限或审批策略，不自动提升为完整访问。要让任务访问本机工作接口、联网或使用原生工具，请在 App 中配置适当权限。此前工作区断网导致本机 HTTP 工作接口失败的观察仍然有效，不能据此悄悄提升权限。
+
+「沿用 App 设置」要求真的有一个 App 任务可沿用，因此它只属于 `transport: app` 的频道：CLI 直连的频道默认工作区写入，只能在只读和工作区写入之间选，服务端对 `native` + `cli` 的组合在建频道和改频道时都返回 400，命令行拼装（`invocation`）也按同一个问题判断，不会给这种频道 `danger-full-access`。
 
 已有只读和工作区写入选项保留，自动轮次分别发送明确的只读或工作区写入沙箱，以及 `on-request` / `auto_review`；启动前仍检查现有范围。App 会合并保留的工作区及可视化目录，不能把传入 `writableRoots` 当作精确的最终目录清单。明确发送的设置可能延续到后续轮次，普通聊天也应以 App 当前设置为准。
 
@@ -42,7 +47,7 @@ App 必须保持运行。连接不兼容、任务未加载或发送回执不明�
 
 ## 原生能力
 
-能力清单是带日期的证据记录，不是运行时自动检测。2026-09-09 对 App follower 路径进行了[独立连接实测](CODEX-CONNECTION-VALIDATION-2026-09-09.md)，更新了旧转接下的浏览器不可用结论；历史未覆盖项继续保留未知。
+能力清单是带日期的证据记录，不是运行时自动检测。2026-09-09 对 App follower 路径进行了[独立连接实测](CODEX-CONNECTION-VALIDATION-2026-09-09.md)，更新了旧转接下的浏览器不可用结论；历史未覆盖项继续保留未知。**整张表只描述 App follower 这条路径**：CLI 直连的 Codex 频道没有应用内浏览器、Computer Use、原生记忆、App 动态工具和 Morrow 工作接口，它能用的就是 `codex exec` 沙箱里的文件与命令。
 
 | 能力 | 结果与边界 |
 | --- | --- |

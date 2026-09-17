@@ -13,27 +13,29 @@ Morrow 是一个本地优先的 Mac 应用。打开已有项目，说明想达�
 
 - **围绕目标持续工作**：保留项目认识、行动依据和经验，支持反馈唤醒、等待与预算约束。
 - **一个项目，一份共享看板**：待处理、调查中、需要关注、已验证四列固定，已解决收进下方历史区；卡片可拖动或用「移动到」菜单改状态。AI 自动维护每个事项的来源频道、尝试、证据、发布与后续效果。
-- **原生 Codex 对话**：通过 Codex App follower 复用同一任务；认证、模型、工具和执行由原生运行时管理。
+- **原生 Codex 对话**：默认通过 Codex App follower 复用同一任务；认证、模型、工具和执行由原生运行时管理。需要不依赖 App 时，频道也可以直连 Codex CLI，代价是没有这条原生对话。
 - **上线前有据可审**：呈现改动、预期收益、验证结果、风险与回退计划，由人确认对应发布版本。
 
-Morrow 支持 Codex（通过 Codex App）、Claude Code 与 Trae（本机已登录的 CLI）。Codex 频道的自动轮次默认沿用 Codex App 中已关联任务的权限与审批设置，需要时可在频道设置中收紧为只读或工作区写入；Claude Code 与 Trae 频道执行有界 CLI 轮次，默认工作区写入，也可收紧为只读。Claude Code 与 Trae 的频道页还有「留言」：写下的补充背景或方向会在下一轮开始时随上下文交给 CLI，列表写明每条是等待读取还是已在哪一轮被读取；留言本身不会开始一轮，需要立刻跑时用「留言并运行一轮」。
+Morrow 支持 Codex、Claude Code 与 Trae（后两者是本机已登录的 CLI）。Codex 频道有两种执行方式，在新建频道时选：**Codex App 任务**（默认）把轮次交给 App 中已关联的任务，默认沿用该任务的权限与审批设置，需要时可在频道设置中收紧为只读或工作区写入；**直连 Codex CLI** 则每轮起一次本机 `codex exec`，不需要 App 常驻，权限与 Claude Code / Trae 同级（默认工作区写入，也可收紧为只读，没有「沿用 App 原生权限」这一项）。两种方式都花同一个 Codex 账号的额度。Claude Code 与 Trae 频道执行有界 CLI 轮次，默认工作区写入，也可收紧为只读。除走 App 任务的 Codex 频道外，频道页都有「留言」：写下的补充背景或方向会在下一轮开始时随上下文交给 CLI，列表写明每条是等待读取还是已在哪一轮被读取；留言本身不会开始一轮，需要立刻跑时用「留言并运行一轮」。
+
+选哪一种：应用内浏览器、Computer Use、App 动态工具、App 内审批和 Morrow 工作接口（含提议上线）只有走 App 任务时才有，所以它是默认；CLI 直连换来的是不依赖 App 安装与常驻，代价是上述能力都没有，看板只能靠轮次末尾的可选报告维护。
 
 框架已提供持续工作与反馈闭环的支撑机制；实际项目仍需接入自己的监控和发布能力，长期自主效果需要真实环境验证。详见 [能力边界](docs/RUNTIMES.md)。
 
 ## 这条分支与 main 的区别
 
-这是 `yukun` 分支（0.15.1）。远端 `main`（0.10.0）自 `6246930` 起改为「直接用 Codex CLI、去掉与桌面 App 的耦合」；本分支是另一条线，执行入口以 Codex App follower 为准。两条线在执行路线上互斥，本 README 其余部分描述的都是本分支的行为。
+这是 `yukun` 分支（0.15.1）。远端 `main`（0.10.0）自 `6246930` 起改为「直接用 Codex CLI、去掉与桌面 App 的耦合」；本分支的默认执行入口是 Codex App follower，同时也提供 CLI 直连作为可选的第二传输方式，由每个频道自己选。区别因此不是「两条互斥的线」，而是 main 只有 CLI 直连一种、且没有 App 相关能力，本分支两种都有、默认走 App。
 
 | 差异 | main（0.10.0） | 本分支 yukun（0.15.1） |
 | --- | --- | --- |
-| 执行入口 | Morrow 自己启动 `codex app-server --listen stdio://`，不查找或唤醒 Codex App | 通过 Codex App 的本地 IPC 以 follower 身份，复用 App 已创建、已加载并明确关联的任务 |
-| 需要安装什么 | 安装 Codex CLI，在终端 `codex login` | Codex 频道：安装并登录 Codex Mac App；在 App 里为项目目录建任务、发送首条消息并保持打开，再回到频道点「关联 App 任务」，App 须保持运行。Claude Code 频道：安装 Claude Code，在终端 `claude auth login`。Trae 频道：安装 `traex`，在终端 `traex login` |
-| 支持的运行时 | Codex、Claude Code、Trae | Codex、Claude Code、Trae；差别只在 Codex 的执行入口（本分支走 App follower，main 走 CLI 直连），Claude Code 与 Trae 两边都是本机 CLI 的有界轮次 |
-| 审批与权限在哪里处理 | 登录、模型、MCP 和工具配置来自 CLI，界面内指导和审批，不再提供 App 打开或桥接配置入口 | 由 App 管理；新的 Codex 频道默认沿用 App 的沙箱与审批设置，不自动提升为完整访问，审批请求在 Codex App 里处理 |
-| 应用内浏览器 / Computer Use / App 动态工具 | Morrow 启动的 CLI 不连接 App，文档未列这些能力 | 2026-09-09 follower 实测可用：真实点击页面、`sky.list_apps()`、`get_usage_limits`。这三项依赖 App，也是本分支没有改用 CLI 直连的原因 |
+| 执行入口 | Morrow 自己启动 `codex app-server --listen stdio://`，不查找或唤醒 Codex App | 由频道的「执行方式」决定：默认通过 Codex App 的本地 IPC 以 follower 身份复用 App 已创建、已加载并明确关联的任务；选「直连 Codex CLI」则每轮起一次本机 `codex exec`，与 Claude Code / Trae 同形 |
+| 需要安装什么 | 安装 Codex CLI，在终端 `codex login` | 走 App 任务的 Codex 频道：安装并登录 Codex Mac App；在 App 里为项目目录建任务、发送首条消息并保持打开，再回到频道点「关联 App 任务」，App 须保持运行。CLI 直连的 Codex 频道：安装 Codex CLI，在终端 `codex login`，不需要 App。Claude Code 频道：安装 Claude Code，在终端 `claude auth login`。Trae 频道：安装 `traex`，在终端 `traex login` |
+| 支持的运行时 | Codex、Claude Code、Trae | Codex、Claude Code、Trae；差别只在 Codex 多一种执行方式可选（App follower 默认，CLI 直连可选；main 只有 CLI 直连），Claude Code 与 Trae 两边都是本机 CLI 的有界轮次 |
+| 审批与权限在哪里处理 | 登录、模型、MCP 和工具配置来自 CLI，界面内指导和审批，不再提供 App 打开或桥接配置入口 | 走 App 任务时由 App 管理：频道默认沿用 App 的沙箱与审批设置，不自动提升为完整访问，审批请求在 Codex App 里处理。CLI 直连没有 App 可沿用，只有只读或工作区写入沙箱，`approval_policy="never"`，与 Claude Code / Trae 一致 |
+| 应用内浏览器 / Computer Use / App 动态工具 | Morrow 启动的 CLI 不连接 App，文档未列这些能力 | 2026-09-09 follower 实测可用：真实点击页面、`sky.list_apps()`、`get_usage_limits`。这三项依赖 App，也是 App follower 仍是默认传输方式的原因；CLI 直连的频道同样没有它们 |
 | 看板形态 | 待处理、调查中、需要关注、已验证、已解决五列固定 | 前四列固定，已解决收进下方「已解决历史」折叠区，该区标题同时是第五个放置目标 |
 | 独立复核方式 | 与执行共用同一个 CLI app-server 入口 | 官方 `codex exec` 的一次性只读会话（`--sandbox read-only`、`--ephemeral`、`--ignore-user-config`），不带执行者的权限和 App 本地工具管道 |
-| 历史关系 | — | `main` 已作为历史合入本分支（合并提交 `de496e9`，未带入其改动），因此 `main` 是本分支的祖先；执行入口没有改成 CLI 直连，旧 `CODEX_CLI_PATH` 转接也已退役 |
+| 历史关系 | — | `main` 已作为历史合入本分支（合并提交 `de496e9`，未带入其改动），因此 `main` 是本分支的祖先；CLI 直连是本分支自己实现的第二传输方式，不是合入 `main` 的改动，旧 `CODEX_CLI_PATH` 转接也已退役 |
 
 本分支相对 `main` 还多出下面这些机制：
 
@@ -47,7 +49,7 @@ Morrow 支持 Codex（通过 Codex App）、Claude Code 与 Trae（本机已登�
 
 ## 快速开始
 
-需要 **macOS 14+、Node.js 24+、npm、Xcode Command Line Tools**。使用 Codex 时，先安装并登录 Codex Mac App。
+需要 **macOS 14+、Node.js 24+、npm、Xcode Command Line Tools**。Codex 频道走 App 任务时，先安装并登录 Codex Mac App；选择直连 Codex CLI 时，改为安装 Codex CLI 并在终端 `codex login`。
 
 ```bash
 git clone https://github.com/AniChikage/Morrow.git
@@ -60,9 +62,9 @@ open "$HOME/Applications/Morrow.app"
 
 1. 「接入项目」选择已有目录，写下目标，并在「项目说明」里补上仓库里没有的背景。新项目会准备一个暂停的频道，接入不会立即执行。
 2. 需要另一条工作方向时，在项目里「新建频道」。
-3. 在 Codex App 为同一项目目录新建任务、发送首条消息并保持打开，再回到频道点「关联 App 任务」。
-4. 点「继续工作」，自动轮次沿用 App 任务的权限与审批设置。
-5. 在频道页的「需要你」区回答 Codex 的提问，审批请求在 Codex App 里处理。
+3. 走 App 任务的频道：在 Codex App 为同一项目目录新建任务、发送首条消息并保持打开，再回到频道点「关联 App 任务」。直连 Codex CLI 的频道跳过这一步。
+4. 点「继续工作」。走 App 任务的轮次沿用 App 的权限与审批设置；直连轮次按频道选择的只读或工作区写入沙箱执行。
+5. 在频道页的「需要你」区回答 Codex 的提问。走 App 任务时审批请求在 Codex App 里处理；直连频道在页面底部的留言框回答，再点「留言并运行一轮」。
 6. 到项目页的「上线确认」核对改动、证据与回退方案，再决定是否上线。装上新版本后，Morrow 会等当前工作结束再自动切换。
 
 构建输出为 `dist/Morrow.app`，默认安装到 `~/Applications/Morrow.app`，已包含 Node 运行时。当前为本机 ad-hoc 签名构建。完整步骤见 [使用指南](docs/GETTING-STARTED.md)；旧用户见 [从 NoHuman 升级](docs/UPGRADING.md)。
@@ -82,5 +84,5 @@ Electron 隔离开发、测试和打包方式见 [开发指南](docs/DEVELOPMENT
 | 如何持续理解、行动、验证和改进 | [核心机制与流程图](docs/CORE-MECHANISM.md) |
 | 如何连接原生任务、保存数据 | [架构与数据](docs/ARCHITECTURE.md) · [运行时](docs/RUNTIMES.md) |
 | AI 如何维护项目、反馈和发布 | [项目工作协议](docs/PROJECT-WORK-CONTRACT.md) |
-| 为什么保留 App follower、不采用 CLI 直连 | [产品方向](docs/PRODUCT-DIRECTION.md) 的 2026-09-15 分支合并说明 |
+| 为什么 App follower 仍是默认、CLI 直连是可选项 | [产品方向](docs/PRODUCT-DIRECTION.md) 的 2026-09-15 分支合并说明 |
 | 产品方向、理论依据与验收记录 | [文档目录](docs/README.md) |
