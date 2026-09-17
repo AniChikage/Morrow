@@ -3,7 +3,7 @@ import { execFile } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
 import { mkdirSync, realpathSync } from 'node:fs';
 import { join } from 'node:path';
-import { APIError, usesApp } from './protocol.ts';
+import { APIError, usesApp, type NativeEnsure } from './protocol.ts';
 import { codexAppLink } from '../desktop/main/codex-link.ts';
 import type {
   Channel,
@@ -153,6 +153,10 @@ export type BridgeRestore = (home: string) => { restartRequired: boolean; detail
 export type OpenAppLink = (url: string) => Promise<void>;
 /** First user turn so an App task is not an empty rollout that later has no source. */
 export const ensureAppTaskFirstTurn = 'Morrow 已准备此任务。';
+export const ensureCatalogNextStep =
+  'Codex App 已打开。请在新任务中发送首条消息或确认创建，Morrow 会在目录出现该任务后自动绑定，无需点「关联」。';
+export const ensureOwnerNextStep =
+  '已绑定任务，但 Codex App 尚未成为 owner。请在 App 中打开该任务，Morrow 会继续等待。';
 export function openCodexAppLink(url: string): Promise<void> {
   if (!url.startsWith('codex://')) return Promise.reject(new APIError(400, '不是 Codex App 链接'));
   return new Promise((resolve, reject) => {
@@ -422,8 +426,10 @@ export class NativeConversations {
   ensuring = new Map<string, Promise<NativeConversation>>();
   /** Deep-link opener. Tests inject a fake; omitted in test mode unless supplied. */
   openAppLink: OpenAppLink | undefined;
-  /** Bound wait for catalog rows / owner ready; tests lower it so a miss fails quickly. */
+  /** Bound wait for catalog rows / owner ready; tests lower it so a miss returns waiting quickly. */
   ensureTimeoutMs = 60_000;
+  /** First catalog wait is shorter than owner restore: composer often never writes a row. */
+  ensureCatalogTimeoutMs = 8_000;
   ensurePollMs = 250;
   observed = new Map<string, { owner: string; revision: number; syncedAt: string }>();
   threadCache = new Map<string, StoredThread>();
@@ -1175,9 +1181,9 @@ export class NativeConversations {
       throw new APIError(409, '原生任务仍在执行，请等待它完成后再切换绑定');
     this.store.transaction(() => {
       this.store.put('native_bindings', binding);
-      this.store.put('channels', { ...channel, sessionId: threadId });
+      this.store.put('channels', { ...this.withoutEnsure(channel), sessionId: threadId });
       // Rebinding is a human decision about which task this channel continues; older continuation
-      // candidates no longer apply.
+      // candidates no longer apply. A catalog wait is over once a real thread id exists.
       this.engine.appResume.advance(id, 'bind');
       this.engine.audit({
         projectId: project.id,
@@ -1206,13 +1212,17 @@ export class NativeConversations {
   /**
    * Prepare an App task without follower `thread/start`: deep-link the App, poll SQLite catalog,
    * bind, wait until an owner is ready, then optionally send the first user turn so an empty task
-   * persists. Timeouts fail; they never return an unbound or owner-less conversation.
+   * persists. A missing catalog row is a durable waiting state, not a 504 and not a fake thread.
    * `seedFirstTurn` defaults on for the HTTP/UI entry. Engine.start turns it off because the
-   * scheduled charter is that first turn.
+   * scheduled charter is that first turn. `reopen` defaults on so a person clicking 准备 can
+   * deep-link again; scheduler retries pass false and only poll.
    */
-  async ensureAppTask(id: string, options?: { seedFirstTurn?: boolean }): Promise<NativeConversation> {
+  async ensureAppTask(
+    id: string,
+    options?: { seedFirstTurn?: boolean; reopen?: boolean }
+  ): Promise<NativeConversation> {
     if (this.ensuring.has(id)) return this.ensuring.get(id)!;
-    const operation = this.ensureAppTaskNow(id, options?.seedFirstTurn !== false);
+    const operation = this.ensureAppTaskNow(id, options?.seedFirstTurn !== false, options?.reopen !== false);
     this.ensuring.set(id, operation);
     try {
       return await operation;
@@ -1220,56 +1230,106 @@ export class NativeConversations {
       this.ensuring.delete(id);
     }
   }
-  private async ensureAppTaskNow(id: string, seedFirstTurn: boolean): Promise<NativeConversation> {
+  /** Bind any channel whose catalog/owner wait can complete without another deep link. */
+  pollPendingEnsures() {
+    if (this.closed) return;
+    for (const channel of this.store.all<Channel>('channels')) {
+      if (!channel.nativeEnsure || !usesApp(channel) || this.ensuring.has(channel.id)) continue;
+      void this.ensureAppTask(channel.id, {
+        seedFirstTurn: channel.nativeEnsure.seedFirstTurn !== false,
+        reopen: false,
+      }).catch((error) => logError('native.ensure-poll', error, { channelId: channel.id }));
+    }
+  }
+  private async ensureAppTaskNow(id: string, seedFirstTurn: boolean, reopen: boolean): Promise<NativeConversation> {
     const { channel, project } = this.channel(id);
     if (!usesApp(channel)) throw new APIError(409, '该频道直连 Codex CLI，不使用 Codex App 任务');
-    if (
-      this.engine.active.has(id) ||
-      this.starting.has(id) ||
-      this.scheduled.has(id) ||
-      this.engine.control(id).enabled
-    )
-      throw new APIError(409, '请先暂停频道并等待本轮完成，再准备 App 任务');
+    if (this.engine.active.has(id) || this.starting.has(id) || this.scheduled.has(id))
+      throw new APIError(409, '请先等待本轮完成，再准备 App 任务');
     const status = await this.status();
     if (!status.connected) throw new APIError(503, status.detail || '请启动 Codex App 后重新连接。');
     const open = this.openAppLink;
     if (!open) throw new APIError(503, '无法打开 Codex App：未配置 deep link。');
     let binding = this.binding(id);
     if (!binding) {
-      const before = new Set((await this.listedProjectThreads(project.path)).map((thread) => thread.id));
-      const url = codexAppLink({ projectPath: project.path });
-      this.engine.audit({
-        projectId: project.id,
-        channelId: id,
-        actor: 'system',
-        action: 'native.ensure-requested',
-        text: '正在打开 Codex App 以准备任务。',
-      });
-      await open(url);
-      const threadId = await this.waitForEnsure(
-        'Codex App 未在限定时间内写出此项目的任务目录。请确认 App 已运行且允许打开 deep link，然后重试。',
-        async () => this.discoverEnsureThread(project.path, before)
+      const pending = channel.nativeEnsure;
+      const before = new Set(
+        pending?.beforeThreadIds
+          ? pending.beforeThreadIds
+          : (await this.listedProjectThreads(project.path)).map((thread) => thread.id)
       );
+      const shouldOpen = reopen || !pending?.lastOpenedAt;
+      if (shouldOpen) {
+        const url = codexAppLink({ projectPath: project.path });
+        this.engine.audit({
+          projectId: project.id,
+          channelId: id,
+          actor: 'system',
+          action: 'native.ensure-requested',
+          text: '正在打开 Codex App 以准备任务。',
+        });
+        await open(url);
+      }
+      this.writeEnsure(id, {
+        phase: 'waiting-catalog',
+        nextStep: ensureCatalogNextStep,
+        beforeThreadIds: [...before],
+        seedFirstTurn,
+        opened: shouldOpen,
+      });
+      const threadId = await this.waitForEnsure(
+        async () => this.discoverEnsureThread(project.path, before),
+        pending && !reopen ? 0 : Math.min(this.ensureTimeoutMs, this.ensureCatalogTimeoutMs)
+      );
+      if (!threadId) {
+        await this.assertAppStillConnected();
+        this.noteEnsureWaiting(id, ensureCatalogNextStep);
+        return this.conversation(id, {});
+      }
       await this.bind(id, threadId);
       const created = this.bound(id);
       this.store.put('native_bindings', { ...created, createdByMorrow: true });
       binding = this.bound(id);
     } else if (!(await this.threadOwnerReady(binding.threadId))) {
-      const url = codexAppLink({ threadId: binding.threadId, projectPath: project.path });
-      this.engine.audit({
-        projectId: project.id,
-        channelId: id,
-        actor: 'system',
-        action: 'native.ensure-restore',
-        text: '已绑定任务未在 App 中打开，正在用 deep link 恢复。',
+      const pending = this.store.get<Channel>('channels', id)?.nativeEnsure;
+      const shouldOpen = reopen || pending?.phase !== 'waiting-owner' || !pending.lastOpenedAt;
+      if (shouldOpen) {
+        const url = codexAppLink({ threadId: binding.threadId, projectPath: project.path });
+        this.engine.audit({
+          projectId: project.id,
+          channelId: id,
+          actor: 'system',
+          action: 'native.ensure-restore',
+          text: '已绑定任务未在 App 中打开，正在用 deep link 恢复。',
+        });
+        await open(url);
+      }
+      this.writeEnsure(id, {
+        phase: 'waiting-owner',
+        nextStep: ensureOwnerNextStep,
+        seedFirstTurn,
+        opened: shouldOpen,
       });
-      await open(url);
     }
     const threadId = this.bound(id).threadId;
-    await this.waitForEnsure(
-      '已打开任务，但 Codex App 未在限定时间内成为 owner。请确认 App 已运行并打开该任务，然后重试。',
-      async () => ((await this.threadOwnerReady(threadId)) ? threadId : undefined)
+    const ownerReady = await this.waitForEnsure(
+      async () => ((await this.threadOwnerReady(threadId)) ? threadId : undefined),
+      this.store.get<Channel>('channels', id)?.nativeEnsure?.phase === 'waiting-owner' && !reopen
+        ? 0
+        : this.ensureTimeoutMs
     );
+    if (!ownerReady) {
+      await this.assertAppStillConnected();
+      this.writeEnsure(id, {
+        phase: 'waiting-owner',
+        nextStep: ensureOwnerNextStep,
+        seedFirstTurn,
+        opened: false,
+      });
+      this.noteEnsureWaiting(id, ensureOwnerNextStep);
+      return this.conversation(id, {});
+    }
+    this.clearEnsure(id);
     let snapshot: NativeSnapshot;
     try {
       snapshot = await this.sync(threadId);
@@ -1307,21 +1367,81 @@ export class NativeConversations {
   private snapshotHasUserTurn(snapshot: NativeSnapshot) {
     return nativeTurns(snapshot.state).some((turn) => (Array.isArray(turn.items) ? turn.items : []).some(isUserItem));
   }
-  private async waitForEnsure(message: string, probe: () => Promise<string | undefined>): Promise<string> {
-    const deadline = Date.now() + this.ensureTimeoutMs;
-    let lastError: unknown;
+  private withoutEnsure(channel: Channel): Channel {
+    const { nativeEnsure: _dropped, ...rest } = channel;
+    return rest;
+  }
+  private writeEnsure(
+    id: string,
+    patch: {
+      phase: NativeEnsure['phase'];
+      nextStep: string;
+      beforeThreadIds?: string[];
+      seedFirstTurn: boolean;
+      opened: boolean;
+    }
+  ) {
+    const channel = this.store.get<Channel>('channels', id);
+    if (!channel) return;
+    const at = now();
+    const previous = channel.nativeEnsure;
+    const record: NativeEnsure = {
+      phase: patch.phase,
+      nextStep: patch.nextStep,
+      openedAt: previous?.openedAt || at,
+      seedFirstTurn: patch.seedFirstTurn,
+      ...(patch.beforeThreadIds
+        ? { beforeThreadIds: patch.beforeThreadIds }
+        : previous?.beforeThreadIds
+          ? { beforeThreadIds: previous.beforeThreadIds }
+          : {}),
+      lastOpenedAt: patch.opened ? at : previous?.lastOpenedAt,
+    };
+    this.store.put('channels', { ...channel, nativeEnsure: record });
+  }
+  private clearEnsure(id: string) {
+    const channel = this.store.get<Channel>('channels', id);
+    if (!channel?.nativeEnsure) return;
+    this.store.put('channels', this.withoutEnsure(channel));
+  }
+  private noteEnsureWaiting(id: string, text: string) {
+    const channel = this.store.get<Channel>('channels', id);
+    if (!channel) return;
+    const already = this.store
+      .all<{ action?: string; channelId?: string; text?: string }>('events')
+      .some((event) => event.channelId === id && event.action === 'native.ensure-waiting' && event.text === text);
+    if (already) return;
+    this.engine.audit({
+      projectId: channel.projectId,
+      channelId: id,
+      actor: 'system',
+      action: 'native.ensure-waiting',
+      text,
+    });
+  }
+  private ensureView(channel?: Channel): NativeConversation['ensure'] | undefined {
+    const record = channel?.nativeEnsure;
+    return record ? { phase: record.phase, nextStep: record.nextStep } : undefined;
+  }
+  private async assertAppStillConnected() {
+    const status = await this.status();
+    if (!status.connected) throw new APIError(503, status.detail || '请启动 Codex App 后重新连接。');
+  }
+  private async waitForEnsure(
+    probe: () => Promise<string | undefined>,
+    timeoutMs: number
+  ): Promise<string | undefined> {
+    const once = timeoutMs <= 0;
+    const deadline = once ? Date.now() : Date.now() + timeoutMs;
     for (;;) {
       if (this.closed) throw new APIError(409, '服务已关闭，未能准备 App 任务');
       try {
         const found = await probe();
         if (found) return found;
-      } catch (error) {
-        lastError = error;
+      } catch {
+        /* Keep polling: App catalog reads can fail while composer is still opening. */
       }
-      if (Date.now() >= deadline) {
-        const extra = lastError ? `（${errorText(lastError)}）` : '';
-        throw new APIError(504, `${message}${extra}`);
-      }
+      if (once || Date.now() >= deadline) return undefined;
       await new Promise((done) => setTimeout(done, this.ensurePollMs));
     }
   }
@@ -1329,7 +1449,9 @@ export class NativeConversations {
     this.channel(id);
     const status = await this.status();
     const binding = this.binding(id);
-    if (!binding) return { channelId: id, status, items: [], requests: [], hasMore: false };
+    const ensure = this.ensureView(this.store.get<Channel>('channels', id));
+    if (!binding)
+      return { channelId: id, status, items: [], requests: [], hasMore: false, ...(ensure ? { ensure } : {}) };
     if (status.connected)
       try {
         await this.sync(binding.threadId);
@@ -1406,6 +1528,9 @@ export class NativeConversations {
       lastSyncedAt: latest.lastSyncedAt,
       ...(syncError ? { syncError } : {}),
       ...(syncError && rawSyncError !== syncError ? { rawSyncError } : {}),
+      ...(this.ensureView(this.store.get<Channel>('channels', id))
+        ? { ensure: this.ensureView(this.store.get<Channel>('channels', id)) }
+        : {}),
     };
   }
   async send(
@@ -1418,6 +1543,10 @@ export class NativeConversations {
   ): Promise<NativeMessageReceipt> {
     const { project, channel } = this.channel(id);
     if (!this.binding(id)) await this.ensureAppTask(id);
+    if (!this.binding(id)) {
+      const next = this.store.get<Channel>('channels', id)?.nativeEnsure?.nextStep;
+      throw new APIError(409, next || 'Codex App 任务仍在准备中。');
+    }
     const binding = this.bound(id);
     const key = `${id}:${requestId}`;
     const workOptions: NativeWorkOptions | undefined =

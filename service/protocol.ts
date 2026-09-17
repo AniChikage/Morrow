@@ -103,6 +103,16 @@ export type ChannelTransport = (typeof channelTransports)[number];
  */
 export const usesApp = (channel: Pick<Channel, 'runtime' | 'transport'>) =>
   channel.runtime === 'codex' && (channel.transport || 'app') === 'app';
+/** Deep-link opened, but the App catalog or owner is not ready yet. Never a fake thread id. */
+export type NativeEnsurePhase = 'waiting-catalog' | 'waiting-owner';
+export type NativeEnsure = {
+  phase: NativeEnsurePhase;
+  nextStep: string;
+  openedAt: string;
+  lastOpenedAt?: string;
+  beforeThreadIds?: string[];
+  seedFirstTurn?: boolean;
+};
 export type Channel = {
   work?: ChannelWork;
   /** A bounded latest signal received while this channel's scheduled turn was running. */
@@ -130,6 +140,8 @@ export type Channel = {
   lastRunAt: string;
   sessionId: string;
   usageWait?: UsageWait;
+  /** App task prepare-in-progress; cleared once a real catalog row is bound and the owner is ready. */
+  nativeEnsure?: NativeEnsure;
 };
 export type WorkItem = {
   id: string;
@@ -340,6 +352,8 @@ export type NativeConversation = {
   canRecreateEmpty?: boolean;
   channelId: string;
   threadId?: string;
+  /** Present while Morrow is waiting for the App catalog or owner after a deep link. Not success. */
+  ensure?: Pick<NativeEnsure, 'phase' | 'nextStep'>;
   status: NativeConnectionStatus;
   thread?: NativeThreadSummary;
   items: NativeItem[];

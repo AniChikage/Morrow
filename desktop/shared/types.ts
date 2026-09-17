@@ -188,6 +188,11 @@ export interface Channel {
   lastRunAt: string;
   sessionId: string;
   usageWait?: UsageWait;
+  nativeEnsure?: {
+    phase: 'waiting-catalog' | 'waiting-owner';
+    nextStep: string;
+    openedAt: string;
+  };
 }
 export interface WorkItem {
   projectId?: string;
@@ -440,6 +445,7 @@ export interface NativeConversation {
   canRecreateEmpty?: boolean;
   channelId: string;
   threadId?: string;
+  ensure?: { phase: 'waiting-catalog' | 'waiting-owner'; nextStep: string };
   status: NativeConnectionStatus;
   thread?: NativeThreadSummary;
   items: NativeItem[];

@@ -747,19 +747,21 @@ export function ChannelView(props: FeatureProps & { id: string }) {
                 ? '本频道直连 Codex CLI：请在执行主机安装 Codex CLI 并运行 codex login，不需要 Codex App。'
                 : unloaded
                   ? '任务未在 Codex App 中打开。Morrow 会尝试重新打开已绑定任务。'
-                  : needsLink
-                    ? 'App 运行后由 Morrow 准备任务：打开 App、写入目录并发送首条。'
-                    : primary === 'open'
-                      ? '请先在 Codex App 恢复连接。'
-                      : channel.work?.awaitingReply
-                        ? '请先回答下方问题。'
-                        : pendingReleases.length
-                          ? '有待批准版本，请先查看变更与风险。'
-                          : blocked.length
-                            ? '有事项受阻，请查看下一步。'
-                            : paused
-                              ? '准备好后继续工作。'
-                              : '最新进展在下方，更多信息按需展开。')}
+                  : conversation?.ensure?.nextStep
+                    ? conversation.ensure.nextStep
+                    : needsLink
+                      ? 'App 运行后由 Morrow 准备任务：打开 App、写入目录并发送首条。'
+                      : primary === 'open'
+                        ? '请先在 Codex App 恢复连接。'
+                        : channel.work?.awaitingReply
+                          ? '请先回答下方问题。'
+                          : pendingReleases.length
+                            ? '有待批准版本，请先查看变更与风险。'
+                            : blocked.length
+                              ? '有事项受阻，请查看下一步。'
+                              : paused
+                                ? '准备好后继续工作。'
+                                : '最新进展在下方，更多信息按需展开。')}
         </p>
         {needsLink && (
           <details
@@ -769,7 +771,10 @@ export function ChannelView(props: FeatureProps & { id: string }) {
           >
             {/* The header carries the primary action; this section is where the choice is made. */}
             <summary>选择要关联的任务</summary>
-            <p>Morrow 会打开 App 并轮询目录、发送首条；也可读取已有任务后手动关联。</p>
+            <p>
+              Morrow 会打开 App 并轮询目录、发送首条；目录尚未出现时请在 App
+              里发送首条，不必点关联。也可读取已有任务后手动关联。
+            </p>
             {!!project.path && <p className="subtle">本项目目录：{project.path}</p>}
             <Button
               variant={linkOpen && !threadId && !reviewingRelease ? 'primary' : 'secondary'}

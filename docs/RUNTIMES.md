@@ -21,7 +21,7 @@ CLI 安装检测不等于登录或配额验证。登录失效时，运行时页�
 
 ## 连接
 
-运行时页的核对是：**App 运行 → Morrow 准备任务 → 可用**。先在 Morrow 添加项目目录，确认 Codex App 已安装、登录并运行；Morrow 用 `codex://threads/new` / `codex://threads/<id>` 打开或恢复任务，轮询目录后绑定，并在空白任务上发出首条。无法后台无焦点创建（需要新的 App IPC）；不能也不该把退休的 `thread/start` 接回来。项目管理、看板、持续调度和既有任务内的连续轮次仍由 Morrow 负责。
+运行时页的核对是：**App 运行 → Morrow 准备任务 → 可用**。先在 Morrow 添加项目目录，确认 Codex App 已安装、登录并运行；Morrow 用 `codex://threads/new` / `codex://threads/<id>` 打开或恢复任务，轮询目录后绑定，并在空白任务上发出首条。Deep link 本身不会写出目录行：若目录一直不增长，Morrow 保持准备中并继续轮询，请在 App 里发送首条或确认新任务，而不是当作失败或假装已有 thread id。无法后台无焦点创建（需要新的 App IPC）；不能也不该把退休的 `thread/start` 接回来。项目管理、看板、持续调度和既有任务内的连续轮次仍由 Morrow 负责。
 
 **这组核对只属于走 App 任务的频道。** CLI 直连的频道不出现在「去关联任务」「在 Codex App 中打开」的候选里，频道页也没有准备任务、打开、App 续跑和「任务未加载」这些区块；它需要的是执行主机上装好 Codex CLI 并 `codex login`，服务端对它的 `/api/channels/:id/native/*` 请求返回 409。
 

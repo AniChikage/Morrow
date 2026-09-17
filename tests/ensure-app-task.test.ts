@@ -4,7 +4,13 @@ import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import { realpathSync } from 'node:fs';
 import { NativeDesktopError } from '../service/codex-desktop-transport.ts';
-import { ensureAppTaskFirstTurn, type NativeSnapshot, type NativeTransport } from '../service/native-conversations.ts';
+import {
+  ensureAppTaskFirstTurn,
+  ensureCatalogNextStep,
+  ensureOwnerNextStep,
+  type NativeSnapshot,
+  type NativeTransport,
+} from '../service/native-conversations.ts';
 import { codexAppLink } from '../desktop/main/codex-link.ts';
 import { startIsolated } from './harness/service.ts';
 
@@ -117,14 +123,56 @@ test('ensureAppTask deep-links a new task, binds the catalog row, waits for the 
   }
 });
 
-test('ensureAppTask times out clearly when the catalog never gains a row', async () => {
+test('ensureAppTask waits when the catalog never gains a row, and does not pretend success', async () => {
   const s = await setup();
   try {
-    const failed = await s.api('POST', `/api/channels/${s.channel.id}/native/ensure`, {}, 504);
-    assert.match(failed.error, /未在限定时间内写出此项目的任务目录/);
+    const conversation = await s.api('POST', `/api/channels/${s.channel.id}/native/ensure`, {});
+    assert.equal(conversation.threadId, undefined);
+    assert.equal(conversation.ensure.phase, 'waiting-catalog');
+    assert.equal(conversation.ensure.nextStep, ensureCatalogNextStep);
     assert.equal(s.store.get<any>('native_bindings', s.channel.id), undefined);
+    assert.equal(s.store.get<any>('channels', s.channel.id).nativeEnsure.phase, 'waiting-catalog');
     assert.equal(s.opened.length, 1);
     assert.equal(s.transport.sent.length, 0);
+    const listed = await s.api('GET', `/api/channels/${s.channel.id}/native/conversation`);
+    assert.equal(listed.ensure.phase, 'waiting-catalog');
+    const actions = s.store.all<any>('events').map((event) => event.action);
+    assert(actions.includes('native.ensure-requested'));
+    assert(actions.includes('native.ensure-waiting'));
+    assert.equal(actions.includes('native.bound'), false);
+  } finally {
+    await s.cleanup();
+  }
+});
+
+test('ensureAppTask 503s when the App is not connected, instead of waiting for a catalog row', async () => {
+  const s = await setup();
+  try {
+    s.transport.connected = false;
+    const failed = await s.api('POST', `/api/channels/${s.channel.id}/native/ensure`, {}, 503);
+    assert.match(failed.error, /启动 Codex App|重新连接/);
+    assert.equal(s.store.get<any>('native_bindings', s.channel.id), undefined);
+    assert.equal(s.store.get<any>('channels', s.channel.id).nativeEnsure, undefined);
+    assert.equal(s.opened.length, 0);
+  } finally {
+    await s.cleanup();
+  }
+});
+
+test('a later catalog row binds without clicking 关联', async () => {
+  const s = await setup();
+  try {
+    const waiting = await s.api('POST', `/api/channels/${s.channel.id}/native/ensure`, {});
+    assert.equal(waiting.ensure.phase, 'waiting-catalog');
+    s.transport.catalog = [{ id: s.transport.threadId, title: '新任务', cwd: s.project.path, updatedAt: Date.now() }];
+    s.transport.ownerReady = true;
+    const conversation = await s.native.ensureAppTask(s.channel.id, { reopen: false });
+    assert.equal(conversation.threadId, s.transport.threadId);
+    assert.equal(conversation.ensure, undefined);
+    assert.equal(s.store.get<any>('native_bindings', s.channel.id).threadId, s.transport.threadId);
+    assert.equal(s.store.get<any>('channels', s.channel.id).nativeEnsure, undefined);
+    assert.equal(s.opened.length, 1);
+    assert.deepEqual(s.transport.sent, [ensureAppTaskFirstTurn]);
   } finally {
     await s.cleanup();
   }
@@ -155,17 +203,20 @@ test('already-bound no-client-found restores via thread deep link and still send
   }
 });
 
-test('ensureAppTask times out clearly when the owner never becomes ready', async () => {
+test('ensureAppTask waits for the owner instead of 504 after a catalog row exists', async () => {
   const s = await setup();
   try {
     s.native.openAppLink = async (url) => {
       s.opened.push(url);
       s.transport.catalog = [{ id: s.transport.threadId, title: '新任务', cwd: s.project.path, updatedAt: Date.now() }];
     };
-    const failed = await s.api('POST', `/api/channels/${s.channel.id}/native/ensure`, {}, 504);
-    assert.match(failed.error, /未在限定时间内成为 owner/);
+    const conversation = await s.api('POST', `/api/channels/${s.channel.id}/native/ensure`, {});
+    assert.equal(conversation.threadId, s.transport.threadId);
+    assert.equal(conversation.ensure.phase, 'waiting-owner');
+    assert.equal(conversation.ensure.nextStep, ensureOwnerNextStep);
     assert.equal(s.transport.sent.length, 0);
     assert.equal(s.store.get<any>('native_bindings', s.channel.id)?.threadId, s.transport.threadId);
+    assert.equal(s.store.get<any>('channels', s.channel.id).nativeEnsure.phase, 'waiting-owner');
   } finally {
     await s.cleanup();
   }
@@ -229,6 +280,21 @@ test('Engine.start still skips App ensure for a CLI-direct channel', async () =>
     await s.api('POST', `/api/channels/${cli.id}/action`, { action: 'run' });
     assert.equal(s.opened.length, 0);
     assert.equal(s.engine.native?.binding(cli.id), undefined);
+  } finally {
+    await s.cleanup();
+  }
+});
+
+test('Engine.start parks waiting when the catalog never appears, and does not start a CLI turn', async () => {
+  const s = await setup();
+  try {
+    await s.api('POST', `/api/channels/${s.channel.id}/action`, { action: 'run' });
+    assert.equal(s.store.get<any>('native_bindings', s.channel.id), undefined);
+    assert.equal(s.store.get<any>('channels', s.channel.id).nativeEnsure.phase, 'waiting-catalog');
+    assert.equal(s.store.get<any>('channels', s.channel.id).status, 'waiting');
+    assert.equal(s.opened.length, 1);
+    assert.equal(s.store.all('runs').length, 0);
+    assert.equal(s.transport.sent.length, 0);
   } finally {
     await s.cleanup();
   }
