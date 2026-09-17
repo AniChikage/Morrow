@@ -200,10 +200,12 @@ test('a CLI-direct Codex channel is never a task target and brings back the CLI 
   );
   render(<RuntimesView {...props} />);
   await checklist();
-  // There is no task to link, so the page offers no shortcut into one.
+  // There is no task to link, so the page offers no shortcut into one — and it says which kind of
+  // channel is missing, rather than implying this project has no Codex channel at all.
   expect(step('任务已关联')).toBe('next');
   expect(screen.queryByRole('button', { name: '去关联任务' })).toBeNull();
-  expect(screen.getByText('还没有可关联的 Codex 频道，请先在项目里添加频道。')).toBeTruthy();
+  expect(screen.getByText('还没有走 App 任务的 Codex 频道；直连 Codex CLI 的频道不需要关联任务。')).toBeTruthy();
+  expect(screen.getByText('新建频道时把「执行方式」选为「Codex App 任务」，才需要在这里关联。')).toBeTruthy();
   // What a CLI-direct channel needs is on this Mac, so the row says where the binary is and how to
   // log in — the half the App normally answers for.
   await userEvent.setup().click(screen.getByRole('button', { name: 'Codex，App 已连接，查看详情' }));

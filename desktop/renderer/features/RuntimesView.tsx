@@ -140,7 +140,14 @@ function AppChecklist({
       <>
         <span>在 Codex App 为同一项目目录创建任务、发送首条消息，再回到频道关联；回到这里会自动重新检测。</span>
         <ChannelChoice label="去关联任务" targets={linkTargets} projects={projects} busy={busy} onAct={onLink} />
-        {!linkTargets.length && <span>还没有可关联的 Codex 频道，请先在项目里添加频道。</span>}
+        {/* Only App-task channels can be linked, so a project of CLI-direct Codex channels lands
+            here. Saying 「没有频道」 would send those people looking for channels they already have. */}
+        {!linkTargets.length && (
+          <>
+            <span>还没有走 App 任务的 Codex 频道；直连 Codex CLI 的频道不需要关联任务。</span>
+            <span>新建频道时把「执行方式」选为「Codex App 任务」，才需要在这里关联。</span>
+          </>
+        )}
       </>
     );
   else if (pending === 3)
