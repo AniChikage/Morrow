@@ -43,6 +43,12 @@ const mergeRuns = (old: Run[], next: Run[]) => mergeById(old, next, (a, b) => b.
 const mergeNotes = (old: WorkspaceEvent[], next: WorkspaceEvent[]) =>
   mergeById(old, next, (a, b) => a.createdAt.localeCompare(b.createdAt));
 const failureText = (failure: unknown, fallback: string) => (failure instanceof Error ? failure.message : fallback);
+/**
+ * How many of the newest notes stay expanded once a channel has collected a few. Everything older
+ * that a turn has already read folds behind one entry, so the notes cannot push the work log off
+ * the page; a note no turn has read yet is never folded, whatever its position.
+ */
+const notesPreview = 3;
 /** One short line per App-resume state; the reason itself is the expanded body. */
 const appResumeLabel: Record<NonNullable<Channel['appResume']>['state'], string> = {
   observing: 'App 续跑：观察中',
@@ -289,6 +295,7 @@ export function ChannelView(props: FeatureProps & { id: string }) {
   const [releasesOpen, setReleasesOpen] = useState(false);
   const [notes, setNotes] = useState<WorkspaceEvent[]>([]);
   const [notesError, setNotesError] = useState('');
+  const [notesExpanded, setNotesExpanded] = useState(false);
   const [draft, setDraft] = useState('');
   const [noteBusy, setNoteBusy] = useState(false);
   const [noteError, setNoteError] = useState('');
@@ -372,6 +379,8 @@ export function ChannelView(props: FeatureProps & { id: string }) {
   useEffect(() => {
     setNotes([]);
     setNotesError('');
+    // Another channel's older notes are not this one's: every channel opens on its newest few.
+    setNotesExpanded(false);
     setDraft('');
     setNoteError('');
     setNoteNotice('');
@@ -455,6 +464,26 @@ export function ChannelView(props: FeatureProps & { id: string }) {
     runs
       .filter((run) => run.channelId === id && run.startedAt && run.startedAt > createdAt)
       .reduce((earliest, run) => (earliest && earliest <= run.startedAt ? earliest : run.startedAt), '');
+  // Newest first, then split so a long list cannot push the work log off the page: the newest few
+  // stay open, and so does anything still waiting to be read, wherever it sits. The rest fold.
+  const orderedNotes = [...notes].reverse();
+  const folded = new Set(
+    orderedNotes.filter((note, index) => index >= notesPreview && !!noteReadAt(note.createdAt)).map((note) => note.id)
+  );
+  const openNotes = orderedNotes.filter((note) => !folded.has(note.id));
+  const foldedNotes = orderedNotes.filter((note) => folded.has(note.id));
+  const noteRow = (note: WorkspaceEvent) => {
+    const readAt = noteReadAt(note.createdAt);
+    return (
+      <li key={note.id}>
+        <p className="channel-note-text">{note.text}</p>
+        <span className="channel-note-meta">
+          <time dateTime={note.createdAt || undefined}>{formatDate(note.createdAt)}</time>
+          <span>{readAt ? `已在 ${formatDate(readAt)} 的轮次读取` : '等下一轮读取'}</span>
+        </span>
+      </li>
+    );
+  };
   const postNote = async (andRun: boolean) => {
     const text = draft.trim();
     if (!text || noteBusy) return;
@@ -857,21 +886,24 @@ export function ChannelView(props: FeatureProps & { id: string }) {
           {notesEnabled && (
             <section className="channel-notes" aria-label="留言">
               <h2>留言</h2>
-              {notes.length ? (
-                <ul className="channel-note-list">
-                  {[...notes].reverse().map((note) => {
-                    const readAt = noteReadAt(note.createdAt);
-                    return (
-                      <li key={note.id}>
-                        <p className="channel-note-text">{note.text}</p>
-                        <span className="channel-note-meta">
-                          <time dateTime={note.createdAt || undefined}>{formatDate(note.createdAt)}</time>
-                          <span>{readAt ? `已在 ${formatDate(readAt)} 的轮次读取` : '等下一轮读取'}</span>
-                        </span>
-                      </li>
-                    );
-                  })}
-                </ul>
+              {orderedNotes.length ? (
+                <>
+                  <ul className="channel-note-list">{openNotes.map(noteRow)}</ul>
+                  {!!foldedNotes.length && (
+                    <details
+                      className="channel-notes-earlier"
+                      open={notesExpanded}
+                      onToggle={(event) => setNotesExpanded(event.currentTarget.open)}
+                    >
+                      <summary>{`更早的留言 · ${notesExpanded ? '' : '还有 '}${foldedNotes.length} 条`}</summary>
+                      {notesExpanded && (
+                        <ul className="channel-note-list" aria-label="更早的留言">
+                          {foldedNotes.map(noteRow)}
+                        </ul>
+                      )}
+                    </details>
+                  )}
+                </>
               ) : (
                 <p className="subtle">{notesError || '还没有留言。留言会在下一轮开始时随上下文交给 CLI。'}</p>
               )}

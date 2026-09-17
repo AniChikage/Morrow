@@ -234,6 +234,80 @@ describe('channel control and history', () => {
     expect(within(rows[1]).getByText('先看导入流程')).toBeTruthy();
   });
 
+  it('folds older notes behind one entry, expands them on request, and opens every channel folded', async () => {
+    const user = userEvent.setup();
+    const state = cliChannelState();
+    state.channels[1].runtime = 'claude';
+    // One loaded turn per channel, started after every note below, so none is still waiting.
+    state.runs = [cliRun(), cliRun({ id: 'run-growth', channelId: 'channel-growth' })];
+    const { props, api } = featureProps({ snapshot: state });
+    const many = Array.from({ length: 6 }, (_, index) =>
+      note(`note-${index}`, `第 ${index + 1} 条留言`, `2026-09-07T00:0${index}:00.000Z`)
+    );
+    api.getMessages
+      .mockResolvedValueOnce({ messages: many })
+      .mockResolvedValueOnce({ messages: many.slice(0, 2) })
+      .mockResolvedValueOnce({ messages: many });
+    const view = render(<ChannelView {...props} id="channel-system" />, { wrapper: TestProviders });
+    const notes = () => within(screen.getByRole('region', { name: '留言' }));
+    const texts = () =>
+      notes()
+        .getAllByRole('listitem')
+        .map((row) => row.querySelector('p')?.textContent);
+    await screen.findByText('第 6 条留言');
+    // Only the newest three are open, and the entry says how many are still behind it.
+    expect(texts()).toEqual(['第 6 条留言', '第 5 条留言', '第 4 条留言']);
+    expect(screen.queryByText('第 3 条留言')).toBeNull();
+    const entry = screen.getByText('更早的留言 · 还有 3 条');
+    expect(entry.closest('details')!.open).toBe(false);
+    await user.click(entry);
+    await screen.findByText('第 1 条留言');
+    expect(texts()).toEqual(['第 6 条留言', '第 5 条留言', '第 4 条留言', '第 3 条留言', '第 2 条留言', '第 1 条留言']);
+    // Expanded, the same entry folds them back.
+    await user.click(screen.getByText('更早的留言 · 3 条'));
+    await waitFor(() => expect(screen.queryByText('第 1 条留言')).toBeNull());
+    expect(texts()).toHaveLength(3);
+    await user.click(screen.getByText('更早的留言 · 还有 3 条'));
+    await screen.findByText('第 1 条留言');
+    // A channel with only a couple of notes shows them all and offers no entry at all.
+    view.rerender(<ChannelView {...props} snapshot={state} id="channel-growth" />);
+    await screen.findByText('第 2 条留言');
+    expect(texts()).toEqual(['第 2 条留言', '第 1 条留言']);
+    expect(screen.queryByText(/^更早的留言/)).toBeNull();
+    // Coming back opens folded again: one channel's expansion is not another's.
+    view.rerender(<ChannelView {...props} snapshot={state} id="channel-system" />);
+    await screen.findByText('第 6 条留言');
+    expect(texts()).toEqual(['第 6 条留言', '第 5 条留言', '第 4 条留言']);
+    expect(screen.getByText('更早的留言 · 还有 3 条').closest('details')!.open).toBe(false);
+  });
+
+  it('never folds a note that is still waiting to be read, wherever it sits in the list', async () => {
+    const state = cliChannelState();
+    // The one loaded turn started at 03:00, so only the notes left before it have been read.
+    state.runs = [cliRun()];
+    const { props, api } = featureProps({ snapshot: state });
+    api.getMessages.mockResolvedValue({
+      messages: [
+        ...Array.from({ length: 3 }, (_, index) =>
+          note(`read-${index}`, `已读留言 ${index + 1}`, `2026-09-07T00:0${index}:00.000Z`)
+        ),
+        ...Array.from({ length: 5 }, (_, index) =>
+          note(`waiting-${index}`, `待读留言 ${index + 1}`, `2026-09-07T04:0${index}:00.000Z`)
+        ),
+      ],
+    });
+    render(<ChannelView {...props} id="channel-system" />, { wrapper: TestProviders });
+    const notes = within(await screen.findByRole('region', { name: '留言' }));
+    await screen.findByText('待读留言 5');
+    // Five notes are waiting for an answer, so all five stay open even though only three would fit
+    // the preview; 待读留言 2 and 1 sit past it and are still visible. The read ones fold instead.
+    expect(notes.getAllByText('等下一轮读取')).toHaveLength(5);
+    expect(notes.getAllByRole('listitem')).toHaveLength(5);
+    expect(notes.getByText('待读留言 1')).toBeTruthy();
+    expect(screen.queryByText('已读留言 3')).toBeNull();
+    expect(screen.getByText('更早的留言 · 还有 3 条')).toBeTruthy();
+  });
+
   it('「留言并运行一轮」 stores the note before asking for the turn, and a refused note keeps the draft', async () => {
     const user = userEvent.setup();
     const { props, api } = featureProps({ snapshot: cliChannelState() });

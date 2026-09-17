@@ -1190,6 +1190,14 @@
   font-size: var(--text-xs);
   color: var(--muted);
 }
+/* The entry holding the older notes a turn has already read; unread ones never move in here. */
+.channel-notes-earlier > summary {
+  cursor: pointer;
+  width: fit-content;
+  padding: var(--space-2) 0;
+  font-size: var(--text-xs);
+  color: var(--muted);
+}
 .feature-inline-error {
   font-size: var(--text-sm);
   line-height: 1.7;
