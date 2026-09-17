@@ -22,7 +22,7 @@ import type { ChildProcessWithoutNullStreams } from 'node:child_process';
 import { appendFileSync, mkdirSync, readFileSync, writeFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
-import { APIError, resultSchema } from './protocol.ts';
+import { APIError, resultSchema, usesApp } from './protocol.ts';
 import type { AgentResult, Channel, Control, Event, Project, Run, Runtime, WorkItem } from './protocol.ts';
 import type { Verification } from './verification-types.ts';
 import { sanitizeEventDetail } from './event-details.ts';
@@ -434,8 +434,11 @@ export class Engine {
     const p = this.store.get<Project>('projects', c.projectId);
     if (p?.isDemo) throw new APIError(409, '示例频道仅用于预览，请创建真实项目后运行');
     if (this.active.has(id) || this.native?.isBusy(id)) throw new APIError(409, '该频道正在执行');
+    // Only a channel whose turns run inside the App needs a task bound to it. A CLI-direct Codex
+    // channel has no App task to create and must not be given one: it starts its own subprocess
+    // below, exactly as a Claude Code or Trae channel does.
     if (
-      c.runtime === 'codex' &&
+      usesApp(c) &&
       !this.native?.binding(id) &&
       (process.env.MORROW_TEST_MODE !== '1' || this.native?.backgroundReady)
     ) {
@@ -467,6 +470,9 @@ export class Engine {
    * such a review must not freeze those channels. The consequence is deliberate: if the source moves
    * while the review waits, `start` finds the material stale and concludes the review unknown, and
    * the next verified claim requests a new one with fresh material. Codex channels are unchanged.
+   *
+   * This one asks about the account, not about the App, so it stays a `runtime` test: a CLI-direct
+   * Codex channel spends the same Codex quota an App one does and is held behind the same line.
    */
   reviewHolds(channel: Channel, row: Omit<Verification, 'prompt'>) {
     if (row.status === 'running') return true;
@@ -555,7 +561,8 @@ export class Engine {
     }
     // Usage gate: the account reserve line (exact) and this project's attributed budget (estimate).
     // Both read the Codex account, so they say nothing about a Claude Code or Trae turn and are not
-    // applied to one; the per-day run budget above still bounds every runtime.
+    // applied to one; the per-day run budget above still bounds every runtime. The test is the
+    // runtime, not the transport: a CLI-direct Codex turn is billed to the same account.
     const gate = channel.runtime === 'codex' ? this.usage.gate(project) : ({ blocked: false } as const);
     if (gate.blocked) {
       if (!scheduled)
@@ -568,13 +575,18 @@ export class Engine {
     } catch {
       throw new APIError(400, '项目目录不存在或不可访问');
     }
-    if (channel.runtime === 'codex' && (process.env.MORROW_TEST_MODE !== '1' || this.native?.binding(id))) {
+    // Where a turn runs is the channel's own choice, not a property of its runtime: `app` (the
+    // default for Codex) hands it to the bound App task, `cli` runs the bounded subprocess below.
+    // The fixture exception is unchanged: under MORROW_TEST_MODE an App-transport channel with no
+    // binding still falls through to the fixture CLI runtime, which is how the service tests drive
+    // a Codex channel with no desktop App present.
+    if (usesApp(channel) && (process.env.MORROW_TEST_MODE !== '1' || this.native?.binding(id))) {
       if (!this.native) throw new APIError(409, '请连接并绑定 Codex App 中的原生任务');
       return this.native.startScheduled(id, scheduled);
     }
-    // The bounded CLI subprocess below is how Claude Code and Trae channels really work. A Codex
-    // channel only reaches it under MORROW_TEST_MODE with the fixture runtime; real Codex work always
-    // happens inside the shared App task above.
+    // The bounded CLI subprocess below is how Claude Code and Trae channels work, and how a Codex
+    // channel whose transport is `cli` works: one `codex exec` turn per run, with no App task, no
+    // work interface and no App-managed approvals.
     const runtime = this.runtimes.find((r) => r.id === channel.runtime);
     if (!runtime?.available)
       throw new APIError(409, `${runtimeTitles[channel.runtime]} CLI 不可用，请在运行环境页刷新并检查安装`);
@@ -867,8 +879,10 @@ export class Engine {
   }
   prompt(project: Project, channel: Channel, run?: Run) {
     const items = this.store.projectItems(project.id);
+    // The App charter is for a turn that really runs inside the bound task. A CLI-direct channel
+    // gets the bounded-CLI prompt below even if an App task were somehow still bound to it.
     const binding = this.native?.binding(channel.id);
-    if (channel.runtime === 'codex' && binding) {
+    if (usesApp(channel) && binding) {
       // `prepare` mints this run's own grant, so its entry line goes out with every turn.
       const tools = run ? this.loop.prepare(run) : '';
       const stored = this.store.get<Channel>('channels', channel.id) || channel;

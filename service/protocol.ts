@@ -84,6 +84,25 @@ export type ProjectBriefRevision = {
  * `turnsSince` counts the turns delivered under it, including the turn that carried it.
  */
 export type PromptCharter = { threadId: string; hash: string; sentAt: string; turnsSince: number };
+/**
+ * How a Codex channel's turns reach Codex. `app` hands each turn to the shared Codex App task it is
+ * bound to; `cli` starts `codex exec` as a bounded subprocess, exactly as a Claude Code or Trae
+ * channel does. Only `app` has the in-app browser, Computer Use, the App's dynamic tools, App
+ * approvals and the Morrow work interface, which is why it stays the default; `cli` buys not
+ * depending on a running App. Both spend the same Codex account quota.
+ */
+export const channelTransports = ['app', 'cli'] as const;
+export type ChannelTransport = (typeof channelTransports)[number];
+/**
+ * Whether this channel's turns run inside the shared Codex App task. A row without a `transport`
+ * means `app`, so every channel written before the field existed keeps the behaviour it had and
+ * nothing has to be migrated. Ask this — not `runtime === 'codex'` — wherever the question is
+ * really "does this channel have an App task behind it": App binding, native conversation, notes,
+ * App-only affordances. Ask `runtime` instead wherever the question is "does this channel spend the
+ * Codex account", because a CLI-direct Codex channel spends it just like an App one.
+ */
+export const usesApp = (channel: Pick<Channel, 'runtime' | 'transport'>) =>
+  channel.runtime === 'codex' && (channel.transport || 'app') === 'app';
 export type Channel = {
   work?: ChannelWork;
   /** A bounded latest signal received while this channel's scheduled turn was running. */
@@ -97,6 +116,11 @@ export type Channel = {
   name: string;
   goal: string;
   runtime: RuntimeID;
+  /**
+   * Which way a Codex channel reaches Codex; absent means `app`. Only a Codex channel carries one —
+   * the other runtimes have no App task to choose between, and the server refuses the field on them.
+   */
+  transport?: ChannelTransport;
   model: string;
   status: string;
   intervalMinutes: number;

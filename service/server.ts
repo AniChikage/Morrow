@@ -19,6 +19,7 @@ import { homedir } from 'node:os';
 import { pathToFileURL } from 'node:url';
 import {
   APIError,
+  channelTransports,
   choice,
   engines,
   integer,
@@ -28,8 +29,9 @@ import {
   object,
   projectBriefLimit,
   string,
+  usesApp,
 } from './protocol.ts';
-import type { Channel, Project, ProjectBriefRevision, Run, RuntimeID, WorkItem } from './protocol.ts';
+import type { Channel, ChannelTransport, Project, ProjectBriefRevision, Run, RuntimeID, WorkItem } from './protocol.ts';
 import { now, Store } from './store.ts';
 import { log, logError, setLogRedactor } from './log.ts';
 import { Engine } from './engine.ts';
@@ -52,23 +54,32 @@ function model(value: unknown) {
   return text;
 }
 /**
- * A Codex channel inherits the App task's own permission and approval settings; the CLI runtimes have
- * no such task, so they start in Morrow's own workspace-write sandbox.
+ * A Codex channel that runs inside an App task inherits that task's own permission and approval
+ * settings; every other channel — the CLI runtimes, and a Codex channel that goes straight to the
+ * CLI — has no such task and starts in Morrow's own workspace-write sandbox.
  */
-const defaultPermission = (runtime: RuntimeID): Channel['permission'] =>
-  runtime === 'codex' ? 'native' : 'workspace-write';
-function defaultChannel(projectId: string, name: string, goal: string, runtime: RuntimeID = 'codex'): Channel {
+const defaultPermission = (runtime: RuntimeID, transport?: ChannelTransport): Channel['permission'] =>
+  usesApp({ runtime, transport }) ? 'native' : 'workspace-write';
+function defaultChannel(
+  projectId: string,
+  name: string,
+  goal: string,
+  runtime: RuntimeID = 'codex',
+  transport?: ChannelTransport
+): Channel {
   return {
     id: randomUUID(),
     projectId,
     name,
     goal,
     runtime,
+    // Left off unless it was asked for, so an unchosen channel row reads exactly as it always did.
+    ...(transport ? { transport } : {}),
     model: '',
     status: 'paused',
     intervalMinutes: 60,
     maxRunsPerDay: 8,
-    permission: defaultPermission(runtime),
+    permission: defaultPermission(runtime, transport),
     nextRunAt: '',
     lastRunAt: '',
     sessionId: '',
@@ -480,6 +491,11 @@ export async function startServer(
       if (nativeMatch) {
         const id = nativeMatch[1],
           action = nativeMatch[2];
+        // Every route in here acts on an App task. A CLI-direct Codex channel has none, so it hears
+        // that instead of being walked through linking one. A channel that does not exist at all
+        // keeps falling through to the 404 each handler already raises.
+        const target = store.get<Channel>('channels', id);
+        if (target && !usesApp(target)) throw new APIError(409, '该频道直连 Codex CLI，不使用 Codex App 任务');
         if (req.method === 'GET' && action === 'threads') {
           respond(res, 200, await native.list(id));
           return;
@@ -676,23 +692,44 @@ export async function startServer(
         return;
       }
       if (req.method === 'POST' && path === '/api/channels') {
-        keys(data, ['projectId', 'name', 'goal', 'runtime', 'model', 'intervalMinutes', 'maxRunsPerDay', 'permission']);
+        keys(data, [
+          'projectId',
+          'name',
+          'goal',
+          'runtime',
+          'transport',
+          'model',
+          'intervalMinutes',
+          'maxRunsPerDay',
+          'permission',
+        ]);
         const projectId = string(data.projectId, 'projectId', 100);
         const project = store.get<Project>('projects', projectId);
         if (!project) throw new APIError(404, '项目不存在');
         const runtime = choice(data.runtime, 'runtime', engines);
+        const transport =
+          data.transport === undefined ? undefined : choice(data.transport, 'transport', channelTransports);
+        // Only Codex has two ways in. The other runtimes have exactly one, so naming a transport on
+        // them is a mistake worth reporting rather than a value to store and ignore.
+        if (transport && runtime !== 'codex') throw new APIError(400, '仅 Codex 频道可以选择传输方式');
         const c = {
-          ...defaultChannel(projectId, string(data.name, 'name', 100), string(data.goal, 'goal', 20000), runtime),
+          ...defaultChannel(
+            projectId,
+            string(data.name, 'name', 100),
+            string(data.goal, 'goal', 20000),
+            runtime,
+            transport
+          ),
           model: data.model === undefined ? '' : model(data.model),
           intervalMinutes: data.intervalMinutes === undefined ? 60 : integer(data.intervalMinutes, 'intervalMinutes'),
           maxRunsPerDay: data.maxRunsPerDay === undefined ? 8 : integer(data.maxRunsPerDay, 'maxRunsPerDay', 1, 100),
           permission:
             data.permission === undefined
-              ? defaultPermission(runtime)
+              ? defaultPermission(runtime, transport)
               : choice(data.permission, 'permission', ['read-only', 'workspace-write', 'native'] as const),
         };
-        if (c.permission === 'native' && c.runtime !== 'codex')
-          throw new APIError(400, '仅 Codex App 支持沿用原生任务权限');
+        if (c.permission === 'native' && !usesApp(c))
+          throw new APIError(400, '仅走 Codex App 的频道支持沿用原生任务权限');
         store.transaction(() => {
           store.put('channels', c);
           engine.audit({
@@ -713,18 +750,32 @@ export async function startServer(
         const c = store.get<Channel>('channels', id);
         if (!c) throw new APIError(404, '频道不存在');
         if (req.method === 'PATCH' && !channelMatch[2]) {
-          keys(data, ['name', 'goal', 'runtime', 'model', 'intervalMinutes', 'maxRunsPerDay', 'permission']);
+          keys(data, [
+            'name',
+            'goal',
+            'runtime',
+            'transport',
+            'model',
+            'intervalMinutes',
+            'maxRunsPerDay',
+            'permission',
+          ]);
           if (
             (engine.active.has(id) || native.isBusy(id)) &&
-            ['runtime', 'model', 'permission'].some((k) => data[k] !== undefined)
+            ['runtime', 'model', 'permission', 'transport'].some((k) => data[k] !== undefined)
           )
-            throw new APIError(409, '请先暂停执行再更改运行时、模型或权限');
+            throw new APIError(409, '请先暂停执行再更改运行时、模型、权限或传输方式');
           const updated = { ...c };
           if (native.binding(id) && data.runtime !== undefined && data.runtime !== c.runtime)
             throw new APIError(409, '频道已绑定 Codex App 原生任务；请新建频道使用其他运行时，避免丢失会话关联');
+          // Same reason as the runtime rule above: the bound task would be left behind with nothing
+          // pointing at it, and the CLI session id lives in the field the binding uses.
+          if (native.binding(id) && data.transport !== undefined && data.transport !== (c.transport || 'app'))
+            throw new APIError(409, '频道已绑定 Codex App 原生任务；请新建频道使用 CLI 直连，避免丢失会话关联');
           if (data.name !== undefined) updated.name = string(data.name, 'name', 100);
           if (data.goal !== undefined) updated.goal = string(data.goal, 'goal', 20000);
           if (data.runtime !== undefined) updated.runtime = choice(data.runtime, 'runtime', engines);
+          if (data.transport !== undefined) updated.transport = choice(data.transport, 'transport', channelTransports);
           if (data.model !== undefined) updated.model = model(data.model);
           if (data.permission !== undefined)
             updated.permission = choice(data.permission, 'permission', [
@@ -736,8 +787,28 @@ export async function startServer(
             updated.intervalMinutes = integer(data.intervalMinutes, 'intervalMinutes');
           if (data.maxRunsPerDay !== undefined)
             updated.maxRunsPerDay = integer(data.maxRunsPerDay, 'maxRunsPerDay', 1, 100);
-          if (updated.permission === 'native' && updated.runtime !== 'codex')
-            throw new APIError(400, '仅 Codex App 支持沿用原生任务权限');
+          if (data.transport !== undefined && updated.runtime !== 'codex')
+            throw new APIError(400, '仅 Codex 频道可以选择传输方式');
+          // A runtime that is no longer Codex leaves no transport to keep, so it drops with it and
+          // the runtime change below is the only thing the channel is told about.
+          if (updated.runtime !== 'codex') updated.transport = undefined;
+          if (updated.permission === 'native' && !usesApp(updated))
+            throw new APIError(400, '仅走 Codex App 的频道支持沿用原生任务权限');
+          // Switching transport starts a different kind of session — an App thread on one side, a
+          // `codex exec` session on the other — and the two share one field, so the old id cannot
+          // carry over. The turn after the switch starts from the full context, as a runtime change
+          // already does.
+          const switchedTransport =
+            updated.runtime === c.runtime && (updated.transport || 'app') !== (c.transport || 'app');
+          if (switchedTransport) {
+            updated.sessionId = '';
+            engine.event(
+              id,
+              '',
+              'system',
+              `执行方式已切换为${usesApp(updated) ? ' Codex App 任务' : ' Codex CLI 直连'}。保留事项、证据和消息，下次使用完整上下文开始新会话。`
+            );
+          }
           if (updated.runtime !== c.runtime) {
             updated.sessionId = '';
             if (data.model === undefined) updated.model = '';

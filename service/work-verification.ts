@@ -2,7 +2,7 @@ import type { ReviewRunner, ReviewObservation } from './codex-cli-review.ts';
 import { unreadableOutput } from './claude-cli-review.ts';
 import type { ReviewStart } from './claude-cli-review.ts';
 import { createHash, randomUUID } from 'node:crypto';
-import { APIError, choice, keys, string } from './protocol.ts';
+import { APIError, choice, keys, string, usesApp } from './protocol.ts';
 import type { Channel, Control, Project, Run, RuntimeID, WorkItem } from './protocol.ts';
 import type { Evidence } from './autonomy-types.ts';
 import type { StrategyDecision } from './strategy-types.ts';
@@ -946,8 +946,13 @@ export class WorkVerification {
       // manual run with autonomy off). Waiting for autonomy to be switched on would leave the item
       // in 调查中 for good and, through `Engine.start`'s pending-review gate, hold the whole project
       // with it. The day's run budget and the one-reviewer-at-a-time rule still apply.
+      //
+      // The gate applies to channels that keep an App task open, so the test is the transport, not
+      // the runtime: a CLI-direct Codex channel is in exactly the position a Claude Code one is —
+      // its turn is over and already paid for, and it is normally paused between turns — so asking
+      // `runtime === 'codex'` here would bring that deadlock back for it.
       const idle = !this.loop.store.get<Control>('controls', row.channelId)?.enabled && run?.status !== 'running';
-      if (idle && channel.runtime === 'codex') continue;
+      if (idle && usesApp(channel)) continue;
       if (this.loop.store.runCount(row.channelId, now().slice(0, 10)) >= channel.maxRunsPerDay) continue;
       this.loop.track(this.start(row.id));
     }

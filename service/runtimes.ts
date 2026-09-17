@@ -3,7 +3,7 @@ import { delimiter, join } from 'node:path';
 import { homedir } from 'node:os';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { engines } from './protocol.ts';
+import { engines, usesApp } from './protocol.ts';
 import type { Channel, EventDetail, Runtime, RuntimeID } from './protocol.ts';
 import { providerEventDetails } from './event-details.ts';
 import { codexAppBinary } from './codex-bridge-setup.ts';
@@ -165,9 +165,9 @@ const claudeTools = {
   'workspace-write': 'Read,Grep,Glob,Edit,Write,MultiEdit,NotebookEdit,Bash',
 };
 /**
- * The command line for one bounded turn. Claude Code and Trae channels really run this way; a Codex
- * channel reaches it only under MORROW_TEST_MODE, because production Codex work happens inside the
- * shared App task instead.
+ * The command line for one bounded turn. Claude Code and Trae channels run this way, and so does a
+ * Codex channel whose transport is `cli`; an `app` Codex channel reaches it only under
+ * MORROW_TEST_MODE, because its production work happens inside the shared App task instead.
  */
 export function invocation(channel: Channel, runId: string, outputPath: string): string[] {
   if (channel.runtime === 'claude') {
@@ -200,7 +200,13 @@ export function invocation(channel: Channel, runId: string, outputPath: string):
   // to full access here; every other scope keeps the sandbox and stays offline. Trae never carries
   // the native scope — the server refuses it — so it always runs sandboxed. No bypass switches are
   // used on fresh or resumed sessions.
-  const native = channel.runtime === 'codex' && channel.permission === 'native';
+  //
+  // `native` means "inherit the App task's own sandbox and approvals", so it belongs to the App
+  // transport: a CLI-direct Codex channel has no App settings to inherit and the server refuses the
+  // scope on it. Asking `usesApp` rather than the runtime keeps that true here too — a row that
+  // somehow carried both would fall to the sandboxed `workspace-write` line below, not to full
+  // access.
+  const native = usesApp(channel) && channel.permission === 'native';
   const sandbox = native
     ? 'danger-full-access'
     : channel.permission === 'native'

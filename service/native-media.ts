@@ -1,7 +1,8 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { chmodSync, mkdirSync, readFileSync, realpathSync, statSync, writeFileSync } from 'node:fs';
 import { basename, isAbsolute, join } from 'node:path';
-import { APIError } from './protocol.ts';
+import { APIError, usesApp } from './protocol.ts';
+import type { Channel } from './protocol.ts';
 import type { Store } from './store.ts';
 
 const MAX_IMAGE = 10 * 1024 * 1024;
@@ -37,9 +38,13 @@ function readImage(path: string): Buffer {
   imageType(bytes);
   return bytes;
 }
+/**
+ * An image is pasted into a native conversation, so the channel has to have one: the test is the
+ * transport, not the runtime. A CLI-direct Codex channel has no App task to attach anything to.
+ */
 function ensureChannel(store: Store, channelId: string): void {
-  const channel = store.get('channels', channelId);
-  if (!channel || channel.runtime !== 'codex' || store.get('projects', channel.projectId)?.isDemo)
+  const channel = store.get<Channel>('channels', channelId);
+  if (!channel || !usesApp(channel) || store.get('projects', channel.projectId)?.isDemo)
     throw new APIError(404, '原生频道不存在');
 }
 export function importNativeImages(store: Store, home: string, channelId: string, paths: string[]) {
