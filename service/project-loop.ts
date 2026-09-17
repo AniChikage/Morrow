@@ -597,7 +597,7 @@ export class ProjectWorkLoop {
     if (!stat.isFile() || stat.size > maxBytes) throw new APIError(400, `必须是小于 ${maxBytes} 字节的普通文件`);
     return { actual, bytes: readFileSync(actual) };
   }
-  mutate(scope: Scope, operation: string, input: Record<string, any>, key: string): unknown {
+  mutate(scope: Scope, operation: string, input: Record<string, any>, key: string, pendingReview?: string): unknown {
     const { project } = this.scope(scope);
     const time = now();
     if (operation === 'execution.prepare') return this.executions.prepare(scope, input);
@@ -611,7 +611,50 @@ export class ProjectWorkLoop {
     if (operation === 'verification.retry') return this.verification.retry(scope, input);
     if (['understanding.upsert', 'decision.choose', 'decision.review'].includes(operation))
       return this.strategy.mutate(scope, operation, input);
-    if (operation === 'feature.upsert' || operation === 'release.propose') this.strategy.requireCurrent(scope);
+    if (operation === 'feature.complete') {
+      keys(input, ['id', 'revision', 'status', 'summary', 'nextStep', 'evidenceIds', 'review']);
+      const item = this.item(scope, input.id, false)!;
+      this.requireOwner(scope, item);
+      if (item.revision !== input.revision) throw new APIError(409, 'feature 已更新，请读取最新版本再合并');
+      const status = choice(input.status ?? 'resolved', 'status', ['verified', 'resolved'] as const);
+      const evidenceIds = this.refs(scope, input.evidenceIds || []);
+      if (!evidenceIds.length) throw new APIError(400, '完成事项需要证据引用');
+      const decision = this.strategy.active(project.id).find((row) => row.channelId === scope.channelId);
+      let reviewResult: any;
+      if (decision) {
+        const review = object(input.review);
+        if (decision.itemId !== item.id || review.id !== decision.id)
+          throw new APIError(409, '完成请求必须核对本频道当前行动及其事项');
+        // Freeze both intents in the outer call transaction. The review includes the completion
+        // evidence too, so the later item request reuses exactly this review rather than buying another.
+        reviewResult = this.strategy.review(scope, {
+          ...review,
+          evidenceIds: [...new Set([...this.refs(scope, review.evidenceIds || []), ...evidenceIds])],
+        });
+      } else if (input.review !== undefined) {
+        throw new APIError(409, '当前没有待复盘行动；请刷新后仅提交事项完成');
+      }
+      return this.mutate(
+        scope,
+        'feature.upsert',
+        {
+          id: item.id,
+          revision: item.revision,
+          title: item.title,
+          kind: item.kind,
+          summary: input.summary,
+          nextStep: input.nextStep,
+          status,
+          evidenceIds,
+        },
+        key,
+        reviewResult?.pendingVerification ? reviewResult.verificationId : undefined
+      );
+    }
+    // Only the atomic completion above may cross this gate while its own review is pending.
+    // Ordinary updates and publication still require the current action to have been reviewed.
+    if ((operation === 'feature.upsert' && !pendingReview) || operation === 'release.propose')
+      this.strategy.requireCurrent(scope);
     const base = {
       id: randomUUID(),
       projectId: scope.projectId,
@@ -703,6 +746,8 @@ export class ProjectWorkLoop {
             if (verification.status === 'passed' && latest && latest.id !== verification.id)
               throw new APIError(409, '已有更新的事项复核，不能回选较早通过记录完成事项');
           }
+          if (pendingReview && verification.id !== pendingReview)
+            throw new APIError(409, '完成请求与复盘材料不一致，请重新核对');
           if (verification.status !== 'passed' || !this.verification.current(verification)) {
             item.status = 'investigating';
             completion = this.verification.defer(scope, verification, 'feature.complete', item.id, item.revision, {

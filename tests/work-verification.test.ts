@@ -1010,3 +1010,154 @@ test('CLI review observations preserve verification gates and never use the impl
     }
   }
 });
+
+async function completionFixture() {
+  const f = await fixture();
+  const decision = await f.choose(true);
+  const execution = await f.call('execution.prepare', { command: f.command });
+  f.emitCommand('completion-proof', 'inProgress');
+  f.emitCommand('completion-proof', 'completed');
+  const evidence = (await f.call('execution.read', { id: execution.id })).evidence;
+  const current = f.store.get<any>('items', f.item.id);
+  const input = {
+    id: current.id,
+    revision: current.revision,
+    summary: '修复完成，实际用户效果未知',
+    nextStep: '等待安装批准',
+    evidenceIds: [evidence.id],
+    review: {
+      id: decision.id,
+      revision: decision.revision,
+      outcome: 'improved',
+      conclusion: '仅隔离检查达标',
+      evidenceIds: [],
+      nextDirection: '继续观察',
+      assessment: {
+        results: [{ expectationId: 'value', verdict: 'met', reason: '原生退出码已核对', evidenceIds: [evidence.id] }],
+        conditions: 'matched',
+        conditionReason: '同一源码',
+        diagnosis: 'expected',
+        explanation: '非业务效果',
+        adjustment: 'stop',
+      },
+    },
+  };
+  return { ...f, decision, input };
+}
+
+test('one completion atomically defers review and feature, then settles both without another implementer turn', async () => {
+  const f = await completionFixture();
+  try {
+    const requestId = randomUUID();
+    const pending = await f.call('feature.complete', f.input, 200, requestId);
+    assert.equal(pending.pendingVerification, true);
+    assert.equal(pending.status, 'investigating');
+    assert.deepEqual(await f.call('feature.complete', f.input, 200, requestId), pending);
+    assert.equal(f.store.all('loop_verifications').length, 1);
+    assert.equal(f.store.all('loop_finalizations').length, 2);
+    await f.engine.loop.verification.start(pending.verificationId);
+    f.store.put('runs', { ...f.run, status: 'completed' });
+    const budget = f.engine.budgetCount(f.channel.id);
+    f.native.complete();
+    assert.equal(f.store.get<any>('strategy_decisions', f.decision.id).status, 'reviewed');
+    assert.equal(f.store.get<any>('items', f.item.id).status, 'resolved');
+    assert.equal(f.store.get<any>('items', f.item.id).ownerChannelId, undefined);
+    assert(f.store.all<any>('loop_finalizations').every((row) => row.status === 'applied'));
+    const revision = f.store.get<any>('items', f.item.id).revision;
+    f.engine.loop.verification.settle(pending.verificationId);
+    assert.equal(f.store.get<any>('items', f.item.id).revision, revision);
+    assert.equal(f.engine.budgetCount(f.channel.id), budget);
+    assert.equal(f.native.sent.length, 1);
+  } finally {
+    await f.cleanup();
+  }
+});
+
+test('a clear fix completes through one review without manufacturing an experiment', async () => {
+  const f = await fixture();
+  try {
+    const pending = await f.call('feature.complete', {
+      id: f.item.id,
+      revision: f.item.revision,
+      summary: '明确修复',
+      nextStep: '等待批准',
+      evidenceIds: [f.evidence.id],
+    });
+    await f.engine.loop.verification.start(pending.verificationId);
+    f.native.complete();
+    assert.equal(f.store.get<any>('items', f.item.id).status, 'resolved');
+    assert.equal(f.store.all('strategy_decisions').length, 0);
+    assert.equal(f.native.sent.length, 1);
+  } finally {
+    await f.cleanup();
+  }
+});
+
+for (const change of ['fail', 'unknown', 'source', 'human', 'reassign'] as const) {
+  test(`atomic completion retains the gate on ${change}`, async () => {
+    const f = await completionFixture();
+    try {
+      const pending = await f.call('feature.complete', f.input);
+      await f.engine.loop.verification.start(pending.verificationId);
+      if (change === 'fail' || change === 'unknown') f.native.verdict = change;
+      if (change === 'source') writeFileSync(join(f.path, 'source.js'), 'export const value=2;');
+      if (change === 'human' || change === 'reassign') {
+        const item = f.store.get<any>('items', f.item.id);
+        f.store.put('items', {
+          ...item,
+          revision: item.revision + 1,
+          ...(change === 'human' ? { summary: '人工新要求' } : { ownerChannelId: 'another-channel' }),
+        });
+      }
+      f.native.complete();
+      assert.equal(f.store.get<any>('items', f.item.id).status, 'investigating');
+      assert.notEqual(f.store.get<any>('loop_finalizations', pending.finalizationId).status, 'applied');
+      if (change === 'human') assert.equal(f.store.get<any>('items', f.item.id).summary, '人工新要求');
+      if (change === 'reassign') assert.equal(f.store.get<any>('items', f.item.id).ownerChannelId, 'another-channel');
+      assert.equal(f.native.sent.length, 1);
+    } finally {
+      await f.cleanup();
+    }
+  });
+}
+
+test('an invalid combined completion rolls back its review and cannot bypass ownership or a different active decision', async () => {
+  const f = await completionFixture();
+  try {
+    const before = f.store.get<any>('items', f.item.id);
+    await f.call('feature.complete', { ...f.input, summary: null }, 400);
+    assert.equal(f.store.all('loop_verifications').length, 0);
+    assert.equal(f.store.all('loop_finalizations').length, 0);
+    assert.deepEqual(f.store.get<any>('items', f.item.id), before);
+    await f.call('feature.complete', { ...f.input, review: { ...f.input.review, id: 'other-decision' } }, 409);
+    await f.call('feature.complete', { ...f.input, revision: 0 }, 409);
+    f.store.put('items', { ...before, ownerChannelId: 'someone-else' });
+    await f.call('feature.complete', f.input, 409);
+    assert.equal(f.store.all('loop_verifications').length, 0);
+  } finally {
+    await f.cleanup();
+  }
+});
+
+test('both saved completion intents recover once after restart with the originating turn closed', async () => {
+  const f = await completionFixture();
+  let reopened: IsolatedService | undefined;
+  try {
+    const pending = await f.call('feature.complete', f.input);
+    const job = f.store.get<any>('loop_verifications', pending.verificationId);
+    f.store.put('loop_verifications', { ...job, status: 'passed', finishedAt: new Date().toISOString() });
+    f.store.put('runs', { ...f.run, status: 'completed' });
+    await f.close();
+    reopened = await f.restart({ nativeTransport: new FakeReviewer() });
+    reopened.engine.loop.verification.tick();
+    assert.equal(reopened.store.get<any>('items', f.item.id).status, 'resolved');
+    assert.equal(reopened.store.get<any>('strategy_decisions', f.decision.id).status, 'reviewed');
+    assert(reopened.store.all<any>('loop_finalizations').every((row) => row.status === 'applied'));
+    const revision = reopened.store.get<any>('items', f.item.id).revision;
+    reopened.engine.loop.verification.tick();
+    assert.equal(reopened.store.get<any>('items', f.item.id).revision, revision);
+  } finally {
+    await reopened?.close();
+    await f.cleanup();
+  }
+});

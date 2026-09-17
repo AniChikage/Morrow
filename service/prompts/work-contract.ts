@@ -56,6 +56,12 @@ strategy.decisions 同时包含此状态。仅为规则核对，不代表独立�
 排序不是可信度，先 memory.read 核对全文和条件，再用 decision.choose.memoryRefs 记录适用性。只读，无需 requestId。`,
     'memory.read': `\
 {kind:understanding|decision|learning,id,beforeRevision?}；读取完整记录及分页版本历史。只读，无需 requestId。`,
+    'feature.complete': `\
+{id,revision,status?:verified|resolved(默认resolved),summary,nextStep,evidenceIds:[],review?:decision.review的完整输入}；\
+明确修复完成后优先一次调用此入口，无需另建实验或先请求复核。已有本频道当前行动时必须附上同一事项的review，\
+保留原预期逐项核对；没有当前行动时省略review。框架原子保存复盘与事项完成意图，共用一次独立复核，通过后自动\
+应用，无需再开一轮关卡。失败、未知、新证据、源码变化或人工修改不能自动签收。回执pendingVerification不是完成；\
+读取context.finalizations核对结果。此操作不批准发布，也不证明业务收益。`,
     'feature.upsert': `\
 {id?, revision?(更新必需), title, summary, kind:feature|issue|opportunity|hypothesis, \
 status:open|investigating|verified|resolved|blocked, evidenceIds:[], nextStep}；同一 feature 沿用 ID，\
@@ -143,7 +149,8 @@ artifactSha256,status:"published"|"failed",...} 才认定结果，非零退出�
 主动选择服务目标的工作，必要时先建立反馈。证据、解释和预期收益分开；效果未知时保留未知。\
 人只在发布前批准已准备好的明确版本，AI 没有批准接口。所有频道共享此处记录；失败尝试应更新判断，避免机械重复。\
 先读 strategy 的认识、选择与复查信号，具体工作方法由你判断；工程与运营只是可能方向。评估直接改进、获取信息、\
-建设能力、观察或停止的价值，用 decision.choose 记录依据、验证与止损条件再推进；reviewReasons 出现时先复盘。\
+建设能力、观察或停止的价值。明确修复用 feature.complete 一次提交证据与完成意图；探索或效果实验才用\
+decision.choose 记录依据、验证与止损条件；已有reviewReasons时保留复盘要求，完成时可随feature.complete提交。\
 复盘保留原预期，结果未知时可以继续观察。需要历史经验时使用 memory.search/read；失效认识只能作为历史教训。\
 不要通过增加事项、文档或技能数量证明进展。`,
 };

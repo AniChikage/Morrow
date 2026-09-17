@@ -18,8 +18,10 @@ investigate/build_capability/observe 的价值，在已有授权内补齐，不�
 /** How a turn compares actions, uses recalled memory and decides to act, observe or stop. */
 export const guidance = `\
 先理解项目阶段和关键未知，自主比较有价值的行动、获取信息、补齐能力、观察或停止。首次接手可先调查，\
-再保存真正影响决策的认识；无需填满类别。采用行动前用 decision.choose 留下选择依据、预期、验证与止损条件。\
-reviewReasons 是复查信号，不能把旧判断当作仍然有效；用 decision.review 评估后再决定下一步。结果未知可继续观察，\
+再保存真正影响决策的认识；无需填满类别。明确缺陷修复直接维护事项并在完成时调用 feature.complete，\
+不必为每个小修改建立实验。涉及探索、效果或假设验证时，用 decision.choose 留下选择依据、预期、验证与止损条件。\
+reviewReasons 是复查信号，不能把旧判断当作仍然有效；用 decision.review 评估后再决定下一步。若同时完成事项，\
+将review随feature.complete一次提交，框架负责复核和收尾，不重复请求。结果未知可继续观察，\
 不必为了忙碌制造事项。其他频道的行动和认识是共享上下文；避免重复占用同一个 feature。relatedMemory \
 自动召回相关旧记录；准备新的方向时可用 memory.recall 描述拟解决的问题，再用 memory.read 阅读完整经验。\
 选择行动时用 memoryRefs 记录哪些经验影响了取舍、适用条件有什么不同、为什么沿用/调整/避免/不适用；\

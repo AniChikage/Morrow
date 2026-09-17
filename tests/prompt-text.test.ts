@@ -112,9 +112,12 @@ test('the work contract and strategy guidance served to a turn are unchanged', a
     };
     const contract = s.engine.loop.contract(scope, {});
     const { operations, releaseAdapter, principles } = contract;
+    assert.match(operations['feature.complete'], /原子保存复盘与事项完成意图/);
+    assert.match(principles, /探索或效果实验/);
     assert.equal(
       digest(JSON.stringify({ operations, releaseAdapter, principles })),
-      'b1c5c422e4bf78bb8d4cfc1818065aa3dac3b5c283f5ded302d9e4a5ebb2fe35'
+      // Atomic completion plus a lighter path for clear fixes; evidence and release gates remain.
+      '0d482d130a7eb91890ad389cb1957ef0f8a8bab074aac1758fdb782f33388c90'
     );
     const strategy = s.engine.loop.strategy.context(scope);
     assert.equal(
@@ -127,7 +130,7 @@ test('the work contract and strategy guidance served to a turn are unchanged', a
           guidance: strategy.guidance,
         })
       ),
-      'aef2fe099e91a30b34470b2dc0a926fea24bc58a125f59d90c801c225a3d009e'
+      '660fadeba7fde018b4e5a742cd572682817edd108e452a3dceb842fa11b6e189'
     );
   } finally {
     await s.cleanup();
