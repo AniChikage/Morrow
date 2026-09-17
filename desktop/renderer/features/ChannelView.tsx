@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Hash, MoreHorizontal, Play } from 'lucide-react';
+import { Hash, MoreHorizontal, Pause, Play } from 'lucide-react';
 import type {
   Channel,
   NativeConversation,
@@ -449,6 +449,7 @@ export function ChannelView(props: FeatureProps & { id: string }) {
   const paused =
     channel.autonomyEnabled === undefined ? ['paused', 'blocked'].includes(channel.status) : !channel.autonomyEnabled;
   const running = channel.status === 'running';
+  const manualRunning = running && paused;
   /** When the note was picked up: the earliest loaded turn of this channel that started after it. */
   const noteReadAt = (createdAt: string) =>
     runs
@@ -542,8 +543,9 @@ export function ChannelView(props: FeatureProps & { id: string }) {
     appRequests.length > 0 ||
     !!usageGate;
   const needsLink = native && !!conversation && !conversation.threadId;
-  const primary =
-    native && !conversation && !nativeError
+  const primary = manualRunning
+    ? 'pause'
+    : native && !conversation && !nativeError
       ? 'loading'
       : needsLink
         ? 'link'
@@ -597,6 +599,15 @@ export function ChannelView(props: FeatureProps & { id: string }) {
                 {unloaded ? '在 Codex App 中打开' : '在 Codex App 中打开对话'}
               </Button>
             )}
+            {primary === 'pause' && (
+              <Button
+                variant="primary"
+                disabled={busy || demo}
+                onClick={() => void onMutate(() => api.channelAction(id, 'pause'))}
+              >
+                <Pause size={13} /> 暂停
+              </Button>
+            )}
             {primary === 'resume' && (
               <Button
                 variant="primary"
@@ -624,7 +635,7 @@ export function ChannelView(props: FeatureProps & { id: string }) {
               {/* Two neighbouring entries read as the same thing; this one only reads the current state back. */}
               <DropdownItem onSelect={() => setSettingsOpen((value) => !value)}>当前方向与额度</DropdownItem>
               <DropdownItem onSelect={() => onNavigate({ kind: 'project', id: project.id })}>项目看板</DropdownItem>
-              {primary !== 'resume' && (
+              {primary !== 'resume' && primary !== 'pause' && (
                 <DropdownItem
                   disabled={busy || demo || (paused && (switching || (native && (!ready(conversation) || nativeBusy))))}
                   onSelect={() => void onMutate(() => api.channelAction(id, paused ? 'resume' : 'pause'))}
@@ -681,22 +692,24 @@ export function ChannelView(props: FeatureProps & { id: string }) {
         )}
         <p className="channel-stage-hint" role={nativeProblem ? 'alert' : undefined}>
           {channel.work?.focus && <strong>{channel.work.focus} · </strong>}
-          {nativeProblem ||
-            (unloaded
-              ? '任务未在 Codex App 中打开。请先打开已关联任务，继续和回答暂不可用。'
-              : needsLink
-                ? '先关联在 Codex App 创建的任务。'
-                : primary === 'open'
-                  ? '请先在 Codex App 恢复连接。'
-                  : channel.work?.awaitingReply
-                    ? '请先回答下方问题。'
-                    : pendingReleases.length
-                      ? '有待批准版本，请先查看变更与风险。'
-                      : blocked.length
-                        ? '有事项受阻，请查看下一步。'
-                        : paused
-                          ? '准备好后继续工作。'
-                          : '最新进展在下方，更多信息按需展开。')}
+          {manualRunning
+            ? '本轮进行中，结束后频道保持暂停。'
+            : nativeProblem ||
+              (unloaded
+                ? '任务未在 Codex App 中打开。请先打开已关联任务，继续和回答暂不可用。'
+                : needsLink
+                  ? '先关联在 Codex App 创建的任务。'
+                  : primary === 'open'
+                    ? '请先在 Codex App 恢复连接。'
+                    : channel.work?.awaitingReply
+                      ? '请先回答下方问题。'
+                      : pendingReleases.length
+                        ? '有待批准版本，请先查看变更与风险。'
+                        : blocked.length
+                          ? '有事项受阻，请查看下一步。'
+                          : paused
+                            ? '准备好后继续工作。'
+                            : '最新进展在下方，更多信息按需展开。')}
         </p>
         {needsLink && (
           <details

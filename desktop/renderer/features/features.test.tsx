@@ -184,6 +184,28 @@ describe('channel control and history', () => {
     expect(api.channelAction).toHaveBeenCalledTimes(2);
   });
 
+  it('pauses a manual running turn without offering to resume its disabled autonomy', async () => {
+    const user = userEvent.setup();
+    const state = cliChannelState();
+    state.channels[0].status = 'running';
+    state.channels[0].autonomyEnabled = false;
+    const { props, api } = featureProps({ snapshot: state });
+    const view = render(<ChannelView {...props} id="channel-system" />, { wrapper: TestProviders });
+    expect(screen.getByText('本轮进行中，结束后频道保持暂停。')).toBeTruthy();
+    expect(screen.queryByText('准备好后继续工作。')).toBeNull();
+    expect(screen.queryByRole('button', { name: '继续工作' })).toBeNull();
+    await user.click(screen.getByRole('button', { name: '频道选项' }));
+    expect(screen.queryByRole('menuitem', { name: '继续工作' })).toBeNull();
+    expect(screen.queryByRole('menuitem', { name: '暂停' })).toBeNull();
+    await user.keyboard('{Escape}');
+    await user.click(screen.getByRole('button', { name: '暂停' }));
+    expect(api.channelAction).toHaveBeenCalledExactlyOnceWith('channel-system', 'pause');
+    const finished = { ...state, channels: state.channels.map((c) => ({ ...c, status: 'paused' })) };
+    view.rerender(<ChannelView {...props} snapshot={finished} id="channel-system" />);
+    expect(screen.getByText('准备好后继续工作。')).toBeTruthy();
+    expect(screen.getByRole('button', { name: '继续工作' })).toBeTruthy();
+  });
+
   it('leaves a note for the next CLI turn and says which notes a turn has already read', async () => {
     const user = userEvent.setup();
     const state = cliChannelState();
