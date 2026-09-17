@@ -453,17 +453,19 @@ test('a native legacy needsHuman report cannot disable a registered release wait
 test('start prepares one task, native decisions drive follow-up and user guidance resumes the same work', async () => {
   const s = await setup();
   try {
-    let creates = 0;
-    Object.assign(s.transport, {
-      backgroundReady: true,
-      createThread: async () => {
-        creates++;
-        s.transport.emit({ turns: [] });
-        return s.transport.readThread(s.transport.threadId);
-      },
-    });
+    const opened: string[] = [];
+    let listed: Array<{ id: string; title: string; cwd: string; updatedAt: number }> = [];
+    s.transport.listThreads = async (cwd: string) =>
+      realpathSync(cwd) === realpathSync(s.path) ? listed.map((row) => ({ ...row, cwd })) : [];
+    s.native.openAppLink = async (url) => {
+      opened.push(url);
+      listed = [{ id: s.transport.threadId, title: '原生任务', cwd: s.project.path, updatedAt: Date.now() }];
+    };
+    s.native.ensureTimeoutMs = 400;
+    s.native.ensurePollMs = 10;
     await Promise.all([s.engine.action(s.channel.id, 'resume'), s.engine.action(s.channel.id, 'resume')]);
-    assert.equal(creates, 1);
+    assert.equal(opened.length, 1);
+    assert.match(opened[0], /^codex:\/\/threads\/new\?/);
     assert.equal(s.transport.sent.length, 1);
     assert.match(s.transport.sent[0].text, /先核对最新指导、事实、进展和未知，再选择有价值的行动/);
     assert.equal(s.engine.control(s.channel.id).enabled, true);
@@ -490,7 +492,7 @@ test('start prepares one task, native decisions drive follow-up and user guidanc
     const guided = s.store.all<any>('events').filter((event) => event.action === 'channel.guided').length;
     await s.native.send(s.channel.id, '先修登录，保留现有布局', requestId);
     assert.equal(s.store.all<any>('events').filter((event) => event.action === 'channel.guided').length, guided);
-    assert.equal(creates, 1);
+    assert.equal(opened.length, 1);
     assert.equal(
       (await s.native.conversation(s.channel.id, {})).items.filter((item) => item.autonomousContext).length,
       2

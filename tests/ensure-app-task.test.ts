@@ -20,7 +20,7 @@ class EnsureTransport implements NativeTransport {
     ownerClientId: 'app-owner',
     revision: 1,
     syncedAt: new Date().toISOString(),
-    state: { turns: [], requests: [] },
+    state: { turns: [], requests: [], currentPermissions: { sandboxPolicy: { type: 'readOnly' } } },
   };
   async connect() {}
   status() {
@@ -182,6 +182,51 @@ test('CLI-direct channels still 409 on /native/ensure', async () => {
     );
     const failed = await s.api('POST', `/api/channels/${cli.id}/native/ensure`, {}, 409);
     assert.match(failed.error, /直连 Codex CLI/);
+    assert.equal(s.opened.length, 0);
+    assert.equal(s.engine.native?.binding(cli.id), undefined);
+  } finally {
+    await s.cleanup();
+  }
+});
+
+test('Engine.start on an unbound App channel deep-links via ensureAppTask instead of createThread', async () => {
+  const s = await setup();
+  try {
+    assert.equal(s.native.transport.createThread, undefined);
+    let listed: Array<{ id: string; title: string; cwd: string; updatedAt: number }> = [];
+    s.transport.listThreads = async (cwd: string) =>
+      realpathSync(cwd) === realpathSync(s.project.path) ? listed.map((row) => ({ ...row, cwd })) : [];
+    s.native.openAppLink = async (url) => {
+      s.opened.push(url);
+      listed = [{ id: s.transport.threadId, title: '新任务', cwd: s.project.path, updatedAt: Date.now() }];
+      s.transport.ownerReady = true;
+    };
+    await s.api('POST', `/api/channels/${s.channel.id}/action`, { action: 'run' });
+    assert.equal(s.store.get<any>('native_bindings', s.channel.id).threadId, s.transport.threadId);
+    assert.equal(s.opened.length, 1);
+    assert.match(s.opened[0], /^codex:\/\/threads\/new\?/);
+    assert.equal(s.opened[0], codexAppLink({ projectPath: s.project.path }));
+    // Engine leaves the seed sentence off this path; the scheduled charter is the first user turn.
+    assert.equal(s.transport.sent.includes(ensureAppTaskFirstTurn), false);
+    assert.ok(s.transport.sent.length >= 1);
+    const actions = s.store.all<any>('events').map((event) => event.action);
+    assert(actions.includes('native.ensure-requested'));
+    assert(actions.includes('native.bound'));
+  } finally {
+    await s.cleanup();
+  }
+});
+
+test('Engine.start still skips App ensure for a CLI-direct channel', async () => {
+  const s = await setup();
+  try {
+    const cli = await s.api(
+      'POST',
+      '/api/channels',
+      { projectId: s.project.id, name: 'CLI 直连', goal: '不走 App', runtime: 'codex', transport: 'cli' },
+      201
+    );
+    await s.api('POST', `/api/channels/${cli.id}/action`, { action: 'run' });
     assert.equal(s.opened.length, 0);
     assert.equal(s.engine.native?.binding(cli.id), undefined);
   } finally {

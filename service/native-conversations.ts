@@ -619,6 +619,9 @@ export class NativeConversations {
   get backgroundReady() {
     return !!this.transport.backgroundReady;
   }
+  get canEnsureAppTask() {
+    return !!this.openAppLink;
+  }
   binding(id: string) {
     return this.store.get<Binding>('native_bindings', id);
   }
@@ -1060,8 +1063,7 @@ export class NativeConversations {
   }
   /**
    * Shared-background create. Follower IPC has no `createThread`, so production `capabilities.create`
-   * stays false and this 409s. App channels should call `ensureAppTask` instead. Engine.start /
-   * performAction still call `create`; the parent wires those to `ensureAppTask` in a later phase.
+   * stays false and this 409s. App channels and Engine.start / `send()` use `ensureAppTask` instead.
    */
   async create(id: string): Promise<NativeConversation> {
     if (this.creating.has(id)) return this.creating.get(id)!;
@@ -1203,12 +1205,14 @@ export class NativeConversations {
   }
   /**
    * Prepare an App task without follower `thread/start`: deep-link the App, poll SQLite catalog,
-   * bind, wait until an owner is ready, then send the first user turn so an empty task persists.
-   * Timeouts fail; they never return an unbound or owner-less conversation.
+   * bind, wait until an owner is ready, then optionally send the first user turn so an empty task
+   * persists. Timeouts fail; they never return an unbound or owner-less conversation.
+   * `seedFirstTurn` defaults on for the HTTP/UI entry. Engine.start turns it off because the
+   * scheduled charter is that first turn.
    */
-  async ensureAppTask(id: string): Promise<NativeConversation> {
+  async ensureAppTask(id: string, options?: { seedFirstTurn?: boolean }): Promise<NativeConversation> {
     if (this.ensuring.has(id)) return this.ensuring.get(id)!;
-    const operation = this.ensureAppTaskNow(id);
+    const operation = this.ensureAppTaskNow(id, options?.seedFirstTurn !== false);
     this.ensuring.set(id, operation);
     try {
       return await operation;
@@ -1216,7 +1220,7 @@ export class NativeConversations {
       this.ensuring.delete(id);
     }
   }
-  private async ensureAppTaskNow(id: string): Promise<NativeConversation> {
+  private async ensureAppTaskNow(id: string, seedFirstTurn: boolean): Promise<NativeConversation> {
     const { channel, project } = this.channel(id);
     if (!usesApp(channel)) throw new APIError(409, '该频道直连 Codex CLI，不使用 Codex App 任务');
     if (
@@ -1275,7 +1279,8 @@ export class NativeConversations {
         ? new APIError(409, '任务仍未在 Codex App 中打开（no-client-found）。请确认 App 已打开该任务后重试。')
         : error;
     }
-    if (!this.snapshotHasUserTurn(snapshot)) await this.send(id, ensureAppTaskFirstTurn, `ensure-${threadId}`, 'chat');
+    if (seedFirstTurn && !this.snapshotHasUserTurn(snapshot))
+      await this.send(id, ensureAppTaskFirstTurn, `ensure-${threadId}`, 'chat');
     return this.conversation(id, {});
   }
   private async listedProjectThreads(cwd: string) {
@@ -1412,7 +1417,7 @@ export class NativeConversations {
     attachments: Array<{ id: string }> = []
   ): Promise<NativeMessageReceipt> {
     const { project, channel } = this.channel(id);
-    if (!this.binding(id)) await this.create(id);
+    if (!this.binding(id)) await this.ensureAppTask(id);
     const binding = this.bound(id);
     const key = `${id}:${requestId}`;
     const workOptions: NativeWorkOptions | undefined =

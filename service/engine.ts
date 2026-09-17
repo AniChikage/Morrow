@@ -59,7 +59,9 @@ type Active = {
 export class Engine {
   native?: {
     readonly backgroundReady?: boolean;
-    create?(id: string): Promise<unknown>;
+    /** Isolated tests set a fake `openAppLink`; production always has the Mac `open` helper. */
+    readonly canEnsureAppTask?: boolean;
+    ensureAppTask?(id: string, options?: { seedFirstTurn?: boolean }): Promise<unknown>;
     binding(id: string): { threadId: string } | undefined;
     isBusy(id: string): boolean;
     isProjectBusy(projectId: string, exceptId?: string): boolean;
@@ -434,16 +436,18 @@ export class Engine {
     const p = this.store.get<Project>('projects', c.projectId);
     if (p?.isDemo) throw new APIError(409, '示例频道仅用于预览，请创建真实项目后运行');
     if (this.active.has(id) || this.native?.isBusy(id)) throw new APIError(409, '该频道正在执行');
-    // Only a channel whose turns run inside the App needs a task bound to it. A CLI-direct Codex
-    // channel has no App task to create and must not be given one: it starts its own subprocess
-    // below, exactly as a Claude Code or Trae channel does.
+    // Only a channel whose turns run inside the App needs a task prepared. A CLI-direct Codex
+    // channel has no App task and must not be given one: it starts its own subprocess below,
+    // exactly as a Claude Code or Trae channel does. Follower IPC cannot `createThread` (409);
+    // `ensureAppTask` deep-links instead. The scheduled charter is the first user turn so this
+    // start is not blocked by a seed reply still running in the App.
     if (
       usesApp(c) &&
       !this.native?.binding(id) &&
-      (process.env.MORROW_TEST_MODE !== '1' || this.native?.backgroundReady)
+      (process.env.MORROW_TEST_MODE !== '1' || this.native?.canEnsureAppTask)
     ) {
-      if (!this.native?.create) throw new APIError(409, 'Codex 后台连接尚未准备好');
-      await this.native.create(id);
+      if (!this.native?.ensureAppTask) throw new APIError(409, '无法准备 Codex App 任务');
+      await this.native.ensureAppTask(id, { seedFirstTurn: false });
     }
     if (action !== 'pause' && (this.activationVersions.get(id) || 0) !== activationVersion) return;
     if (action === 'resume') {
