@@ -1178,6 +1178,80 @@ test('what a tool read in the workspace never becomes the reason a failed turn i
     await s.cleanup();
   }
 });
+test('what the model wrote about its own work never becomes the reason a failed turn is reported', async () => {
+  const s = await setup();
+  try {
+    const channel = await s.api(
+      'POST',
+      '/api/channels',
+      { projectId: s.project.id, name: 'Claude 自述轮次', goal: '检查模型文字不参与归因', runtime: 'claude' },
+      201
+    );
+    const failures = () => s.store.all<any>('runs').filter((r) => r.channelId === channel.id && r.status === 'failed');
+    // A background task is named by the model, so its notices are tool input in all but shape.
+    s.config({
+      failAfterEvents: true,
+      events: [
+        {
+          type: 'system',
+          subtype: 'task_started',
+          task_id: 'bg-1',
+          tool_use_id: 'toolu_1',
+          description: 'Run the 429 regression test',
+          task_type: 'local_bash',
+        },
+        {
+          type: 'system',
+          subtype: 'task_notification',
+          task_id: 'bg-1',
+          tool_use_id: 'toolu_1',
+          status: 'completed',
+          summary: 'Run the 429 regression test',
+        },
+        // The runtime's own statement, and one that ranks below a quota failure: reading the task
+        // notices would outrank and hide it.
+        { type: 'result', is_error: true, result: 'ECONNREFUSED while contacting the model service' },
+      ],
+    });
+    await s.api('POST', `/api/channels/${channel.id}/action`, { action: 'run' });
+    await until(() => failures().length === 1);
+    const background = failures()[0];
+    assert(background.summary.includes('无法连接模型服务'), background.summary);
+    assert(!background.summary.includes('配额不足或触发速率限制'), background.summary);
+    // Both notices are still readable lines in the work log.
+    const page = await s.api('GET', `/api/events?channelId=${channel.id}&runId=${background.id}`);
+    assert(page.events.some((e: any) => e.text === '后台任务已开始 · Run the 429 regression test'));
+    assert(page.events.some((e: any) => e.text === '后台任务已完成 · Run the 429 regression test'));
+    // A turn's own answer is not a failure report either, and turns in this project discuss quota,
+    // rate limits and test counts routinely. The exit code is what actually failed this one.
+    s.config({
+      failAfterEvents: true,
+      events: [
+        {
+          type: 'result',
+          is_error: false,
+          result: '本轮读完了配额相关代码：429 tests passed，rate limit 分支没有问题。',
+        },
+      ],
+    });
+    await s.api('POST', `/api/channels/${channel.id}/action`, { action: 'run' });
+    await until(() => failures().length === 2);
+    const answered = failures().find((r) => r.id !== background.id)!;
+    assert(answered.summary.includes('CLI 执行失败（退出码 2）'), answered.summary);
+    assert(!answered.summary.includes('配额不足或触发速率限制'), answered.summary);
+    // The same line marked as the turn's failure is the runtime speaking, and still diagnosed.
+    s.config({
+      failAfterEvents: true,
+      events: [{ type: 'result', is_error: true, result: 'usage limit reached; your credit balance is too low' }],
+    });
+    await s.api('POST', `/api/channels/${channel.id}/action`, { action: 'run' });
+    await until(() => failures().length === 3);
+    const quota = failures().find((r) => ![background.id, answered.id].includes(r.id))!;
+    assert(quota.summary.includes('配额不足或触发速率限制'), quota.summary);
+  } finally {
+    await s.cleanup();
+  }
+});
 test('streamed Codex tool items persist details, matched names and sanitized output', async () => {
   const s = await setup();
   try {

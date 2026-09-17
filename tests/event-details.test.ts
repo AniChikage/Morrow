@@ -222,6 +222,9 @@ test('Claude background task notices read as the task starting and ending, never
     })
   );
   assert.equal(started.skip, undefined, '后台任务事件有信息量，不属于被跳过的进度噪声');
+  // Shown like any other event, but marked: the wording is the model's own name for the task, so
+  // `service/engine.ts` keeps it out of the failure diagnosis.
+  assert.equal(started.backgroundTask, true);
   assert.equal(started.kind, 'system');
   assert.equal(started.sessionId, '42c9');
   assert.equal(started.detail, undefined);
@@ -240,6 +243,7 @@ test('Claude background task notices read as the task starting and ending, never
     })
   );
   assert.equal(finished.skip, undefined);
+  assert.equal(finished.backgroundTask, true);
   assert.equal(finished.kind, 'system');
   assert.equal(finished.sessionId, '42c9');
   assert.equal(finished.text, '后台任务已完成 · Run UI test suite with one worker');

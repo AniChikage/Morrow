@@ -681,7 +681,13 @@ export class Engine {
         [decoded.detail, ...(decoded.additionalDetails || [])].some(
           (detail) => detail?.type === 'tool_use' || detail?.type === 'tool_result'
         );
-      if (!carriesWorkspaceContent) diagnose(text);
+      // Text the model wrote is no better a witness: the name it gave a background task is tool
+      // input in all but shape, and the answer of a turn that did not fail is not a failure report
+      // at all — turns in this project discuss quota, rate limits and test counts routinely. `kind`
+      // is `result` only where `is_error` was false; a failed result decodes to `error` and keeps
+      // its diagnosis, which is where a real account failure is stated.
+      const modelAuthored = decoded.kind === 'result' || !!decoded.backgroundTask;
+      if (!carriesWorkspaceContent && !modelAuthored) diagnose(text);
       if (decoded.sessionId && /^[a-zA-Z0-9_-]{1,200}$/.test(decoded.sessionId)) {
         run.sessionId = decoded.sessionId;
         this.store.put('runs', run);

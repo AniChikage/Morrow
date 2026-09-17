@@ -232,6 +232,12 @@ export function decodeLine(line: string): {
    * to the raw log: no event, no failure diagnosis and no session id are taken from it.
    */
   skip?: true;
+  /**
+   * A background task announcing itself. The wording is the name the model gave the task, which is
+   * tool input in all but shape, so the caller keeps the line out of failure diagnosis the way it
+   * keeps a tool line out. The event itself is shown like any other.
+   */
+  backgroundTask?: true;
 } {
   let data: any;
   try {
@@ -294,7 +300,7 @@ export function decodeLine(line: string): {
             ? `后台任务已结束（${status}）`
             : '后台任务已结束';
     const what = phrase(started ? data.description : data.summary);
-    return { kind: 'system', text: what ? `${head} · ${what}` : head, sessionId };
+    return { kind: 'system', text: what ? `${head} · ${what}` : head, sessionId, backgroundTask: true };
   }
   // Claude Code's terminal line for the whole turn: the answer text, and structured output when a
   // schema was in force. `is_error` is the turn's own verdict, not a single failed tool call.
