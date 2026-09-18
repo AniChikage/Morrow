@@ -22,13 +22,14 @@ import { logError } from './log.ts';
  * A development checkout has no bundle and an `unknown` fingerprint; it keeps spawning from the
  * source tree, so an edit takes effect on the next turn exactly as it does today.
  *
- * Both helpers the daemon starts are pinned here: `agent-cli.ts`, the work interface a turn calls
- * several times, and `codex-cli-worker.ts`, the supervisor `service/codex-cli-review.ts` starts once
- * per independent review and whose IPC contract with that module must match the daemon that is
- * running — see `docs/UPGRADING.md`. Each of them imports only `node:` builtins, so a single-file
- * copy runs on its own.
+ * The helpers the daemon starts are pinned here: `agent-cli.ts`, the work interface a turn calls
+ * several times; `agent-mcp.ts`, the host stdio MCP that wraps that same `tool.sh` for CLI turns;
+ * and `codex-cli-worker.ts`, the supervisor `service/codex-cli-review.ts` starts once per independent
+ * review and whose IPC contract with that module must match the daemon that is running — see
+ * `docs/UPGRADING.md`. Each of them imports only `node:` builtins, so a single-file copy runs on its
+ * own.
  */
-export const helperNames = ['agent-cli.ts', 'codex-cli-worker.ts'] as const;
+export const helperNames = ['agent-cli.ts', 'agent-mcp.ts', 'codex-cli-worker.ts'] as const;
 export type HelperName = (typeof helperNames)[number];
 export type Helpers = Record<HelperName, string>;
 

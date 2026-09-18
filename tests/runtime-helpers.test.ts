@@ -18,6 +18,7 @@ import { grantFor } from './harness/grant.ts';
  * and the copy is never refreshed under a daemon that is already running.
  */
 const source = fileURLToPath(new URL('../service/agent-cli.ts', import.meta.url));
+const mcpSource = fileURLToPath(new URL('../service/agent-mcp.ts', import.meta.url));
 const workerSource = fileURLToPath(new URL('../service/codex-cli-worker.ts', import.meta.url));
 const fingerprint = 'a'.repeat(64);
 const identity = (value = fingerprint, bundlePath = '/Applications/Morrow.app'): BuildIdentity => ({
@@ -35,8 +36,10 @@ test('an installed build spawns both helpers from its own copies, not from the b
     assert.equal(s.engine.loop.helpers['agent-cli.ts'], pinned);
     assert.deepEqual(readFileSync(pinned), readFileSync(source));
     assert.equal(statSync(pinned).mode & 0o777, 0o600);
-    // The review supervisor is pinned the same way, so an install cannot change the IPC contract
-    // under a review this daemon started.
+    const pinnedMcp = join(helperDirectory(s.home, fingerprint), 'agent-mcp.ts');
+    assert.equal(s.engine.loop.helpers['agent-mcp.ts'], pinnedMcp);
+    assert.deepEqual(readFileSync(pinnedMcp), readFileSync(mcpSource));
+    assert.equal(statSync(pinnedMcp).mode & 0o777, 0o600);
     const pinnedWorker = join(helperDirectory(s.home, fingerprint), 'codex-cli-worker.ts');
     assert.equal(s.engine.loop.helpers['codex-cli-worker.ts'], pinnedWorker);
     assert.deepEqual(readFileSync(pinnedWorker), readFileSync(workerSource));
@@ -55,6 +58,7 @@ test('a development checkout keeps spawning the helpers from the source tree', a
   const s = await startIsolated({ identity: identity('unknown', '') });
   try {
     assert.equal(s.engine.loop.helpers['agent-cli.ts'], source);
+    assert.equal(s.engine.loop.helpers['agent-mcp.ts'], mcpSource);
     assert.equal(s.engine.loop.helpers['codex-cli-worker.ts'], workerSource);
     assert.equal(existsSync(join(s.home, 'runtime')), false);
     const grant = grantFor(s, { projectId: s.project.id, channelId: s.channel.id });
@@ -69,12 +73,14 @@ test('a copy already in place survives a new install, and other builds are prune
   const s = await startIsolated({ identity: identity(), project: false });
   try {
     const pinned = join(helperDirectory(s.home, fingerprint), 'agent-cli.ts');
+    const pinnedMcp = join(helperDirectory(s.home, fingerprint), 'agent-mcp.ts');
     const pinnedWorker = join(helperDirectory(s.home, fingerprint), 'codex-cli-worker.ts');
     // Stand in for the helper of the build that was running when a new bundle was installed: a
     // second resolution must keep it rather than copy the newly installed source over it.
     writeFileSync(pinned, '// the running build\n');
     assert.deepEqual(pinHelpers(s.home, fingerprint), {
       'agent-cli.ts': pinned,
+      'agent-mcp.ts': pinnedMcp,
       'codex-cli-worker.ts': pinnedWorker,
     });
     assert.equal(readFileSync(pinned, 'utf8'), '// the running build\n');
