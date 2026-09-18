@@ -123,7 +123,7 @@ test('Codex reports the live App connection and bundle version separately from t
   await userEvent.setup().click(row);
   const details = within(screen.getByRole('region', { name: 'Codex 详情' }));
   expect(details.getByText('已连接 Codex App 已加载的任务。')).toBeTruthy();
-  expect(details.getByText(/App 运行后由 Morrow 准备同一条任务/)).toBeTruthy();
+  expect(details.getByText(/绑定 Codex App 的同一条任务/)).toBeTruthy();
   expect(details.getByText('app-server/7')).toBeTruthy();
   expect(details.getByText(installed.version)).toBeTruthy();
   expect(details.getByText(installed.path)).toBeTruthy();
@@ -205,7 +205,7 @@ test('a CLI-direct Codex channel is never a task target and brings back the CLI 
   expect(step('任务已关联')).toBe('next');
   expect(screen.queryByRole('button', { name: '去关联任务' })).toBeNull();
   expect(screen.getByText('还没有走 App 任务的 Codex 频道；直连 Codex CLI 的频道不需要关联任务。')).toBeTruthy();
-  expect(screen.getByText('新建频道时把「执行方式」选为「Codex App 任务」，才需要在这里准备任务。')).toBeTruthy();
+  expect(screen.getByText('新建频道时把「执行方式」选为「Codex App 任务」，才需要在这里关联。')).toBeTruthy();
   // What a CLI-direct channel needs is on this Mac, so the row says where the binary is and how to
   // log in — the half the App normally answers for.
   await userEvent.setup().click(screen.getByRole('button', { name: 'Codex，App 已连接，查看详情' }));
@@ -223,7 +223,7 @@ test('associated tasks must actually be available before the checklist says read
   expect(step('任务未在 Codex App 中打开')).toBe('next');
   expect(nextStep().textContent).toContain('在 Codex App 打开已关联任务');
   await userEvent.setup().click(screen.getByRole('button', { name: '在 Codex App 中打开' }));
-  expect(api.ensureAppTask).toHaveBeenCalledWith('channel-system');
+  expect(api.openNativeApp).toHaveBeenCalledWith('channel-system');
   view.unmount();
   api.getNativeStatus.mockResolvedValue(status({ connected: true, boundThreadCount: 1, readyThreadCount: 1 }));
   render(<RuntimesView {...props} />);
@@ -533,5 +533,5 @@ test('opening the associated task offers nothing rather than another project tas
   props.snapshot.channels[0].sessionId = 'atlas-task';
   render(<RuntimesView {...props} projectId="project-atlas" />);
   await userEvent.setup().click(await screen.findByRole('button', { name: '在 Codex App 中打开' }));
-  expect(api.ensureAppTask).toHaveBeenCalledWith('channel-system');
+  expect(api.openNativeApp).toHaveBeenCalledWith('channel-system');
 });

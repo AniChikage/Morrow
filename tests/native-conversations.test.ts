@@ -453,19 +453,17 @@ test('a native legacy needsHuman report cannot disable a registered release wait
 test('start prepares one task, native decisions drive follow-up and user guidance resumes the same work', async () => {
   const s = await setup();
   try {
-    const opened: string[] = [];
-    let listed: Array<{ id: string; title: string; cwd: string; updatedAt: number }> = [];
-    s.transport.listThreads = async (cwd: string) =>
-      realpathSync(cwd) === realpathSync(s.path) ? listed.map((row) => ({ ...row, cwd })) : [];
-    s.native.openAppLink = async (url) => {
-      opened.push(url);
-      listed = [{ id: s.transport.threadId, title: '原生任务', cwd: s.project.path, updatedAt: Date.now() }];
-    };
-    s.native.ensureTimeoutMs = 400;
-    s.native.ensurePollMs = 10;
+    let creates = 0;
+    Object.assign(s.transport, {
+      backgroundReady: true,
+      createThread: async () => {
+        creates++;
+        s.transport.emit({ turns: [] });
+        return s.transport.readThread(s.transport.threadId);
+      },
+    });
     await Promise.all([s.engine.action(s.channel.id, 'resume'), s.engine.action(s.channel.id, 'resume')]);
-    assert.equal(opened.length, 1);
-    assert.match(opened[0], /^codex:\/\/threads\/new\?/);
+    assert.equal(creates, 1);
     assert.equal(s.transport.sent.length, 1);
     assert.match(s.transport.sent[0].text, /先核对最新指导、事实、进展和未知，再选择有价值的行动/);
     assert.equal(s.engine.control(s.channel.id).enabled, true);
@@ -492,7 +490,7 @@ test('start prepares one task, native decisions drive follow-up and user guidanc
     const guided = s.store.all<any>('events').filter((event) => event.action === 'channel.guided').length;
     await s.native.send(s.channel.id, '先修登录，保留现有布局', requestId);
     assert.equal(s.store.all<any>('events').filter((event) => event.action === 'channel.guided').length, guided);
-    assert.equal(opened.length, 1);
+    assert.equal(creates, 1);
     assert.equal(
       (await s.native.conversation(s.channel.id, {})).items.filter((item) => item.autonomousContext).length,
       2
@@ -591,6 +589,31 @@ test('an obsolete direction never installs the old next step', async () => {
     assert.equal(s.store.get<any>('channels', s.channel.id).work, undefined);
     assert.equal(s.engine.control(s.channel.id).enabled, true);
     assert(s.store.all<any>('events').some((event) => event.action === 'channel.plan-outdated'));
+  } finally {
+    await s.cleanup();
+  }
+});
+test('an unbound App channel cannot start without an App-created task, and the retired ensure route is gone', async () => {
+  const s = await setup();
+  try {
+    Object.assign(s.transport, { backgroundReady: true });
+    assert.equal((await s.api('GET', '/api/native/status')).capabilities.create, false);
+    const missing = await s.api('POST', `/api/channels/${s.channel.id}/native/ensure`, {}, 404);
+    assert.match(missing.error, /接口不存在/);
+    const failed = await s.api('POST', `/api/channels/${s.channel.id}/action`, { action: 'resume' }, 409);
+    assert.match(failed.error, /请在 Codex App 中创建同一项目的任务、发送首条消息，再回到 Morrow 关联/);
+    assert.equal(s.store.all('native_bindings').length, 0);
+    assert.equal(s.engine.control(s.channel.id).enabled, false);
+    s.store.put('channels', {
+      ...s.store.get<any>('channels', s.channel.id),
+      nativeEnsure: {
+        phase: 'waiting-catalog',
+        nextStep: '等待 App 写出任务',
+        openedAt: new Date().toISOString(),
+      },
+    });
+    await s.native.bind(s.channel.id, s.transport.threadId);
+    assert.equal('nativeEnsure' in s.store.get<any>('channels', s.channel.id), false);
   } finally {
     await s.cleanup();
   }

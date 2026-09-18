@@ -171,11 +171,10 @@ test('a CLI-direct Codex channel runs its own bounded turn and never creates an 
     await s.api('POST', `/api/channels/${cli.id}/messages`, { text: '先看导入流程' }, 201);
     await s.api('GET', `/api/channels/${cli.id}/native/conversation`, undefined, 409);
     await s.api('POST', `/api/channels/${cli.id}/native/bind`, { threadId: 'some-thread' }, 409);
-    await s.api('POST', `/api/channels/${cli.id}/native/ensure`, {}, 409);
-    // Follower IPC still has no createThread. An App-transport start uses ensureAppTask (deep link),
-    // not this background create path, so a ready createThread is never asked.
+    await s.api('POST', `/api/channels/${cli.id}/native/ensure`, {}, 404);
+    // The App-transport channel of the same project still goes to the background for its task.
     await s.api('POST', `/api/channels/${s.channel.id}/action`, { action: 'run' }).catch(() => {});
-    assert.equal(background.created.length, 0);
+    assert.equal(background.created.length, 1);
   } finally {
     await s.cleanup();
   }

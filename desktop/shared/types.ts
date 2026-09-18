@@ -188,11 +188,6 @@ export interface Channel {
   lastRunAt: string;
   sessionId: string;
   usageWait?: UsageWait;
-  nativeEnsure?: {
-    phase: 'waiting-catalog' | 'waiting-owner';
-    nextStep: string;
-    openedAt: string;
-  };
 }
 export interface WorkItem {
   projectId?: string;
@@ -445,7 +440,6 @@ export interface NativeConversation {
   canRecreateEmpty?: boolean;
   channelId: string;
   threadId?: string;
-  ensure?: { phase: 'waiting-catalog' | 'waiting-owner'; nextStep: string };
   status: NativeConnectionStatus;
   thread?: NativeThreadSummary;
   items: NativeItem[];
@@ -509,8 +503,6 @@ export interface DesktopAPI {
   listNativeThreads(channelId: string): Promise<{ status: NativeConnectionStatus; threads: NativeThreadSummary[] }>;
   getNativeConversation(channelId: string, query?: NativeHistoryQuery): Promise<NativeConversation>;
   bindNativeThread(channelId: string, threadId: string): Promise<NativeConversation>;
-  /** Deep-link the App, bind the catalog row, and send the first turn. */
-  ensureAppTask(channelId: string): Promise<NativeConversation>;
   sendNativeMessage(channelId: string, input: NativeMessageInput): Promise<NativeMessageReceipt>;
   interruptNativeTurn(channelId: string, turnId: string): Promise<unknown>;
   openNativeApp(channelId: string): Promise<void>;

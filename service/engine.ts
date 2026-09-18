@@ -60,15 +60,12 @@ type Active = {
 export class Engine {
   native?: {
     readonly backgroundReady?: boolean;
-    /** Isolated tests set a fake `openAppLink`; production always has the Mac `open` helper. */
-    readonly canEnsureAppTask?: boolean;
-    ensureAppTask?(id: string, options?: { seedFirstTurn?: boolean; reopen?: boolean }): Promise<unknown>;
+    create?(id: string): Promise<unknown>;
     binding(id: string): { threadId: string } | undefined;
     isBusy(id: string): boolean;
     isProjectBusy(projectId: string, exceptId?: string): boolean;
     startScheduled(id: string, scheduled: boolean): Promise<void>;
     pause(id: string): Promise<void>;
-    pollPendingEnsures?(): void;
   };
   store: Store;
   home: string;
@@ -272,7 +269,6 @@ export class Engine {
     if (this.closed) return;
     this.upgrade.tick();
     this.loop.tick();
-    this.native?.pollPendingEnsures?.();
     // Only a channel whose control is on can be acted on below, so the tick asks for those instead
     // of reading every channel of every project once a second.
     for (const channel of this.store.enabledChannels()) {
@@ -290,16 +286,6 @@ export class Engine {
           this.failScheduled(channel.id, e);
         }
     }
-  }
-  /** Catalog/owner still missing after a deep link: keep retrying, do not treat it as a failed schedule. */
-  parkAppEnsure(id: string) {
-    const channel = this.store.get<Channel>('channels', id);
-    if (!channel) return;
-    this.store.put('channels', {
-      ...channel,
-      status: 'waiting',
-      nextRunAt: new Date(Date.now() + 5000).toISOString(),
-    });
   }
   /** Only called after a read-only native preflight failed, before a run/outbox was created. */
   deferNativeStart(id: string, code: string, generation: number) {
@@ -449,18 +435,17 @@ export class Engine {
     const p = this.store.get<Project>('projects', c.projectId);
     if (p?.isDemo) throw new APIError(409, '示例频道仅用于预览，请创建真实项目后运行');
     if (this.active.has(id) || this.native?.isBusy(id)) throw new APIError(409, '该频道正在执行');
-    // Only a channel whose turns run inside the App needs a task prepared. A CLI-direct Codex
-    // channel has no App task and must not be given one: it starts its own subprocess below,
-    // exactly as a Claude Code or Trae channel does. Follower IPC cannot `createThread` (409);
-    // `ensureAppTask` deep-links instead. The scheduled charter is the first user turn so this
-    // start is not blocked by a seed reply still running in the App.
+    // Only a channel whose turns run inside the App needs a task bound to it. A CLI-direct Codex
+    // channel has no App task to create and must not be given one: it starts its own subprocess
+    // below, exactly as a Claude Code or Trae channel does. Follower IPC cannot create a task;
+    // `create` 409s and the person binds an App-created thread instead.
     if (
       usesApp(c) &&
       !this.native?.binding(id) &&
-      (process.env.MORROW_TEST_MODE !== '1' || this.native?.canEnsureAppTask)
+      (process.env.MORROW_TEST_MODE !== '1' || this.native?.backgroundReady)
     ) {
-      if (!this.native?.ensureAppTask) throw new APIError(409, '无法准备 Codex App 任务');
-      await this.native.ensureAppTask(id, { seedFirstTurn: false, reopen: false });
+      if (!this.native?.create) throw new APIError(409, 'Codex 后台连接尚未准备好');
+      await this.native.create(id);
     }
     if (action !== 'pause' && (this.activationVersions.get(id) || 0) !== activationVersion) return;
     if (action === 'resume') {
@@ -597,21 +582,8 @@ export class Engine {
     // The fixture exception is unchanged: under MORROW_TEST_MODE an App-transport channel with no
     // binding still falls through to the fixture CLI runtime, which is how the service tests drive
     // a Codex channel with no desktop App present.
-    if (
-      usesApp(channel) &&
-      (process.env.MORROW_TEST_MODE !== '1' || this.native?.binding(id) || this.native?.canEnsureAppTask)
-    ) {
+    if (usesApp(channel) && (process.env.MORROW_TEST_MODE !== '1' || this.native?.binding(id))) {
       if (!this.native) throw new APIError(409, '请连接并绑定 Codex App 中的原生任务');
-      if (!this.native.binding(id)) {
-        if (!this.native.ensureAppTask) throw new APIError(409, '无法准备 Codex App 任务');
-        return this.native.ensureAppTask(id, { seedFirstTurn: false, reopen: false }).then(() => {
-          if (!this.native?.binding(id)) {
-            this.parkAppEnsure(id);
-            return;
-          }
-          return this.native.startScheduled(id, scheduled);
-        });
-      }
       return this.native.startScheduled(id, scheduled);
     }
     // The bounded CLI subprocess below is how Claude Code and Trae channels work, and how a Codex

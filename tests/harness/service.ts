@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'nod
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { startServer } from '../../service/server.ts';
-import type { BridgeRestore, NativeTransport, OpenAppLink } from '../../service/native-conversations.ts';
+import type { BridgeRestore, NativeTransport } from '../../service/native-conversations.ts';
 import type { BuildIdentity } from '../../service/build-identity.ts';
 import type { Channel, Project } from '../../service/protocol.ts';
 
@@ -25,8 +25,6 @@ export type IsolatedOptions = {
    * `launchctl`. Supply it to exercise the restore route without touching this Mac's login session.
    */
   restoreBridge?: BridgeRestore;
-  /** Opens `codex://` deep links for `ensureAppTask`. Tests inject a fake. */
-  openAppLink?: OpenAppLink;
   /**
    * `false` stops the daemon's own one-second loop, here and after every `restart()`, for a test that
    * drives each step itself. Nothing else changes: every gate still runs when the test calls it.
@@ -89,7 +87,6 @@ export async function startIsolated(options: IsolatedOptions = {}): Promise<Isol
       nativeTransport: transport,
       reviewTransport: transport,
       ...(options.restoreBridge ? { restoreBridge: options.restoreBridge } : {}),
-      ...(options.openAppLink ? { openAppLink: options.openAppLink } : {}),
       ...(options.identity ? { identity: options.identity } : {}),
     });
     if (options.scheduler === false) stopScheduler(service);

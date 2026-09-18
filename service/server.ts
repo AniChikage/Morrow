@@ -43,9 +43,9 @@ import { eventHistory, runHistory, runOutput, queryID } from './event-history.ts
 import { runLog } from './run-log.ts';
 import { discoverRuntimes } from './runtimes.ts';
 import { pruneHelpers } from './runtime-helpers.ts';
-import { NativeConversations, openCodexAppLink } from './native-conversations.ts';
+import { NativeConversations } from './native-conversations.ts';
 import { NativeDesktopError } from './codex-desktop-transport.ts';
-import type { BridgeRestore, NativeTransport, OpenAppLink } from './native-conversations.ts';
+import type { BridgeRestore, NativeTransport } from './native-conversations.ts';
 import { usageBudgetInput, usageReserveInput, usageWindowLabels } from './usage.ts';
 import type { Verification } from './verification-types.ts';
 function model(value: unknown) {
@@ -145,8 +145,6 @@ export async function startServer(
      * `launchctl` against the user's login session, so a test supplies its own instead.
      */
     restoreBridge?: BridgeRestore;
-    /** Opens `codex://` deep links for `ensureAppTask`. Tests inject a fake. */
-    openAppLink?: OpenAppLink;
     /** The build this process runs; read from its own bundle when omitted. */
     identity?: BuildIdentity;
     /** Called after the close path finished for an automatic version switch; the daemon exits here. */
@@ -219,13 +217,7 @@ export async function startServer(
   // Every log line from here on passes through this daemon's own redactor, so no field can carry
   // the service token. One daemon runs per process; the last service started owns the redactor.
   setLogRedactor((value) => engine.redact(value));
-  const native = new NativeConversations(
-    store,
-    engine,
-    options.nativeTransport,
-    options.restoreBridge,
-    options.openAppLink ?? (process.env.MORROW_TEST_MODE === '1' ? undefined : openCodexAppLink)
-  );
+  const native = new NativeConversations(store, engine, options.nativeTransport, options.restoreBridge);
   engine.native = native;
   engine.loop.verification.connect(options.reviewTransport ?? native.transport, (value) => engine.redact(value));
   if (!options.reviewTransport) {
@@ -494,7 +486,7 @@ export async function startServer(
         return;
       }
       const nativeMatch = path.match(
-        /^\/api\/channels\/([^/]+)\/native\/(threads|conversation|bind|messages|interrupt|open|ensure)$/
+        /^\/api\/channels\/([^/]+)\/native\/(threads|conversation|bind|messages|interrupt|open)$/
       );
       if (nativeMatch) {
         const id = nativeMatch[1],
@@ -529,11 +521,6 @@ export async function startServer(
         if (req.method === 'POST' && action === 'bind') {
           keys(data, ['threadId']);
           respond(res, 200, await native.bind(id, string(data.threadId, 'threadId', 200)));
-          return;
-        }
-        if (req.method === 'POST' && action === 'ensure') {
-          keys(data, []);
-          respond(res, 200, await native.ensureAppTask(id));
           return;
         }
         if (req.method === 'POST' && action === 'messages') {

@@ -162,13 +162,6 @@ export function featureProps(patch: Partial<FeatureProps> = {}) {
       hasMore: false,
     })),
     bindNativeThread: vi.fn(),
-    ensureAppTask: vi.fn(async (channelId: string) => ({
-      channelId,
-      status: nativeStatus,
-      items: [],
-      requests: [],
-      hasMore: false,
-    })),
     sendNativeMessage: vi.fn(async (_channelId: string, input: NativeMessageInput): Promise<NativeMessageReceipt> => ({
       requestId: input.requestId,
       state: 'accepted',

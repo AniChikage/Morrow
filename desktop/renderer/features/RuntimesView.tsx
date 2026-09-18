@@ -138,14 +138,14 @@ function AppChecklist({
   else if (pending === 2)
     next = (
       <>
-        <span>App 运行后由 Morrow 准备任务（打开、写入目录、发送首条）；也可到频道页开始准备。</span>
+        <span>在 Codex App 为同一项目目录创建任务、发送首条消息，再回到频道关联；回到这里会自动重新检测。</span>
         <ChannelChoice label="去关联任务" targets={linkTargets} projects={projects} busy={busy} onAct={onLink} />
         {/* Only App-task channels can be linked, so a project of CLI-direct Codex channels lands
             here. Saying 「没有频道」 would send those people looking for channels they already have. */}
         {!linkTargets.length && (
           <>
             <span>还没有走 App 任务的 Codex 频道；直连 Codex CLI 的频道不需要关联任务。</span>
-            <span>新建频道时把「执行方式」选为「Codex App 任务」，才需要在这里准备任务。</span>
+            <span>新建频道时把「执行方式」选为「Codex App 任务」，才需要在这里关联。</span>
           </>
         )}
       </>
@@ -153,7 +153,7 @@ function AppChecklist({
   else if (pending === 3)
     next = (
       <>
-        <span>任务未在 Codex App 中打开。请在 Codex App 打开已关联任务；Morrow 也可用 deep link 恢复。</span>
+        <span>任务未在 Codex App 中打开。请在 Codex App 打开已关联任务；打开后回到这里，会自动重新检测。</span>
         {!remote && (
           <ChannelChoice
             label="在 Codex App 中打开"
@@ -458,7 +458,7 @@ export function RuntimesView({
                         openTargets={openTargets}
                         onMutate={onMutate}
                         onRefresh={refreshNative}
-                        onOpen={(channelId) => void onMutate(() => api.ensureAppTask(channelId))}
+                        onOpen={(channelId) => void onMutate(() => api.openNativeApp(channelId))}
                         onLink={(channelId) => onNavigate({ kind: 'channel', id: channelId })}
                       />
                     )}
@@ -484,8 +484,8 @@ export function RuntimesView({
                               )}
                               <dt>对话执行</dt>
                               <dd>
-                                App 运行后由 Morrow 准备同一条任务并同步消息、回复和运行活动。账号、模型、工具和权限由
-                                App 管理。无法后台无焦点创建任务（需要新的 App IPC）。
+                                绑定 Codex App 的同一条任务，直接同步消息、回复和运行活动。账号、模型、工具和权限由 App
+                                管理。
                               </dd>
                             </>
                           )}

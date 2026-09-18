@@ -373,7 +373,6 @@ export function previewAPI(): DesktopAPI {
       hasMore: false,
     }),
     bindNativeThread: unavailable,
-    ensureAppTask: unavailable,
     sendNativeMessage: unavailable,
     interruptNativeTurn: unavailable,
     openNativeApp: unavailable,

@@ -220,7 +220,6 @@ function registerIPC(): void {
   handle('bind-native-thread', 2, (channelId, threadId) =>
     service.request(`channels/${id(channelId)}/native/bind`, 'POST', { threadId: id(threadId) })
   );
-  handle('ensure-app-task', 1, (channelId) => service.request(`channels/${id(channelId)}/native/ensure`, 'POST', {}));
   handle('send-native-message', 2, (channelId, value) =>
     service.request(`channels/${id(channelId)}/native/messages`, 'POST', nativeMessageInput(value))
   );

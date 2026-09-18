@@ -586,7 +586,7 @@ it('gives a CLI-direct Codex channel notes and no App task, and points at the CL
   expect(api.getMessages).toHaveBeenCalledWith('channel-system');
   // Nothing App-shaped: no conversation is polled, and no entry offers to open or link one.
   expect(api.getNativeConversation).not.toHaveBeenCalled();
-  expect(screen.queryByRole('button', { name: '准备 App 任务' })).toBeNull();
+  expect(screen.queryByRole('button', { name: '关联 App 任务' })).toBeNull();
   // What is missing is the CLI on this Mac, so that is what the page names.
   expect(screen.getByRole('alert').textContent).toContain('codex login');
   await userEvent.setup().click(screen.getByRole('button', { name: '频道选项' }));

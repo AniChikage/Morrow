@@ -550,7 +550,7 @@ export function ChannelView(props: FeatureProps & { id: string }) {
     : !native
       ? ''
       : unloaded
-        ? '任务未在 Codex App 中打开，Morrow 会尝试重新打开后再继续或回答。'
+        ? '任务未在 Codex App 中打开，打开后才能继续或回答。'
         : !ready(conversation)
           ? '原生对话尚未就绪，暂时不能回答'
           : !conversation?.status.capabilities.send
@@ -609,8 +609,7 @@ export function ChannelView(props: FeatureProps & { id: string }) {
                   : runs.length
                     ? 'latest'
                     : 'none';
-  const prepareTask = () => void onMutate(() => api.ensureAppTask(id));
-  const openApp = () => void onMutate(() => (unloaded ? api.ensureAppTask(id) : api.openNativeApp(id)));
+  const openApp = () => void onMutate(() => api.openNativeApp(id));
   const status = unloaded
     ? '任务未就绪'
     : channel.work?.awaitingReply
@@ -638,8 +637,8 @@ export function ChannelView(props: FeatureProps & { id: string }) {
             {/* Until the section is open this is the page's one action; inside it, the step takes over. */}
             {primary === 'loading' && <Button disabled>正在检测 App 连接…</Button>}
             {primary === 'link' && (
-              <Button variant={linkOpen ? 'secondary' : 'primary'} disabled={busy} onClick={prepareTask}>
-                准备 App 任务
+              <Button variant={linkOpen ? 'secondary' : 'primary'} disabled={busy} onClick={() => setLinkOpen(true)}>
+                关联 App 任务
               </Button>
             )}
             {primary === 'open' && (
@@ -746,22 +745,20 @@ export function ChannelView(props: FeatureProps & { id: string }) {
               (cliMissing
                 ? '本频道直连 Codex CLI：请在执行主机安装 Codex CLI 并运行 codex login，不需要 Codex App。'
                 : unloaded
-                  ? '任务未在 Codex App 中打开。Morrow 会尝试重新打开已绑定任务。'
-                  : conversation?.ensure?.nextStep
-                    ? conversation.ensure.nextStep
-                    : needsLink
-                      ? 'App 运行后由 Morrow 准备任务：打开 App、写入目录并发送首条。'
-                      : primary === 'open'
-                        ? '请先在 Codex App 恢复连接。'
-                        : channel.work?.awaitingReply
-                          ? '请先回答下方问题。'
-                          : pendingReleases.length
-                            ? '有待批准版本，请先查看变更与风险。'
-                            : blocked.length
-                              ? '有事项受阻，请查看下一步。'
-                              : paused
-                                ? '准备好后继续工作。'
-                                : '最新进展在下方，更多信息按需展开。')}
+                  ? '任务未在 Codex App 中打开。请先打开已关联任务，继续和回答暂不可用。'
+                  : needsLink
+                    ? '先关联在 Codex App 创建的任务。'
+                    : primary === 'open'
+                      ? '请先在 Codex App 恢复连接。'
+                      : channel.work?.awaitingReply
+                        ? '请先回答下方问题。'
+                        : pendingReleases.length
+                          ? '有待批准版本，请先查看变更与风险。'
+                          : blocked.length
+                            ? '有事项受阻，请查看下一步。'
+                            : paused
+                              ? '准备好后继续工作。'
+                              : '最新进展在下方，更多信息按需展开。')}
         </p>
         {needsLink && (
           <details
@@ -771,10 +768,7 @@ export function ChannelView(props: FeatureProps & { id: string }) {
           >
             {/* The header carries the primary action; this section is where the choice is made. */}
             <summary>选择要关联的任务</summary>
-            <p>
-              Morrow 会打开 App 并轮询目录、发送首条；目录尚未出现时请在 App
-              里发送首条，不必点关联。也可读取已有任务后手动关联。
-            </p>
+            <p>在 Codex App 为同一目录创建任务并发送首条消息，再选择关联。</p>
             {!!project.path && <p className="subtle">本项目目录：{project.path}</p>}
             <Button
               variant={linkOpen && !threadId && !reviewingRelease ? 'primary' : 'secondary'}
