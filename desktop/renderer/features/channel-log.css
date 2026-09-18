@@ -1,0 +1,304 @@
+.channel-stage-hint {
+  margin: 0;
+  padding: var(--space-2) var(--space-5) var(--space-3);
+  font-size: var(--text-sm);
+  line-height: 1.6;
+  color: var(--muted);
+  border-bottom: 1px solid var(--line);
+}
+.channel-stage-hint strong {
+  color: var(--text);
+  font-weight: 600;
+}
+.channel-settings-summary {
+  margin: 0 var(--space-5) var(--space-3);
+  padding: var(--space-3) 0;
+  border-bottom: 1px solid var(--line);
+  font-size: var(--text-sm);
+  line-height: var(--text-sm-lh);
+}
+.channel-settings-summary h2 {
+  font-size: var(--text-xs);
+  line-height: var(--text-xs-lh);
+  font-weight: 500;
+  color: var(--muted);
+  margin: 0 0 var(--space-2);
+}
+.channel-settings-summary > span {
+  display: block;
+  margin: var(--space-1) 0;
+  color: var(--muted);
+}
+.channel-log-scroll {
+  padding: var(--space-5) var(--space-5) var(--space-6);
+}
+.channel-log-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin: 0;
+}
+.channel-log-heading h2,
+.channel-needs h2 {
+  font-size: var(--text-md);
+  line-height: var(--text-md-lh);
+  font-weight: 600;
+  margin: 0 0 var(--space-2);
+}
+/* 需要你: the only block allowed a tint, because it is the only one asking for a person now. */
+.channel-needs {
+  margin: 0 0 var(--space-5);
+  padding: var(--space-4);
+  border-left: 3px solid var(--accent);
+  border-radius: var(--radius-lg);
+  background: var(--accent-soft);
+}
+.channel-needs .channel-question {
+  margin: var(--space-3) 0 0;
+}
+.channel-needs ul {
+  margin: var(--space-2) 0 0;
+  padding: 0;
+  list-style: none;
+}
+.channel-needs > details {
+  font-size: var(--text-sm);
+  line-height: var(--text-sm-lh);
+}
+/* One plain line per waiting reason: an App approval, or a usage gate holding every round. */
+.channel-needs-note {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  margin: 0 0 var(--space-2);
+  font-size: var(--text-sm);
+  line-height: var(--text-sm-lh);
+  color: var(--muted);
+}
+/* The work log's time rail. One hairline runs down the left of the rounds; every round puts
+   a tick on it and rides it with a monospace timestamp, so a channel reads like a ledger
+   rather than a feed. The round still wanting something from you keeps the accent tick and
+   the rest settle to neutral — this is the one place the interface has a personality. */
+.channel-log-entry {
+  --log-tick: var(--faint);
+  position: relative;
+  max-width: 850px;
+  padding: var(--space-4) 0 var(--space-4) var(--space-4);
+}
+/* The round's own outcome on the rail, from the same tokens its status text is read by. The rules
+   below come first so the newest round, and the one wanting something from you, keep the accent. */
+.channel-log-entry[data-status='running'],
+.channel-log-entry[data-status='investigating'] {
+  --log-tick: var(--accent);
+}
+.channel-log-entry[data-status='completed'],
+.channel-log-entry[data-status='succeeded'] {
+  --log-tick: var(--success);
+}
+.channel-log-entry[data-status='waiting'],
+.channel-log-entry[data-status='paused'],
+.channel-log-entry[data-status='blocked'] {
+  --log-tick: var(--warning);
+}
+.channel-log-entry[data-status='failed'],
+.channel-log-entry[data-status='interrupted'],
+.channel-log-entry[data-status='error'] {
+  --log-tick: var(--danger);
+}
+.channel-log-entry:first-of-type,
+.channel-log-entry:has(.log-primary-action) {
+  --log-tick: var(--accent);
+}
+.channel-log-entry::before {
+  content: '';
+  position: absolute;
+  left: 3px;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  background: var(--line);
+}
+.channel-log-entry::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: calc(var(--space-4) + 5px);
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--log-tick);
+}
+.channel-log-entry > header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--space-1) var(--space-3);
+  color: var(--muted);
+  font-size: var(--text-xs);
+  line-height: var(--text-xs-lh);
+}
+.channel-log-entry > header > time {
+  color: var(--text);
+}
+.channel-log-entry h3 {
+  font-size: var(--text-md);
+  line-height: var(--text-md-lh);
+  margin: var(--space-2) 0 var(--space-1);
+  font-weight: 500;
+}
+.channel-log-entry h4 {
+  font-size: var(--text-xs);
+  line-height: var(--text-xs-lh);
+  color: var(--muted);
+  font-weight: 500;
+  margin: var(--space-3) 0 var(--space-1);
+}
+.channel-log-entry p {
+  margin: var(--space-1) 0;
+  font-size: var(--text-sm);
+  line-height: 1.7;
+  overflow-wrap: anywhere;
+}
+.log-reason {
+  color: var(--muted);
+}
+.log-commands,
+.log-outputs {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  font-size: var(--text-xs);
+  line-height: var(--text-xs-lh);
+}
+.log-commands li {
+  padding: var(--space-1) 0;
+}
+.log-command-line {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-3);
+}
+.log-command-line code {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-mono);
+}
+.log-command-full {
+  margin: var(--space-2) 0;
+  font-family: var(--font-mono);
+  font-size: inherit;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.log-commands span {
+  flex-shrink: 0;
+  white-space: nowrap;
+  color: var(--muted);
+}
+.log-command-line button {
+  flex-shrink: 0;
+  border: 0;
+  background: none;
+  padding: 0;
+  color: var(--muted);
+  font: inherit;
+  cursor: pointer;
+}
+.log-outputs li {
+  display: flex;
+  gap: var(--space-2);
+  padding: 3px 0;
+}
+.log-outputs li > span:first-child {
+  color: var(--muted);
+  flex-shrink: 0;
+  min-width: 48px;
+}
+.log-outputs button {
+  border: 0;
+  background: none;
+  padding: 0;
+  text-align: left;
+  color: inherit;
+  cursor: pointer;
+}
+.log-outputs button:hover {
+  text-decoration: underline;
+}
+.channel-log-entry > details {
+  margin-top: var(--space-3);
+  font-size: var(--text-xs);
+  line-height: var(--text-xs-lh);
+  color: var(--muted);
+}
+.channel-log summary {
+  cursor: pointer;
+}
+.log-summary {
+  color: var(--muted);
+}
+.log-summary-loading {
+  display: grid;
+  gap: var(--space-2);
+  margin: var(--space-3) 0;
+}
+.log-summary-loading .skeleton-line {
+  height: var(--space-3);
+}
+.log-work-details > summary {
+  width: fit-content;
+  padding: var(--space-1) 0;
+}
+/* The log's one primary action, so it is the one button shaped like a primary button. */
+.channel-log summary.log-primary-action {
+  display: inline-block;
+  padding: var(--space-1) var(--space-3);
+  border-radius: var(--radius);
+  background: var(--accent);
+  color: #fff;
+  font-size: var(--text-base);
+  font-weight: 500;
+  line-height: var(--text-sm-lh);
+  list-style: none;
+  transition: background-color 0.12s;
+}
+.channel-log summary.log-primary-action:hover {
+  background: var(--accent-strong);
+}
+.channel-log pre {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  line-height: 1.7;
+  max-height: 320px;
+  overflow: auto;
+}
+.channel-audit {
+  margin-top: var(--space-5);
+  font-size: var(--text-xs);
+}
+.channel-link-task {
+  padding: var(--space-2) var(--space-5);
+  font-size: var(--text-sm);
+  border-bottom: 1px solid var(--line);
+}
+.channel-link-task select {
+  margin: var(--space-2) 0;
+  max-width: 260px;
+}
+/* One line and one expandable reason for an App-started continuation; ids stay in the work log. */
+.channel-app-resume {
+  padding: var(--space-2) var(--space-5);
+  font-size: var(--text-sm);
+  color: var(--muted);
+  border-bottom: 1px solid var(--line);
+}
+.channel-app-resume p {
+  margin: var(--space-1) 0 0;
+}

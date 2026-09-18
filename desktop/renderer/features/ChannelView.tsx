@@ -1,79 +1,1035 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { ArrowUp, ArrowUpRight, Hash, History, LoaderCircle, MessageSquare, Pause, Play, RefreshCw, Settings2, Terminal } from 'lucide-react';
-import type { NativeConversation, WorkspaceEvent } from '../../shared/types';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { Hash, MoreHorizontal, Pause, Play } from 'lucide-react';
+import { usesApp } from '../../shared/types';
+import type {
+  Channel,
+  NativeConversation,
+  NativeThreadSummary,
+  ProjectUsage,
+  Run,
+  RunDetails,
+  WorkspaceEvent,
+} from '../../shared/types';
 import type { FeatureProps } from './types';
-import { Button, EmptyState, Markdown, PropertyPanel, StatusLabel } from '../components/ui';
-import { formatDate, runtimeLabel } from '../components/format';
-import { Property } from './ProjectView';
-import { nativeContinuationBlock } from './featureOwnership';
-import { EventLog } from './EventLog';
-import { RunHistory } from './RunsView';
-import { NativeConversationView, nativeConversationReady } from './NativeConversationView';
+import { Button, Dropdown, DropdownItem, EmptyState, Markdown } from '../components/ui';
+import { mergeById, replaceIfChanged } from '../components/collections';
+import { connectionDetail } from '../components/connection-detail';
+import {
+  channelStatusLabel,
+  durationSeconds,
+  formatDate,
+  runTime,
+  runtimeLabel,
+  usageWindowLabel,
+} from '../components/format';
+import { ChannelQuestion, questionExcerpt } from './ChannelQuestion';
+import { ChannelAudit } from './ChannelAudit';
+import { ProjectReleases } from './ProjectWork';
+import { upgradeSwitching } from './upgradeState';
 import './content.css';
+import './channel-log.css';
+
+const ready = (value: NativeConversation | null) =>
+  !!(
+    value?.status.connected &&
+    value.threadId &&
+    value.lastSyncedAt &&
+    !value.syncError &&
+    value.status.readyThreadCount !== 0
+  );
+const active = (value: NativeConversation | null) =>
+  !!value?.thread?.activeTurnId || ['active', 'running', 'inProgress'].includes(value?.thread?.status || '');
+const mergeRuns = (old: Run[], next: Run[]) => mergeById(old, next, (a, b) => b.startedAt.localeCompare(a.startedAt));
+/** Notes are kept the way the service lists them, oldest first; the page reverses them to read. */
+const mergeNotes = (old: WorkspaceEvent[], next: WorkspaceEvent[]) =>
+  mergeById(old, next, (a, b) => a.createdAt.localeCompare(b.createdAt));
+const failureText = (failure: unknown, fallback: string) => (failure instanceof Error ? failure.message : fallback);
+/**
+ * How many of the newest notes stay expanded once a channel has collected a few. Everything older
+ * that a turn has already read folds behind one entry, so the notes cannot push the work log off
+ * the page; a note no turn has read yet is never folded, whatever its position, and a lone note is
+ * left in place rather than hidden behind an entry longer than itself.
+ */
+const notesPreview = 3;
+/** One short line per App-resume state; the reason itself is the expanded body. */
+const appResumeLabel: Record<NonNullable<Channel['appResume']>['state'], string> = {
+  observing: 'App 续跑：观察中',
+  unconfirmed: 'App 续跑：关联未确认',
+  linked: 'App 续跑：进行中',
+  resumed: 'App 续跑：已恢复等待',
+  'kept-paused': 'App 续跑：保持暂停',
+};
+const stateLabel = (value: string) =>
+  ({
+    continue: '继续推进',
+    wait: '等待',
+    needs_input: '需要回答',
+    completed: '已完成',
+    failed: '失败',
+    running: '工作中',
+  })[value] || value;
+const normalizePath = (value: string) => value.replace(/\/+$/, '');
+/** An App task belongs to this project only when it was created for the same directory. */
+const sameDirectory = (cwd: string, path: string) => !!path && !!cwd && normalizePath(cwd) === normalizePath(path);
+const sortThreads = (threads: NativeThreadSummary[], path: string) =>
+  [...threads].sort((a, b) => Number(sameDirectory(b.cwd, path)) - Number(sameDirectory(a.cwd, path)));
+/**
+ * Usage is only attributed to Codex turns (`service/engine.ts` tracks nothing for other runtimes),
+ * so a Claude Code or Trae turn has no 额度 to report at all: undefined drops the label rather than
+ * calling it 未记录, which would read as a gap in a record that was never kept for this runtime.
+ * The test is the runtime and stays that way — a CLI-direct Codex turn spends the same account and
+ * carries the same reading.
+ */
+const runUsage = (run: Run) =>
+  run.runtime !== 'codex'
+    ? undefined
+    : run.usage?.delta && Object.keys(run.usage.delta).length
+      ? Object.entries(run.usage.delta)
+          .map(([key, value]) => `${usageWindowLabel(key as '5h' | 'weekly')} 估算 ${value}%`)
+          .join(' · ')
+      : '额度消耗未记录';
+
+function LogCommand({ command }: { command: NonNullable<Run['log']>['commands'][number] }) {
+  const [expanded, setExpanded] = useState(false);
+  const firstLine = command.command.split(/\r\n|\r|\n/, 1)[0];
+  const characters = Array.from(firstLine);
+  const preview = characters.length > 160 ? characters.slice(0, 159).join('') + '…' : firstLine;
+  const expandable = command.command !== firstLine || characters.length > 160;
+  return (
+    <li>
+      <div className="log-command-line">
+        <code>{preview || '（空首行）'}</code>
+        <span>
+          {command.exitCode === undefined ? stateLabel(command.status) : `退出 ${command.exitCode}`}
+          {command.sealed ? ' · 已封存' : ' · 未封存'}
+        </span>
+        {expandable && (
+          <button type="button" aria-expanded={expanded} onClick={() => setExpanded(!expanded)}>
+            {expanded ? '收起' : '展开'}
+          </button>
+        )}
+      </div>
+      {expanded && expandable && <pre className="log-command-full">{command.command}</pre>}
+    </li>
+  );
+}
+
+function LogEntry({
+  run,
+  api,
+  currentWork,
+  onNavigate,
+  primaryAction,
+  questionAbove,
+}: Pick<FeatureProps, 'api' | 'onNavigate'> & {
+  run: Run;
+  currentWork?: import('../../shared/types').ChannelWork;
+  primaryAction?: boolean;
+  questionAbove?: boolean;
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const [detail, setDetail] = useState<RunDetails>();
+  const [error, setError] = useState('');
+  const [attempt, setAttempt] = useState(0);
+  useEffect(() => {
+    if (!expanded) return;
+    let cancelled = false;
+    api.getRun(run.id).then(
+      (value) => {
+        if (!cancelled) {
+          setDetail(value);
+          setError('');
+        }
+      },
+      (failure) => {
+        if (!cancelled) setError(failure instanceof Error ? failure.message : '详情读取失败');
+      }
+    );
+    return () => {
+      cancelled = true;
+    };
+  }, [expanded, api, run.id, run.status, attempt]);
+  // The polled list owns the summary; a collapsed detail cache may predate completion.
+  // Older services without list projections can still supply the summary through details.
+  const log = run.log || detail?.run.log;
+  const work = log?.work || currentWork;
+  // A bounded turn's own answer, shown when it left no work decision. The question is where the turn
+  // ran, not which runtime it was: a CLI-direct Codex turn has no work interface either, so its
+  // answer is all there is. `executionOwner` is that fact, recorded per run.
+  const cliSummary =
+    !work && run.executionOwner !== 'codex-app'
+      ? run.summary
+          .trim()
+          .split(/\r?\n/)
+          .slice(0, 2)
+          .map((line) => questionExcerpt(line, 200))
+          .join('\n')
+      : '';
+  const cliCharacters = Array.from(cliSummary);
+  const cliExcerpt = cliCharacters.slice(0, 200).join('') + (cliCharacters.length > 200 ? '…' : '');
+  const cliTitle = questionExcerpt(cliSummary.split(/(?<=[。！？!?])|(?<=\.)\s|\n/)[0], 100);
+  // A round owned by the Codex App may carry no native timestamps at all: say so rather than
+  // reporting 尚未运行 for a finished round, or NaN 秒 for a duration nothing can be derived from.
+  const started = runTime(run, run.startedAt);
+  const duration = run.finishedAt ? durationSeconds(run.startedAt, run.finishedAt) : undefined;
+  const usageLabel = runUsage(run);
+  return (
+    <article className="channel-log-entry" data-status={run.status} aria-label={`轮次 ${started}`}>
+      <header>
+        <time dateTime={run.startedAt || undefined}>{started}</time>
+        <span>{stateLabel(run.status)}</span>
+        <span>{!run.finishedAt ? '尚未结束' : duration === undefined ? '时长未记录' : `${duration} 秒`}</span>
+        {/* Dropped entirely on a CLI turn: an empty span would still take a gap in this flex row. */}
+        {usageLabel && <span>{usageLabel}</span>}
+      </header>
+      {!log && !work && !cliSummary ? (
+        <div className="log-summary-loading" role="status" aria-label="本轮摘要尚未载入">
+          <div className="skeleton-line" aria-hidden="true" />
+          <div className="skeleton-line" aria-hidden="true" />
+        </div>
+      ) : (
+        <>
+          <h3>{work?.focus || cliTitle || log?.direction || '未记录本轮关注点'}</h3>
+          <p className="log-summary">
+            {questionAbove ? (
+              '需要回答 · 问题见上方'
+            ) : work ? (
+              `${stateLabel(work.state)} · ${questionExcerpt(work.nextStep, 100)}`
+            ) : cliExcerpt ? (
+              <span style={{ whiteSpace: 'pre-line' }}>{cliExcerpt}</span>
+            ) : (
+              '结论未记录'
+            )}
+          </p>
+        </>
+      )}
+      <details className="log-work-details">
+        <summary className={primaryAction ? 'log-primary-action' : undefined}>
+          {primaryAction ? '查看最新轮次' : '本轮详情'}
+        </summary>
+        <p className="log-reason">{work?.reason || (log ? '未记录选择理由' : '选择理由尚未载入')}</p>
+        <section>
+          <h4>做了什么</h4>
+          {!!log?.files.length && <p className="log-files">{log.files.join(' · ')}</p>}
+          {log?.commands.length ? (
+            <ul className="log-commands" aria-label="本轮命令">
+              {log.commands.map((command) => (
+                <LogCommand key={command.id} command={command} />
+              ))}
+            </ul>
+          ) : (
+            <p className="subtle">{log ? '未记录命令或文件变更' : '命令与文件记录尚未载入'}</p>
+          )}
+        </section>
+        <section>
+          <h4>产出</h4>
+          {log?.outputs.length ? (
+            <ul className="log-outputs">
+              {log.outputs.map((output) => (
+                <li key={`${output.kind}:${output.id}`}>
+                  <span>{output.kind}</span>
+                  {output.itemId ? (
+                    <button onClick={() => onNavigate({ kind: 'finding', id: output.itemId! })}>{output.title}</button>
+                  ) : (
+                    <span>{output.title}</span>
+                  )}
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <p className="subtle">{log ? '未记录结构化产出' : '产出记录尚未载入'}</p>
+          )}
+        </section>
+        <section className="log-conclusion">
+          <h4>{work ? stateLabel(work.state) : log ? '结论未记录' : '结论尚未载入'}</h4>
+          <Markdown>{work?.nextStep || '展开查看本轮原话；缺少安排不代表执行失败。'}</Markdown>
+        </section>
+        {log?.truncated && <p className="subtle">当前为有界摘要，完整过程可在 Codex App 查看。</p>}
+        <details open={expanded} onToggle={(event) => setExpanded(event.currentTarget.open)}>
+          <summary>原生工具活动与 Codex 原话</summary>
+          {error ? (
+            <p role="alert">
+              {error}
+              <Button onClick={() => setAttempt((value) => value + 1)}>重试详情</Button>
+            </p>
+          ) : !detail ? (
+            <p className="subtle">正在读取详情…</p>
+          ) : (
+            <>
+              {detail.run.log?.activity?.map((item) => (
+                <details key={item.id} className="log-native-item">
+                  <summary>{item.type}</summary>
+                  <pre>{item.input || item.text}</pre>
+                  {item.output && <pre>{item.output}</pre>}
+                </details>
+              ))}
+              <Markdown>{detail.finalOutput || run.summary || '本轮没有原话记录。'}</Markdown>
+            </>
+          )}
+        </details>
+      </details>
+    </article>
+  );
+}
 
 export function ChannelView(props: FeatureProps & { id: string }) {
-  const { id, snapshot, api, busy, onMutate, onNavigate, onEditChannel, showInspector } = props;
-  const channel = snapshot.channels.find(c => c.id === id);
-  const project = snapshot.projects.find(p => p.id === channel?.projectId);
-  const nativeCodex = channel?.runtime === 'codex' && !project?.isDemo;
-  const [tab, setTab] = useState<'conversation' | 'activity' | 'runs'>(nativeCodex ? 'conversation' : 'activity');
-  const [nativeConversation, setNativeConversation] = useState<NativeConversation | null>(null);
-  const [details, setDetails] = useState(false);
-  const [message, setMessage] = useState('');
-  const [older, setOlder] = useState<WorkspaceEvent[]>([]);
+  const { id, snapshot, api, busy, onMutate, onNavigate, onEditChannel } = props;
+  const channel = snapshot.channels.find((value) => value.id === id);
+  const project = snapshot.projects.find((value) => value.id === channel?.projectId);
+  const demo = !!project?.isDemo;
+  // While the service steps aside for a new version, nothing may start work; pausing still can.
+  const switching = upgradeSwitching(snapshot);
+  // Only a channel bound to an App task has an App conversation behind it. Claude Code and Trae
+  // channels, and a Codex channel that goes straight to the CLI, run a bounded turn instead, so none
+  // of the App-task state — linking, opening, resume, approvals — applies to them.
+  const native = !!channel && usesApp(channel) && !demo;
+  // A bounded-turn channel reads what people leave here at the start of its next turn, and that is
+  // the only way in it has. A channel with an App task has the App conversation instead, and a demo
+  // channel never runs, so neither takes notes.
+  const notesEnabled = !!channel && !demo && !usesApp(channel);
+  const [conversation, setConversation] = useState<NativeConversation | null>(null);
+  const [usage, setUsage] = useState<ProjectUsage>();
+  const [runs, setRuns] = useState<Run[]>([]);
   const [hasMore, setHasMore] = useState(false);
   const [cursor, setCursor] = useState<string>();
-  const [loadingOlder, setLoadingOlder] = useState(false);
-  const [historyError, setHistoryError] = useState('');
-  const [historyLoaded, setHistoryLoaded] = useState(false);
-  const snapshotBaseline = useRef(new Set<string>());
-  const historyGeneration = useRef(0);
-  const historyBusy = useRef(false);
-  const events = useMemo(() => {
-    const loadedIds = new Set(older.map(event => event.id));
-    const live = snapshot.events.filter(event => event.channelId === id && (!historyLoaded || loadedIds.has(event.id) || !snapshotBaseline.current.has(event.id)));
-    return [...new Map([...older.filter(event => event.channelId === id), ...live].map(event => [event.id, event])).values()].sort((a, b) => a.createdAt.localeCompare(b.createdAt) || (a.detail?.sequence ?? 0) - (b.detail?.sequence ?? 0));
-  }, [older, snapshot.events, id, historyLoaded]);
-  const runs = snapshot.runs.filter(r => r.channelId === id).sort((a, b) => b.startedAt.localeCompare(a.startedAt));
-  const loadHistory = useCallback(async (before?: string) => {
-    if (historyBusy.current) return;
-    const generation = historyGeneration.current;
-    historyBusy.current = true;
-    setLoadingOlder(true); setHistoryError('');
-    try { const page = await api.getEvents({ channelId: id, ...(before ? { before } : {}), limit: 60 }); if (historyGeneration.current !== generation) return; setOlder(previous => before ? [...page.events, ...previous] : page.events); setHistoryLoaded(true); setHasMore(page.hasMore); setCursor(page.cursor || page.events[0]?.id); }
-    catch (error) { if (historyGeneration.current !== generation) return; setHistoryError(error instanceof Error ? error.message : '暂时无法加载记录，已保留当前内容。'); }
-    finally { if (historyGeneration.current === generation) { historyBusy.current = false; setLoadingOlder(false); } }
-  }, [api, id]);
-  const channelExists = !!channel;
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
+  const [nativeError, setNativeError] = useState('');
+  const [threads, setThreads] = useState<NativeThreadSummary[]>([]);
+  const [threadId, setThreadId] = useState('');
+  const [threadNotice, setThreadNotice] = useState('');
+  const [threadError, setThreadError] = useState('');
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [linkOpen, setLinkOpen] = useState(false);
+  const [releasesOpen, setReleasesOpen] = useState(false);
+  const [notes, setNotes] = useState<WorkspaceEvent[]>([]);
+  const [notesError, setNotesError] = useState('');
+  const [notesExpanded, setNotesExpanded] = useState(false);
+  const [draft, setDraft] = useState('');
+  const [noteBusy, setNoteBusy] = useState(false);
+  const [noteError, setNoteError] = useState('');
+  const [noteNotice, setNoteNotice] = useState('');
+  const generation = useRef(0),
+    inFlight = useRef(false),
+    oldestCursor = useRef<string | undefined>(undefined);
+  const entryQuestion = useRef<{ id: string; present: boolean } | undefined>(undefined);
+  if (entryQuestion.current?.id !== id) entryQuestion.current = { id, present: !!channel?.work?.awaitingReply };
+  const load = useCallback(
+    async (before?: string) => {
+      if (inFlight.current) return;
+      inFlight.current = true;
+      const gen = generation.current;
+      setLoading(true);
+      try {
+        const page = await api.getRuns({ channelId: id, limit: 20, ...(before ? { before } : {}) });
+        if (gen !== generation.current) return;
+        setRuns((previous) =>
+          replaceIfChanged(
+            previous,
+            mergeRuns(
+              previous,
+              page.runs.filter((run) => run.channelId === id)
+            )
+          )
+        );
+        if (before || !oldestCursor.current) {
+          setHasMore(page.hasMore);
+          setCursor(page.cursor);
+          oldestCursor.current = page.cursor;
+        }
+        setError('');
+      } catch (failure) {
+        if (gen === generation.current) setError(failure instanceof Error ? failure.message : '轮次读取失败');
+      } finally {
+        if (gen === generation.current) {
+          inFlight.current = false;
+          setLoading(false);
+        }
+      }
+    },
+    [api, id]
+  );
+  const loadRef = useRef(load);
+  loadRef.current = load;
   useEffect(() => {
-    historyGeneration.current++; historyBusy.current = false;
-    snapshotBaseline.current = new Set(snapshot.events.map(event => event.id));
-    setOlder([]); setHistoryLoaded(false); setHasMore(false); setCursor(undefined); setLoadingOlder(false); setHistoryError(''); setMessage(''); setTab(nativeCodex ? 'conversation' : 'activity'); setNativeConversation(null); setDetails(false);
-    if (channelExists) void loadHistory();
-    return () => { historyGeneration.current++; };
-  }, [id, channelExists, loadHistory, nativeCodex]);
-  async function send() {
-    if (nativeCodex || !message.trim() || busy) return;
-    const value = message.trim();
-    if (await onMutate(() => api.sendMessage(id, value))) { setMessage(''); setTab('activity'); }
-  }
-  if (!channel) return <EmptyState icon={<Hash />} title="频道不存在" description="请从项目中重新选择频道。" />;
-  const paused = channel.autonomyEnabled === undefined ? channel.status === 'paused' || channel.status === 'blocked' : !channel.autonomyEnabled;
-  const demo = !!project?.isDemo;
-  const nativeBlock = nativeContinuationBlock(snapshot, channel.projectId);
-  const nativeBusy = !!nativeConversation?.thread?.activeTurnId || ['active', 'inProgress', 'running'].includes(nativeConversation?.thread?.status || '');
-  const nativeRunUnavailable = nativeCodex && (!nativeConversationReady(nativeConversation) || !nativeConversation?.status.capabilities.send || nativeBusy);
-  const activity = <>{historyError && <div className="feature-inline-error" role="alert">{historyError}<Button variant="ghost" onClick={() => void loadHistory(cursor)}>重试</Button></div>}{loadingOlder && <div className="run-loading" role="status"><LoaderCircle className="spin" size={14} />正在读取记录…</div>}{events.length > 0 ? <div className="event-timeline">{hasMore && !historyError && <div className="load-history"><Button variant="ghost" disabled={loadingOlder} onClick={() => void loadHistory(cursor)}><History size={14} />加载更早记录</Button></div>}{events.map(event => <EventLog key={event.id} event={event} runtime={channel.runtime} />)}</div> : !loadingOlder && !historyError && <EmptyState icon={<MessageSquare />} title="频道还没有动态" description={nativeCodex ? "这里记录频道设置、调度和操作；下方消息直接发送到 Codex CLI。" : "补充背景或约束，再运行一次。Agent 会带着这些上下文继续探索。"} />}</>;
-  return <div className="feature-layout"><main className="feature-main">
-    <header className="channel-heading"><div className="channel-title"><Hash size={22} /><h1>{channel.name}</h1>{nativeCodex ? <span className="channel-work-status">{nativeBusy ? paused ? '正在回应你的指导' : 'Codex 正在工作' : channel.work?.awaitingReply ? '等你指导' : paused ? '已暂停' : channel.nextRunAt ? '已安排下一步' : '等待继续'}</span> : <StatusLabel status={channel.status} />}{demo && <span className="feature-demo-label">示例数据</span>}</div><div className="channel-actions">{nativeCodex ? <><Button variant="ghost" onClick={() => {setDetails(value=>!value);setTab('conversation');}}>工作详情</Button><Button variant="primary" disabled={busy || (paused && !(nativeConversation?.status.capabilities.create || nativeConversationReady(nativeConversation)))} onClick={() => void onMutate(async () => {if(paused&&!nativeConversation?.threadId)await api.createNativeThread(id);await api.channelAction(id,paused?'resume':'pause');})}>{paused ? <Play size={13}/> : <Pause size={13}/>} {paused ? channel.lastRunAt ? '继续工作' : '开始工作' : '暂停'}</Button></> : <><Button variant="primary" disabled={busy || demo || channel.status === 'running' || nativeRunUnavailable} onClick={() => void onMutate(() => api.channelAction(id, 'run'))}><Play size={13} />运行一次</Button><Button disabled={busy || demo} onClick={() => void onMutate(() => api.channelAction(id, paused ? 'resume' : 'pause'))}>{paused ? <RefreshCw size={13} /> : <Pause size={13} />}{paused ? '开启持续运行' : '暂停频道'}</Button></>}</div></header>
-    {nativeCodex && <div className="channel-direction"><div><span className="channel-direction-label">工作方向</span><p>{channel.goal}</p></div><Button variant="ghost" onClick={()=>onEditChannel(channel)}>调整方向</Button></div>}
-    {nativeCodex && channel.work && <div className="channel-next-step"><span>{channel.work.awaitingReply?'需要你指导':'下一步'}</span><p>{channel.work.nextStep}</p>{!paused&&channel.nextRunAt&&<time>{formatDate(channel.nextRunAt)}</time>}</div>}
-    {demo && <div className="channel-demo-note">示例频道用于浏览流程，不会执行任务。</div>}
-    {(!nativeCodex || details) && <div className="feature-toolbar channel-tabbar"><div className="feature-tabs" role="tablist" aria-label="频道内容">{nativeCodex && <button role="tab" aria-selected={tab === 'conversation'} className={tab === 'conversation' ? 'active' : ''} onClick={() => setTab('conversation')}>原生对话</button>}<button role="tab" aria-selected={tab === 'activity'} className={tab === 'activity' ? 'active' : ''} onClick={() => setTab('activity')}>动态</button><button role="tab" aria-selected={tab === 'runs'} className={tab === 'runs' ? 'active' : ''} onClick={() => setTab('runs')}>运行记录 <span>{runs.length}</span></button></div><div className="feature-toolbar-spacer" />{project && <Button variant="ghost" onClick={() => onNavigate({ kind: 'project', id: project.id })}>项目功能看板<ArrowUpRight size={12} /></Button>}<span className="channel-engine">{runtimeLabel(channel.runtime)}</span></div>}
-    {nativeCodex && <NativeConversationView key={id} channelId={id} api={api} autonomous compact={!details} direction={channel.goal} active={tab !== 'runs'} onState={setNativeConversation} historyContent={tab === 'activity' ? activity : undefined} onSent={() => setTab('conversation')} />}
-    {(tab === 'runs' || (!nativeCodex && tab === 'activity')) && <div className="feature-scroll channel-body">
-      {tab === 'activity' ? activity : <RunHistory {...props} runs={runs} query={{ channelId: id }} showChannel={false} />}
-    </div>}
-    {!nativeCodex && tab === 'activity' && <div className="message-composer"><div className="composer-box"><textarea aria-label="向频道补充上下文" placeholder="补充背景，或为下一次探索指明方向…" value={message} onChange={event => setMessage(event.target.value)} onKeyDown={event => { if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) { event.preventDefault(); void send(); } }} /><div className="composer-footer"><span>将在下一次运行时读取</span><Button variant="primary" aria-label="发送消息，快捷键 Command Enter" disabled={busy || !message.trim()} onClick={() => void send()}><ArrowUp size={15} /></Button></div></div><span className="composer-hint">⌘ Enter 发送 · 消息不会自动启动运行</span></div>}
-  </main>{showInspector && (!nativeCodex || details) && <PropertyPanel><section className="property-section"><h3>属性 <button aria-label="编辑频道设置" className="property-icon-button" onClick={() => onEditChannel(channel)}><Settings2 size={14} /></button></h3><Property label="状态"><StatusLabel status={channel.status} /></Property><Property label="引擎">{runtimeLabel(channel.runtime)}</Property><Property label="模型">{nativeCodex ? nativeConversation?.thread?.model || '原生对话设置' : channel.model || 'CLI 默认模型'}</Property><Property label="权限">{nativeCodex ? '原生对话设置' : channel.permission === 'read-only' ? '只读工作空间' : '允许工作区写入'}</Property><Property label="运行间隔">{channel.intervalMinutes} 分钟</Property><Property label="每日上限">{channel.maxRunsPerDay} 次</Property><Button variant="ghost" onClick={() => onEditChannel(channel)}><Settings2 size={14} />编辑设置</Button>{nativeCodex ? null : <Button variant="ghost" title={nativeBlock || '继续此频道的原生会话；没有会话时打开项目目录中的 CLI。'} disabled={busy || !!nativeBlock} onClick={() => void onMutate(() => api.openNativeSession(channel.id))}><Terminal size={14} />在原生 CLI 中继续</Button>}</section><section className="property-section"><h3>持续目标</h3><div className="property-description"><Markdown>{channel.goal}</Markdown></div></section><section className="property-section"><h3>调度</h3><Property label="上次运行">{formatDate(channel.lastRunAt)}</Property><Property label="下次运行">{channel.status === 'paused' ? '已暂停' : channel.nextRunAt ? formatDate(channel.nextRunAt) : '等待调度'}</Property>{(nativeCodex ? nativeConversation?.threadId : channel.sessionId) && <><h4 className="property-small-label">原生会话</h4><code className="property-session">{nativeCodex ? nativeConversation?.threadId : channel.sessionId}</code></>}</section></PropertyPanel>}</div>;
+    generation.current++;
+    inFlight.current = false;
+    oldestCursor.current = undefined;
+    setRuns(snapshot.runs.filter((run) => run.channelId === id));
+    setCursor(undefined);
+    setHasMore(false);
+    setError('');
+    setThreads([]);
+    setThreadId('');
+    setThreadNotice('');
+    setThreadError('');
+    setSettingsOpen(false);
+    setLinkOpen(false);
+    setReleasesOpen(false);
+    void loadRef.current();
+    const timer = window.setInterval(() => {
+      if (document.visibilityState !== 'hidden') void loadRef.current();
+    }, 3000);
+    return () => {
+      generation.current++;
+      window.clearInterval(timer);
+    };
+  }, [id, api]);
+  useEffect(() => {
+    setRuns((previous) =>
+      mergeRuns(
+        previous,
+        snapshot.runs
+          .filter((run) => run.channelId === id)
+          .map((run) => ({ ...run, log: previous.find((old) => old.id === run.id)?.log || run.log }))
+      )
+    );
+  }, [snapshot.runs, id]);
+  useEffect(() => {
+    setNotes([]);
+    setNotesError('');
+    // Another channel's older notes are not this one's: every channel opens on its newest few.
+    setNotesExpanded(false);
+    setDraft('');
+    setNoteError('');
+    setNoteNotice('');
+    if (!notesEnabled) return;
+    let cancelled = false;
+    api.getMessages(id).then(
+      (value) => {
+        if (!cancelled) setNotes(value.messages);
+      },
+      (failure) => {
+        if (!cancelled) setNotesError(failureText(failure, '留言读取失败'));
+      }
+    );
+    return () => {
+      cancelled = true;
+    };
+  }, [api, id, notesEnabled]);
+  // A note posted from another window reaches the snapshot as a `message` event; merging it here
+  // keeps the list current without a second poll of its own.
+  useEffect(() => {
+    if (!notesEnabled) return;
+    const live = snapshot.events.filter((row) => row.channelId === id && row.kind === 'message');
+    if (live.length) setNotes((previous) => replaceIfChanged(previous, mergeNotes(previous, live)));
+  }, [snapshot.events, id, notesEnabled]);
+  useEffect(() => {
+    let cancelled = false,
+      pending = false;
+    setConversation(null);
+    setUsage(undefined);
+    setNativeError('');
+    const poll = async () => {
+      if (pending || document.visibilityState === 'hidden') return;
+      pending = true;
+      await Promise.allSettled([
+        native
+          ? api.getNativeConversation(id, { limit: 1 }).then(
+              (value) => {
+                if (!cancelled) {
+                  setConversation((previous) => replaceIfChanged(previous, value));
+                  setNativeError('');
+                }
+              },
+              (failure) => {
+                if (!cancelled) {
+                  setConversation(null);
+                  setNativeError(failure instanceof Error ? failure.message : '原生连接不可用');
+                }
+              }
+            )
+          : Promise.resolve(),
+        project && api.getProjectUsage
+          ? api.getProjectUsage(project.id).then(
+              (value) => {
+                if (!cancelled) setUsage((previous) => replaceIfChanged(previous, value));
+              },
+              () => {
+                if (!cancelled) setUsage(undefined);
+              }
+            )
+          : Promise.resolve(),
+      ]);
+      pending = false;
+    };
+    void poll();
+    const timer = window.setInterval(poll, 3000);
+    window.addEventListener('focus', poll);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+      window.removeEventListener('focus', poll);
+    };
+  }, [api, id, native, project?.id]);
+  if (!channel || !project)
+    return <EmptyState icon={<Hash />} title="频道不存在" description="请从项目中重新选择频道。" />;
+  const paused =
+    channel.autonomyEnabled === undefined ? ['paused', 'blocked'].includes(channel.status) : !channel.autonomyEnabled;
+  const running = channel.status === 'running';
+  const manualRunning = running && paused;
+  /** When the note was picked up: the earliest loaded turn of this channel that started after it. */
+  const noteReadAt = (createdAt: string) =>
+    runs
+      .filter((run) => run.channelId === id && run.startedAt && run.startedAt > createdAt)
+      .reduce((earliest, run) => (earliest && earliest <= run.startedAt ? earliest : run.startedAt), '');
+  // Newest first, then split so a long list cannot push the work log off the page: the newest few
+  // stay open, and so does anything still waiting to be read, wherever it sits. The rest fold —
+  // unless that is a single note, which costs more attention behind an entry than in the list.
+  const orderedNotes = [...notes].reverse();
+  const foldable = orderedNotes.filter((note, index) => index >= notesPreview && !!noteReadAt(note.createdAt));
+  const folded = new Set(foldable.length > 1 ? foldable.map((note) => note.id) : []);
+  const openNotes = orderedNotes.filter((note) => !folded.has(note.id));
+  const foldedNotes = orderedNotes.filter((note) => folded.has(note.id));
+  const noteRow = (note: WorkspaceEvent) => {
+    const readAt = noteReadAt(note.createdAt);
+    return (
+      <li key={note.id}>
+        <p className="channel-note-text">{note.text}</p>
+        <span className="channel-note-meta">
+          <time dateTime={note.createdAt || undefined}>{formatDate(note.createdAt)}</time>
+          <span>{readAt ? `已在 ${formatDate(readAt)} 的轮次读取` : '等下一轮读取'}</span>
+        </span>
+      </li>
+    );
+  };
+  const postNote = async (andRun: boolean) => {
+    const text = draft.trim();
+    if (!text || noteBusy) return;
+    setNoteBusy(true);
+    setNoteError('');
+    setNoteNotice('');
+    let saved: WorkspaceEvent;
+    try {
+      saved = await api.sendMessage(id, text);
+    } catch (failure) {
+      // The draft is the only copy of an unsaved note, so it stays in the box.
+      setNoteError(`留言未保存：${failureText(failure, '未知错误')}`);
+      setNoteBusy(false);
+      return;
+    }
+    setNotes((previous) => mergeNotes(previous, [saved]));
+    setDraft('');
+    if (!andRun) {
+      setNoteNotice('已留言，下一轮读取');
+      setNoteBusy(false);
+      return;
+    }
+    // The note is stored either way; only the turn can still be refused, and `onMutate` reports why.
+    const started = await onMutate(() => api.channelAction(id, 'run'));
+    if (started) setNoteNotice('已留言，正在开始一轮');
+    else setNoteError('已留言，但这一轮没有开始。');
+    setNoteBusy(false);
+  };
+  const nativeBusy = active(conversation);
+  // Approvals and follow-up questions raised inside the App are fetched with the conversation but were
+  // never shown: a round stuck on one of them looked like Codex was merely slow to answer.
+  const appRequests = (conversation?.requests || []).filter(
+    (request) => !['completed', 'resolved', 'cancelled', 'canceled', 'rejected'].includes(request.status)
+  );
+  const appRequestTitles = appRequests
+    .map((request) => request.title || request.type)
+    .filter(Boolean)
+    .join('、');
+  // The API keeps App availability even when a task sync error marks this conversation disconnected.
+  const unloaded =
+    native && !!conversation?.threadId && conversation.status.available && conversation.status.readyThreadCount === 0;
+  const nativeProblem = nativeError
+    ? connectionDetail(nativeError)
+    : native && conversation
+      ? !conversation.status.available
+        ? connectionDetail(conversation.status.detail)
+        : conversation.syncError
+          ? connectionDetail(conversation.syncError)
+          : !conversation.status.connected
+            ? connectionDetail(conversation.status.detail)
+            : ''
+      : '';
+  const unavailable = demo
+    ? '示例频道不能回答'
+    : !native
+      ? ''
+      : unloaded
+        ? '任务未在 Codex App 中打开，打开后才能继续或回答。'
+        : !ready(conversation)
+          ? '原生对话尚未就绪，暂时不能回答'
+          : !conversation?.status.capabilities.send
+            ? '当前不能发送到原生对话'
+            : nativeBusy
+              ? appRequests.length
+                ? 'Codex 在 App 里等你处理（审批/追问）'
+                : 'Codex 正在回应，请稍候'
+              : '';
+  const pendingReleases = (snapshot.releases || []).filter(
+    (row) => row.projectId === project.id && row.channelId === id && row.status === 'awaiting_approval'
+  );
+  const blocked = snapshot.items.filter(
+    (item) =>
+      item.status === 'blocked' &&
+      (!item.projectId || item.projectId === project.id) &&
+      (item.channelId === id || item.sourceChannelIds?.includes(id))
+  );
+  const reviewingRelease = releasesOpen && pendingReleases.length > 0;
+  // The account reserve line only holds Codex turns (`service/engine.ts` gates nothing else), so a
+  // Claude Code or Trae channel that the service would start must not be told it is waiting on 额度.
+  // `runtime` is the test, not `native`: a demo Codex channel keeps reading the same gate it always
+  // did, and a CLI-direct one is held by the same line because it spends the same account.
+  const usageGate = channel.runtime === 'codex' && usage?.gate.blocked && !usage.gate.pending ? usage.gate : undefined;
+  const needs =
+    !!channel.work?.awaitingReply ||
+    pendingReleases.length > 0 ||
+    blocked.length > 0 ||
+    appRequests.length > 0 ||
+    !!usageGate;
+  const needsLink = native && !!conversation && !conversation.threadId;
+  // A CLI-direct Codex channel needs the Codex CLI on the execution host, not the App. None of the
+  // App connection lines below apply to it, so this is the only place it can be told what is
+  // missing — and the answer is `codex login`, not an App to install and keep open.
+  const cliMissing =
+    !demo &&
+    channel.runtime === 'codex' &&
+    !usesApp(channel) &&
+    snapshot.runtimes.some((row) => row.id === 'codex' && !row.available);
+  const primary = manualRunning
+    ? 'pause'
+    : native && !conversation && !nativeError
+      ? 'loading'
+      : needsLink
+        ? 'link'
+        : nativeError || (native && conversation && !ready(conversation))
+          ? 'open'
+          : channel.work?.awaitingReply
+            ? 'answer'
+            : pendingReleases.length
+              ? 'release'
+              : blocked.length
+                ? 'blocked'
+                : paused
+                  ? 'resume'
+                  : runs.length
+                    ? 'latest'
+                    : 'none';
+  const openApp = () => void onMutate(() => api.openNativeApp(id));
+  const status = unloaded
+    ? '任务未就绪'
+    : channel.work?.awaitingReply
+      ? '等你回答'
+      : channel.usageWait && channel.status === 'waiting'
+        ? channelStatusLabel(channel)
+        : channel.status === 'running'
+          ? '工作中'
+          : paused
+            ? '已暂停'
+            : channel.nextRunAt
+              ? `等待到 ${formatDate(channel.nextRunAt)}`
+              : '等待继续';
+  return (
+    <div className="feature-layout">
+      <main className="feature-main channel-log">
+        <header className="channel-heading">
+          <div className="channel-title">
+            <Hash size={20} />
+            <h1>{channel.name}</h1>
+            <span className="channel-work-status">{status}</span>
+            {demo && <span className="feature-demo-label">示例数据</span>}
+          </div>
+          <div className="channel-actions">
+            {/* Until the section is open this is the page's one action; inside it, the step takes over. */}
+            {primary === 'loading' && <Button disabled>正在检测 App 连接…</Button>}
+            {primary === 'link' && (
+              <Button variant={linkOpen ? 'secondary' : 'primary'} disabled={busy} onClick={() => setLinkOpen(true)}>
+                关联 App 任务
+              </Button>
+            )}
+            {primary === 'open' && (
+              <Button variant="primary" disabled={busy} onClick={openApp}>
+                {unloaded ? '在 Codex App 中打开' : '在 Codex App 中打开对话'}
+              </Button>
+            )}
+            {primary === 'pause' && (
+              <Button
+                variant="primary"
+                disabled={busy || demo}
+                onClick={() => void onMutate(() => api.channelAction(id, 'pause'))}
+              >
+                <Pause size={13} /> 暂停
+              </Button>
+            )}
+            {primary === 'resume' && (
+              <Button
+                variant="primary"
+                disabled={busy || demo || (paused && (switching || (native && (!ready(conversation) || nativeBusy))))}
+                onClick={() => void onMutate(() => api.channelAction(id, paused ? 'resume' : 'pause'))}
+              >
+                <Play size={13} /> 继续工作
+              </Button>
+            )}
+            <Dropdown
+              trigger={
+                <Button variant="ghost" aria-label="频道选项">
+                  <MoreHorizontal size={16} />
+                </Button>
+              }
+            >
+              {/* A channel with no App task has no conversation to open; the demo one keeps the
+                  entry so the preview still shows it, disabled like every other demo action. */}
+              {primary !== 'open' && usesApp(channel) && (
+                <DropdownItem disabled={busy || demo} onSelect={openApp}>
+                  在 Codex App 中打开对话
+                </DropdownItem>
+              )}
+              <DropdownItem onSelect={() => onEditChannel(channel)}>调整方向</DropdownItem>
+              {/* Two neighbouring entries read as the same thing; this one only reads the current state back. */}
+              <DropdownItem onSelect={() => setSettingsOpen((value) => !value)}>当前方向与额度</DropdownItem>
+              <DropdownItem onSelect={() => onNavigate({ kind: 'project', id: project.id })}>项目看板</DropdownItem>
+              {primary !== 'resume' && primary !== 'pause' && (
+                <DropdownItem
+                  disabled={busy || demo || (paused && (switching || (native && (!ready(conversation) || nativeBusy))))}
+                  onSelect={() => void onMutate(() => api.channelAction(id, paused ? 'resume' : 'pause'))}
+                >
+                  {paused ? '继续工作' : '暂停'}
+                </DropdownItem>
+              )}
+            </Dropdown>
+          </div>
+        </header>
+        {settingsOpen && (
+          <section className="channel-settings-summary" aria-label="当前方向与额度">
+            <h2>当前方向与额度</h2>
+            <p>{channel.goal}</p>
+            <span>
+              {usage?.budget
+                ? `本项目 ${usageWindowLabel(usage.budget.window)} · 估算已用 ${usage.project?.usedPercent ?? '未知'}% / 上限 ${usage.budget.limitPercent}%`
+                : usage
+                  ? '本项目未设置额度上限'
+                  : '项目额度信息未知'}
+            </span>
+            <span>
+              {usage?.reading && !usage.stale
+                ? usage.reading.windows.map((w) => `账户${usageWindowLabel(w.name)} 已用 ${w.usedPercent}%`).join(' · ')
+                : '账户额度未知'}
+            </span>
+            <p>
+              复查间隔 {channel.intervalMinutes} 分钟 · 每日上限 {channel.maxRunsPerDay} 轮
+            </p>
+            <Button variant="ghost" onClick={() => setSettingsOpen(false)}>
+              收起
+            </Button>
+          </section>
+        )}
+        {channel.appResume && (
+          <details className="channel-app-resume">
+            <summary>{appResumeLabel[channel.appResume.state]}</summary>
+            <p>{channel.appResume.reason}</p>
+          </details>
+        )}
+        {!channel.work?.awaitingReply && channel.work && (
+          <div className="channel-next-step">
+            <span>下一步</span>
+            <p>
+              {channel.work.state === 'needs_input'
+                ? // A bounded turn is over: the answer waits for the next one rather than reaching a
+                  // task that is still open, so nothing is continuing right now.
+                  usesApp(channel)
+                  ? '已回答，等待 Codex 继续'
+                  : '已回答，等待下一轮'
+                : questionExcerpt(channel.work.nextStep, 120)}
+            </p>
+          </div>
+        )}
+        <p className="channel-stage-hint" role={nativeProblem || cliMissing ? 'alert' : undefined}>
+          {channel.work?.focus && <strong>{channel.work.focus} · </strong>}
+          {manualRunning
+            ? '本轮进行中，结束后频道保持暂停。'
+            : nativeProblem ||
+              (cliMissing
+                ? '本频道直连 Codex CLI：请在执行主机安装 Codex CLI 并运行 codex login，不需要 Codex App。'
+                : unloaded
+                  ? '任务未在 Codex App 中打开。请先打开已关联任务，继续和回答暂不可用。'
+                  : needsLink
+                    ? '先关联在 Codex App 创建的任务。'
+                    : primary === 'open'
+                      ? '请先在 Codex App 恢复连接。'
+                      : channel.work?.awaitingReply
+                        ? '请先回答下方问题。'
+                        : pendingReleases.length
+                          ? '有待批准版本，请先查看变更与风险。'
+                          : blocked.length
+                            ? '有事项受阻，请查看下一步。'
+                            : paused
+                              ? '准备好后继续工作。'
+                              : '最新进展在下方，更多信息按需展开。')}
+        </p>
+        {needsLink && (
+          <details
+            className="channel-link-task"
+            open={linkOpen}
+            onToggle={(event) => setLinkOpen(event.currentTarget.open)}
+          >
+            {/* The header carries the primary action; this section is where the choice is made. */}
+            <summary>选择要关联的任务</summary>
+            <p>在 Codex App 为同一目录创建任务并发送首条消息，再选择关联。</p>
+            {!!project.path && <p className="subtle">本项目目录：{project.path}</p>}
+            <Button
+              variant={linkOpen && !threadId && !reviewingRelease ? 'primary' : 'secondary'}
+              disabled={busy}
+              onClick={() =>
+                void onMutate(async () => {
+                  setThreadError('');
+                  try {
+                    const result = await api.listNativeThreads(id);
+                    const sorted = sortThreads(result.threads, project.path);
+                    const matching = sorted.filter((thread) => sameDirectory(thread.cwd, project.path));
+                    setThreads(sorted);
+                    // A read that found nothing usable must say so; silence looked like a broken button.
+                    setThreadNotice(
+                      !sorted.length
+                        ? project.path
+                          ? `没有找到目录为 ${project.path} 的任务：请在 Codex App 里对这个目录新建任务并发一条消息，再读取。`
+                          : '没有读取到任务：请在 Codex App 里新建任务并发一条消息，再读取。'
+                        : !matching.length && project.path
+                          ? `读取到 ${sorted.length} 个任务，但没有目录为 ${project.path} 的任务：请在 Codex App 里对这个目录新建任务并发一条消息，再读取。`
+                          : `读取到 ${sorted.length} 个任务`
+                    );
+                    setThreadId(matching[0]?.id || '');
+                  } catch (failure) {
+                    setThreads([]);
+                    setThreadNotice('');
+                    setThreadError(failure instanceof Error ? failure.message : '读取 App 任务失败');
+                  }
+                })
+              }
+            >
+              读取已有任务
+            </Button>
+            <select aria-label="已有 App 任务" value={threadId} onChange={(event) => setThreadId(event.target.value)}>
+              <option value="">选择任务</option>
+              {threads.map((thread) => (
+                <option key={thread.id} value={thread.id}>
+                  {thread.title || thread.id} · {thread.cwd || '目录未提供'}
+                </option>
+              ))}
+            </select>
+            <Button
+              variant={linkOpen && !!threadId && !reviewingRelease ? 'primary' : 'secondary'}
+              disabled={busy || !threadId}
+              onClick={() =>
+                void onMutate(async () => {
+                  setConversation(await api.bindNativeThread(id, threadId));
+                })
+              }
+            >
+              关联选中任务
+            </Button>
+            {threadNotice && <p role="status">{threadNotice}</p>}
+            {threadError && (
+              <p role="alert" className="feature-inline-error">
+                {threadError}
+              </p>
+            )}
+          </details>
+        )}
+        <div className="feature-scroll channel-log-scroll">
+          {needs && (
+            <section className="channel-needs" aria-label="需要你">
+              <h2>需要你</h2>
+              {channel.work?.awaitingReply && (
+                <>
+                  <ChannelQuestion
+                    key={`question:${id}:${channel.work.runId}`}
+                    channelId={id}
+                    work={channel.work}
+                    api={api}
+                    label={`${runtimeLabel(channel.runtime)} 需要你回答`}
+                    busy={busy}
+                    unavailable={unavailable}
+                    // A bounded-turn channel answers through the composer at the bottom of the page,
+                    // the only reply path it has: the box in here sends to the App, which would
+                    // refuse it.
+                    readOnly={notesEnabled}
+                    autoFocus={entryQuestion.current?.present}
+                    primaryAction={primary === 'answer' && !reviewingRelease}
+                    onShowConversation={usesApp(channel) ? openApp : undefined}
+                  />
+                  {notesEnabled && (
+                    <p className="channel-needs-note">
+                      在下方留言框回答，然后点「留言并运行一轮」；只留言不会开始运行。
+                    </p>
+                  )}
+                </>
+              )}
+              {!!pendingReleases.length && (
+                <details open={reviewingRelease} onToggle={(event) => setReleasesOpen(event.currentTarget.open)}>
+                  <summary className={primary === 'release' && !reviewingRelease ? 'log-primary-action' : undefined}>
+                    待确认上线 · {pendingReleases.map((row) => row.title).join('、')}
+                  </summary>
+                  {reviewingRelease && (
+                    <ProjectReleases
+                      {...props}
+                      snapshot={{ ...snapshot, releases: pendingReleases }}
+                      projectId={project.id}
+                    />
+                  )}
+                </details>
+              )}
+              {!!appRequests.length && (
+                <p className="channel-needs-note">
+                  <span>
+                    Codex 在 App 里等你处理（审批/追问）
+                    {appRequestTitles ? ` · ${appRequestTitles}` : ''}
+                  </span>
+                  <Button variant="ghost" disabled={busy || demo} onClick={openApp}>
+                    在 Codex App 中打开
+                  </Button>
+                </p>
+              )}
+              {usageGate && (
+                <p className="channel-needs-note">
+                  <span>{usageGate.message}</span>
+                </p>
+              )}
+              {!!blocked.length && (
+                <ul>
+                  {blocked.map((item, index) => (
+                    <li key={item.id}>
+                      <Button
+                        variant={primary === 'blocked' && index === 0 && !reviewingRelease ? 'primary' : 'ghost'}
+                        onClick={() => onNavigate({ kind: 'finding', id: item.id })}
+                      >
+                        被阻塞 · {item.title}
+                      </Button>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </section>
+          )}
+          {notesEnabled && (
+            <section className="channel-notes" aria-label="留言">
+              <h2>留言</h2>
+              {orderedNotes.length ? (
+                <>
+                  <ul className="channel-note-list">{openNotes.map(noteRow)}</ul>
+                  {!!foldedNotes.length && (
+                    <details
+                      className="channel-notes-earlier"
+                      open={notesExpanded}
+                      onToggle={(event) => setNotesExpanded(event.currentTarget.open)}
+                    >
+                      <summary>{`更早的留言 · ${notesExpanded ? '' : '还有 '}${foldedNotes.length} 条`}</summary>
+                      {notesExpanded && (
+                        <ul className="channel-note-list" aria-label="更早的留言">
+                          {foldedNotes.map(noteRow)}
+                        </ul>
+                      )}
+                    </details>
+                  )}
+                </>
+              ) : (
+                <p className="subtle">{notesError || '还没有留言。留言会在下一轮开始时随上下文交给 CLI。'}</p>
+              )}
+            </section>
+          )}
+          <div className="channel-log-heading">
+            <h2>工作日志</h2>
+          </div>
+          {error && (
+            <p role="alert" className="feature-inline-error">
+              {error}
+              <Button onClick={() => void load(cursor)}>重试轮次</Button>
+            </p>
+          )}
+          {!runs.length && (
+            <p className="subtle">{loading ? '正在读取轮次…' : '还没有轮次记录。后续工作会在这里按轮次保留。'}</p>
+          )}
+          {mergeRuns(
+            [],
+            runs.filter((run) => run.channelId === id)
+          ).map((run, index) => (
+            <LogEntry
+              key={`${id}:${run.id}`}
+              run={run}
+              api={api}
+              currentWork={channel.work?.runId === run.id ? channel.work : undefined}
+              onNavigate={onNavigate}
+              primaryAction={primary === 'latest' && index === 0 && !reviewingRelease}
+              questionAbove={!!channel.work?.awaitingReply && channel.work.runId === run.id}
+            />
+          ))}
+          {hasMore && (
+            <Button disabled={loading} onClick={() => void load(cursor)}>
+              {loading ? '正在读取…' : '加载更早轮次'}
+            </Button>
+          )}
+          <details className="channel-audit">
+            <summary>频道审计记录</summary>
+            <ChannelAudit id={id} api={api} snapshot={snapshot} />
+          </details>
+        </div>
+        {notesEnabled && (
+          <div className="message-composer">
+            <div className="composer-box">
+              <textarea
+                aria-label="给频道留言"
+                placeholder={
+                  channel.work?.awaitingReply ? '回答上一轮的问题，或补充背景…' : '补充背景，或给下一轮指明方向…'
+                }
+                value={draft}
+                onChange={(event) => setDraft(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) {
+                    event.preventDefault();
+                    void postNote(false);
+                  }
+                }}
+              />
+              <div className="composer-footer">
+                <span>
+                  {/* A waiting question comes first: the channel is stopped anyway, and what this
+                      box is for right now is the answer, which only a turn will deliver. */}
+                  {channel.work?.awaitingReply
+                    ? '上一轮在等你回答：留言后点「留言并运行一轮」'
+                    : running
+                      ? '本轮进行中不会读取，下一轮读取'
+                      : paused
+                        ? '频道已暂停，留言会在下一轮读取'
+                        : channel.nextRunAt
+                          ? `将在下一轮（${formatDate(channel.nextRunAt)}）读取`
+                          : '将在下一轮读取'}
+                </span>
+                <div className="composer-actions">
+                  <Button
+                    variant="primary"
+                    disabled={busy || noteBusy || !draft.trim()}
+                    onClick={() => void postNote(false)}
+                  >
+                    留言
+                  </Button>
+                  {/* The service refuses a turn that is already running or caught by the handover. */}
+                  <Button
+                    variant="secondary"
+                    disabled={busy || noteBusy || !draft.trim() || running || switching}
+                    onClick={() => void postNote(true)}
+                  >
+                    留言并运行一轮
+                  </Button>
+                </div>
+              </div>
+            </div>
+            <span className="composer-hint">⌘ Enter 留言 · 留言本身不会开始运行</span>
+            {noteError && (
+              <p role="alert" className="feature-inline-error">
+                {noteError}
+              </p>
+            )}
+            {noteNotice && (
+              <p role="status" className="composer-hint">
+                {noteNotice}
+              </p>
+            )}
+          </div>
+        )}
+      </main>
+    </div>
+  );
 }

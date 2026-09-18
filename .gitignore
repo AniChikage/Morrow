@@ -2,7 +2,7 @@
 .swiftpm/
 dist/
 .DS_Store
-node_modules/
+node_modules
 out/
 *.sqlite
 *.sqlite-shm
@@ -13,3 +13,5 @@ artifacts/
 .env.*
 !.env.example
 *.log
+.morrow/
+/release-manifest.json

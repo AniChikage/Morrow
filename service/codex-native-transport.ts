@@ -1,63 +1,71 @@
-import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
-import { EventEmitter } from 'node:events';
-import { StringDecoder } from 'node:string_decoder';
-import { homedir } from 'node:os';
-import { CodexSharedTransport, type RpcSocket } from './codex-shared-transport.ts';
-import { NativeDesktopError } from './codex-desktop-transport.ts';
-import { runtimePath } from './runtimes.ts';
+import { CodexDesktopTransport } from './codex-desktop-transport.ts';
+import { CodexUsageReader } from './codex-usage.ts';
+import type { NativeTransport, NativeSnapshot, NativeWorkOptions } from './native-conversations.ts';
 
-/** JSON-RPC over a CLI child owned by Morrow. Never controls App processes. */
-class CliSocket extends EventEmitter implements RpcSocket {
-  readyState = 0;
-  child: ChildProcessWithoutNullStreams;
-  constructor(executable: string, env: NodeJS.ProcessEnv) {
-    super();
-    this.child = spawn(executable, ['app-server', '--listen', 'stdio://'], { cwd: homedir(), env, stdio: ['pipe', 'pipe', 'pipe'] });
-    const decoder = new StringDecoder('utf8');
-    let buffer = '';
-    this.child.once('spawn', () => { if (this.readyState === 0) { this.readyState = 1; this.emit('open'); } });
-    this.child.on('error', error => this.emit('error', error));
-    this.child.stdin.on('error', error => this.emit('error', error));
-    this.child.stderr.resume(); // Drain diagnostics without exposing credentials or retaining unbounded logs.
-    this.child.stdout.on('data', chunk => {
-      buffer += decoder.write(chunk);
-      let end: number;
-      while ((end = buffer.indexOf('\n')) >= 0) {
-        const line = buffer.slice(0, end); buffer = buffer.slice(end + 1);
-        if (line.trim()) this.emit('message', line);
-      }
-      if (Buffer.byteLength(buffer) > 256 * 1024 * 1024) {
-        this.emit('error', new Error('Codex CLI 消息超过读取上限。')); this.terminate();
-      }
-    });
-    this.child.once('close', () => { this.readyState = 3; this.emit('close'); });
+/** Follows tasks owned by the App. Never replaces its executable, server, or task ownership. */
+export class CodexNativeTransport implements NativeTransport {
+  readonly connectionMode = 'app-follower' as const;
+  readonly desktop: CodexDesktopTransport;
+  private readonly usage: CodexUsageReader;
+  constructor(desktop = new CodexDesktopTransport(), usage = new CodexUsageReader()) {
+    this.desktop = desktop;
+    this.usage = usage;
   }
-  send(data: string, callback?: (error?: Error | null) => void) {
-    if (this.readyState !== 1) { callback?.(new Error('Codex CLI 未连接。')); return; }
-    this.child.stdin.write(`${data}\n`, callback);
+  get backgroundReady() {
+    return this.desktop.status().connected;
   }
-  terminate() {
-    if (this.readyState >= 2) return;
-    this.readyState = 2;
-    this.child.stdin.end();
-    this.child.kill('SIGTERM'); // Only our child; never pkill, App IPC, or an external task.
+  async connect() {
+    return this.desktop.connect();
   }
-}
-
-export class CodexNativeTransport extends CodexSharedTransport {
-  readonly executionBackend = 'cli' as const;
-  constructor(options: { executable?: string; env?: NodeJS.ProcessEnv; timeoutMs?: number } = {}) {
-    super({ timeoutMs: options.timeoutMs, createSocket: () => {
-      const executable = options.executable || runtimePath('codex');
-      if (!executable) throw new NativeDesktopError('未找到 Codex CLI，请在终端安装并运行 codex login。', 'cli_unavailable');
-      const env = { ...process.env, ...options.env };
-      delete env.CODEX_CLI_PATH; // Retired App bridge override is not CLI configuration.
-      return new CliSocket(executable, env);
-    } });
+  status() {
+    return this.desktop.status();
   }
-  get backgroundReady() { return !!this.status().connected; }
-  override threadStatus(id: string) {
-    const value = super.threadStatus(id);
-    return { ...value, detail: this.error || (value.ready ? '已连接 Codex CLI。' : '正在恢复 Codex CLI 任务。') };
+  threadStatus(id: string) {
+    return this.desktop.threadStatus(id);
+  }
+  listThreads(cwd: string) {
+    return this.desktop.listThreads(cwd);
+  }
+  readThread(id: string) {
+    return this.desktop.readThread(id);
+  }
+  loadCompleteHistory(id: string) {
+    return this.desktop.loadCompleteHistory(id);
+  }
+  subscribeChanges(id: string, listener: (snapshot: NativeSnapshot, change: any) => void) {
+    return this.desktop.subscribeChanges(id, listener);
+  }
+  subscribe(id: string, listener: (snapshot: NativeSnapshot) => void) {
+    return this.desktop.subscribe(id, listener);
+  }
+  readUsage() {
+    return this.usage.read();
+  }
+  sendMessage(
+    id: string,
+    text: string,
+    requestId?: string,
+    images?: Array<{ path: string }>,
+    workOptions?: NativeWorkOptions
+  ) {
+    return this.desktop.sendMessage(id, text, requestId, images, workOptions);
+  }
+  interrupt(id: string, turnId: string) {
+    return this.desktop.interrupt(id, turnId);
+  }
+  compact(id: string) {
+    return this.desktop.compact(id);
+  }
+  respond(
+    id: string,
+    requestId: string | number,
+    kind: 'command' | 'file' | 'permissions' | 'userInput' | 'mcp',
+    response: unknown
+  ) {
+    return this.desktop.respond(id, requestId, kind, response);
+  }
+  close() {
+    this.desktop.close();
+    this.usage.close();
   }
 }

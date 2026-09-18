@@ -9,5 +9,4 @@ export interface FeatureProps {
   onNewChannel: (projectId: string) => void;
   onNewFeature: (projectId: string) => void;
   onEditFeature: (item: WorkItem) => void;
-  showInspector: boolean;
 }

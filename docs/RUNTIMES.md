@@ -2,24 +2,86 @@
 
 [文档首页](README.md) · [连接与安装](GETTING-STARTED.md) · [服务配置](../service/README.md)
 
-| 运行时 | 当前集成方式 | 适用范围 |
+Morrow 支持三种运行时。Codex 频道还要选一种**执行方式**（频道行上的 `transport`，缺省视为 `app`，已有频道无需迁移）：`app` 通过 App 本地 IPC 作为 follower 发送轮次，复用 App 已创建并加载的任务，登录、模型、工具和实际权限继续由 App 管理；`cli` 直连本机 Codex CLI，每轮起一次 `codex exec`，不连接 App。旧 `CODEX_CLI_PATH` 转接方案已退役，两种方式都不使用共享后台转接程序。Claude Code 与 Trae 频道不连接 App，用本机已登录的 CLI 执行有界轮次。**CLI 直连的 Codex 频道与 Claude Code / Trae 频道同级**（没有应用内浏览器、Computer Use、App 动态工具和 App 审批，权限只有只读或工作区写入）；有 grant 的 CLI 轮次通过主机侧 Morrow MCP 使用工作接口，沙箱内命令仍然不联网。选择哪一种由每个频道单独决定，服务端只允许 Codex 频道带这个字段，且轮次进行中不能切换；切换会清空会话 ID（App 线程 ID 与 `codex exec` 会话 ID 共用同一字段），并写一条系统事件。已绑定 App 任务的频道不能切走，需要新建频道。
+
+| 运行时 | 执行方式 | 权限映射 |
 | --- | --- | --- |
-| **Codex** | 直接运行 `codex app-server --listen stdio://` | 执行主机上的任务创建与恢复、连续对话、运行中指导、工具记录、受支持的审批/提问/图片；自动工作复用同一任务。 |
-| **Claude Code** | 已安装 CLI 的非交互调用与会话恢复 | 受限文件读取与编辑；当前适配器不开放 Bash，不能执行测试命令。 |
-| **Trae** | `traex exec` / `exec resume` | 有界 CLI 工作、会话恢复、只读或工作区沙箱。 |
+| Codex（`transport: app`，默认） | Codex App follower：复用 App 中已关联并打开的任务 | 默认沿用 App 设置（`native`），也可收紧为只读或工作区写入沙箱 |
+| Codex（`transport: cli`） | 与下面 Trae 同形的一次 `codex exec`，并注入主机 Morrow MCP：`exec [resume <id>] --json --skip-git-repo-check -c sandbox_mode=… -c approval_policy="never" -c sandbox_workspace_write.network_access=false -c mcp_servers.morrow.… -c mcp_servers.morrow.default_tools_approval_mode="approve" --output-last-message <file> [--sandbox …] [--model …]`，提示从 stdin 进入 | 只读或工作区写入沙箱，沙箱内命令不联网；**没有 `native`**——没有 App 设置可沿用，服务端对该组合返回 400 |
+| Claude Code | `claude -p` 一次有界轮次：`--print --verbose --output-format stream-json --setting-sources user --strict-mcp-config --mcp-config <Morrow-only> --tools <T> --allowedTools <T>,mcp__morrow__call --permission-mode <M> --name Morrow:<runId>`，有模型加 `--model`，有会话加 `--resume`；提示从 stdin 进入。不使用 `--safe-mode`（它会丢掉 `--mcp-config`）。复核仍是 `--safe-mode` + 空 MCP | 只读 → `Read,Grep,Glob` + `dontAsk`；工作区写入 → 另加 `Edit,Write,MultiEdit,NotebookEdit,Bash` + `acceptEdits`。**工作区写入包含命令执行，且这些命令不在 Morrow 的沙箱内运行**，边界由提示词和项目目录约定，不是系统级隔离 |
+| Trae | `traex exec --json …` / `exec resume <id>`，`--output-last-message` 取最终答复 | 只读或工作区写入沙箱，`approval_policy="never"`，沙箱内命令不联网 |
 
-Morrow 从执行主机的 PATH 和常用 CLI 安装目录寻找 `codex`，通过其官方 app-server 接口通信。该进程由 Morrow 自己启动，不查找或唤醒 Codex App，不修改 App 启动参数。登录、模型、MCP 和工具配置来自 CLI。协议不兼容或发送结果不明确时保留真实错误与历史，不自动重发；恢复已有任务必须使用其原 ID，找不到时不偷偷创建替代任务。
+CLI 轮次的共同边界：单轮 45 分钟上限（`cliTurnMinutes`，超时即 SIGTERM 中断并暂停频道），stdout/stderr 合计 20 MiB，组装提示 1 MiB。有 grant 时通过主机 Morrow MCP 写看板（省略 `morrow-report` schema）；没有 grant 时可选的 `morrow-report` 代码块仍是看板写入口。轮次提示会写明这个时限、以及超时轮次没有汇报也不会更新看板，并像原生轮次一样列出工作树里未提交的文件。在频道页留下的留言以 `humanNotes` 随同一份上下文进入下一轮，其中上一轮开始之后留下的那几条带 `new` 标记，提示词要求本轮处理并在汇报中回应，其余是仍然适用的既往交代；留言本身不会开始一轮，要立刻跑就用页面上的「留言并运行一轮」。一轮汇报 `needsHuman` 时自动调度停止、频道置为 blocked，报告摘要就是它要问的问题：服务把它存成频道的 `needs_input` 判断并标记等待回答，频道页在「需要你」里按原文显示，那里只读——CLI 频道没有原生对话可答，答案写在页面底部的留言框，再点「留言并运行一轮」跑下一轮；回答本身不恢复自主运行，要恢复得点「继续工作」。下一轮开始时等待回答的标记即被清除，答案作为带 `new` 标记的留言、连同上一轮的摘要（也就是那个问题）一起进入提示，不额外增加任何提示内容。工作轮次的 Claude 隔离是 `--strict-mcp-config` + Morrow-only `--mcp-config` + `--setting-sources user`（跳过项目/local 的 hooks 与 CLAUDE.md），**不能**等价于 `--safe-mode`：user 级插件/技能/hooks 仍可能加载。`--safe-mode` 会丢掉注入的 MCP，因此只留在复核路径。
 
-旧版的 App 绑定与历史保留在原 SQLite 中，同一 CODEX_HOME 下的持久任务可通过 CLI 按原 ID 恢复。桌面 App 专属配置不会复制到 CLI，也不再承诺两端实时同步。尚未持久化的空任务或旧的 App 托管图片可能需要重新创建或添加；有历史的任务不会自动替换。
+工作日志只保留一轮里可读的部分：Claude Code 每秒一条的 `system/thinking_tokens`、`tool_progress`、只含 thinking 块的 assistant 消息，以及 `rate_limit_info.status` 以 `allowed` 开头的 `rate_limit_event`（每轮都有，只是说账户没问题），都被跳过；`system/init` 收敛成一行「会话已开始 · 模型 … · 权限 … · 工具 …」。跳过的行只写进该轮的 `stdout.jsonl`，不产生事件，也**不进入失败诊断**——诊断的配额规则会命中 `rate_limit_event` 字面量本身，读它会把每一次因别的原因失败的 Claude 轮次都报成「配额不足」。其余状态（`rejected`、缺失、无法识别）不跳过，会以「速率限制：<status>（<窗口>）」一行留在日志里，并照常参与失败诊断。
 
-普通 Codex 对话沿用原生设置。自动工作会核对频道范围，再应用相应沙箱与原生自动审查；这些轮次设置可能延续到后续对话。Claude/Trae 的人工备注进入后续工作上下文，目前没有与 Codex 相同的实时对话能力。「CLI 就绪」只表示可执行文件与选项可用，登录和额度以实际运行结果为准。
+**工作接口**：有 grant 的 CLI 轮次（Codex `transport: cli`、Claude Code、Trae）通过主机 stdio MCP 调用同一套 `agent-cli.ts`（`release.propose`、`memory.search` 等）。凭证留在 `agent-context.json`，沙箱保持 `network_access=false`。**不能批准上线**（`release.approve` 与桌面审阅路由对 grant 仍是 400/401）。`evidence.native` / `execution.prepare` 没有绑定的 App 任务时返回 409。发布级复核对 CLI 频道接受 file/http 采集证据（`evidence.capture` / 观测），由独立复核者在隔离检出里重跑检查，不要求、也不接受伪造的 `execution.prepare` 输出；走 App 任务的频道仍要绑定当前源版本的 execution 证据。没有 grant 的一轮仍可用可选报告维护看板。**独立复核不与执行者同一运行时**：这两种运行时汇报的 verified/resolved 与 Codex 频道一样，先进入一次独立复核，通过后才算数——有工作接口的一轮也可以自己 `verification.request`，报告入口仍会由服务排队。事项先留在调查中，服务把本轮的报告条目、最终答复和它为这一轮记录的工具调用存成一条证据，据此排一次只读复核，并把所报状态挂在这次复核上：通过就自动落到 verified/resolved，不必再跑一轮；未通过则事项留在调查中，下一步和工作日志写明先处理哪条复核发现，源码没有变化之前不会再买一次复核。复核走哪个运行时由 `WorkVerification.reviewRunner` 决定：执行者是 Codex（App follower 或 codex-cli）时用 Claude Code 复核，执行者是 Claude Code 时用 Codex 复核，Trae 与 Codex 同样优先用 Claude Code；目标运行时没装在本机就回退到 Codex 复核。走 Claude Code 的复核不花 Codex 账户，因此**不受 Codex 额度门禁**（保留线、项目预算、账户用尽）约束；它自己的额度用尽只让这一行复核等待重试，不会停下任何 Codex 轮次。走 Codex 的复核和以前一样，保留线挡住时与别的复核一起等额度。实际用了哪个运行时记在复核行的 `executionOwner`（`codex-cli` / `claude-cli`）上，界面的复核记录也据此显示会话来源。材料中的 `report` 与 `finalOutput` 标为模型自述；`recordedTools` 则标明由 Morrow 从 CLI 事件流记录（`recordedBy: morrow-cli-stream`），非模型自述，但无退出码与版本绑定，不能当作原生执行证据。CLI 提示词限定 verified/resolved 只用于只读环境能独立重现的文件、静态检查或 Git 历史事实，测试和构建结果只作为附带证据，不作为 verified 的依据。这次复核在下一次调度心跳就开始，不要求频道开着持续运行——有界轮次的频道平时是暂停的（「留言并运行一轮」就是一次手动运行），而请求它的那一轮已经结束、也已经付过了。这个判断按**传输方式**而不是运行时来做：CLI 直连的 Codex 频道处境和 Claude Code 频道完全一样，按运行时判断会让它的复核永远不开始，同时 `Engine.start` 的待复核门禁把整个项目的手动运行 409 掉。只有走 App 任务的频道保留原来的控制位判断。账户保留线按住复核时，等待只落在复核这一行上：额度门禁读的是 Codex 账户，Claude Code 与 Trae 频道本来就不花它，照常继续运行；等待期间源码若发生变化，这次复核真正开始时会因材料已过期判为 unknown，下一次 verified/resolved 声明带着新材料重新请求。**额度门禁与用量归因按运行时判断，只对 Codex 生效**（读数来自 Codex 账户），对走 Claude Code 的复核同样不生效；CLI 直连的 Codex 轮次照样花这份额度，因此照样受保留线、项目预算和账户用尽约束，用量也照常归因到运行记录。每日运行次数上限对所有运行时生效。
+
+CLI 安装检测不等于登录或配额验证。登录失效时，运行时页与失败轮次分别提示 `codex login`、`claude auth login`、`traex login`。运行时页的 Codex 行在有 CLI 直连频道时会把这半边（可执行文件路径、账号登录、执行权限）重新显示出来——平时它被 App 连接状态取代，但直连频道需要的是本机的 `codex login`，不是装 App。频道页同理：CLI 直连频道检测不到 Codex CLI 时提示装 CLI 并 `codex login`，不提示关联 App 任务。
+
+## 连接
+
+运行时页的四步是：App 已安装 → App 已连接 → 任务已关联 → 关联任务可用。先在 Morrow 添加项目目录，再在 Codex App 为同一目录创建任务、发送首条消息并保持打开，最后回到频道关联。Morrow 暂不直接新建 App 任务；项目管理、看板、持续调度和既有任务内的连续轮次仍由 Morrow 负责。
+
+**这四步只属于走 App 任务的频道。** CLI 直连的频道不出现在「去关联任务」「在 Codex App 中打开」的候选里，频道页也没有关联、打开、App 续跑和「任务未加载」这些区块；它需要的是执行主机上装好 Codex CLI 并 `codex login`，服务端对它的 `/api/channels/:id/native/*` 请求返回 409。
+
+App 必须保持运行。连接不兼容、任务未加载或发送回执不明确时，保留历史与未知回执，不自动另建任务或盲目重发。App 升级后需要验证其内部 IPC 兼容性。运行时页显示已安装 App 与 CLI 的版本，不把 CLI 版本冒充 IPC 未提供的后台握手版本。
+
+服务启动会清理与自身旧安装精确匹配的 Morrow/NoHuman 转接环境变量和登录项，不修改其他自定义路径，不终止 App。若旧转接进程仍随当前 App 运行，自动工作暂不启动，界面提示当前任务结束后重开 App。旧安装记录仍可通过「清理旧转接设置」处理；旧启用接口返回已退役错误。
+
+## 权限与独立复核
+
+新的 Codex 频道默认「沿用 App 设置」：普通消息和自动轮次都不附带新的权限或审批策略，不自动提升为完整访问。要让任务访问本机工作接口、联网或使用原生工具，请在 App 中配置适当权限。此前工作区断网导致本机 HTTP 工作接口失败的观察仍然有效，不能据此悄悄提升权限。
+
+「沿用 App 设置」要求真的有一个 App 任务可沿用，因此它只属于 `transport: app` 的频道：CLI 直连的频道默认工作区写入，只能在只读和工作区写入之间选，服务端对 `native` + `cli` 的组合在建频道和改频道时都返回 400，命令行拼装（`invocation`）也按同一个问题判断，不会给这种频道 `danger-full-access`。
+
+已有只读和工作区写入选项保留，自动轮次分别发送明确的只读或工作区写入沙箱，以及 `on-request` / `auto_review`；启动前仍检查现有范围。App 会合并保留的工作区及可视化目录，不能把传入 `writableRoots` 当作精确的最终目录清单。明确发送的设置可能延续到后续轮次，普通聊天也应以 App 当前设置为准。
+
+独立复核使用官方 `codex exec` 的一次性会话：`approval_policy="never"`、`--ephemeral`、`--ignore-user-config`、关闭 Web 搜索，不携带执行者的 Morrow grant 或 App 本地工具管道。沙箱看它跑在哪里：在共享的项目目录里跑时是 `--sandbox read-only`，与以前逐字一致；在下面说的一次性隔离检出里跑时是 `--sandbox workspace-write` 外加 `-c sandbox_workspace_write.network_access=false`，也就是**可写范围仅限那个用完即删的检出，并且仍然不能联网**（`read-only` 本来隐含断网，换成可写沙箱后必须显式关掉）。它检查源文件、原始证据和命令记录，不承诺浏览器或 App 动态工具能力。实际工具记录、正常完成事件和 CLI 成功退出必须同时满足；失败、输出超限或文件变更均不能判为通过。服务关闭或被强制结束时，独立 supervisor 会停止自己拥有的 CLI 进程组；单次时长以复核记录自己的上限为准（事项 5 分钟、上线 8 分钟），supervisor 只在其后兜一个 15 分钟硬上限，防住异常的超时值。复核不使用或修改原执行任务。
+
+走 Claude Code 的复核是一次有界的 `claude --print` 轮次（`service/claude-cli-review.ts`），命令行与只读 CLI 频道同形：`--output-format stream-json --safe-mode --strict-mcp-config --mcp-config '{"mcpServers":{}}' --permission-mode dontAsk --name Morrow:review-<复核 ID>`，提示从 stdin 进入，不加载 MCP，不带执行者的 Morrow grant 或 App 工具管道，与 Codex 复核共用同一个 supervisor 处理取消、硬超时和父服务退出。工具表只有 `Read,Grep,Glob`；只有在一次性隔离检出里才追加 `Bash`，因为那里的写入随检出一起丢弃。工具调用按调用名与参数记成 `commandExecution` 观察（CLI 不给数字退出码：未标记为错误的结果记 0，标记为错误的记 1），最终答复来自 CLI 的 `result` 行，结论仍只从那段 `morrow-verification` 代码块解析；因为不提供写入类工具，复核不会产生 `fileChange` 观察，检出内命令写的文件也不当作越权。CLI 必须既报告成功结果又成功退出，且给出会话 ID，否则保留未知。
+
+**Claude Code 跑不起来时回退到 Codex 复核，而不是判 unknown。** 安装检测不等于登录有效，而复核是事项唯一的认证通道：一次掉登录会让所有事项停在调查中，看起来还像是复核给出的结论，人会去追查复核内容而不是去重新登录。因此当这次复核以「运行时不可用」结束——子进程起不来（ENOENT / spawn 失败 / 找不到命令）、登录失效（失败诊断的最高优先级那条）、或者 stdout 不是合法 JSONL 以致一条观察都没解析出来——Morrow 在同一次启动里改用 Codex 运行器重跑这一次复核，复用同一份隔离检出，把 `executionOwner` 记成真正执行的那个，并写一条 `verification.runtime-unavailable` 事件说明这是本机环境问题。回退只有一次，也只有这一个方向：Codex 再失败就照常保留未知。真正跑起来了的复核仍然是它自己的结果——额度用尽照旧等额度重试，「CLI 未正常完成」照旧是未知。因为回退之后要花 Codex 额度，它会重新过一次额度门禁：被保留线或用尽的账户挡住时，这一行退回排队并等额度，不算失败。
+
+复核不在共享工作树里跑。启动前 Morrow 用 `git worktree add --detach` 把被复核的源版本检出到 `MORROW_HOME/reviews/<复核 ID>`，软链项目的 `node_modules`，复核进程在那里运行，结束（含取消、超时、异常）即删除检出并清理注册，服务重启时也会清掉被强杀留下的目录。这解决了一个实测问题：复核跑在共享工作树的只读沙箱里时，它无法自己重跑测试或构建，凡是「测试通过」这类结论只能记 unknown（看板事项 #43 就是这样）。在检出里，提示词会明确告诉复核者可以自行重跑格式检查、类型检查、测试和构建，并以亲自运行的结果作为结论依据，不必采信执行者自述；写入只落在这份用完即弃的检出里，不会回到项目，也不构成通过的理由。两个 CLI 运行器都这样：Codex 用可写且离线的工作区沙箱，Claude Code 的工具表追加 `Bash`。**只有走 App 原生任务的那条复核路径例外**——它继续用只读权限，也不会收到这段话：App 会把传入的 `writableRoots` 与它自己保留的目录合并，Morrow 无法保证写入只落在检出里，而提示词绝不能承诺运行时做不到的事；这条路径只在两个 CLI 都没装时才会用到，它仍然在检出里读被复核的那个版本。另外，无论哪条路径，出现 `fileChange` 观察一律判「超出只读范围」：检出里的改动请用命令完成，模型改用补丁类工具写文件时这次复核仍会停下判未知。项目不是 Git 仓库、工作树不干净（未提交或未跟踪的文件会让检出与提交不一致，也就不再是被封存的那个源版本）、或拿不到该版本的提交时，复核回退到在项目目录里只读运行，措辞也回到原来的「不能写文件、联网、安装依赖」。复核结论与源版本的绑定规则没有变化。
+
+## 原生能力
+
+能力清单是带日期的证据记录，不是运行时自动检测。2026-09-09 对 App follower 路径进行了[独立连接实测](CODEX-CONNECTION-VALIDATION-2026-09-09.md)，更新了旧转接下的浏览器不可用结论；历史未覆盖项继续保留未知。**整张表只描述 App follower 这条路径**：CLI 直连的 Codex 频道没有应用内浏览器、Computer Use、原生记忆和 App 动态工具；工作接口走主机 MCP，不是这张表里的 App HTTP。
+
+| 能力 | 结果与边界 |
+| --- | --- |
+| 应用内浏览器 | follower 实测可用：读取随机页面标记、真实点击按钮、读取对应结果。仍依赖 App 权限与插件。 |
+| Chrome / Edge | 未完成该路线的独立操作验收；发现扩展不等于控制成功。 |
+| Computer Use | follower 的 `sky.list_apps()` 可用；此前 Morrow 窗口的无障碍树和截图可读。ChatGPT 自身 UI 被该工具拒绝。 |
+| 原生记忆 | 历史实测可读；自动总结和新增记忆效果未验证。 |
+| Web 搜索 | 历史实测可用；不代表本次重新验收所有工具。 |
+| Morrow 工作接口 | 历史完整访问轮次可用；当前取决于 App 允许的本机 HTTP 访问。 |
+| App 动态工具 | follower 的 `get_usage_limits` 实际调用成功，不推导所有动态工具都已验收。 |
+
+直接共享官方后台的实验能新建并执行任务，但浏览器与 App 动态工具仍未通过，未作为生产路径。
+
+## 额度
+
+Morrow 启动一个短暂的官方只读 app-server 协议客户端读取账户的用量窗口，不改变 App 的连接，也不创建任务：各窗口的已用百分比和重置时间，不消耗模型轮次。2026-09-09 在真实后台确认：方法名就是代码里的 `account/rateLimits/read`（camelCase，`resetsAt` 为 unix 秒），生产读取使用请求/响应；旧共享后台的通知记录保留在历史适配器中。后台不支持、未连接或超时都只表现为「额度未知」，不会当成错误。打开运行时页或点击「重新检测」会主动读取一次，无需配置预算或关联任务；普通状态轮询不额外查询。设置预算后读数每 10 分钟刷新一次，也会在每个 Morrow 发起的轮次开始前后各读一次，把前后差值作为该轮次的用量记录在运行记录里（`usage_samples` 表保留最近 2000 条读数）。
+
+同一次实测发现窗口并不总是两个：这个 Pro 账号的主 `codex` 限制只暴露每周窗口（`primary` 的 `windowDurationMins` 为 10080，`secondary` 为 `null`），5 小时窗口只出现在 `rateLimitsByLimitId` 里另一个模型桶。所以在这样的账号上保留线要选「每周」；选「5 小时」时读不到该窗口，界面显示「额度未知」。按 limit id 分桶读取是后续可做的细化，当前没有实现。
+
+界面把三种「读不到」分开说：从未尝试读取时是「尚未读取账户用量」，尝试过但协议没有返回结果是「协议未返回账户用量」，有读数但已过期是「读数已过期」；实际读取失败会显示失败原因，有尚未过期的旧读数时保留并标记「刷新失败，显示最近读数」。
+
+单次用量数据点（不是基准）：2026-09-09 那一次真实轮次，每周窗口从 15% 走到 16%，运行记录里的差值是 1，即约占每周额度的 1%。这是一次观测，会随轮次长度、模型和账号计划变化。
+
+两条限制都可以留空，空即不限：
+
+- **保留给自己的额度**（设置对话框）：全局，按精确的账户读数判断。账户用量达到「100% − 保留」时，Morrow 不再发起新的自动 Codex 轮次和走 Codex 的独立复核（走 Claude Code 的复核不花这份额度，照常开始），频道显示「等待额度重置」，到窗口重置时间（没有重置时间时到下一个 UTC 日）再继续；改动或清除保留线后，等待中的频道在几秒内重新判断。
+- **项目额度上限**（项目属性栏「额度」）：按项目，是估算。Morrow 把自己发起的轮次前后读数之差累加为本项目在该窗口内的用量；你在同一账号下自己使用 Codex 也会混进去，所以它只能当作归因估算，界面上标为「估算」。
+
+读数不可用时界面标红「额度未知」，默认不阻断自动工作；勾选「额度未知时也停止自动工作」后会停止，并每 10 分钟重试。门禁只决定是否发起新的轮次或复核：正在进行的轮次和复核不会被打断，普通 Codex 对话从不受额度限制。限制的设置改动和每次触发都写入审计记录；自动轮次的提示词也会带上当前读数和限制，让 Codex 在额度紧张时优先做便宜且有信息价值的事，或选择等待。
+
+## 发布与证据
 
 当前发布适配器需要项目提供符合约定的 HTTP 发布端和状态查询端。人工确认门禁约束 Morrow 发布接口；原生工具与凭据仍受原生权限管理。尚未内置通用云部署器、各平台分析数据连接器或自动技能市场。
 
 测量规则通过、测试通过和模型复核分别提供不同层次的证据。它们不能证明业务收益、统计显著性或因果效果。项目已经实现支撑自主闭环的机制；任意项目上的长期无人值守效果仍需真实环境验证。
 
 详细的连接、恢复、审批和消息边界见 [执行服务文档](../service/README.md#原生运行时)。
-
-### 旧 App 写入锁的接续
-
-实际安装验收发现，App 可在轮次空闲时仍持有原任务写入锁。新策略不释放其他进程的锁、不操作 App、不重启 Codex：仅对升级前的旧绑定，在 CLI 明确返回 `already has an active writer` 时，通过原生 `thread/fork` 做一次接续。SQLite 保存旧任务 ID、接续回执与新旧绑定关系，界面明确显示接续说明；旧运行、证据和预算不改写，继承的轮次不重复计数。后续持续复用新 CLI 任务。普通网络失败、已归属 CLI 的任务或未确认发送不能触发该迁移；接续结果未知时不重发创建。

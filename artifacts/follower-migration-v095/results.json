@@ -1,0 +1,92 @@
+{
+  "version": "0.9.5",
+  "appVersion": "26.903.61454",
+  "codexVersion": "0.153.4",
+  "follower": {
+    "status": "completed",
+    "connectionMode": "app-follower",
+    "threadId": "01a0891e-c278-7590-ad94-212c45237258",
+    "turnId": "01a08946-b4fe-7150-975a-81535c22f52c",
+    "permission": "native",
+    "unboundStatus": 409,
+    "createCapability": false,
+    "usageAvailable": true,
+    "expectedMarker": "5e32b67e-c8d5-49c2-870d-362743002275",
+    "pageRequests": [
+      "/probe"
+    ],
+    "final": "连接验收完成：已读取 Morrow context，通过应用内浏览器真实点击 **Check adapter**，并关闭本轮测试 tab。\n\n- marker：`5e32b67e-c8d5-49c2-870d-362743002275`\n- result：`ADAPTER_CLICK_OK:5e32b67e-c8d5-49c2-870d-362743002275`\n\nMorrow 已确认进入等待状态。\n\n```morrow-next\n{\"state\":\"wait\",\"focus\":\"一次连接验收\",\"reason\":\"context 读取和浏览器点击验收均已完成，测试 tab 已关闭\",\"nextStep\":\"等待新的用户指令，不扩展范围\",\"waitMinutes\":1440}\n```",
+    "tools": [
+      {
+        "type": "commandExecution",
+        "status": "completed"
+      },
+      {
+        "type": "mcpToolCall",
+        "status": "completed",
+        "tool": "js",
+        "server": "node_repl"
+      },
+      {
+        "type": "mcpToolCall",
+        "status": "completed",
+        "tool": "js",
+        "server": "node_repl"
+      },
+      {
+        "type": "commandExecution",
+        "status": "completed"
+      },
+      {
+        "type": "commandExecution",
+        "status": "completed"
+      }
+    ]
+  },
+  "cliReview": {
+    "status": "completed",
+    "threadId": "01a0893d-a0a8-7ad1-9f56-773d50176cb5",
+    "turnId": null,
+    "successfulShellChecks": 1,
+    "output": [
+      "MORROW_REVIEW_INPUT_7129\nWRITE_DENIED\n"
+    ],
+    "canaryCreated": false
+  },
+  "installation": {
+    "serviceFileCount": 33,
+    "serviceMatches": true,
+    "appAsarSha256": "1bf2d2e2dbbc529dd1880c44b671f3f94239769dc4eb4d3fa5452d5ef9d1d0ab",
+    "databaseBackup": "$MORROW_HOME/backups/follower-v095-20260909T221047/workspace.sqlite",
+    "priorState": {
+      "projects": 0,
+      "channels": 0,
+      "items": 0,
+      "runs": 0,
+      "nativeBindings": 0,
+      "controls": 0
+    }
+  },
+  "limitations": [
+    "One real Morrow scheduling turn; sustained dogfood has not started.",
+    "CLI read-only behavior was live-tested; full verification parsing and fail-closed gates were tested with an explicit fake CLI.",
+    "The original GUI did not exit with normal quit requests during installation; only the known idle Morrow frontend process was forced to exit. The Codex App process stayed running.",
+    "Unconfigured usage budgets retain the existing not-yet-read status until usage is requested."
+  ],
+  "validation": {
+    "serviceTests": {
+      "passed": 175,
+      "skipped": 1,
+      "failed": 0
+    },
+    "uiTests": {
+      "passed": 193,
+      "failed": 0
+    },
+    "packagedNodeReviewTests": 4,
+    "acceptanceFixture": "passed",
+    "typecheck": "passed",
+    "format": "passed",
+    "build": "passed"
+  }
+}

@@ -1,282 +1,212 @@
-import test from "node:test";
-import assert from "node:assert/strict";
-import {
-  mkdtempSync,
-  mkdirSync,
-  readFileSync,
-  writeFileSync,
-  rmSync,
-  statSync,
-  existsSync,
-} from "node:fs";
-import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
-import { spawn } from "node:child_process";
-import { randomUUID } from "node:crypto";
-import { Store } from "../service/store.ts";
-import { eventHistory } from "../service/event-history.ts";
-import { startServer } from "../service/server.ts";
-import { invocation, diagnoseFailure } from "../service/runtimes.ts";
-import { validateResult } from "../service/protocol.ts";
-const fixture = resolve("tests/fixtures/runtime.mjs");
-process.env.MORROW_TEST_MODE = "1";
-for (const id of ["CODEX", "CLAUDE", "TRAE"])
-  process.env[`MORROW_TEST_${id}_PATH`] = fixture;
-const pause = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
-async function until(predicate: () => any, timeout = 5000) {
-  const end = Date.now() + timeout;
-  while (Date.now() < end) {
-    const value = await predicate();
-    if (value) return value;
-    await pause(25);
-  }
-  throw new Error("Timed out");
-}
-async function setup() {
-  const root = mkdtempSync(join(tmpdir(), "morrow-test-"));
-  const home = join(root, "home");
-  const projectPath = join(root, "project");
-  mkdirSync(projectPath);
-  const service = await startServer({ home, port: 0 });
-  const token = readFileSync(join(home, "token"), "utf8");
-  const base = `http://127.0.0.1:${service.port}`;
-  const api = async (
-    method: string,
-    path: string,
-    data?: any,
-    expected = 200,
-  ) => {
-    const res = await fetch(base + path, {
-      method,
-      headers: {
-        Authorization: `Bearer ${token}`,
-        "Content-Type": "application/json",
-      },
-      ...(data === undefined ? {} : { body: JSON.stringify(data) }),
-    });
-    const value = await res.json();
-    assert.equal(res.status, expected, JSON.stringify(value));
-    return value;
-  };
-  const project = await api(
-    "POST",
-    "/api/projects",
-    { name: "Test Project", path: projectPath, goal: "验证完整项目循环" },
-    201,
-  );
-  const state = await api("GET", "/api/state");
-  const channels = state.channels;
-  assert.equal(channels.length,1);
-  assert.equal(channels[0].name,'自主推进');
-  channels.push(await api('POST','/api/channels',{projectId:project.id,name:'独立验收职责',goal:'验证共享项目上下文',runtime:'codex',permission:'workspace-write'},201));
-  const config = (value: any) =>
-    writeFileSync(join(projectPath, ".fixture.json"), JSON.stringify(value));
-  return {
-    ...service,
-    root,
-    home,
-    base,
-    token,
-    api,
-    project,
-    projectPath,
-    channels,
-    config,
-    cleanup: async () => {
-      await service.close();
-      rmSync(root, { recursive: true, force: true });
+import './harness/env.ts';
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync, statSync, existsSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join, resolve } from 'node:path';
+import { execFileSync, spawn } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
+import { Store } from '../service/store.ts';
+import { eventHistory } from '../service/event-history.ts';
+import { startServer } from '../service/server.ts';
+import { discoverRuntimes, invocation, diagnoseFailure } from '../service/runtimes.ts';
+import { APIError, validateResult } from '../service/protocol.ts';
+import { startIsolated, stopScheduler } from './harness/service.ts';
+import { FakeReviewer } from './harness/fake-reviewer.ts';
+import { until } from './harness/wait.ts';
+const fixture = resolve('tests/fixtures/runtime.mjs');
+/** A turn that reports real progress and claims nothing verified, so no independent review is due. */
+const progressReport = {
+  summary: '继续核对导入流程，本轮记录进展。',
+  items: [
+    {
+      id: '',
+      title: 'Fixture 进展',
+      summary: '根据测试文件确认。',
+      status: 'investigating',
+      kind: 'issue',
+      evidence: ['fixture.txt:1 — 可复查的测试证据'],
+      nextStep: '继续核对',
     },
-  };
+  ],
+  nextCheckMinutes: 60,
+  knowledge: [],
+  needsHuman: false,
+};
+async function setup() {
+  const s = await startIsolated({ project: { name: 'Test Project', goal: '验证完整项目循环' } });
+  const state = await s.api('GET', '/api/state');
+  const channels = state.channels;
+  assert.equal(channels.length, 1);
+  assert.equal(channels[0].name, '自主推进');
+  channels.push(
+    await s.api(
+      'POST',
+      '/api/channels',
+      {
+        projectId: s.project.id,
+        name: '独立验收职责',
+        goal: '验证共享项目上下文',
+        runtime: 'codex',
+        permission: 'workspace-write',
+      },
+      201
+    )
+  );
+  const config = (value: any) => writeFileSync(join(s.path, '.fixture.json'), JSON.stringify(value));
+  return { ...s, projectPath: s.path, channels, config };
 }
-test("local auth, schema validation, paused defaults and idempotent explicit demo", async () => {
+/**
+ * Drives every queued review to a conclusion. The fixture report claims one item verified, which now
+ * queues that item's own independent review, and a queued review holds the whole project
+ * (`Engine.start`), so a test that runs further turns has to let it finish first — exactly as a real
+ * project waits for one. No model runs: with no reviewer connected the review concludes as unknown.
+ */
+async function concludeReviews(s: Awaited<ReturnType<typeof setup>>) {
+  for (const row of s.store.all<any>('loop_verifications').filter((r) => r.status === 'queued'))
+    await s.engine.loop.verification.start(row.id);
+}
+test('local auth, schema validation, paused defaults and idempotent explicit demo', async () => {
   const s = await setup();
   try {
-    assert.deepEqual(await (await fetch(s.base + "/health")).json(), {
+    assert.deepEqual(await (await fetch(s.base + '/health')).json(), {
       ok: true,
-      service: "morrow",
+      service: 'morrow',
     });
-    assert.equal((await fetch(s.base + "/api/state")).status, 401);
-    assert.equal(statSync(join(s.home, "token")).mode & 0o777, 0o600);
+    assert.equal((await fetch(s.base + '/api/state')).status, 401);
+    assert.equal(statSync(join(s.home, 'token')).mode & 0o777, 0o600);
     assert.equal(
       (
-        await fetch(s.base + "/api/state", {
+        await fetch(s.base + '/api/state', {
           headers: {
             Authorization: `Bearer ${s.token}`,
-            Origin: "https://example.com",
+            Origin: 'https://example.com',
           },
         })
       ).status,
-      403,
+      403
     );
-    assert(
-      s.channels.every(
-        (c: any) =>
-          c.status === "paused" &&
-          c.permission === "workspace-write" &&
-          c.sessionId === "",
-      ),
-    );
+    assert(s.channels.every((c: any) => c.status === 'paused' && c.sessionId === ''));
+    assert.equal(s.channels[0].permission, 'native');
+    assert.equal(s.channels[1].permission, 'workspace-write');
+    await s.api('POST', '/api/projects', { name: 'Again', path: s.projectPath, goal: 'Duplicate' }, 409);
+    await s.api('PATCH', `/api/channels/${s.channels[0].id}`, { model: '--dangerous' }, 400);
+    await s.api('PATCH', `/api/channels/${s.channels[0].id}`, { maxRunsPerDay: 0 }, 400);
+    await s.api('POST', '/api/channels', { projectId: s.project.id, name: 'A', goal: 'B', runtime: 'unknown' }, 400);
+    // Only a Codex channel can follow the App's own scope; a CLI runtime has no App task to follow.
     await s.api(
-      "POST",
-      "/api/projects",
-      { name: "Again", path: s.projectPath, goal: "Duplicate" },
-      409,
+      'POST',
+      '/api/channels',
+      { projectId: s.project.id, name: 'A', goal: 'B', runtime: 'claude', permission: 'native' },
+      400
     );
-    await s.api(
-      "PATCH",
-      `/api/channels/${s.channels[0].id}`,
-      { model: "--dangerous" },
-      400,
+    const cli = await s.api(
+      'POST',
+      '/api/channels',
+      { projectId: s.project.id, name: 'CLI 频道', goal: '用本机 CLI 执行', runtime: 'claude' },
+      201
     );
-    await s.api(
-      "PATCH",
-      `/api/channels/${s.channels[0].id}`,
-      { maxRunsPerDay: 0 },
-      400,
-    );
-    await s.api(
-      "POST",
-      "/api/channels",
-      { projectId: s.project.id, name: "A", goal: "B", runtime: "unknown" },
-      400,
-    );
-    await s.api("POST", "/api/demo", {});
-    await s.api("POST", "/api/demo", {});
-    const state = await s.api("GET", "/api/state");
+    assert.equal(cli.permission, 'workspace-write');
+    await s.api('PATCH', `/api/channels/${cli.id}`, { permission: 'native' }, 400);
+    await s.api('POST', '/api/demo', {});
+    await s.api('POST', '/api/demo', {});
+    const state = await s.api('GET', '/api/state');
     assert.equal(state.projects.filter((p: any) => p.isDemo).length, 1);
     assert(state.items.every((i: any) => i.evidence.length));
     const demo = state.channels.find((c: any) => c.projectId !== s.project.id);
-    await s.api(
-      "POST",
-      `/api/channels/${demo.id}/action`,
-      { action: "run" },
-      409,
-    );
+    await s.api('POST', `/api/channels/${demo.id}/action`, { action: 'run' }, 409);
     assert(!JSON.stringify(state).includes(s.token));
   } finally {
     await s.cleanup();
   }
 });
-test("one-shot persists valid results, shared sourced knowledge, messages, native resume and engine handoff", async () => {
+test('one-shot persists valid results, shared sourced knowledge, messages, native resume and engine handoff', async () => {
   const s = await setup();
   try {
     const c = s.channels[0];
-    await s.api("PATCH", `/api/channels/${c.id}`, {permission:"read-only"});
-    await s.api(
-      "POST",
-      `/api/channels/${c.id}/messages`,
-      { text: "请重点检查导入流程" },
-      201,
-    );
-    await s.api("POST", `/api/channels/${c.id}/action`, { action: "run" });
-    await until(() =>
-      s.store.all<any>("runs").find((r) => r.status === "completed"),
-    );
-    let state = await s.api("GET", "/api/state");
-    assert.equal(state.channels[0].status, "paused");
-    assert.equal(state.channels[0].sessionId, "fixture-session-1");
+    await s.api('PATCH', `/api/channels/${c.id}`, { permission: 'read-only' });
+    await s.api('POST', `/api/channels/${c.id}/messages`, { text: '请重点检查导入流程' }, 201);
+    await s.api('POST', `/api/channels/${c.id}/action`, { action: 'run' });
+    await until(() => s.store.all<any>('runs').find((r) => r.status === 'completed'));
+    let state = await s.api('GET', '/api/state');
+    assert.equal(state.channels[0].status, 'paused');
+    assert.equal(state.channels[0].sessionId, 'fixture-session-1');
     assert.equal(state.items.length, 1);
-    assert.equal(s.store.all("results").length, 1);
-    const capture = JSON.parse(
-      readFileSync(join(s.projectPath, ".fixture-capture.json"), "utf8"),
-    );
-    assert(capture.input.includes("请重点检查导入流程"));
+    assert.equal(s.store.all('results').length, 1);
+    const capture = JSON.parse(readFileSync(join(s.projectPath, '.fixture-capture.json'), 'utf8'));
+    assert(capture.input.includes('请重点检查导入流程'));
     assert(capture.args.includes('sandbox_mode="read-only"'));
-    assert(s.engine.prompt(s.project, s.channels[1]).includes("共享确认事实"));
-    assert(!s.engine.prompt(s.project, s.channels[1]).includes("未验证的猜想"));
-    assert(s.store.all<any>("knowledge").every((k) => k.source && k.createdAt));
-    await s.api("POST", `/api/channels/${c.id}/action`, { action: "run" });
-    await until(
-      () =>
-        s.store.all<any>("runs").filter((r) => r.status === "completed")
-          .length === 2,
-    );
-    assert(
-      JSON.parse(
-        readFileSync(join(s.projectPath, ".fixture-capture.json"), "utf8"),
-      ).args.includes("resume"),
-    );
-    const updated = await s.api("PATCH", `/api/channels/${c.id}`, {
-      runtime: "claude",
-    });
-    assert.equal(updated.sessionId, "");
-    await s.api("POST", `/api/channels/${c.id}/action`, { action: "run" });
-    await until(
-      () =>
-        s.store.all<any>("runs").filter((r) => r.status === "completed")
-          .length === 3,
-    );
-    const nextCapture = JSON.parse(
-      readFileSync(join(s.projectPath, ".fixture-capture.json"), "utf8"),
-    );
-    assert(!nextCapture.args.includes("--resume"));
-    assert(nextCapture.input.includes("Fixture 发现"));
-    assert(nextCapture.args.includes("--restricted"));
-    assert.equal(
-      nextCapture.args[nextCapture.args.indexOf("--tools") + 1],
-      "Read,Grep,Glob",
-    );
-    state = await s.api("GET", "/api/state");
-    assert.equal(state.runs.at(-1).runtime, "claude");
+    assert(s.engine.prompt(s.project, s.channels[1]).includes('共享确认事实'));
+    assert(!s.engine.prompt(s.project, s.channels[1]).includes('未验证的猜想'));
+    assert(s.store.all<any>('knowledge').every((k) => k.source && k.createdAt));
+    await concludeReviews(s);
+    await s.api('POST', `/api/channels/${c.id}/action`, { action: 'run' });
+    await until(() => s.store.all<any>('runs').filter((r) => r.status === 'completed').length === 2);
+    assert(JSON.parse(readFileSync(join(s.projectPath, '.fixture-capture.json'), 'utf8')).args.includes('resume'));
+    const updated = await s.api('PATCH', `/api/channels/${c.id}`, { model: 'gpt-5-codex' });
+    assert.equal(updated.sessionId, '');
+    await concludeReviews(s);
+    await s.api('POST', `/api/channels/${c.id}/action`, { action: 'run' });
+    await until(() => s.store.all<any>('runs').filter((r) => r.status === 'completed').length === 3);
+    const nextCapture = JSON.parse(readFileSync(join(s.projectPath, '.fixture-capture.json'), 'utf8'));
+    assert(!nextCapture.args.includes('resume'));
+    assert(nextCapture.input.includes('Fixture 发现'));
+    assert.equal(nextCapture.args[nextCapture.args.indexOf('--model') + 1], 'gpt-5-codex');
+    state = await s.api('GET', '/api/state');
+    assert.equal(state.runs.at(-1).runtime, 'codex');
+    assert.equal(state.runs.at(-1).model, 'gpt-5-codex');
   } finally {
     await s.cleanup();
   }
 });
-test("successful native output without a report does not invent findings or fail execution", async () => {
+test('successful native output without a report does not invent findings or fail execution', async () => {
   const s = await setup();
   try {
     s.config({ malformed: true });
     const c = s.channels[0];
-    await s.api("POST", `/api/channels/${c.id}/action`, { action: "run" });
-    await until(() =>
-      s.store.all<any>("runs").some((r) => r.status === "completed"),
-    );
-    const state = await s.api("GET", "/api/state");
+    await s.api('POST', `/api/channels/${c.id}/action`, { action: 'run' });
+    await until(() => s.store.all<any>('runs').some((r) => r.status === 'completed'));
+    const state = await s.api('GET', '/api/state');
     assert.equal(state.items.length, 0);
-    assert.equal(state.channels[0].status, "paused");
-    assert.equal(state.runs[0].reportStatus, "missing");
-    assert(state.runs[0].summary.includes("No structured output"));
-    assert.equal(s.store.all("results").length, 0);
+    assert.equal(state.channels[0].status, 'paused');
+    assert.equal(state.runs[0].reportStatus, 'missing');
+    assert(state.runs[0].summary.includes('No structured output'));
+    assert.equal(s.store.all('results').length, 0);
   } finally {
     await s.cleanup();
   }
 });
-test("daily budget applies to manual runs and scheduled continuation", async () => {
+test('daily budget applies to manual runs and scheduled continuation', async () => {
   const s = await setup();
   try {
     const c = s.channels[0];
-    await s.api("PATCH", `/api/channels/${c.id}`, { maxRunsPerDay: 1 });
-    await s.api("POST", `/api/channels/${c.id}/action`, { action: "run" });
-    await until(() =>
-      s.store.all<any>("runs").some((r) => r.status === "completed"),
-    );
-    await s.api("POST", `/api/channels/${c.id}/action`, { action: "run" }, 429);
-    await s.api("POST", `/api/channels/${c.id}/action`, { action: "resume" });
-    const current = s.store.get<any>("channels", c.id);
-    assert.equal(current.status, "waiting");
+    await s.api('PATCH', `/api/channels/${c.id}`, { maxRunsPerDay: 1 });
+    await s.api('POST', `/api/channels/${c.id}/action`, { action: 'run' });
+    await until(() => s.store.all<any>('runs').some((r) => r.status === 'completed'));
+    await concludeReviews(s);
+    await s.api('POST', `/api/channels/${c.id}/action`, { action: 'run' }, 429);
+    await s.api('POST', `/api/channels/${c.id}/action`, { action: 'resume' });
+    const current = s.store.get<any>('channels', c.id);
+    assert.equal(current.status, 'waiting');
     assert(current.nextRunAt > new Date().toISOString());
-    assert.equal(s.store.all("runs").length, 1);
-    await s.api("POST", `/api/channels/${c.id}/action`, { action: "pause" });
+    assert.equal(s.store.all('runs').length, 1);
+    await s.api('POST', `/api/channels/${c.id}/action`, { action: 'pause' });
   } finally {
     await s.cleanup();
   }
 });
-test("project execution lock, settings guard, pause cancels complete process group", async () => {
+test('project execution lock, settings guard, pause cancels complete process group', async () => {
   const s = await setup();
   try {
     s.config({ sleep: true, ignoreTerm: true });
     const [a, b] = s.channels;
-    await s.api("POST", `/api/channels/${a.id}/action`, { action: "run" });
-    await until(() => existsSync(join(s.projectPath, ".fixture-child-ready")));
-    const child = Number(
-      readFileSync(join(s.projectPath, ".fixture-child.pid"), "utf8"),
-    );
-    await s.api("POST", `/api/channels/${b.id}/action`, { action: "run" }, 409);
-    await s.api("PATCH", `/api/channels/${a.id}`, { runtime: "claude" }, 409);
-    await s.api("POST", `/api/channels/${a.id}/action`, { action: "pause" });
-    await until(() =>
-      s.store.all<any>("runs").some((r) => r.status === "interrupted"),
-    );
+    await s.api('POST', `/api/channels/${a.id}/action`, { action: 'run' });
+    await until(() => existsSync(join(s.projectPath, '.fixture-child-ready')));
+    const child = Number(readFileSync(join(s.projectPath, '.fixture-child.pid'), 'utf8'));
+    await s.api('POST', `/api/channels/${b.id}/action`, { action: 'run' }, 409);
+    await s.api('PATCH', `/api/channels/${a.id}`, { permission: 'read-only' }, 409);
+    await s.api('POST', `/api/channels/${a.id}/action`, { action: 'pause' });
+    await until(() => s.store.all<any>('runs').some((r) => r.status === 'interrupted'));
     await until(() => {
       try {
         process.kill(child, 0);
@@ -285,141 +215,619 @@ test("project execution lock, settings guard, pause cancels complete process gro
         return true;
       }
     });
-    assert.equal(s.store.get<any>("channels", a.id).status, "paused");
+    assert.equal(s.store.get<any>('channels', a.id).status, 'paused');
     assert.equal(s.engine.active.size, 0);
   } finally {
     await s.cleanup();
   }
 });
-test("resume scheduling, per-project queued work, and human-needed results stop continuation", async () => {
+test('a Claude Code channel runs a bounded CLI turn, resumes its session and still waits for independent review', async () => {
+  const s = await setup();
+  try {
+    // Every turn here is started by hand, and the review the first one queues is concluded by hand
+    // below; the daemon's own one-second loop would otherwise start that review at a moment of its
+    // choosing, before the reviewer double is connected.
+    stopScheduler(s);
+    const claude = await s.api(
+      'POST',
+      '/api/channels',
+      { projectId: s.project.id, name: 'Claude 频道', goal: '用本机 Claude Code 执行有界轮次', runtime: 'claude' },
+      201
+    );
+    assert.equal(claude.permission, 'workspace-write');
+    // A note left before the channel ever ran: the first turn is the first to see it.
+    const firstNote = await s.api('POST', `/api/channels/${claude.id}/messages`, { text: '先看导入流程' }, 201);
+    // A real temporary repository, so `projectTreeState` has something to read; only `git status`
+    // is ever run against it, and the working tree starts clean.
+    const git = (...args: string[]) =>
+      execFileSync('git', args, { cwd: s.projectPath, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
+    git('init', '-q');
+    git('config', 'user.email', 'fixture@example.com');
+    git('config', 'user.name', 'Morrow Fixture');
+    git('config', 'commit.gpgsign', 'false');
+    git('commit', '-q', '--allow-empty', '-m', 'fixture baseline');
+    const capture = () => JSON.parse(readFileSync(join(s.projectPath, '.fixture-capture.json'), 'utf8'));
+    // The turn's project data context is one JSON line inside the prompt; `humanNotes` is the part
+    // this checks, so the notes are read back the way the CLI receives them.
+    const humanNotes = (input: string): { text: string; new?: boolean }[] =>
+      JSON.parse(input.split('\n').find((line) => line.startsWith('{"project":'))!).humanNotes;
+    const finished = (count: number) =>
+      until(
+        () =>
+          s.store.all<any>('runs').filter((r) => r.channelId === claude.id && r.status === 'completed').length === count
+      );
+    await s.api('POST', `/api/channels/${claude.id}/action`, { action: 'run' });
+    await finished(1);
+    const first = capture();
+    const tools = 'Read,Grep,Glob,Edit,Write,MultiEdit,NotebookEdit,Bash';
+    // Workspace write opens edits and commands. `--safe-mode` would drop `--mcp-config`, so work
+    // turns use `--setting-sources user` plus Morrow-only MCP, and put the MCP tool on `--allowedTools`.
+    assert.equal(first.args[first.args.indexOf('--tools') + 1], tools);
+    assert.equal(first.args[first.args.indexOf('--allowedTools') + 1], `${tools},mcp__morrow__call`);
+    assert.equal(first.args[first.args.indexOf('--permission-mode') + 1], 'acceptEdits');
+    assert.equal(first.args[first.args.indexOf('--output-format') + 1], 'stream-json');
+    assert.equal(first.args[first.args.indexOf('--setting-sources') + 1], 'user');
+    const mcp = JSON.parse(first.args[first.args.indexOf('--mcp-config') + 1]);
+    assert.deepEqual(Object.keys(mcp.mcpServers), ['morrow']);
+    for (const flag of ['--print', '--verbose', '--strict-mcp-config']) assert(first.args.includes(flag));
+    assert(!first.args.includes('--safe-mode'));
+    assert(!first.args.some((a: string) => a.includes('dangerously')));
+    // The first turn has no session to continue, and the turn carries its own run id as a name.
+    assert(!first.args.includes('--resume'));
+    const run = s.store.all<any>('runs').find((r) => r.channelId === claude.id)!;
+    assert.equal(run.runtime, 'claude');
+    assert.equal(first.args[first.args.indexOf('--name') + 1], `Morrow:${run.id}`);
+    assert(first.input.includes('工作区写入：可在项目内修改文件，并可执行命令'));
+    // The turn knows its own deadline, and says nothing about a working tree that was clean.
+    assert(first.input.includes('本轮最多 45 分钟'));
+    assert(!first.input.includes('工作树有未提交改动'));
+    // Nothing ran before, so the one note is this turn's to answer.
+    assert.deepEqual(humanNotes(first.input), [{ text: '先看导入流程', createdAt: firstNote.createdAt, new: true }]);
+    assert.equal(s.store.get<any>('channels', claude.id).sessionId, 'fixture-session-1');
+    // The optional report reached the board, and its verified item waits for the Codex reviewer.
+    const item = s.store.all<any>('items').find((i) => i.lastRunId === run.id)!;
+    assert.equal(item.title, 'Fixture 发现');
+    assert.equal(item.status, 'investigating');
+    assert(item.nextStep.startsWith('等待当前版本的独立复核；'));
+    // That claim queued the review itself (covered in full below), and a queued review holds the
+    // whole project: the rest of this test is about session resume, notes and scope, so the review
+    // is settled here and the later turns report progress instead of another verified claim.
+    const queued = s.store.all<any>('loop_verifications').find((row) => row.itemId === item.id)!;
+    assert.equal(queued.status, 'queued');
+    const reviewer = new FakeReviewer();
+    reviewer.autoComplete = true;
+    s.engine.loop.verification.connect(reviewer, (v) => v);
+    await s.engine.loop.verification.start(queued.id);
+    assert.equal(s.store.get<any>('items', item.id).status, 'verified');
+    s.config({ result: progressReport });
+    // What an interrupted turn leaves behind: uncommitted files the resumed session cannot see.
+    writeFileSync(join(s.projectPath, 'unfinished.ts'), 'export const half = true;\n');
+    await s.api('POST', `/api/channels/${claude.id}/action`, { action: 'run' });
+    await finished(2);
+    const second = capture();
+    assert.equal(second.args[second.args.indexOf('--resume') + 1], 'fixture-session-1');
+    assert(second.input.includes('工作树有未提交改动'));
+    assert(second.input.includes('unfinished.ts'));
+    // The same channel left them, so the line says so rather than blaming another channel.
+    assert(second.input.includes('这是本频道上一轮留下的'));
+    // Nobody left anything since the first turn started, so the note is now earlier guidance.
+    assert.deepEqual(humanNotes(second.input), [{ text: '先看导入流程', createdAt: firstNote.createdAt }]);
+    // A note left after the second turn started is the only one the third turn has to answer.
+    const laterNote = await s.api('POST', `/api/channels/${claude.id}/messages`, { text: '再核对重试路径' }, 201);
+    await s.api('PATCH', `/api/channels/${claude.id}`, { permission: 'read-only' });
+    await s.api('POST', `/api/channels/${claude.id}/action`, { action: 'run' });
+    await finished(3);
+    const readOnly = capture();
+    assert.equal(readOnly.args[readOnly.args.indexOf('--tools') + 1], 'Read,Grep,Glob');
+    assert.equal(readOnly.args[readOnly.args.indexOf('--allowedTools') + 1], 'Read,Grep,Glob,mcp__morrow__call');
+    assert.equal(readOnly.args[readOnly.args.indexOf('--permission-mode') + 1], 'dontAsk');
+    assert(!readOnly.args.some((a: string) => a.includes('Bash')));
+    assert.deepEqual(humanNotes(readOnly.input), [
+      { text: '先看导入流程', createdAt: firstNote.createdAt },
+      { text: '再核对重试路径', createdAt: laterNote.createdAt, new: true },
+    ]);
+    // Reading them back: oldest first, and an unknown channel is a 404 rather than an empty list.
+    const listed = await s.api('GET', `/api/channels/${claude.id}/messages`);
+    assert.deepEqual(
+      listed.messages.map((m: any) => m.text),
+      ['先看导入流程', '再核对重试路径']
+    );
+    await s.api('GET', '/api/channels/missing-channel/messages', undefined, 404);
+  } finally {
+    await s.cleanup();
+  }
+});
+/** One report entry claiming the work is verified; `id` empty opens a new item, as a report may. */
+const verifiedClaim = (id: string, title: string) => ({
+  id,
+  title,
+  summary: '根据测试文件确认。',
+  status: 'verified',
+  kind: 'issue',
+  evidence: ['fixture.txt:1 — 可复查的测试证据'],
+  nextStep: '继续核对',
+});
+test('a report claiming verified records the turn as evidence, queues its own review and applies the claim when it passes', async () => {
+  const s = await setup();
+  try {
+    const claude = await s.api(
+      'POST',
+      '/api/channels',
+      { projectId: s.project.id, name: '自动复核频道', goal: '让汇报的 verified 自行排队复核', runtime: 'claude' },
+      201
+    );
+    // This test drives the review tick itself, so the daemon's own loop must not start the review
+    // at a moment of its choosing — before the assertions below, or before the reviewer double.
+    stopScheduler(s);
+    // What the turn did is part of the material the reviewer receives, so the fixture streams one
+    // real tool call and its result rather than only the final report.
+    s.config({
+      events: [
+        {
+          type: 'assistant',
+          message: { content: [{ type: 'tool_use', id: 'check-1', name: 'Bash', input: { command: 'npm test' } }] },
+        },
+        {
+          type: 'user',
+          message: {
+            content: [{ type: 'tool_result', tool_use_id: 'check-1', content: '3 tests passed', is_error: false }],
+          },
+        },
+      ],
+    });
+    await s.api('POST', `/api/channels/${claude.id}/action`, { action: 'run' });
+    const run = await until(() =>
+      s.store.all<any>('runs').find((r) => r.channelId === claude.id && r.status === 'completed')
+    );
+    const item = s.store.all<any>('items').find((i) => i.lastRunId === run.id)!;
+    assert.equal(item.status, 'investigating');
+    assert(item.nextStep.startsWith('等待当前版本的独立复核；'));
+    // One agent-origin row holding the claim and the tool activity Morrow recorded for this run.
+    const evidence = s.store.all<any>('loop_evidence').filter((row) => row.itemId === item.id);
+    assert.equal(evidence.length, 1);
+    assert.equal(evidence[0].origin, 'agent');
+    assert.equal(evidence[0].source, `run:${run.id}`);
+    assert.equal(evidence[0].data.runtime, 'claude');
+    assert.equal(evidence[0].data.report.status, 'verified');
+    assert.equal(evidence[0].data.reportedBy, 'model');
+    assert.match(evidence[0].data.reportNote, /report 与 finalOutput 为模型自述/);
+    assert.equal(evidence[0].data.tools, undefined);
+    const recorded = evidence[0].data.recordedTools;
+    assert.equal(recorded.recordedBy, 'morrow-cli-stream');
+    assert.match(recorded.note, /由 Morrow 从 CLI 事件流记录，非模型自述；无退出码与版本绑定/);
+    assert.deepEqual(
+      recorded.calls.map((tool: any) => [tool.tool, tool.failed]),
+      [['Bash', false]]
+    );
+    assert(recorded.calls[0].input.includes('npm test'));
+    assert(recorded.calls[0].output.includes('3 tests passed'));
+    assert.match(evidence[0].summary, /模型自述/);
+    assert.match(evidence[0].summary, /Morrow 从 CLI 事件流记录的 1 次工具调用/);
+    assert.match(evidence[0].summary, /无退出码与版本绑定/);
+    // The shared report path must not call App-owned run events a CLI stream.
+    const nativeData = s.engine.reportEvidenceData(
+      { ...run, executionOwner: 'codex-app' },
+      evidence[0].data.report,
+      evidence[0].data.finalOutput
+    );
+    assert.equal(nativeData.recordedTools.recordedBy, 'morrow-run-events');
+    assert.match(nativeData.recordedTools.note, /本轮事件/);
+    assert(!nativeData.recordedTools.note.includes('CLI'));
+    assert(item.evidence.some((line: string) => line.startsWith(`[${evidence[0].id}]`)));
+    // One queued review citing exactly that row, and one completion held against the stored revision.
+    const reviews = s.store.all<any>('loop_verifications').filter((row) => row.itemId === item.id);
+    assert.equal(reviews.length, 1);
+    assert.equal(reviews[0].status, 'queued');
+    assert.deepEqual(reviews[0].evidenceIds, [evidence[0].id]);
+    const intents = s.store.all<any>('loop_finalizations').filter((row) => row.targetId === item.id);
+    assert.equal(intents.length, 1);
+    assert.equal(intents[0].status, 'pending');
+    assert.equal(intents[0].operation, 'feature.complete');
+    assert.equal(intents[0].verificationId, reviews[0].id);
+    assert.equal(intents[0].revision, item.revision);
+    assert.deepEqual(intents[0].input, { status: 'verified' });
+    // The channel is paused again — a manual 运行一轮 leaves autonomy off — and the review still
+    // starts on the next tick, the same call the daemon's loop makes every second. Nothing here
+    // reaches into the reviewer: the claimed status takes effect on its own, without another turn.
+    const reviewer = new FakeReviewer();
+    reviewer.autoComplete = true;
+    s.engine.loop.verification.connect(reviewer, (v) => v);
+    assert(!s.engine.control(claude.id).enabled);
+    s.engine.loop.verification.tick();
+    await until(() => s.store.get<any>('loop_verifications', reviews[0].id).status === 'passed');
+    assert.equal(s.store.get<any>('items', item.id).status, 'verified');
+    assert.equal(s.store.get<any>('loop_finalizations', intents[0].id).status, 'applied');
+    // And the project is free again: the next manual run is accepted instead of 409.
+    await s.api('POST', `/api/channels/${claude.id}/action`, { action: 'run' });
+    await until(() => s.store.all<any>('runs').filter((r) => r.status === 'completed').length === 2);
+  } finally {
+    await s.cleanup();
+  }
+});
+test('a pending, refused or failed review keeps a re-claimed report item waiting without buying a second review', async () => {
+  const s = await setup();
+  try {
+    const claude = await s.api(
+      'POST',
+      '/api/channels',
+      { projectId: s.project.id, name: '复核等待频道', goal: '检查重复汇报不会重复复核', runtime: 'claude' },
+      201
+    );
+    // The queued review has to stay queued while the claims below arrive, so the daemon's own loop,
+    // which now starts a CLI channel's review whether or not the channel is running, is stopped.
+    stopScheduler(s);
+    // A repository whose ignored fixture files keep the source digest identical from turn to turn,
+    // so a review that failed on this source is still the current source's review afterwards.
+    writeFileSync(join(s.projectPath, '.gitignore'), '.fixture*\n');
+    const git = (...args: string[]) =>
+      execFileSync('git', args, { cwd: s.projectPath, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
+    git('init', '-q');
+    git('config', 'user.email', 'fixture@example.com');
+    git('config', 'user.name', 'Morrow Fixture');
+    git('config', 'commit.gpgsign', 'false');
+    git('add', '.gitignore');
+    git('commit', '-q', '-m', 'fixture baseline');
+    /**
+     * One report delivered the way a turn the App itself started delivers it: straight into
+     * `Engine.finishSuccess`. `Engine.start` refuses a turn while a review is queued, so this is
+     * how a second claim can arrive before the first one's review has concluded.
+     */
+    const directReport = (items: unknown[]) => {
+      const run = {
+        id: randomUUID(),
+        projectId: s.project.id,
+        channelId: claude.id,
+        runtime: 'claude',
+        model: '',
+        permission: 'workspace-write',
+        trigger: 'manual',
+        resumedFromSessionId: '',
+        reportStatus: 'pending',
+        reportError: '',
+        status: 'running',
+        startedAt: new Date().toISOString(),
+        finishedAt: '',
+        summary: '',
+        sessionId: '',
+      } as any;
+      s.store.put('runs', run);
+      const dir = join(s.home, 'runs', run.id);
+      mkdirSync(dir, { recursive: true });
+      s.engine.finishSuccess(
+        run,
+        s.store.get<any>('channels', claude.id),
+        { summary: '再次汇报同一结论', items, nextCheckMinutes: 60, knowledge: [], needsHuman: false } as any,
+        dir,
+        undefined,
+        '最终答复'
+      );
+      return run;
+    };
+    const notes = (runId: string, text: string) =>
+      s.store.all<any>('events').filter((e) => e.runId === runId && e.kind === 'system' && e.text.includes(text));
+    const rows = (table: 'loop_evidence' | 'loop_verifications', itemId: string) =>
+      s.store.all<any>(table).filter((row) => row.itemId === itemId);
+    await s.api('POST', `/api/channels/${claude.id}/action`, { action: 'run' });
+    const run = await until(() =>
+      s.store.all<any>('runs').find((r) => r.channelId === claude.id && r.status === 'completed')
+    );
+    const item = s.store.all<any>('items').find((i) => i.lastRunId === run.id)!;
+    const review = rows('loop_verifications', item.id)[0];
+    assert.equal(review.status, 'queued');
+    // Re-claiming the same item while its review is still queued waits for that review instead of
+    // paying for a second one, and records the same material again no more than it asks again.
+    const repeat = directReport([verifiedClaim(item.id, item.title)]);
+    assert.equal(s.store.get<any>('items', item.id).status, 'investigating');
+    assert(s.store.get<any>('items', item.id).nextStep.startsWith('等待当前版本的独立复核；'));
+    assert.equal(rows('loop_evidence', item.id).length, 1);
+    assert.equal(rows('loop_verifications', item.id).length, 1);
+    assert.equal(notes(repeat.id, '独立复核').length, 0);
+    // A different item claimed while the project already has a review pending: the request is
+    // refused, so nothing of it is kept, and the work log says why and that the next turn retries.
+    const refused = directReport([verifiedClaim('', '另一个 Fixture 发现')]);
+    const other = s.store.all<any>('items').find((i) => i.title === '另一个 Fixture 发现')!;
+    assert.equal(other.status, 'investigating');
+    assert(other.nextStep.startsWith('等待当前版本的独立复核；'));
+    assert.equal(rows('loop_evidence', other.id).length, 0);
+    assert.equal(rows('loop_verifications', other.id).length, 0);
+    const refusal = notes(refused.id, `#${other.number} 的独立复核未能自动发起`);
+    assert.equal(refusal.length, 1);
+    assert(refusal[0].text.includes('项目已有复核待完成'));
+    assert(refusal[0].text.endsWith('下一轮汇报时会再试'));
+    // The review finds a counterexample. Claiming the same item again on a source nobody has
+    // changed since asks for no new review: the findings have to be answered in the project first.
+    const reviewer = new FakeReviewer();
+    reviewer.autoComplete = true;
+    reviewer.verdict = 'fail';
+    s.engine.loop.verification.connect(reviewer, (v) => v);
+    await s.engine.loop.verification.start(review.id);
+    assert.equal(s.store.get<any>('loop_verifications', review.id).status, 'failed');
+    const known = new Set(s.store.all<any>('runs').map((r) => r.id));
+    s.config({ result: { ...progressReport, items: [verifiedClaim(item.id, item.title)] } });
+    await s.api('POST', `/api/channels/${claude.id}/action`, { action: 'run' });
+    const again = await until(() => s.store.all<any>('runs').find((r) => !known.has(r.id) && r.status === 'completed'));
+    const parked = s.store.get<any>('items', item.id);
+    assert.equal(parked.status, 'investigating');
+    assert(parked.nextStep.startsWith('上一次独立复核未通过且源码此后未变，先处理复核发现；'));
+    assert.equal(rows('loop_verifications', item.id).length, 1);
+    assert.equal(rows('loop_evidence', item.id).length, 1);
+    const finding = notes(again.id, `#${item.number} 的上一次独立复核未通过`);
+    assert.equal(finding.length, 1);
+    assert(finding[0].text.includes('夹具按要求给出反例'));
+  } finally {
+    await s.cleanup();
+  }
+});
+test('a review the Codex account holds keeps waiting without freezing the CLI channel that asked for it', async () => {
+  const s = await setup();
+  try {
+    const claude = await s.api(
+      'POST',
+      '/api/channels',
+      { projectId: s.project.id, name: '额度等待频道', goal: '检查保留线不冻结 CLI 频道', runtime: 'claude' },
+      201
+    );
+    stopScheduler(s);
+    await s.api('POST', `/api/channels/${claude.id}/action`, { action: 'run' });
+    const run = await until(() =>
+      s.store.all<any>('runs').find((r) => r.channelId === claude.id && r.status === 'completed')
+    );
+    const review = s.store.all<any>('loop_verifications').find((row) => row.runId === run.id)!;
+    assert.equal(review.status, 'queued');
+    // The account is spent until its window resets. The reviewer is a Codex job, so the tick writes
+    // that wait onto the row and starts nothing; the row stays queued, with no verdict of its own.
+    s.engine.usage.exhaustedUntil = new Date(Date.now() + 3600_000).toISOString();
+    s.engine.loop.verification.tick();
+    const row = () => s.store.get<any>('loop_verifications', review.id);
+    await until(() => row().usageWait);
+    assert.equal(row().status, 'queued');
+    assert.equal(row().usageWait.kind, 'account');
+    assert(row().retryAt > new Date().toISOString());
+    // 额度门禁 reads the Codex account, which a Claude Code channel never spends: its next manual run
+    // is accepted and completes while that review keeps waiting, instead of 409 for the whole hold.
+    await s.api('POST', `/api/channels/${claude.id}/action`, { action: 'run' });
+    await until(
+      () => s.store.all<any>('runs').filter((r) => r.channelId === claude.id && r.status === 'completed').length === 2
+    );
+    assert.equal(row().status, 'queued');
+    assert.equal(s.store.all('loop_verifications').length, 1);
+    // A Codex channel of the same project waits behind it exactly as before.
+    const refused = await s.api('POST', `/api/channels/${s.channels[0].id}/action`, { action: 'run' }, 409);
+    assert.equal(refused.error, '项目独立复核尚未完成，完成后会继续原任务');
+  } finally {
+    await s.cleanup();
+  }
+});
+test('a Trae channel runs the sandboxed exec shape and every runtime is listed by discovery', async () => {
+  const s = await setup();
+  try {
+    const trae = await s.api(
+      'POST',
+      '/api/channels',
+      { projectId: s.project.id, name: 'Trae 频道', goal: '用本机 Trae CLI 执行有界轮次', runtime: 'trae' },
+      201
+    );
+    assert.equal(trae.permission, 'workspace-write');
+    await s.api('POST', `/api/channels/${trae.id}/action`, { action: 'run' });
+    await until(() => s.store.all<any>('runs').find((r) => r.channelId === trae.id && r.status === 'completed'));
+    const args = JSON.parse(readFileSync(join(s.projectPath, '.fixture-capture.json'), 'utf8')).args;
+    assert.equal(args[0], 'exec');
+    assert(args.includes('--json'));
+    assert.equal(args[args.indexOf('--sandbox') + 1], 'workspace-write');
+    assert(args.includes('sandbox_mode="workspace-write"'));
+    assert(args.includes('approval_policy="never"'));
+    assert(args.includes('sandbox_workspace_write.network_access=false'));
+    assert(args.includes('mcp_servers.morrow.default_tools_approval_mode="approve"'));
+    assert(args.includes('--output-last-message'));
+    assert(!args.some((a: string) => a.includes('dangerously')));
+    const runtimes = await discoverRuntimes();
+    assert.deepEqual(
+      runtimes.map((r) => r.id),
+      ['codex', 'claude', 'trae']
+    );
+    assert(runtimes.every((r) => r.available && r.path === fixture));
+    assert.deepEqual(
+      runtimes.map((r) => r.name),
+      ['Codex', 'Claude Code', 'Trae CLI']
+    );
+  } finally {
+    await s.cleanup();
+  }
+});
+test('resume scheduling, per-project queued work, and human-needed results stop continuation', async () => {
   const s = await setup();
   try {
     const c = s.channels[0];
-    await s.api("POST", `/api/channels/${c.id}/action`, { action: "resume" });
-    await until(() =>
-      s.store.all<any>("runs").some((r) => r.status === "completed"),
-    );
-    assert.equal(s.store.get<any>("channels", c.id).status, "waiting");
+    await s.api('POST', `/api/channels/${c.id}/action`, { action: 'resume' });
+    await until(() => s.store.all<any>('runs').some((r) => r.status === 'completed'));
+    assert.equal(s.store.get<any>('channels', c.id).status, 'waiting');
     assert(s.engine.control(c.id).enabled);
+    await concludeReviews(s);
     s.config({
       result: {
-        summary: "需要人类提供样本数据。",
+        summary: '需要人类提供样本数据。',
         items: [],
         nextCheckMinutes: 60,
         knowledge: [],
         needsHuman: true,
       },
     });
-    s.store.put("channels", {
-      ...s.store.get<any>("channels", c.id),
-      nextRunAt: "2000-01-01T00:00:00.000Z",
+    s.store.put('channels', {
+      ...s.store.get<any>('channels', c.id),
+      nextRunAt: '2000-01-01T00:00:00.000Z',
     });
     s.engine.tick();
-    await until(
-      () =>
-        s.store.all<any>("runs").filter((r) => r.status === "completed")
-          .length === 2,
-    );
-    assert.equal(s.store.get<any>("channels", c.id).status, "blocked");
+    await until(() => s.store.all<any>('runs').filter((r) => r.status === 'completed').length === 2);
+    assert.equal(s.store.get<any>('channels', c.id).status, 'blocked');
     assert(!s.engine.control(c.id).enabled);
   } finally {
     await s.cleanup();
   }
 });
-test("safe adapters and evidence validation", () => {
+test('a CLI turn that needs a person leaves its question on the channel, and the next turn takes the answer', async () => {
+  const s = await setup();
+  try {
+    // Every turn here is started by hand; the daemon loop would otherwise choose its own moment.
+    stopScheduler(s);
+    const claude = await s.api(
+      'POST',
+      '/api/channels',
+      { projectId: s.project.id, name: '提问频道', goal: '缺关键信息时先问人', runtime: 'claude' },
+      201
+    );
+    // A report has no separate question field, so a turn that needs a person puts the question in
+    // its summary — which is exactly what the real Claude Code turn behind this behaviour did.
+    const question = '样本数据从哪里取？现有导出缺少退款记录，请指定来源。';
+    s.config({ result: { summary: question, items: [], nextCheckMinutes: 60, knowledge: [], needsHuman: true } });
+    const finished = (count: number) =>
+      until(
+        () =>
+          s.store.all<any>('runs').filter((r) => r.channelId === claude.id && r.status === 'completed').length === count
+      );
+    await s.api('POST', `/api/channels/${claude.id}/action`, { action: 'resume' });
+    await finished(1);
+    const asked = s.store.all<any>('runs').find((r) => r.channelId === claude.id)!;
+    const blocked = s.store.get<any>('channels', claude.id);
+    assert.equal(blocked.status, 'blocked');
+    assert(!s.engine.control(claude.id).enabled);
+    // The question the page shows, stored the way a native question is stored.
+    assert.equal(blocked.work.state, 'needs_input');
+    assert.equal(blocked.work.awaitingReply, true);
+    assert.equal(blocked.work.nextStep, question);
+    assert.equal(blocked.work.runId, asked.id);
+    assert.equal(blocked.work.focus, '');
+    assert.equal(blocked.work.reason, '本轮需要人工输入');
+    assert(blocked.work.updatedAt);
+    // The audit line that says why automatic scheduling stopped is still written.
+    assert(
+      s.store
+        .all<any>('events')
+        .some((e) => e.channelId === claude.id && e.text === '此轮需要人工输入，频道已停止自动调度。')
+    );
+    // The only reply a CLI channel has is a note; storing one answers nothing on its own.
+    const answer = await s.api(
+      'POST',
+      `/api/channels/${claude.id}/messages`,
+      { text: '用 2026-08 的对账导出，退款记录在第二张表。' },
+      201
+    );
+    assert.equal(s.store.get<any>('channels', claude.id).work.awaitingReply, true);
+    s.config({ result: progressReport });
+    await s.api('POST', `/api/channels/${claude.id}/action`, { action: 'run' });
+    await finished(2);
+    // Cleared when the turn started: this turn's report says nothing about a person, so nothing
+    // after the start could have cleared it. The decision itself stays, now marked answered.
+    const answered = s.store.get<any>('channels', claude.id);
+    assert.equal(answered.work.awaitingReply, false);
+    assert.equal(answered.work.state, 'needs_input');
+    assert.equal(answered.work.nextStep, question);
+    // Answering does not resume autonomy; the person asks for the turn, as they did above.
+    assert(!s.engine.control(claude.id).enabled);
+    const second = s.store.all<any>('runs').find((r) => r.channelId === claude.id && r.id !== asked.id)!;
+    const prompt = s.store.runText(second.id, 'prompt')!;
+    const context = JSON.parse(prompt.split('\n').find((line) => line.startsWith('{"project":'))!);
+    // Nothing was added to the prompt for this: the answer arrives as the note this turn is the
+    // first to see, beside the previous turn's summary — the question it answers.
+    assert.deepEqual(context.humanNotes, [{ text: answer.text, createdAt: answer.createdAt, new: true }]);
+    assert(context.previousRuns.some((r: any) => r.summary === question));
+  } finally {
+    await s.cleanup();
+  }
+});
+test('safe adapters and evidence validation', () => {
   const channel: any = {
-    runtime: "codex",
-    permission: "read-only",
-    sessionId: "previous-session",
-    model: "",
+    runtime: 'codex',
+    permission: 'read-only',
+    sessionId: 'previous-session',
+    model: '',
   };
-  for (const runtime of ["codex", "trae"]) {
-    const args = invocation({ ...channel, runtime }, "run", "schema", "output");
-    assert(args.includes("resume"));
+  for (const runtime of ['codex', 'trae']) {
+    const args = invocation({ ...channel, runtime }, 'run', 'output');
+    assert(args.includes('resume'));
     assert(args.includes('sandbox_mode="read-only"'));
     assert(args.includes('approval_policy="never"'));
-    assert(!args.some((a) => a.includes("dangerously")));
+    assert(args.includes('sandbox_workspace_write.network_access=false'));
+    assert(!args.some((a) => a.includes('dangerously')));
   }
-  const args = invocation(
-    { ...channel, runtime: "claude", permission: "workspace-write" },
-    "run",
-    "schema",
-    "output",
-  );
-  assert.equal(args[args.indexOf("--tools") + 1], "Read,Grep,Glob,Edit,Write");
-  assert(args.includes("acceptEdits"));
-  assert(!args.includes("Bash"));
+  const native = invocation({ ...channel, permission: 'native', sessionId: '' }, 'run', 'output');
+  assert(native.includes('sandbox_mode="danger-full-access"'));
+  assert(!native.includes('sandbox_workspace_write.network_access=false'));
+  assert.equal(native[native.indexOf('--sandbox') + 1], 'danger-full-access');
+  const claude = invocation({ ...channel, runtime: 'claude', permission: 'workspace-write' }, 'run-7', 'output');
+  assert.equal(claude[claude.indexOf('--tools') + 1], 'Read,Grep,Glob,Edit,Write,MultiEdit,NotebookEdit,Bash');
+  assert.equal(claude[claude.indexOf('--permission-mode') + 1], 'acceptEdits');
+  assert.equal(claude[claude.indexOf('--name') + 1], 'Morrow:run-7');
+  assert.equal(claude[claude.indexOf('--resume') + 1], 'previous-session');
+  assert(!claude.some((a) => a.includes('dangerously')));
+  // The login command a failed turn quotes belongs to the runtime that produced it.
+  assert(diagnoseFailure('claude', 'authentication_failed')?.summary.includes('claude auth login'));
+  assert(diagnoseFailure('trae', 'get_detail_param returned 401')?.summary.includes('traex login'));
   assert.throws(() =>
     validateResult({
-      summary: "Claim",
+      summary: 'Claim',
       items: [
         {
-          id: "",
-          title: "Claim",
-          summary: "",
-          status: "verified",
-          kind: "issue",
+          id: '',
+          title: 'Claim',
+          summary: '',
+          status: 'verified',
+          kind: 'issue',
           evidence: [],
-          nextStep: "",
+          nextStep: '',
         },
       ],
       nextCheckMinutes: 1,
       knowledge: [],
       needsHuman: false,
-    }),
+    })
   );
 });
-test("restart recovers unfinished run, kills verified orphan and pauses channel", async () => {
-  const root = mkdtempSync(join(tmpdir(), "morrow-restart-"));
-  const home = join(root, "home");
-  const projectPath = join(root, "project");
+test('restart recovers unfinished run, kills verified orphan and pauses channel', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'morrow-restart-'));
+  const home = join(root, 'home');
+  const projectPath = join(root, 'project');
   mkdirSync(projectPath);
-  writeFileSync(
-    join(projectPath, ".fixture.json"),
-    JSON.stringify({ sleep: true }),
-  );
+  writeFileSync(join(projectPath, '.fixture.json'), JSON.stringify({ sleep: true }));
   let daemon: any;
   let recovered: any;
   try {
-    daemon = spawn(process.execPath, ["service/server.ts"], {
-      cwd: resolve("."),
-      env: { ...process.env, MORROW_HOME: home, MORROW_PORT: "0" },
-      stdio: ["ignore", "pipe", "pipe"],
+    daemon = spawn(process.execPath, ['service/server.ts'], {
+      cwd: resolve('.'),
+      env: { ...process.env, MORROW_HOME: home, MORROW_PORT: '0' },
+      stdio: ['ignore', 'pipe', 'pipe'],
     });
-    let output = "";
-    daemon.stdout.on("data", (c: any) => (output += c));
-    await until(() => output.includes("listening"));
+    let output = '';
+    daemon.stdout.on('data', (c: any) => (output += c));
+    await until(() => output.includes('listening'));
     const port = output.match(/127\.0\.0\.1:(\d+)/)![1];
-    const token = readFileSync(join(home, "token"), "utf8");
+    const token = readFileSync(join(home, 'token'), 'utf8');
     const api = async (path: string, data?: any) => {
       const r = await fetch(`http://127.0.0.1:${port}` + path, {
-        method: data ? "POST" : "GET",
+        method: data ? 'POST' : 'GET',
         headers: {
           Authorization: `Bearer ${token}`,
-          "Content-Type": "application/json",
+          'Content-Type': 'application/json',
         },
         ...(data ? { body: JSON.stringify(data) } : {}),
       });
       return r.json();
     };
-    await api("/api/projects", {
-      name: "Recovery",
+    await api('/api/projects', {
+      name: 'Recovery',
       path: projectPath,
-      goal: "Recover safely",
+      goal: 'Recover safely',
     });
-    const state: any = await api("/api/state");
+    const state: any = await api('/api/state');
     const id = state.channels[0].id;
-    await api(`/api/channels/${id}/action`, { action: "resume" });
-    await until(() => existsSync(join(projectPath, ".fixture-capture.json")));
-    const pid = JSON.parse(
-      readFileSync(join(projectPath, ".fixture-capture.json"), "utf8"),
-    ).pid;
-    daemon.kill("SIGKILL");
-    await new Promise((resolve) => daemon.once("close", resolve));
+    await api(`/api/channels/${id}/action`, { action: 'resume' });
+    await until(() => existsSync(join(projectPath, '.fixture-capture.json')));
+    const pid = JSON.parse(readFileSync(join(projectPath, '.fixture-capture.json'), 'utf8')).pid;
+    daemon.kill('SIGKILL');
+    await new Promise((resolve) => daemon.once('close', resolve));
     daemon = undefined;
     recovered = await startServer({ home, port: 0 });
-    assert.equal(recovered.store.all("runs")[0].status, "interrupted");
-    assert.equal(recovered.store.get("channels", id).status, "paused");
+    assert.equal(recovered.store.all('runs')[0].status, 'interrupted');
+    assert.equal(recovered.store.get('channels', id).status, 'paused');
     assert(!recovered.engine.control(id).enabled);
     await until(() => {
       try {
@@ -431,355 +839,1208 @@ test("restart recovers unfinished run, kills verified orphan and pauses channel"
     });
   } finally {
     if (daemon) {
-      daemon.kill("SIGKILL");
-      await new Promise((resolve) => daemon.once("close", resolve));
+      daemon.kill('SIGKILL');
+      await new Promise((resolve) => daemon.once('close', resolve));
     }
     if (recovered) await recovered.close();
     rmSync(root, { recursive: true, force: true });
   }
 });
 
-test("split UTF-8 stream preserves Chinese structured output", async () => {
+test('split UTF-8 stream preserves Chinese structured output', async () => {
   const s = await setup();
   try {
     s.config({ splitUTF8: true });
-    await s.api("POST", `/api/channels/${s.channels[0].id}/action`, {
-      action: "run",
+    await s.api('POST', `/api/channels/${s.channels[0].id}/action`, {
+      action: 'run',
     });
-    await until(() =>
-      s.store.all<any>("runs").some((r) => r.status === "completed"),
-    );
-    assert.equal(s.store.all<any>("runs")[0].summary, "中文证据完整");
+    await until(() => s.store.all<any>('runs').some((r) => r.status === 'completed'));
+    assert.equal(s.store.all<any>('runs')[0].summary, '中文证据完整');
   } finally {
     await s.cleanup();
   }
 });
 
-test("execution timeout interrupts and disables scheduling", async () => {
-  process.env.MORROW_TEST_TIMEOUT_MS = "150";
+test('execution timeout interrupts and disables scheduling', async () => {
+  process.env.MORROW_TEST_TIMEOUT_MS = '150';
   const s = await setup();
   try {
     s.config({ sleep: true });
-    await s.api("POST", `/api/channels/${s.channels[0].id}/action`, {
-      action: "resume",
+    await s.api('POST', `/api/channels/${s.channels[0].id}/action`, {
+      action: 'resume',
     });
-    await until(() =>
-      s.store.all<any>("runs").some((r) => r.status === "interrupted"),
-    );
-    assert.equal(
-      s.store.get<any>("channels", s.channels[0].id).status,
-      "paused",
-    );
+    await until(() => s.store.all<any>('runs').some((r) => r.status === 'interrupted'));
+    assert.equal(s.store.get<any>('channels', s.channels[0].id).status, 'paused');
     assert(!s.engine.control(s.channels[0].id).enabled);
-    assert(s.store.all<any>("runs")[0].summary.includes("超时"));
+    assert(s.store.all<any>('runs')[0].summary.includes('超时'));
   } finally {
     await s.cleanup();
     delete process.env.MORROW_TEST_TIMEOUT_MS;
   }
 });
 
-test("authentication failures are actionable and never reported as valid results", async () => {
+test('authentication failures are actionable and never reported as valid results', async () => {
   const s = await setup();
   try {
     s.config({ fail: true, authFailure: true });
     const c = s.channels[0];
-    await s.api("PATCH", `/api/channels/${c.id}`, { runtime: "claude" });
-    await s.api("POST", `/api/channels/${c.id}/action`, { action: "run" });
-    await until(() =>
-      s.store.all<any>("runs").some((r) => r.status === "failed"),
-    );
-    assert(s.store.all<any>("runs")[0].summary.includes("claude auth login"));
-    assert.equal(s.store.all("results").length, 0);
-    assert.equal(s.store.all("items").length, 0);
-    assert(
-      diagnoseFailure(
-        "trae",
-        "get_detail_param returned 401",
-      )?.summary.includes("traex login"),
-    );
-    assert(
-      diagnoseFailure("codex", "429 rate_limit")?.summary.includes("配额"),
-    );
+    await s.api('POST', `/api/channels/${c.id}/action`, { action: 'run' });
+    await until(() => s.store.all<any>('runs').some((r) => r.status === 'failed'));
+    assert(s.store.all<any>('runs')[0].summary.includes('codex login'));
+    assert.equal(s.store.all('results').length, 0);
+    assert.equal(s.store.all('items').length, 0);
+    assert(diagnoseFailure('codex', '429 rate_limit')?.summary.includes('配额'));
   } finally {
     await s.cleanup();
   }
 });
 
-
-test("event history uses scoped stable cursors and includes legacy events", async () => {
+test('event history uses scoped stable cursors and includes legacy events', async () => {
   const s = await setup();
   try {
     const channelId = s.channels[0].id;
     const runId = randomUUID();
-    s.store.put("runs", { id: runId, channelId, status: "completed" });
+    s.store.put('runs', { id: runId, channelId, status: 'completed' });
     const otherRunId = randomUUID();
-    s.store.put("runs", { id: otherRunId, channelId, status: "completed" });
-    const first = s.store.event(channelId, runId, "system", "legacy plain log");
-    const second = s.engine.event(channelId, runId, "tool", "tool input", { type: "tool_use", tool: "Read", input: { path: "a.txt" }, toolCallId: "read-1" });
-    s.store.event(s.channels[1].id, "", "system", "another channel");
-    const third = s.engine.event(channelId, runId, "tool", "tool result", { type: "tool_result", toolCallId: "read-1", output: "result" });
-    s.store.event(channelId, otherRunId, "system", "another run");
-    const fourth = s.store.event(channelId, runId, "result", "finished");
-    for (const event of [first, second, third, fourth]) s.store.put("events", { ...event, createdAt: "2026-01-01T00:00:00.000Z" });
+    s.store.put('runs', { id: otherRunId, channelId, status: 'completed' });
+    const first = s.store.event(channelId, runId, 'system', 'legacy plain log');
+    const second = s.engine.event(channelId, runId, 'tool', 'tool input', {
+      type: 'tool_use',
+      tool: 'Read',
+      input: { path: 'a.txt' },
+      toolCallId: 'read-1',
+    });
+    s.store.event(s.channels[1].id, '', 'system', 'another channel');
+    const third = s.engine.event(channelId, runId, 'tool', 'tool result', {
+      type: 'tool_result',
+      toolCallId: 'read-1',
+      output: 'result',
+    });
+    s.store.event(channelId, otherRunId, 'system', 'another run');
+    const fourth = s.store.event(channelId, runId, 'result', 'finished');
+    for (const event of [first, second, third, fourth])
+      s.store.put('events', { ...event, createdAt: '2026-01-01T00:00:00.000Z' });
     const query = `/api/events?channelId=${channelId}&runId=${runId}&limit=2`;
-    const latest = await s.api("GET", query);
-    assert.deepEqual(latest.events.map((e: any) => e.id), [third.id, fourth.id]);
-    assert.equal(latest.hasMore, true); assert.equal(latest.cursor, third.id);
-    const previous = await s.api("GET", `${query}&before=${latest.cursor}`);
-    assert.deepEqual(previous.events.map((e: any) => e.id), [first.id, second.id]);
-    assert.equal(previous.hasMore, false); assert.equal(previous.events[0].detail, undefined);
+    const latest = await s.api('GET', query);
+    assert.deepEqual(
+      latest.events.map((e: any) => e.id),
+      [third.id, fourth.id]
+    );
+    assert.equal(latest.hasMore, true);
+    assert.equal(latest.cursor, third.id);
+    const previous = await s.api('GET', `${query}&before=${latest.cursor}`);
+    assert.deepEqual(
+      previous.events.map((e: any) => e.id),
+      [first.id, second.id]
+    );
+    assert.equal(previous.hasMore, false);
+    assert.equal(previous.events[0].detail, undefined);
     assert.equal(previous.events[1].detail.sequence, 2);
-    const incremental = await s.api("GET", `${query}&after=${first.id}`);
-    assert.deepEqual(incremental.events.map((e: any) => e.id), [second.id, third.id]);
-    assert.equal(incremental.cursor, third.id); assert.equal(incremental.hasMore, true);
-    const remainder = await s.api("GET", `${query}&after=${incremental.cursor}`);
-    assert.deepEqual(remainder.events.map((e: any) => e.id), [fourth.id]); assert.equal(remainder.hasMore, false);
-    const empty = await s.api("GET", `${query}&after=${fourth.id}`);
+    const incremental = await s.api('GET', `${query}&after=${first.id}`);
+    assert.deepEqual(
+      incremental.events.map((e: any) => e.id),
+      [second.id, third.id]
+    );
+    assert.equal(incremental.cursor, third.id);
+    assert.equal(incremental.hasMore, true);
+    const remainder = await s.api('GET', `${query}&after=${incremental.cursor}`);
+    assert.deepEqual(
+      remainder.events.map((e: any) => e.id),
+      [fourth.id]
+    );
+    assert.equal(remainder.hasMore, false);
+    const empty = await s.api('GET', `${query}&after=${fourth.id}`);
     assert.deepEqual(empty, { events: [], hasMore: false });
-    const snapshot = await s.api("GET", "/api/state");
+    const snapshot = await s.api('GET', '/api/state');
     assert.equal(snapshot.events.find((e: any) => e.id === third.id).detail.sequence, 3);
     assert.equal((await fetch(s.base + query)).status, 401);
-    assert.equal((await fetch(s.base + query, { headers: { Authorization: `Bearer ${s.token}`, Origin: "http://example.com" } })).status, 403);
-    for (const suffix of ["&limit=201", "&limit=0", "&limit=1.5", "&limit=abc", "&unknown=yes", `&before=${first.id}&after=${third.id}`, "&after=invalid"]) await s.api("GET", `/api/events?channelId=${channelId}&runId=${runId}${suffix}`, undefined, 400);
-    await s.api("GET", `${query}&limit=3`, undefined, 400);
-    for (let index = 0; index < 205; index++) s.store.event(s.channels[1].id, "", "system", `history ${index}`);
-    const bounded = await s.api("GET", `/api/events?channelId=${s.channels[1].id}&limit=200`);
-    assert.equal(bounded.events.length, 200); assert.equal(bounded.hasMore, true);
-    const defaultPage = await s.api("GET", `/api/events?channelId=${s.channels[1].id}`);
+    assert.equal(
+      (await fetch(s.base + query, { headers: { Authorization: `Bearer ${s.token}`, Origin: 'http://example.com' } }))
+        .status,
+      403
+    );
+    for (const suffix of [
+      '&limit=201',
+      '&limit=0',
+      '&limit=1.5',
+      '&limit=abc',
+      '&unknown=yes',
+      `&before=${first.id}&after=${third.id}`,
+      '&after=invalid',
+    ])
+      await s.api('GET', `/api/events?channelId=${channelId}&runId=${runId}${suffix}`, undefined, 400);
+    await s.api('GET', `${query}&limit=3`, undefined, 400);
+    for (let index = 0; index < 205; index++) s.store.event(s.channels[1].id, '', 'system', `history ${index}`);
+    const bounded = await s.api('GET', `/api/events?channelId=${s.channels[1].id}&limit=200`);
+    assert.equal(bounded.events.length, 200);
+    assert.equal(bounded.hasMore, true);
+    const defaultPage = await s.api('GET', `/api/events?channelId=${s.channels[1].id}`);
     assert.equal(defaultPage.events.length, 50);
-    await s.api("GET", "/api/events", undefined, 400);
-    await s.api("GET", `/api/events?channelId=${randomUUID()}`, undefined, 404);
-    await s.api("GET", `${query}&before=${randomUUID()}`, undefined, 404);
-    await s.api("GET", `/api/events?channelId=${s.channels[1].id}&runId=${runId}`, undefined, 404);
-    await s.api("GET", `/api/events?channelId=${s.channels[1].id}&before=${first.id}`, undefined, 404);
-    await s.api("GET", `/api/events?channelId=${channelId}&runId=${otherRunId}&before=${first.id}`, undefined, 404);
+    await s.api('GET', '/api/events', undefined, 400);
+    await s.api('GET', `/api/events?channelId=${randomUUID()}`, undefined, 404);
+    await s.api('GET', `${query}&before=${randomUUID()}`, undefined, 404);
+    await s.api('GET', `/api/events?channelId=${s.channels[1].id}&runId=${runId}`, undefined, 404);
+    await s.api('GET', `/api/events?channelId=${s.channels[1].id}&before=${first.id}`, undefined, 404);
+    await s.api('GET', `/api/events?channelId=${channelId}&runId=${otherRunId}&before=${first.id}`, undefined, 404);
     // Reopen only this test's temporary database; production daemons are untouched.
     await s.close();
-    const reopened = new Store(join(s.home, "workspace.sqlite"));
+    const reopened = new Store(join(s.home, 'workspace.sqlite'));
     try {
       const persisted = eventHistory(reopened, new URLSearchParams({ channelId, runId, after: second.id }));
-      assert.deepEqual(persisted.events.map(event => event.id), [third.id, fourth.id]);
+      assert.deepEqual(
+        persisted.events.map((event) => event.id),
+        [third.id, fourth.id]
+      );
       assert.equal(persisted.events[0].detail?.sequence, 3);
-      const next = reopened.event(channelId, runId, "tool", "continued", { type: "tool_use", tool: "Read" });
+      const next = reopened.event(channelId, runId, 'tool', 'continued', { type: 'tool_use', tool: 'Read' });
       assert.equal(next.detail?.sequence, 5);
-    } finally { reopened.close(); }
-  } finally { await s.cleanup(); }
+    } finally {
+      reopened.close();
+    }
+  } finally {
+    await s.cleanup();
+  }
 });
 
-test("streamed Claude tools persist multiple details, matched names and sanitized output", async () => {
+test('streamed Claude tools persist multiple details, matched names and sanitized output', async () => {
+  const s = await setup();
+  try {
+    const channel = await s.api(
+      'POST',
+      '/api/channels',
+      { projectId: s.project.id, name: 'Claude 工具流', goal: '检查工具事件落库', runtime: 'claude' },
+      201
+    );
+    s.config({
+      events: [
+        // Claude Code's own progress chatter, interleaved the way a real turn emits it.
+        { type: 'system', subtype: 'thinking_tokens', estimated_tokens: 50, estimated_tokens_delta: 50 },
+        {
+          type: 'assistant',
+          message: {
+            content: [
+              { type: 'tool_use', id: 'read-a', name: 'Read', input: { path: 'a.txt' } },
+              { type: 'tool_use', id: 'read-b', name: 'Grep', input: { pattern: 'TODO' } },
+            ],
+          },
+        },
+        { type: 'rate_limit_event', rate_limit_info: { status: 'allowed', rateLimitType: 'five_hour' } },
+        {
+          type: 'user',
+          message: {
+            content: [
+              { type: 'tool_result', tool_use_id: 'read-a', content: `visible ${s.token}`, is_error: false },
+              { type: 'tool_result', tool_use_id: 'read-b', content: 'no matches', is_error: false },
+            ],
+          },
+        },
+      ],
+    });
+    await s.api('POST', `/api/channels/${channel.id}/action`, { action: 'run' });
+    await until(() => s.store.all<any>('runs').some((r) => r.channelId === channel.id && r.status === 'completed'));
+    const runId = s.store.all<any>('runs').find((r) => r.channelId === channel.id)!.id;
+    const page = await s.api('GET', `/api/events?channelId=${channel.id}&runId=${runId}`);
+    const details = page.events.filter((e: any) => e.detail).map((e: any) => e.detail);
+    assert.equal(details.length, 4);
+    // A tool_result carries only the call id, so the name is matched from the earlier tool_use.
+    assert.deepEqual(
+      details.map((d: any) => d.tool),
+      ['Read', 'Grep', 'Read', 'Grep']
+    );
+    assert(details.every((d: any, i: number) => i === 0 || d.sequence > details[i - 1].sequence));
+    assert(!JSON.stringify(page).includes(s.token));
+    assert(!JSON.stringify(s.store.all('events')).includes(s.token));
+    assert(details[2].output.includes('[REDACTED]'));
+    // The progress chatter reached stdout.jsonl but never the work log, and the session
+    // announcement is one summary line instead of the whole CLI startup inventory.
+    const texts = page.events.map((e: any) => e.text).join('\n');
+    assert(!texts.includes('thinking_tokens'));
+    assert(!texts.includes('rate_limit_event'));
+    assert(page.events.some((e: any) => e.text.startsWith('会话已开始')));
+    const stdout = readFileSync(join(s.home, 'runs', runId, 'stdout.jsonl'), 'utf8');
+    assert(stdout.includes('thinking_tokens') && stdout.includes('rate_limit_event'));
+  } finally {
+    await s.cleanup();
+  }
+});
+test('an ordinary rate-limit notice never becomes the reason a failed Claude turn is reported', async () => {
+  const s = await setup();
+  try {
+    const channel = await s.api(
+      'POST',
+      '/api/channels',
+      { projectId: s.project.id, name: 'Claude 失败轮次', goal: '检查失败原因归因', runtime: 'claude' },
+      201
+    );
+    const failures = () => s.store.all<any>('runs').filter((r) => r.channelId === channel.id && r.status === 'failed');
+    // Every Claude turn carries an allowed notice; its words match the quota pattern, so a turn that
+    // fails for any other reason must not be reported as a spent account.
+    s.config({
+      failAfterEvents: true,
+      events: [{ type: 'rate_limit_event', rate_limit_info: { status: 'allowed', rateLimitType: 'five_hour' } }],
+    });
+    await s.api('POST', `/api/channels/${channel.id}/action`, { action: 'run' });
+    await until(() => failures().length === 1);
+    const allowed = failures()[0];
+    assert(allowed.summary.includes('CLI 执行失败（退出码 2）'), allowed.summary);
+    assert(!allowed.summary.includes('配额不足或触发速率限制'), allowed.summary);
+    // A refusal is a real limit: visible in the log, and still the explanation for the failure.
+    s.config({
+      failAfterEvents: true,
+      events: [{ type: 'rate_limit_event', rate_limit_info: { status: 'rejected', rateLimitType: 'five_hour' } }],
+    });
+    await s.api('POST', `/api/channels/${channel.id}/action`, { action: 'run' });
+    await until(() => failures().length === 2);
+    const rejected = failures().find((r) => r.id !== allowed.id)!;
+    assert(rejected.summary.includes('配额不足或触发速率限制'), rejected.summary);
+    const page = await s.api('GET', `/api/events?channelId=${channel.id}&runId=${rejected.id}`);
+    assert(page.events.some((e: any) => e.text === '速率限制：rejected（five_hour）'));
+  } finally {
+    await s.cleanup();
+  }
+});
+test('what a tool read in the workspace never becomes the reason a failed turn is reported', async () => {
+  const s = await setup();
+  try {
+    const channel = await s.api(
+      'POST',
+      '/api/channels',
+      { projectId: s.project.id, name: 'Claude 工具失败轮次', goal: '检查工具内容不参与归因', runtime: 'claude' },
+      201
+    );
+    const failures = () => s.store.all<any>('runs').filter((r) => r.channelId === channel.id && r.status === 'failed');
+    // Ordinary project bytes that `quotaFailure` matches word for word: a passing test count, and a
+    // grep that hit the very file the patterns live in. A real turn did exactly this second one.
+    const workspaceLines = [
+      {
+        type: 'assistant',
+        message: { content: [{ type: 'tool_use', id: 'bash-1', name: 'Bash', input: { command: 'npm test' } }] },
+      },
+      {
+        type: 'user',
+        message: {
+          content: [{ type: 'tool_result', tool_use_id: 'bash-1', content: '429 tests passed', is_error: false }],
+        },
+      },
+      {
+        type: 'assistant',
+        message: {
+          content: [
+            {
+              type: 'tool_use',
+              id: 'grep-1',
+              name: 'Grep',
+              input: { pattern: 'cliTurnMinutes', path: 'service/runtimes.ts' },
+            },
+          ],
+        },
+      },
+      {
+        type: 'user',
+        message: {
+          content: [
+            {
+              type: 'tool_result',
+              tool_use_id: 'grep-1',
+              content: 'quotaFailure = /insufficient_quota|quota exceeded|usage limit|rate_limit|429|credit balance/i',
+              is_error: false,
+            },
+          ],
+        },
+      },
+    ];
+    // The turn then fails for a reason of its own, and one the runtime states at a lower priority
+    // than a quota failure: reading the tool lines would outrank and hide it.
+    s.config({
+      failAfterEvents: true,
+      events: [
+        ...workspaceLines,
+        { type: 'result', is_error: true, result: 'ECONNREFUSED while contacting the model service' },
+      ],
+    });
+    await s.api('POST', `/api/channels/${channel.id}/action`, { action: 'run' });
+    await until(() => failures().length === 1);
+    const network = failures()[0];
+    assert(network.summary.includes('无法连接模型服务'), network.summary);
+    assert(!network.summary.includes('配额不足或触发速率限制'), network.summary);
+    // Nothing was hidden from the work log: the tool calls and their output are still events.
+    const page = await s.api('GET', `/api/events?channelId=${channel.id}&runId=${network.id}`);
+    assert(page.events.some((e: any) => e.detail?.output === '429 tests passed'));
+    assert.equal(page.events.filter((e: any) => e.detail?.type === 'tool_use').length, 2);
+    // A quota failure the runtime itself reports is still diagnosed, past the same tool lines.
+    s.config({
+      failAfterEvents: true,
+      events: [
+        ...workspaceLines,
+        { type: 'rate_limit_event', rate_limit_info: { status: 'rejected', rateLimitType: 'five_hour' } },
+      ],
+    });
+    await s.api('POST', `/api/channels/${channel.id}/action`, { action: 'run' });
+    await until(() => failures().length === 2);
+    const quota = failures().find((r) => r.id !== network.id)!;
+    assert(quota.summary.includes('配额不足或触发速率限制'), quota.summary);
+  } finally {
+    await s.cleanup();
+  }
+});
+test('what the model wrote about its own work never becomes the reason a failed turn is reported', async () => {
+  const s = await setup();
+  try {
+    const channel = await s.api(
+      'POST',
+      '/api/channels',
+      { projectId: s.project.id, name: 'Claude 自述轮次', goal: '检查模型文字不参与归因', runtime: 'claude' },
+      201
+    );
+    const failures = () => s.store.all<any>('runs').filter((r) => r.channelId === channel.id && r.status === 'failed');
+    // A background task is named by the model, so its notices are tool input in all but shape.
+    s.config({
+      failAfterEvents: true,
+      events: [
+        {
+          type: 'system',
+          subtype: 'task_started',
+          task_id: 'bg-1',
+          tool_use_id: 'toolu_1',
+          description: 'Run the 429 regression test',
+          task_type: 'local_bash',
+        },
+        {
+          type: 'system',
+          subtype: 'task_notification',
+          task_id: 'bg-1',
+          tool_use_id: 'toolu_1',
+          status: 'completed',
+          summary: 'Run the 429 regression test',
+        },
+        // The runtime's own statement, and one that ranks below a quota failure: reading the task
+        // notices would outrank and hide it.
+        { type: 'result', is_error: true, result: 'ECONNREFUSED while contacting the model service' },
+      ],
+    });
+    await s.api('POST', `/api/channels/${channel.id}/action`, { action: 'run' });
+    await until(() => failures().length === 1);
+    const background = failures()[0];
+    assert(background.summary.includes('无法连接模型服务'), background.summary);
+    assert(!background.summary.includes('配额不足或触发速率限制'), background.summary);
+    // Both notices are still readable lines in the work log.
+    const page = await s.api('GET', `/api/events?channelId=${channel.id}&runId=${background.id}`);
+    assert(page.events.some((e: any) => e.text === '后台任务已开始 · Run the 429 regression test'));
+    assert(page.events.some((e: any) => e.text === '后台任务已完成 · Run the 429 regression test'));
+    // A turn's own answer is not a failure report either, and turns in this project discuss quota,
+    // rate limits and test counts routinely. The exit code is what actually failed this one.
+    s.config({
+      failAfterEvents: true,
+      events: [
+        {
+          type: 'result',
+          is_error: false,
+          result: '本轮读完了配额相关代码：429 tests passed，rate limit 分支没有问题。',
+        },
+      ],
+    });
+    await s.api('POST', `/api/channels/${channel.id}/action`, { action: 'run' });
+    await until(() => failures().length === 2);
+    const answered = failures().find((r) => r.id !== background.id)!;
+    assert(answered.summary.includes('CLI 执行失败（退出码 2）'), answered.summary);
+    assert(!answered.summary.includes('配额不足或触发速率限制'), answered.summary);
+    // The same line marked as the turn's failure is the runtime speaking, and still diagnosed.
+    s.config({
+      failAfterEvents: true,
+      events: [{ type: 'result', is_error: true, result: 'usage limit reached; your credit balance is too low' }],
+    });
+    await s.api('POST', `/api/channels/${channel.id}/action`, { action: 'run' });
+    await until(() => failures().length === 3);
+    const quota = failures().find((r) => ![background.id, answered.id].includes(r.id))!;
+    assert(quota.summary.includes('配额不足或触发速率限制'), quota.summary);
+  } finally {
+    await s.cleanup();
+  }
+});
+test('streamed Codex tool items persist details, matched names and sanitized output', async () => {
   const s = await setup();
   try {
     const channelId = s.channels[0].id;
-    await s.api("PATCH", `/api/channels/${channelId}`, { runtime: "claude" });
-    s.config({ events: [
-      { type: "assistant", message: { content: [
-        { type: "tool_use", id: "read-a", name: "Read", input: { path: "a.txt" } },
-        { type: "tool_use", id: "read-b", name: "Grep", input: { pattern: "TODO" } }
-      ] } },
-      { type: "user", message: { content: [
-        { type: "tool_result", tool_use_id: "read-a", content: `visible ${s.token}`, is_error: false },
-        { type: "tool_result", tool_use_id: "read-b", content: "no matches", is_error: false }
-      ] } }
-    ] });
-    await s.api("POST", `/api/channels/${channelId}/action`, { action: "run" });
-    await until(() => s.store.all<any>("runs").some(r => r.status === "completed"));
-    const runId = s.store.all<any>("runs")[0].id;
-    const page = await s.api("GET", `/api/events?channelId=${channelId}&runId=${runId}`);
+    s.config({
+      events: [
+        {
+          type: 'item.started',
+          item: { id: 'cmd-a', type: 'command_execution', command: 'cat a.txt', status: 'in_progress' },
+        },
+        {
+          type: 'item.started',
+          item: {
+            id: 'mcp-b',
+            type: 'mcp_tool_call',
+            server: 'local',
+            tool: 'grep',
+            arguments: { pattern: 'TODO' },
+            status: 'in_progress',
+          },
+        },
+        {
+          type: 'item.completed',
+          item: {
+            id: 'cmd-a',
+            type: 'command_execution',
+            command: 'cat a.txt',
+            aggregated_output: `visible ${s.token}`,
+            exit_code: 0,
+            status: 'completed',
+          },
+        },
+        {
+          type: 'item.completed',
+          item: {
+            id: 'mcp-b',
+            type: 'mcp_tool_call',
+            server: 'local',
+            tool: 'grep',
+            arguments: { pattern: 'TODO' },
+            result: 'no matches',
+            status: 'completed',
+          },
+        },
+      ],
+    });
+    await s.api('POST', `/api/channels/${channelId}/action`, { action: 'run' });
+    await until(() => s.store.all<any>('runs').some((r) => r.status === 'completed'));
+    const runId = s.store.all<any>('runs')[0].id;
+    const page = await s.api('GET', `/api/events?channelId=${channelId}&runId=${runId}`);
     const details = page.events.filter((e: any) => e.detail).map((e: any) => e.detail);
     assert.equal(details.length, 4);
-    assert.deepEqual(details.map((d: any) => d.tool), ["Read", "Grep", "Read", "Grep"]);
+    assert.deepEqual(
+      details.map((d: any) => d.tool),
+      ['shell', 'local.grep', 'shell', 'local.grep']
+    );
+    assert.deepEqual(
+      details.map((d: any) => d.toolCallId),
+      ['cmd-a', 'mcp-b', 'cmd-a', 'mcp-b']
+    );
     assert(details.every((d: any, i: number) => i === 0 || d.sequence > details[i - 1].sequence));
     assert(!JSON.stringify(page).includes(s.token));
-    assert(!JSON.stringify(s.store.all("events")).includes(s.token));
-    assert(details[2].output.includes("[REDACTED]"));
-  } finally { await s.cleanup(); }
+    assert(!JSON.stringify(s.store.all('events')).includes(s.token));
+    assert(details[2].output.includes('[REDACTED]'));
+  } finally {
+    await s.cleanup();
+  }
 });
 
 test('project board creation, provenance, optimistic edits and project audit are durable', async () => {
   const s = await setup();
   try {
-    const item = await s.api('POST', `/api/projects/${s.project.id}/items`, {title:'统一导入流程'}, 201);
-    assert.equal(item.projectId,s.project.id); assert.equal(item.channelId,''); assert.equal(item.number,1); assert.equal(item.kind,'feature'); assert.equal(item.revision,1);
-    const updated = await s.api('PATCH', `/api/items/${item.id}`, {summary:'手工描述',nextStep:'验证导入',revision:1});
-    assert.equal(updated.revision,2);
-    await s.api('PATCH', `/api/items/${item.id}`, {title:'旧版本覆盖',revision:1},409);
-    const legacy = await s.api('PATCH', `/api/items/${item.id}`, {status:'investigating'});
-    assert.equal(legacy.revision,3);
-    await s.api('PATCH', `/api/items/${item.id}`, {projectId:'elsewhere'},400);
+    const item = await s.api('POST', `/api/projects/${s.project.id}/items`, { title: '统一导入流程' }, 201);
+    assert.equal(item.projectId, s.project.id);
+    assert.equal(item.channelId, '');
+    assert.equal(item.number, 1);
+    assert.equal(item.kind, 'feature');
+    assert.equal(item.revision, 1);
+    const updated = await s.api('PATCH', `/api/items/${item.id}`, {
+      summary: '手工描述',
+      nextStep: '验证导入',
+      revision: 1,
+    });
+    assert.equal(updated.revision, 2);
+    await s.api('PATCH', `/api/items/${item.id}`, { title: '旧版本覆盖', revision: 1 }, 409);
+    const legacy = await s.api('PATCH', `/api/items/${item.id}`, { status: 'investigating' });
+    assert.equal(legacy.revision, 3);
+    await s.api('PATCH', `/api/items/${item.id}`, { projectId: 'elsewhere' }, 400);
     const history = await s.api('GET', `/api/events?projectId=${s.project.id}&itemId=${item.id}&limit=2`);
-    assert.equal(history.events.length,2); assert.equal(history.hasMore,true);
-    assert.equal(history.events.at(-1).changes.before.status,'open');
-    assert.equal(history.events.at(-1).changes.after.status,'investigating');
-    assert(history.events.every((event:any)=>event.actor==='human' && event.itemId===item.id));
-    const first = await s.api('GET', `/api/events?projectId=${s.project.id}&itemId=${item.id}&before=${history.cursor}`);
-    assert.equal(first.events[0].action,'item.created'); assert.equal(first.hasMore,false);
-    await s.api('GET', `/api/events?projectId=${s.project.id}&itemId=${randomUUID()}`,undefined,404);
-    await s.api('GET', `/api/events?projectId=${s.project.id}&before=${randomUUID()}`,undefined,404);
-    assert.equal((await fetch(s.base+`/api/events?projectId=${s.project.id}`)).status,401);
-    const rootPath=join(s.root,'second');mkdirSync(rootPath);
-    const project=await s.api('POST','/api/projects',{name:'Other',path:rootPath,goal:'other',runtime:'claude'},201);
-    const state=await s.api('GET','/api/state');
-    assert.equal(project.runtime,'claude');assert(state.channels.filter((c:any)=>c.projectId===project.id).every((c:any)=>c.runtime==='claude'));
-    await s.api('POST',`/api/projects/${project.id}/items`,{title:'Wrong provenance',channelId:s.channels[0].id},404);
-    await s.api('GET',`/api/events?projectId=${project.id}&channelId=${s.channels[0].id}`,undefined,404);
-  } finally {await s.cleanup();}
+    assert.equal(history.events.length, 2);
+    assert.equal(history.hasMore, true);
+    assert.equal(history.events.at(-1).changes.before.status, 'open');
+    assert.equal(history.events.at(-1).changes.after.status, 'investigating');
+    assert(history.events.every((event: any) => event.actor === 'human' && event.itemId === item.id));
+    const first = await s.api(
+      'GET',
+      `/api/events?projectId=${s.project.id}&itemId=${item.id}&before=${history.cursor}`
+    );
+    assert.equal(first.events[0].action, 'item.created');
+    // An audit line names the item by its stable number; the board is not a feature-only board.
+    assert.equal(first.events[0].text, `创建事项 #${item.number}`);
+    assert.equal(history.events.at(-1).text, `更新事项 #${item.number}`);
+    assert.equal(first.hasMore, false);
+    await s.api('GET', `/api/events?projectId=${s.project.id}&itemId=${randomUUID()}`, undefined, 404);
+    await s.api('GET', `/api/events?projectId=${s.project.id}&before=${randomUUID()}`, undefined, 404);
+    assert.equal((await fetch(s.base + `/api/events?projectId=${s.project.id}`)).status, 401);
+    const rootPath = join(s.root, 'second');
+    mkdirSync(rootPath);
+    const project = await s.api(
+      'POST',
+      '/api/projects',
+      { name: 'Other', path: rootPath, goal: 'other', runtime: 'claude' },
+      201
+    );
+    const state = await s.api('GET', '/api/state');
+    assert.equal(project.runtime, 'claude');
+    // The project's own runtime decides its first channel's runtime and its default scope.
+    const seeded = state.channels.filter((c: any) => c.projectId === project.id);
+    assert(seeded.every((c: any) => c.runtime === 'claude' && c.permission === 'workspace-write'));
+    await s.api(
+      'POST',
+      `/api/projects/${project.id}/items`,
+      { title: 'Wrong provenance', channelId: s.channels[0].id },
+      404
+    );
+    await s.api('GET', `/api/events?projectId=${project.id}&channelId=${s.channels[0].id}`, undefined, 404);
+  } finally {
+    await s.cleanup();
+  }
 });
 
 test('sibling channels advance one project item, preserve origin, reject other projects and protect human edits', async () => {
-  const s=await setup();
-  const report=(item:any,title:string)=>({summary:'更新功能',items:[{id:item.id,title,summary:'验证后的内容',status:'investigating',kind:'feature',evidence:['fixture.txt:1'],nextStep:'下一步'}],nextCheckMinutes:60,knowledge:[],needsHuman:false});
-  const waitRuns=(count:number)=>until(()=>s.store.all<any>('runs').filter(r=>r.status==='completed').length===count);
+  const s = await setup();
+  const report = (item: any, title: string) => ({
+    summary: '更新功能',
+    items: [
+      {
+        id: item.id,
+        title,
+        summary: '验证后的内容',
+        status: 'investigating',
+        kind: 'feature',
+        evidence: ['fixture.txt:1'],
+        nextStep: '下一步',
+      },
+    ],
+    nextCheckMinutes: 60,
+    knowledge: [],
+    needsHuman: false,
+  });
+  const waitRuns = (count: number) =>
+    until(() => s.store.all<any>('runs').filter((r) => r.status === 'completed').length === count);
   try {
-    const [a,b]=s.channels;
-    const item=await s.api('POST',`/api/projects/${s.project.id}/items`,{title:'Shared feature',channelId:a.id},201);
-    s.config({markdown:true,result:report(item,'Shared feature updated')});
-    await s.api('POST',`/api/channels/${b.id}/action`,{action:'run'});await waitRuns(1);
-    let updated=s.store.get<any>('items',item.id);
-    assert.equal(s.store.all('items').length,1);assert.equal(updated.channelId,a.id);assert.deepEqual(updated.sourceChannelIds,[a.id,b.id]);assert.equal(updated.revision,2);
-    assert(s.engine.prompt(s.project,a).includes('Shared feature updated'));
-    const run=s.store.all<any>('runs')[0];assert.equal(updated.lastRunId,run.id);assert.equal(run.reportStatus,'valid');
-    const history=await s.api('GET',`/api/events?projectId=${s.project.id}&itemId=${item.id}`);
-    assert.equal(history.events.at(-1).actor,'agent');assert.equal(history.events.at(-1).channelId,b.id);
-    s.config({delay:300,result:report(updated,'Agent stale overwrite')});
-    await s.api('POST',`/api/channels/${a.id}/action`,{action:'run'});
-    await s.api('PATCH',`/api/items/${item.id}`,{title:'Human latest',revision:updated.revision});
-    await waitRuns(2);updated=s.store.get<any>('items',item.id);
-    assert.equal(updated.title,'Human latest');assert.equal(s.store.all<any>('runs').at(-1).reportStatus,'conflict');
-    assert(s.store.all<any>('events').some(e=>e.action==='item.conflict' && e.itemId===item.id));
-    const otherPath=join(s.root,'other');mkdirSync(otherPath);
-    const other=await s.api('POST','/api/projects',{name:'Other',path:otherPath,goal:'Other'},201);
-    const foreign=await s.api('POST',`/api/projects/${other.id}/items`,{title:'Foreign item'},201);
-    s.config({result:report(foreign,'Should never apply')});
-    await s.api('POST',`/api/channels/${a.id}/action`,{action:'run'});await waitRuns(3);
-    assert.equal(s.store.get<any>('items',foreign.id).title,'Foreign item');assert.equal(s.store.all<any>('runs').at(-1).reportStatus,'invalid');
-  } finally {await s.cleanup();}
+    const [a, b] = s.channels;
+    const item = await s.api(
+      'POST',
+      `/api/projects/${s.project.id}/items`,
+      { title: 'Shared feature', channelId: a.id },
+      201
+    );
+    s.config({ markdown: true, result: report(item, 'Shared feature updated') });
+    await s.api('POST', `/api/channels/${b.id}/action`, { action: 'run' });
+    await waitRuns(1);
+    let updated = s.store.get<any>('items', item.id);
+    assert.equal(s.store.all('items').length, 1);
+    assert.equal(updated.channelId, a.id);
+    assert.deepEqual(updated.sourceChannelIds, [a.id, b.id]);
+    assert.equal(updated.revision, 2);
+    assert(s.engine.prompt(s.project, a).includes('Shared feature updated'));
+    const run = s.store.all<any>('runs')[0];
+    assert.equal(updated.lastRunId, run.id);
+    assert.equal(run.reportStatus, 'valid');
+    const history = await s.api('GET', `/api/events?projectId=${s.project.id}&itemId=${item.id}`);
+    assert.equal(history.events.at(-1).actor, 'agent');
+    assert.equal(history.events.at(-1).channelId, b.id);
+    // Reporting an item nobody was responsible for claimed it, so the channel that may still write
+    // it — and whose stale report the human edit must survive — is that same channel.
+    assert.equal(updated.ownerChannelId, b.id);
+    s.config({ delay: 300, result: report(updated, 'Agent stale overwrite') });
+    await s.api('POST', `/api/channels/${b.id}/action`, { action: 'run' });
+    await s.api('PATCH', `/api/items/${item.id}`, { title: 'Human latest', revision: updated.revision });
+    await waitRuns(2);
+    updated = s.store.get<any>('items', item.id);
+    assert.equal(updated.title, 'Human latest');
+    assert.equal(s.store.all<any>('runs').at(-1).reportStatus, 'conflict');
+    assert(s.store.all<any>('events').some((e) => e.action === 'item.conflict' && e.itemId === item.id));
+    const otherPath = join(s.root, 'other');
+    mkdirSync(otherPath);
+    const other = await s.api('POST', '/api/projects', { name: 'Other', path: otherPath, goal: 'Other' }, 201);
+    const foreign = await s.api('POST', `/api/projects/${other.id}/items`, { title: 'Foreign item' }, 201);
+    s.config({ result: report(foreign, 'Should never apply') });
+    await s.api('POST', `/api/channels/${a.id}/action`, { action: 'run' });
+    await waitRuns(3);
+    assert.equal(s.store.get<any>('items', foreign.id).title, 'Foreign item');
+    assert.equal(s.store.all<any>('runs').at(-1).reportStatus, 'invalid');
+  } finally {
+    await s.cleanup();
+  }
 });
 
-test('optional invalid reports do not fail native work and terminal success overrides transient diagnostics',async()=>{
-  const s=await setup();
+test('optional invalid reports do not fail native work and terminal success overrides transient diagnostics', async () => {
+  const s = await setup();
   try {
-    const c=s.channels[0];
-    s.config({finalText:'Native work finished.\n```morrow-report\n{broken}\n```',events:[{type:'error',message:'Transient retry'}],recovered:true});
-    await s.api('POST',`/api/channels/${c.id}/action`,{action:'resume'});
-    await until(()=>s.store.all<any>('runs').some(r=>r.status==='completed'));
-    const run=s.store.all<any>('runs')[0];
-    assert.equal(run.reportStatus,'invalid');assert.equal(run.exitCode,0);assert.equal(run.trigger,'schedule');
-    assert.equal(s.store.get<any>('channels',c.id).status,'waiting');assert(s.engine.control(c.id).enabled);assert.equal(s.store.all('items').length,0);
-    const detail=await s.api('GET',`/api/runs/${run.id}`);
-    assert(detail.finalOutput.includes('Native work finished.'));assert(detail.prompt.includes('可选'));assert.equal(detail.report,undefined);
-    await s.api('POST',`/api/channels/${c.id}/action`,{action:'pause'});
-    const args=invocation({...c,sessionId:'exact-session'},run.id,'schema','output');
-    for(const flag of ['--ignore-user-config','--ignore-rules','--output-schema','--last'])assert(!args.includes(flag));
-    assert(args.includes('exact-session'));assert(args.includes('approval_policy="never"'));assert(args.includes('sandbox_workspace_write.network_access=false'));
-    const claude=invocation({...c,runtime:'claude',sessionId:'exact-claude'},run.id,'schema','output');
-    assert(!claude.includes('--json-schema'));assert(claude.includes('--resume'));assert(claude.includes('exact-claude'));assert(!claude.includes('Bash'));
-  } finally {await s.cleanup();}
+    const c = s.channels[0];
+    s.config({
+      finalText: 'Native work finished.\n```morrow-report\n{broken}\n```',
+      events: [{ type: 'error', message: 'Transient retry' }],
+      recovered: true,
+    });
+    await s.api('POST', `/api/channels/${c.id}/action`, { action: 'resume' });
+    await until(() => s.store.all<any>('runs').some((r) => r.status === 'completed'));
+    const run = s.store.all<any>('runs')[0];
+    assert.equal(run.reportStatus, 'invalid');
+    assert.equal(run.exitCode, 0);
+    assert.equal(run.trigger, 'schedule');
+    assert.equal(s.store.get<any>('channels', c.id).status, 'waiting');
+    assert(s.engine.control(c.id).enabled);
+    assert.equal(s.store.all('items').length, 0);
+    const detail = await s.api('GET', `/api/runs/${run.id}`);
+    assert(detail.finalOutput.includes('Native work finished.'));
+    assert(detail.prompt.includes('Morrow MCP'));
+    assert.equal(detail.report, undefined);
+    await s.api('POST', `/api/channels/${c.id}/action`, { action: 'pause' });
+    const args = invocation({ ...c, permission: 'workspace-write', sessionId: 'exact-session' }, 'output');
+    for (const flag of ['--ignore-user-config', '--ignore-rules', '--output-schema', '--last', '--json-schema'])
+      assert(!args.includes(flag));
+    assert(args.includes('exact-session'));
+    assert(args.includes('approval_policy="never"'));
+    assert(args.includes('sandbox_workspace_write.network_access=false'));
+  } finally {
+    await s.cleanup();
+  }
 });
 
-test('full run records and raw I/O page beyond snapshots with auth and scoped cursors',async()=>{
-  const s=await setup();
+test('full run records and raw I/O page beyond snapshots with auth and scoped cursors', async () => {
+  const s = await setup();
   try {
-    const c=s.channels[0];
-    await s.api('POST',`/api/channels/${c.id}/action`,{action:'run'});
-    await until(()=>s.store.all<any>('runs').some(r=>r.status==='completed'));
-    const run=s.store.all<any>('runs')[0];
-    const detail=await s.api('GET',`/api/runs/${run.id}`);
-    assert.equal(detail.run.permission,'workspace-write');assert.equal(detail.run.projectId,s.project.id);assert(detail.prompt.includes('验证完整项目循环'));assert.equal(detail.report.summary,run.summary);
-    for(let index=0;index<112;index++)s.store.io(run.id,'stdout',`chunk${index}\n`);
-    let page=await s.api('GET',`/api/runs/${run.id}/output?limit=100`);assert.equal(page.hasMore,true);const chunks=[...page.chunks];
-    while(page.hasMore){page=await s.api('GET',`/api/runs/${run.id}/output?after=${page.cursor}&limit=100`);chunks.push(...page.chunks);}
-    assert(chunks.some((chunk:any)=>chunk.stream==='prompt'));assert(chunks.some((chunk:any)=>chunk.stream==='report'));assert(chunks.some((chunk:any)=>chunk.stream==='final'));
-    assert(chunks.map((chunk:any)=>chunk.text).join('').includes('chunk111'));
-    assert.deepEqual(chunks.map((chunk:any)=>chunk.sequence),chunks.map((_:any,index:number)=>index+1));
-    await s.api('GET',`/api/runs/${run.id}/output?limit=101`,undefined,400);
-    await s.api('GET',`/api/runs/${run.id}/output?after=${randomUUID()}`,undefined,404);
-    assert.equal((await fetch(s.base+`/api/runs/${run.id}/output`)).status,401);
-    for(let index=0;index<505;index++)s.store.put('runs',{...run,id:randomUUID(),summary:`historic-${index}`});
-    assert(!(await s.api('GET','/api/state')).runs.some((r:any)=>r.id===run.id));
-    assert.equal((await s.api('GET',`/api/runs/${run.id}`)).run.id,run.id);
-    const recent=await s.api('GET',`/api/runs?projectId=${s.project.id}&limit=200`);assert.equal(recent.runs.length,200);assert(recent.hasMore);
-    const older=await s.api('GET',`/api/runs?projectId=${s.project.id}&before=${recent.cursor}&limit=200`);assert(!older.runs.some((r:any)=>recent.runs.some((n:any)=>n.id===r.id)));
-    await s.api('GET',`/api/runs?projectId=${s.project.id}&before=${randomUUID()}`,undefined,404);
-  }finally{await s.cleanup();}
-});
-
-test('unfinished native stdout and stderr persist before exit and split tokens remain redacted',async()=>{
-  const s=await setup();
-  try {
-    const c=s.channels[0];s.config({partial:true});
-    await s.api('POST',`/api/channels/${c.id}/action`,{action:'run'});
-    await until(()=>s.store.all<any>('run_io').some(chunk=>chunk.stream==='stderr'));
-    const run=s.store.all<any>('runs')[0];assert.equal(run.status,'running');
-    const page=await s.api('GET',`/api/runs/${run.id}/output`);
-    for (const [stream, expected] of [['stdout','partial native output without newline'],['stderr','partial diagnostic without newline']]) {
-      const publicText=page.chunks.filter((chunk:any)=>chunk.stream===stream).map((chunk:any)=>chunk.text).join('');
-      const pending=s.store.get<any>('run_io_pending',`${run.id}:${stream}`)?.text || '';
-      assert.equal(publicText+pending,expected);
+    const c = s.channels[0];
+    await s.api('POST', `/api/channels/${c.id}/action`, { action: 'run' });
+    await until(() => s.store.all<any>('runs').some((r) => r.status === 'completed'));
+    const run = s.store.all<any>('runs')[0];
+    const detail = await s.api('GET', `/api/runs/${run.id}`);
+    assert.equal(detail.run.permission, 'native');
+    assert.equal(detail.run.projectId, s.project.id);
+    assert(detail.prompt.includes('验证完整项目循环'));
+    assert.equal(detail.report.summary, run.summary);
+    for (let index = 0; index < 112; index++) s.store.io(run.id, 'stdout', `chunk${index}\n`);
+    let page = await s.api('GET', `/api/runs/${run.id}/output?limit=100`);
+    assert.equal(page.hasMore, true);
+    const chunks = [...page.chunks];
+    while (page.hasMore) {
+      page = await s.api('GET', `/api/runs/${run.id}/output?after=${page.cursor}&limit=100`);
+      chunks.push(...page.chunks);
     }
-    for(const text of ['prefix ',s.token.slice(0,20),s.token.slice(20,40),s.token.slice(40),' suffix'])s.store.ioStream(run.id,'stdout',text,s.token);
-    const text=s.store.runText(run.id,'stdout');assert(!text.includes(s.token));assert(text.includes('prefix [REDACTED] suffix'));
-    await s.api('POST',`/api/channels/${c.id}/action`,{action:'pause'});
-    await until(()=>s.store.get<any>('runs',run.id).status==='interrupted');
-  }finally{await s.cleanup();}
+    assert(chunks.some((chunk: any) => chunk.stream === 'prompt'));
+    assert(chunks.some((chunk: any) => chunk.stream === 'report'));
+    assert(chunks.some((chunk: any) => chunk.stream === 'final'));
+    assert(
+      chunks
+        .map((chunk: any) => chunk.text)
+        .join('')
+        .includes('chunk111')
+    );
+    assert.deepEqual(
+      chunks.map((chunk: any) => chunk.sequence),
+      chunks.map((_: any, index: number) => index + 1)
+    );
+    await s.api('GET', `/api/runs/${run.id}/output?limit=101`, undefined, 400);
+    await s.api('GET', `/api/runs/${run.id}/output?after=${randomUUID()}`, undefined, 404);
+    assert.equal((await fetch(s.base + `/api/runs/${run.id}/output`)).status, 401);
+    for (let index = 0; index < 505; index++)
+      s.store.put('runs', { ...run, id: randomUUID(), summary: `historic-${index}` });
+    assert(!(await s.api('GET', '/api/state')).runs.some((r: any) => r.id === run.id));
+    assert.equal((await s.api('GET', `/api/runs/${run.id}`)).run.id, run.id);
+    const recent = await s.api('GET', `/api/runs?projectId=${s.project.id}&limit=200`);
+    assert.equal(recent.runs.length, 200);
+    assert(recent.hasMore);
+    const older = await s.api('GET', `/api/runs?projectId=${s.project.id}&before=${recent.cursor}&limit=200`);
+    assert(!older.runs.some((r: any) => recent.runs.some((n: any) => n.id === r.id)));
+    await s.api('GET', `/api/runs?projectId=${s.project.id}&before=${randomUUID()}`, undefined, 404);
+  } finally {
+    await s.cleanup();
+  }
 });
 
-test('native handoff requires every project channel paused and records intent with exact native session',async()=>{
-  const s=await setup();
+test('unfinished native stdout and stderr persist before exit and split tokens remain redacted', async () => {
+  const s = await setup();
   try {
-    const [a,b]=s.channels;s.store.put('channels',{...a,sessionId:'native-exact'});
-    const result=await s.api('POST',`/api/channels/${a.id}/native-handoff`,{});
-    assert.equal(result.sessionId,'native-exact');assert.equal(result.projectPath,s.project.path);assert.equal(result.executable,fixture);
-    assert(s.store.all<any>('events').some(e=>e.action==='native-session-opened' && e.actor==='human'));
-    s.engine.setControl(b.id,{enabled:true});
-    await s.api('POST',`/api/channels/${a.id}/native-handoff`,{},409);
-    s.engine.setControl(b.id,{enabled:false});
-    s.config({sleep:true});await s.api('POST',`/api/channels/${a.id}/action`,{action:'run'});
-    await until(()=>s.store.get<any>('channels',a.id).sessionId==='fixture-session-1');
-    await s.api('POST',`/api/channels/${a.id}/native-handoff`,{},409);
-    await s.api('POST',`/api/channels/${a.id}/action`,{action:'pause'});
-    await until(()=>s.store.all<any>('runs').some(run=>run.status==='interrupted'));
-    assert.equal(s.store.get<any>('channels',a.id).sessionId,'fixture-session-1');
-  }finally{await s.cleanup();}
+    const c = s.channels[0];
+    s.config({ partial: true });
+    await s.api('POST', `/api/channels/${c.id}/action`, { action: 'run' });
+    await until(() => s.store.all<any>('run_io').some((chunk) => chunk.stream === 'stderr'));
+    const run = s.store.all<any>('runs')[0];
+    assert.equal(run.status, 'running');
+    const page = await s.api('GET', `/api/runs/${run.id}/output`);
+    for (const [stream, expected] of [
+      ['stdout', 'partial native output without newline'],
+      ['stderr', 'partial diagnostic without newline'],
+    ]) {
+      const publicText = page.chunks
+        .filter((chunk: any) => chunk.stream === stream)
+        .map((chunk: any) => chunk.text)
+        .join('');
+      const pending = s.store.get<any>('run_io_pending', `${run.id}:${stream}`)?.text || '';
+      assert.equal(publicText + pending, expected);
+    }
+    for (const text of ['prefix ', s.token.slice(0, 20), s.token.slice(20, 40), s.token.slice(40), ' suffix'])
+      s.store.ioStream(run.id, 'stdout', text, s.token);
+    const text = s.store.runText(run.id, 'stdout');
+    assert(!text.includes(s.token));
+    assert(text.includes('prefix [REDACTED] suffix'));
+    await s.api('POST', `/api/channels/${c.id}/action`, { action: 'pause' });
+    await until(() => s.store.get<any>('runs', run.id).status === 'interrupted');
+  } finally {
+    await s.cleanup();
+  }
 });
 
-test('legacy project board migration is idempotent and mirrors existing artifacts',()=>{
-  const home=mkdtempSync(join(tmpdir(),'morrow-migration-'));const path=join(home,'workspace.sqlite');let store=new Store(path);
-  try{
-    const projectId=randomUUID(),channelId=randomUUID(),itemId=randomUUID(),runId=randomUUID(),eventId=randomUUID();
-    store.put('projects',{id:projectId,name:'legacy'});store.put('channels',{id:channelId,projectId,runtime:'trae',sessionId:'provider-native'});
-    store.put('items',{id:itemId,channelId,title:'legacy item'});store.put('runs',{id:runId,channelId,status:'completed',sessionId:'provider-native'});store.put('events',{id:eventId,channelId,runId,kind:'assistant',text:'Legacy'});
-    store.db.exec('DELETE FROM migrations');const dir=join(home,'runs',runId);mkdirSync(dir,{recursive:true});writeFileSync(join(dir,'prompt.txt'),'legacy prompt');writeFileSync(join(dir,'stdout.jsonl'),'legacy stdout\n');store.close();
-    store=new Store(path);const first=store.get<any>('items',itemId);assert.equal(first.projectId,projectId);assert.equal(first.number,1);assert.equal(first.revision,1);assert.deepEqual(first.sourceChannelIds,[channelId]);
-    assert.equal(store.get<any>('projects',projectId).runtime,'trae');assert.equal(store.get<any>('events',eventId).projectId,projectId);assert.equal(store.get<any>('channels',channelId).sessionId,'provider-native');assert.equal(store.runText(runId,'prompt'),'legacy prompt');
-    const count=store.all('run_io').length;store.close();store=new Store(path);assert.deepEqual(store.get('items',itemId),first);assert.equal(store.all('run_io').length,count);
-  }finally{store.close();rmSync(home,{recursive:true,force:true});}
+test('legacy project board migration is idempotent and mirrors existing artifacts', () => {
+  const home = mkdtempSync(join(tmpdir(), 'morrow-migration-'));
+  const path = join(home, 'workspace.sqlite');
+  let store = new Store(path);
+  try {
+    const projectId = randomUUID(),
+      channelId = randomUUID(),
+      itemId = randomUUID(),
+      runId = randomUUID(),
+      eventId = randomUUID();
+    store.put('projects', { id: projectId, name: 'legacy' });
+    store.put('channels', { id: channelId, projectId, runtime: 'trae', sessionId: 'provider-native' });
+    store.put('items', { id: itemId, channelId, title: 'legacy item' });
+    store.put('runs', { id: runId, channelId, status: 'completed', sessionId: 'provider-native' });
+    store.put('events', { id: eventId, channelId, runId, kind: 'assistant', text: 'Legacy' });
+    store.db.exec('DELETE FROM migrations');
+    const dir = join(home, 'runs', runId);
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, 'prompt.txt'), 'legacy prompt');
+    writeFileSync(join(dir, 'stdout.jsonl'), 'legacy stdout\n');
+    store.close();
+    store = new Store(path);
+    const first = store.get<any>('items', itemId);
+    assert.equal(first.projectId, projectId);
+    assert.equal(first.number, 1);
+    assert.equal(first.revision, 1);
+    assert.deepEqual(first.sourceChannelIds, [channelId]);
+    assert.equal(store.get<any>('projects', projectId).runtime, 'trae');
+    assert.equal(store.get<any>('events', eventId).projectId, projectId);
+    assert.equal(store.get<any>('channels', channelId).sessionId, 'provider-native');
+    assert.equal(store.runText(runId, 'prompt'), 'legacy prompt');
+    const count = store.all('run_io').length;
+    store.close();
+    store = new Store(path);
+    assert.deepEqual(store.get('items', itemId), first);
+    assert.equal(store.all('run_io').length, count);
+  } finally {
+    store.close();
+    rmSync(home, { recursive: true, force: true });
+  }
 });
 
-test('incremental raw output cursors never revise prior chunks, lose suffixes or expose pending token prefixes',()=>{
-  const home=mkdtempSync(join(tmpdir(),'morrow-output-cursors-'));const path=join(home,'workspace.sqlite');let store=new Store(path);
-  const secret='0123456789abcdef'.repeat(4),runId=randomUUID();
-  try{
-    store.ioStream(runId,'stdout','prefix '+secret.slice(0,32),secret);
-    const first=store.ioPage(runId,undefined,100);
-    assert.equal(first.chunks.map(chunk=>chunk.text).join(''),'prefix ');
-    assert(!JSON.stringify(first).includes(secret.slice(0,32)));
-    assert.equal(store.get<any>('run_io_pending',`${runId}:stdout`).text,secret.slice(0,32));
-    const frozen=JSON.stringify(first.chunks);
+test('a scheduler tick selects only the rows that need work, through indexes rather than table scans', () => {
+  const home = mkdtempSync(join(tmpdir(), 'morrow-tick-scan-'));
+  const store = new Store(join(home, 'workspace.sqlite'));
+  try {
+    for (const id of ['on', 'off', 'no-control']) store.put('channels', { id, projectId: 'p', name: id });
+    store.put('controls', { id: 'on', enabled: true, pid: 0, runId: '' });
+    store.put('controls', { id: 'off', enabled: false, pid: 0, runId: '' });
+    // Both branches of the engine tick require an enabled control, so nothing else has to be read.
+    assert.deepEqual(
+      store.enabledChannels().map((channel) => channel.id),
+      ['on']
+    );
+    for (const status of ['awaiting_approval', 'approved', 'published', 'unknown', 'failed'])
+      store.put('loop_releases', { id: status, projectId: 'p', status });
+    assert.deepEqual(
+      store.byStatus<any>('loop_releases', ['approved', 'unknown']).map((row) => row.id),
+      ['approved', 'unknown']
+    );
+    for (const phase of ['applied', 'draining', 'blocked']) store.put('upgrades', { id: phase, phase });
+    assert.deepEqual(
+      store.byStatus<any>('upgrades', ['pending', 'draining', 'exiting'], 'phase').map((row) => row.id),
+      ['draining']
+    );
+    // `latest()` reads the newest row of any phase; `record()` the newest one still on its way.
+    assert.equal(store.recent<any>('upgrades', 1).at(-1)?.id, 'blocked');
+    const plan = (sql: string, ...values: string[]) =>
+      JSON.stringify(
+        store.db
+          .prepare('EXPLAIN QUERY PLAN ' + sql)
+          .all(...values)
+          .map((row: any) => row.detail)
+      );
+    assert.match(
+      plan("SELECT data FROM loop_releases WHERE json_extract(data,'$.status') IN ('approved','unknown')"),
+      /INDEX loop_releases_status/
+    );
+    assert.match(
+      plan("SELECT data FROM loop_finalizations WHERE json_extract(data,'$.status') IN ('pending')"),
+      /INDEX loop_finalizations_status/
+    );
+    // The merged verification tick reads one row set; both of its conditions must be indexed.
+    const verifications = plan(
+      "SELECT data FROM loop_verifications WHERE json_extract(data,'$.interruptPending')=1 OR json_extract(data,'$.status')='queued'"
+    );
+    assert.match(verifications, /INDEX loop_verifications_interruptpending/);
+    assert.match(verifications, /INDEX loop_verifications_status/);
+    assert.match(
+      plan(
+        "SELECT channels.data AS data FROM controls JOIN channels ON channels.id=controls.id WHERE json_extract(controls.data,'$.enabled')=1"
+      ),
+      /INDEX controls_enabled/
+    );
+    // A watch's due condition mixes two ranges. Each state asks the composite index for its own,
+    // so the tick reads neither the cancelled rows nor the terminal ones whose poll time has not
+    // come — and never the whole table, which is what the single condition it replaces did.
+    const past = new Date(0).toISOString();
+    const future = new Date(Date.now() + 3600_000).toISOString();
+    for (const [id, status, nextPollAt, deadline] of [
+      ['due-watching', 'watching', past, future],
+      ['deadline-watching', 'watching', future, past],
+      ['idle-watching', 'watching', future, future],
+      ['due-triggered', 'triggered', past, past],
+      ['idle-triggered', 'triggered', future, future],
+      ['due-expired', 'expired', past, past],
+      ['due-cancelled', 'cancelled', past, past],
+    ] as const)
+      store.put('loop_watches', { id, projectId: 'p', status, nextPollAt, deadline });
+    // A row written before `status` existed stays pollable, exactly as the scan treated it.
+    store.put('loop_watches', { id: 'no-status', projectId: 'p', nextPollAt: past, deadline: past });
+    // A terminal watch that is not continuous is never polled again and therefore carries no poll
+    // time: it falls outside every range. Emptying the field instead would put it inside all of
+    // them — `''` compares before every timestamp — which is why the row below is still due.
+    store.put('loop_watches', { id: 'closed-triggered', projectId: 'p', status: 'triggered', deadline: past });
+    store.put('loop_watches', {
+      id: 'emptied-triggered',
+      projectId: 'p',
+      status: 'triggered',
+      nextPollAt: '',
+      deadline: past,
+    });
+    const dueWatches = `SELECT data FROM (
+         SELECT rowid AS rid, data FROM loop_watches
+           WHERE json_extract(data,'$.status')='watching'
+             AND (json_extract(data,'$.nextPollAt')<=? OR json_extract(data,'$.deadline')<=?)
+         UNION ALL
+         SELECT rowid AS rid, data FROM loop_watches
+           WHERE (json_extract(data,'$.status') IN ('triggered','expired')
+               OR json_extract(data,'$.status') IS NULL)
+             AND json_extract(data,'$.nextPollAt')<=?
+       ) ORDER BY rid`;
+    const now = new Date().toISOString();
+    assert.deepEqual(
+      (store.db.prepare(dueWatches).all(now, now, now) as any[]).map((row) => JSON.parse(row.data).id),
+      ['due-watching', 'deadline-watching', 'due-triggered', 'due-expired', 'no-status', 'emptied-triggered']
+    );
+    const watches = plan(dueWatches, now, now, now);
+    assert.match(watches, /INDEX loop_watches_status_next/);
+    assert.doesNotMatch(watches, /SCAN loop_watches/);
+    // Checkpoint recovery's own read of the native journal, the reason for its index.
+    assert.match(
+      plan(
+        "SELECT data FROM native_events WHERE json_extract(data,'$.kind')='native.patch' AND json_extract(data,'$.threadId')='t' AND json_extract(data,'$.ownerClientId')='o' AND json_extract(data,'$.revision')>1"
+      ),
+      /INDEX native_events_thread_revision/
+    );
+    // Every checkpoint retires the journal rows it covers through the same index.
+    assert.match(
+      plan(
+        "DELETE FROM native_events WHERE json_extract(data,'$.threadId')='t' AND (json_extract(data,'$.ownerClientId')<>'o' OR CAST(json_extract(data,'$.revision') AS INTEGER)<=1)"
+      ),
+      /INDEX native_events_thread_revision/
+    );
+  } finally {
+    store.close();
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test('start-up backfills run once and the native journal keeps only what checkpoint recovery can read', () => {
+  const home = mkdtempSync(join(tmpdir(), 'morrow-prune-'));
+  const path = join(home, 'workspace.sqlite');
+  let store = new Store(path);
+  try {
+    const threadId = randomUUID();
+    store.put('native_threads', { id: threadId, threadId, ownerClientId: 'client-a', revision: 5 });
+    for (const revision of [4, 5, 6])
+      store.put('native_events', {
+        id: `patch-${revision}`,
+        kind: 'native.patch',
+        threadId,
+        ownerClientId: 'client-a',
+        revision,
+      });
+    store.put('native_events', {
+      id: 'other-owner',
+      kind: 'native.patch',
+      threadId,
+      ownerClientId: 'client-b',
+      revision: 9,
+    });
+    // A projection row: written without a `kind`, so no reader ever selected it.
+    store.put('native_events', { id: 'projection', threadId, ownerClientId: 'client-a', revision: 9 });
+    const orphan = randomUUID();
+    store.put('native_events', {
+      id: 'no-checkpoint',
+      kind: 'native.patch',
+      threadId: orphan,
+      ownerClientId: 'client-a',
+      revision: 1,
+    });
+    // Rows written after the backfills recorded their markers; a replayed scan would rewrite them.
+    store.put('channels', { id: 'c1', projectId: 'p1' });
+    store.put('items', { id: 'i1', channelId: 'c1', title: '迁移标记之后写入的事项' });
+    store.db.prepare('DELETE FROM migrations WHERE id=?').run('native-events-prune-v1');
+    store.close();
+    store = new Store(path);
+    assert.deepEqual(
+      store
+        .all<any>('native_events')
+        .map((row) => row.id)
+        .sort(),
+      ['no-checkpoint', 'patch-6']
+    );
+    assert.equal(store.get<any>('migrations', 'native-events-prune-v1').removed, 4);
+    // The index the only reader needs, built over what survived the prune.
+    assert.equal(
+      (
+        store.db
+          .prepare(
+            "SELECT count(*) AS n FROM sqlite_master WHERE type='index' AND name='native_events_thread_revision'"
+          )
+          .get() as any
+      ).n,
+      1
+    );
+    for (const marker of ['project-runtime-brief-v1', 'item-number-v1', 'run-project-report-v1', 'event-project-v1'])
+      assert(store.get('migrations', marker), marker);
+    assert.equal(store.get<any>('items', 'i1').number, undefined);
+    // Replaying the events backfill fills a missing project from the row's own channel in one statement.
+    store.put('events', { id: 'e1', channelId: 'c1', runId: '', kind: 'assistant', text: '旧事件' });
+    store.put('events', { id: 'e2', channelId: 'gone', runId: '', kind: 'assistant', text: '频道已不存在' });
+    store.db.prepare('DELETE FROM migrations WHERE id=?').run('event-project-v1');
+    store.close();
+    store = new Store(path);
+    assert.equal(store.get<any>('events', 'e1').projectId, 'p1');
+    assert.equal(store.get<any>('events', 'e2').projectId, '');
+    // With the marker in place the journal is never swept again.
+    store.put('native_events', { id: 'later', threadId, ownerClientId: 'client-a', revision: 1 });
+    store.close();
+    store = new Store(path);
+    assert(store.all<any>('native_events').some((row) => row.id === 'later'));
+  } finally {
+    store.close();
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test('the native conversation state moves out of the checkpoint header once, and a replay leaves split rows alone', () => {
+  const home = mkdtempSync(join(tmpdir(), 'morrow-thread-state-'));
+  const path = join(home, 'workspace.sqlite');
+  let store = new Store(path);
+  try {
+    const threadId = randomUUID();
+    const legacy = {
+      id: threadId,
+      threadId,
+      ownerClientId: 'client-a',
+      revision: 7,
+      syncedAt: new Date().toISOString(),
+      summary: { id: threadId, title: '原生任务', cwd: '/tmp/native', status: 'idle' },
+      hash: 'projection-hash',
+      projectionVersion: 3,
+      state: { turns: [{ turnId: 't', status: 'completed', items: [{ id: 'i', text: 'x'.repeat(200000) }] }] },
+    };
+    // Exactly what a checkpoint wrote before the split: one row carrying the whole state.
+    store.write('native_threads', threadId, JSON.stringify(legacy));
+    store.db.prepare('DELETE FROM migrations WHERE id=?').run('native-thread-state-v1');
+    store.close();
+    store = new Store(path);
+    assert.equal(store.get<any>('migrations', 'native-thread-state-v1').threads, 1);
+    assert.equal(store.get<any>('migrations', 'native-thread-state-v1').split, 1);
+    const header = () =>
+      JSON.parse((store.db.prepare('SELECT data FROM native_threads WHERE id=?').get(threadId) as any).data);
+    assert.equal(header().state, undefined);
+    assert.equal(header().revision, 7);
+    assert.equal(header().summary.status, 'idle');
+    assert(JSON.stringify(header()).length < 1024);
+    // Nothing is lost: the reader still returns the snapshot that checkpoint wrote.
+    assert.deepEqual(store.get<any>('native_threads', threadId), { ...legacy, stateHash: header().stateHash });
+    // A replay finds nothing left to split and never rewrites a row that is already split.
+    const stateRow = () => store.db.prepare('SELECT data FROM native_thread_state WHERE id=?').get(threadId) as any;
+    const before = stateRow().data;
+    store.db.prepare('DELETE FROM migrations WHERE id=?').run('native-thread-state-v1');
+    store.close();
+    store = new Store(path);
+    assert.equal(store.get<any>('migrations', 'native-thread-state-v1').split, 0);
+    assert.equal(stateRow().data, before);
+    assert.equal(store.get<any>('native_threads', threadId).state.turns[0].items[0].text.length, 200000);
+    // A header written with no state of its own replaces both halves of the row.
+    store.put('native_threads', { id: threadId, threadId, ownerClientId: 'client-a', revision: 8 });
+    assert.equal((store.db.prepare('SELECT COUNT(*) AS n FROM native_thread_state').get() as any).n, 0);
+    assert.equal(store.get<any>('native_threads', threadId).state, undefined);
+  } finally {
+    store.close();
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test('resolved native requests age out after 30 days while pending ones and recent answers stay', () => {
+  const home = mkdtempSync(join(tmpdir(), 'morrow-requests-'));
+  const path = join(home, 'workspace.sqlite');
+  let store = new Store(path);
+  try {
+    const threadId = randomUUID();
+    const days = (count: number) => new Date(Date.now() - count * 24 * 60 * 60 * 1000).toISOString();
+    const row = (id: string, status: string, resolvedAt?: string) => ({
+      id,
+      threadId,
+      nativeId: id,
+      status,
+      ...(resolvedAt ? { resolvedAt } : {}),
+    });
+    store.put('native_requests', row('live', 'pending'));
+    store.put('native_requests', row('recent', 'resolved', days(29)));
+    store.put('native_requests', row('stale', 'resolved', days(31)));
+    store.put('native_requests', row('answered', 'responded', days(400)));
+    // Written before `resolvedAt` existed; replaying the stamp is what deleting its marker does.
+    store.put('native_requests', row('legacy', 'resolved'));
+    store.db.prepare('DELETE FROM migrations WHERE id=?').run('native-requests-resolved-at-v1');
+    store.close();
+    store = new Store(path);
+    assert.deepEqual(
+      store
+        .all<any>('native_requests')
+        .map((request) => request.id)
+        .sort(),
+      ['legacy', 'live', 'recent']
+    );
+    // The legacy row ages from this upgrade rather than disappearing the moment it lands.
+    assert(store.get<any>('native_requests', 'legacy').resolvedAt > days(1));
+    assert(store.get('migrations', 'native-requests-resolved-at-v1'));
+    const plan = store.db
+      .prepare("EXPLAIN QUERY PLAN DELETE FROM native_requests WHERE json_extract(data,'$.resolvedAt')<'2026-01-01'")
+      .all()
+      .map((step: any) => step.detail)
+      .join(' ');
+    assert.match(plan, /INDEX native_requests_resolved/);
+    // A live request is never stamped, so no later start-up can retire it.
+    store.close();
+    store = new Store(path);
+    assert.equal(store.get<any>('native_requests', 'live').resolvedAt, undefined);
+    assert.equal(store.all('native_requests').length, 3);
+  } finally {
+    store.close();
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test('run output and event ordinals are counted once per run, not once per append', () => {
+  const home = mkdtempSync(join(tmpdir(), 'morrow-sequence-'));
+  const path = join(home, 'workspace.sqlite');
+  let store = new Store(path);
+  try {
+    const runId = randomUUID(),
+      channelId = randomUUID();
+    const statements: string[] = [];
+    const prepare = store.db.prepare.bind(store.db);
+    store.db.prepare = ((sql: string) => {
+      statements.push(sql);
+      return prepare(sql);
+    }) as typeof store.db.prepare;
+    for (let index = 0; index < 200; index++) {
+      store.io(runId, 'stdout', `chunk ${index}\n`);
+      store.event(
+        channelId,
+        runId,
+        'system',
+        `line ${index}`,
+        index % 2 ? { type: 'tool_use', tool: 'Read' } : undefined
+      );
+    }
+    store.db.prepare = prepare;
+    // One read of the stored ordinal each, instead of one per append over every row already written.
+    assert.equal(statements.filter((sql) => sql.includes('MAX(CAST(json_extract')).length, 1);
+    assert.equal(statements.filter((sql) => sql.startsWith('SELECT COUNT(*)')).length, 1);
+    const chunks = store.ioPage(runId, undefined, 400).chunks;
+    assert.deepEqual(
+      chunks.map((chunk) => chunk.sequence),
+      chunks.map((_, index) => index + 1)
+    );
+    // The detail ordinal still counts every event of the run, including the ones without a detail.
+    const details = store.all<any>('events').filter((row) => row.detail);
+    assert.deepEqual(
+      details.map((row) => row.detail.sequence),
+      details.map((_, index) => index * 2 + 2)
+    );
+    // A transaction that rolled back numbered nothing; the next append takes that number.
+    assert.throws(() =>
+      store.transaction(() => {
+        store.io(runId, 'stdout', 'rolled back');
+        throw new Error('rolled back');
+      })
+    );
+    assert.equal(store.io(runId, 'stdout', 'after rollback').sequence, 201);
+    store.close();
+    // A restarted daemon continues from what is stored rather than from an empty counter.
+    store = new Store(path);
+    assert.equal(store.io(runId, 'stdout', 'after restart').sequence, 202);
+    assert.equal(
+      store.event(channelId, runId, 'tool', 'after restart', { type: 'tool_use', tool: 'Read' }).detail?.sequence,
+      201
+    );
+  } finally {
+    store.close();
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test('incremental raw output cursors never revise prior chunks, lose suffixes or expose pending token prefixes', () => {
+  const home = mkdtempSync(join(tmpdir(), 'morrow-output-cursors-'));
+  const path = join(home, 'workspace.sqlite');
+  let store = new Store(path);
+  const secret = '0123456789abcdef'.repeat(4),
+    runId = randomUUID();
+  try {
+    store.ioStream(runId, 'stdout', 'prefix ' + secret.slice(0, 32), secret);
+    const first = store.ioPage(runId, undefined, 100);
+    assert.equal(first.chunks.map((chunk) => chunk.text).join(''), 'prefix ');
+    assert(!JSON.stringify(first).includes(secret.slice(0, 32)));
+    assert.equal(store.get<any>('run_io_pending', `${runId}:stdout`).text, secret.slice(0, 32));
+    const frozen = JSON.stringify(first.chunks);
     // Pending bytes survive a restart without publishing incomplete secrets.
-    store.close();store=new Store(path);
-    store.ioStream(runId,'stdout',secret.slice(32)+' suffix',secret);
-    const next=store.ioPage(runId,first.cursor,100);
-    assert.equal([...first.chunks,...next.chunks].map(chunk=>chunk.text).join(''),'prefix [REDACTED] suffix');
-    assert.equal(JSON.stringify(store.ioPage(runId,undefined,1).chunks),frozen);
-    assert.equal(store.runText(runId,'stdout'),'prefix [REDACTED] suffix');
-    for(let split=1;split<secret.length;split++){
-      const id=randomUUID();store.ioStream(id,'stdout','begin '+secret.slice(0,split),secret);
-      const before=store.ioPage(id,undefined,100);assert.equal(before.chunks.map(chunk=>chunk.text).join(''),'begin ');
-      store.ioStream(id,'stdout',secret.slice(split)+' end0',secret);
-      store.ioStream(id,'stdout','',secret,true);
-      const after=store.ioPage(id,before.cursor,100);
-      assert.equal([...before.chunks,...after.chunks].map(chunk=>chunk.text).join(''),'begin [REDACTED] end0');
-      assert.equal(JSON.stringify(store.ioPage(id,undefined,1).chunks),JSON.stringify(before.chunks));
+    store.close();
+    store = new Store(path);
+    store.ioStream(runId, 'stdout', secret.slice(32) + ' suffix', secret);
+    const next = store.ioPage(runId, first.cursor, 100);
+    assert.equal([...first.chunks, ...next.chunks].map((chunk) => chunk.text).join(''), 'prefix [REDACTED] suffix');
+    assert.equal(JSON.stringify(store.ioPage(runId, undefined, 1).chunks), frozen);
+    assert.equal(store.runText(runId, 'stdout'), 'prefix [REDACTED] suffix');
+    for (let split = 1; split < secret.length; split++) {
+      const id = randomUUID();
+      store.ioStream(id, 'stdout', 'begin ' + secret.slice(0, split), secret);
+      const before = store.ioPage(id, undefined, 100);
+      assert.equal(before.chunks.map((chunk) => chunk.text).join(''), 'begin ');
+      store.ioStream(id, 'stdout', secret.slice(split) + ' end0', secret);
+      store.ioStream(id, 'stdout', '', secret, true);
+      const after = store.ioPage(id, before.cursor, 100);
+      assert.equal([...before.chunks, ...after.chunks].map((chunk) => chunk.text).join(''), 'begin [REDACTED] end0');
+      assert.equal(JSON.stringify(store.ioPage(id, undefined, 1).chunks), JSON.stringify(before.chunks));
     }
-  }finally{store.close();rmSync(home,{recursive:true,force:true});}
+  } finally {
+    store.close();
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test('a person pressing 持续运行 as a scheduled turn starts keeps autonomy on instead of switching it off', async () => {
+  const s = await startIsolated({ project: { name: '持续运行', goal: '不让竞态关掉自动工作' }, scheduler: false });
+  try {
+    const id = s.channel.id;
+    const realStart = s.engine.start.bind(s.engine);
+    // The scheduling tick is one second wide: a turn can begin between `performAction`'s own check
+    // and its call to `start`, which then refuses because the channel is already executing.
+    s.engine.start = ((channelId: string) => {
+      s.engine.active.set(channelId, { projectPath: s.path } as any);
+      throw new APIError(409, '频道正在执行');
+    }) as typeof s.engine.start;
+    await s.api('POST', `/api/channels/${id}/action`, { action: 'resume' });
+    assert.equal(s.engine.control(id).enabled, true);
+    s.engine.active.delete(id);
+    // A start that really did leave nothing running still switches the control back off and says why.
+    s.engine.start = (() => {
+      throw new APIError(400, '项目目录不存在或不可访问');
+    }) as typeof s.engine.start;
+    const refused = await s.api('POST', `/api/channels/${id}/action`, { action: 'resume' }, 400);
+    assert.match(refused.error, /项目目录不存在/);
+    assert.equal(s.engine.control(id).enabled, false);
+    // And a channel that is already executing when the request arrives is refused as before.
+    s.engine.start = realStart;
+    s.engine.active.set(id, { projectPath: s.path } as any);
+    const busy = await s.api('POST', `/api/channels/${id}/action`, { action: 'resume' }, 409);
+    assert.match(busy.error, /正在执行/);
+    s.engine.active.delete(id);
+  } finally {
+    await s.cleanup();
+  }
 });

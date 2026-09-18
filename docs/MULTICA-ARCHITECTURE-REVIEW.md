@@ -1,5 +1,7 @@
 # Multica 架构与展示差距审查
 
+> **历史文档（2026-09-15 标注）。** 本文写于 0.2.0–0.3.0，正文里的 Claude Code 与 Trae 是当时支持的运行时；0.9.x 起 Morrow 只编排 Codex，旧运行时的频道与记录保持可读但不再调度或执行（见 [service/README.md](../service/README.md) 与 [UPGRADING.md](UPGRADING.md)）。正文按原样保留，作为迁移当时的审查依据，不作为当前行为的说明；当前契约见 [contract.md](contract.md) 与 [PROJECT-WORK-CONTRACT.md](PROJECT-WORK-CONTRACT.md)。
+
 审查日期：2026-09-07。参照仓库：[multica-ai/multica](https://github.com/multica-ai/multica)，源码固定在 `7a438bd5b8bf39afd54259a7eb0971390e50a8ef`。本文件保留迁移前审查依据，并记录 0.2.0 的界面迁移与 0.3.0 的项目/执行契约调整。
 
 ## 0.3.0 功能模型更新

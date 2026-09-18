@@ -1,60 +1,312 @@
 // @vitest-environment jsdom
-import { afterEach, expect, test } from 'vitest';
-import { cleanup, render, screen, within } from '@testing-library/react';
+import { afterEach, expect, test, vi } from 'vitest';
+import { act, cleanup, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { RuntimesView } from './RuntimesView';
-import { featureProps, snapshot } from './testFixtures';
-import type { NativeConnectionStatus, Runtime } from '../../shared/types';
+import { featureProps, sentence, snapshot } from './testFixtures';
+import { formatResetTime } from '../components/format';
+import { previewAPI } from '../state/preview';
+import type { ConnectionInfo, NativeConnectionStatus, Runtime } from '../../shared/types';
 
 afterEach(cleanup);
-const installed: Runtime = { id: 'codex', name: 'Codex', available: true, path: '/opt/homebrew/bin/codex', version: 'codex-cli 0.100.0', detail: 'CLI 已安装，尚未验证登录和配额。', canWrite: true };
+const installed: Runtime = {
+  id: 'codex',
+  name: 'Codex',
+  available: true,
+  path: '/opt/homebrew/bin/codex',
+  version: 'codex-cli 0.100.0',
+  detail: 'CLI 已安装，尚未验证登录和配额。',
+  canWrite: true,
+};
 function runtimeProps(runtimes: Runtime[] = [installed]) {
   const state = snapshot();
   state.runtimes = runtimes;
   return featureProps({ snapshot: state });
 }
+const capabilities = (on: boolean) => ({ list: on, read: on, send: on, create: false, interrupt: on, respond: on });
+function status(patch: Partial<NativeConnectionStatus> = {}): NativeConnectionStatus {
+  const connected = !!patch.connected;
+  return {
+    available: connected,
+    connected,
+    detail: connected ? '已连接 Codex App。' : '请启动 Codex App 后重新连接。',
+    appInstalled: connected,
+    capabilities: capabilities(connected),
+    ...patch,
+  };
+}
+const remote: ConnectionInfo = {
+  name: '远程 · dev-box',
+  connected: true,
+  config: { mode: 'ssh', host: 'dev-box', port: 43821, directory: '~/.local/share/morrow' },
+};
+const checklist = async () => {
+  const toggle = await screen.findByText('连接清单与账户用量', { selector: 'summary' });
+  if (!toggle.closest('details')?.open) await userEvent.setup().click(toggle);
+  return screen.findByRole('list', { name: 'Codex App 连接清单' });
+};
+/** done: green dot; next: amber dot marking the first unmet step; pending: gray. */
+function step(label: string) {
+  const item = screen.getByText(label).closest('li')!;
+  return item.classList.contains('detected') ? 'done' : item.classList.contains('attention') ? 'next' : 'pending';
+}
+const nextStep = () => screen.getByText('下一步').parentElement!;
 
-test('CLI detection stays separate from authentication and details are progressively disclosed', async () => {
-  const cli = { ...installed, id: 'claude', name: 'Claude Code', path: '/opt/homebrew/bin/claude' };
-  const { props } = runtimeProps([cli]);
+test('keeps raw connection detail inside the collapsed diagnostic checklist', async () => {
+  const { props, api } = runtimeProps();
+  const rawDetail = 'connect ECONNREFUSED /Users/test/.codex/ipc/ipc.sock';
+  api.getNativeStatus.mockResolvedValue(
+    status({ appInstalled: true, detail: 'Codex App 未运行，打开后会自动重连', rawDetail })
+  );
+  render(<RuntimesView {...props} />);
+  const raw = await screen.findByText(rawDetail);
+  const disclosure = raw.closest('details')!;
+  expect(disclosure.className).toContain('runtime-settings-diagnostics');
+  expect(disclosure.open).toBe(false);
+  expect(nextStep().textContent).not.toContain('ECONNREFUSED');
+  await userEvent.setup().click(within(disclosure).getByText('连接清单与账户用量', { selector: 'summary' }));
+  expect(disclosure.open).toBe(true);
+  expect(raw.textContent).toBe(rawDetail);
+  await userEvent.setup().click(screen.getByRole('button', { name: 'Codex，App 未连接，查看详情' }));
+  expect(within(screen.getByRole('region', { name: 'Codex 详情' })).queryByText(rawDetail)).toBeNull();
+});
+
+test('an unmapped legacy detail uses a plain hint while retaining the original in diagnostics', async () => {
+  const { props, api } = runtimeProps();
+  const detail = 'connect ECONNREFUSED /tmp/codex.sock';
+  api.getNativeStatus.mockResolvedValue(status({ appInstalled: undefined, detail }));
+  render(<RuntimesView {...props} />);
+  await screen.findByText('连接清单与账户用量', { selector: 'summary' });
+  expect(nextStep().textContent).toContain('App 连接暂时不可用，请在运行时页重新检测。');
+  expect(screen.getByText(detail).closest('details')!.open).toBe(false);
+});
+
+test('CLI detection stays separate from authentication and details are progressively disclosed while App status is unknown', async () => {
+  const { props, api } = runtimeProps();
+  // Until the App status answers, the Codex row can only report what the CLI probe found.
+  api.getNativeStatus.mockImplementation(() => new Promise(() => {}));
   render(<RuntimesView {...props} />);
   expect(screen.getByText('已检测到')).toBeTruthy();
-  expect(screen.getByText('待验证')).toBeTruthy();
+  expect(screen.getByText('沿用 CLI 登录')).toBeTruthy();
   expect(screen.queryByText('已登录')).toBeNull();
-  expect(screen.queryByText(cli.path)).toBeNull();
-  const row = screen.getByRole('button', { name: 'Claude Code，已检测到，查看详情' });
+  expect(screen.queryByText(installed.path)).toBeNull();
+  expect(screen.queryByRole('list', { name: 'Codex App 连接清单' })).toBeNull();
+  const row = screen.getByRole('button', { name: 'Codex，已检测到，查看详情' });
   expect(row.getAttribute('aria-expanded')).toBe('false');
   await userEvent.setup().click(row);
-  const details = within(screen.getByRole('region', { name: 'Claude Code 详情' }));
-  expect(details.getByText(cli.path)).toBeTruthy();
-  expect(details.getByText('只读 / 工作区编辑，由每个频道单独设置。')).toBeTruthy();
+  const details = within(screen.getByRole('region', { name: 'Codex 详情' }));
+  expect(details.getByText(installed.path)).toBeTruthy();
+  expect(
+    details.getByText('只读 / 工作区写入，由每个频道单独设置；沿用 App 任务权限只有走 App 的 Codex 频道可选。')
+  ).toBeTruthy();
   expect(details.getByText(/登录状态与配额在实际执行时验证/)).toBeTruthy();
   expect(row.getAttribute('aria-expanded')).toBe('true');
   expect(screen.queryByRole('button', { name: /安装|登录|配置/ })).toBeNull();
 });
 
-test('Codex reports the live CLI connection and its actual executable', async () => {
+test('Codex reports the live App connection and bundle version separately from the installed CLI used for review', async () => {
   const { props, api } = runtimeProps();
-  const status: NativeConnectionStatus = { available: true, connected: true, detail: '原生会话连接已建立', appVersion: '1.0-test', capabilities: { list: true, read: true, send: true, create: false, interrupt: true, respond: true } };
-  api.getNativeStatus.mockResolvedValue(status);
+  api.getNativeStatus.mockResolvedValue(
+    status({
+      connected: true,
+      detail: '已连接 Codex App 已加载的任务。',
+      appVersion: '1.0-test',
+      runtimeVersion: 'app-server/7',
+    })
+  );
   render(<RuntimesView {...props} />);
-  await userEvent.setup().click(await screen.findByRole('button', { name: 'Codex，CLI 已连接，查看详情' }));
-  expect(screen.getByText('由 CLI 管理')).toBeTruthy();
-  expect(screen.getByText(installed.version)).toBeTruthy();
-  expect(screen.queryByText('1.0-test')).toBeNull();
-  expect(screen.getByText('原生会话连接已建立')).toBeTruthy();
+  const row = await screen.findByRole('button', { name: 'Codex，App 已连接，查看详情' });
+  expect(within(row).getByText('由 App 管理')).toBeTruthy();
+  // The version column belongs to the App; the CLI version moves into the details.
+  expect(within(row).getByText('1.0-test')).toBeTruthy();
+  expect(within(row).queryByText(installed.version)).toBeNull();
+  await userEvent.setup().click(row);
+  const details = within(screen.getByRole('region', { name: 'Codex 详情' }));
+  expect(details.getByText('已连接 Codex App 已加载的任务。')).toBeTruthy();
+  expect(details.getByText(/绑定 Codex App 的同一条任务/)).toBeTruthy();
+  expect(details.getByText('app-server/7')).toBeTruthy();
+  expect(details.getByText(installed.version)).toBeTruthy();
+  expect(details.getByText(installed.path)).toBeTruthy();
   expect(screen.queryByText('已登录')).toBeNull();
-  expect(screen.getByText(installed.path)).toBeTruthy();
 });
 
-test('an installed but incompatible CLI differs from a CLI missing from PATH', () => {
-  const { props } = runtimeProps([
-    { ...installed, available: false, detail: '当前 CLI 版本缺少必要的安全或结构化输出选项，请升级。' },
-    { ...installed, id: 'claude', name: 'Claude Code', available: false, path: '', version: '', canWrite: false },
-  ]);
+test('the checklist marks the first unmet step and names installing, then opening the App', async () => {
+  const { props, api } = runtimeProps();
+  api.getNativeStatus.mockResolvedValue(status({ appInstalled: false }));
   render(<RuntimesView {...props} />);
+  await checklist();
+  expect(step('Codex App 已安装')).toBe('next');
+  expect(step('App 已连接')).toBe('pending');
+  expect(step('任务已关联')).toBe('pending');
+  expect(step('关联任务可用')).toBe('pending');
+  expect(nextStep().textContent).toBe('下一步安装并登录 Codex App。装好后回到这里，会自动重新检测。');
+  expect(screen.queryByRole('button', { name: /启用后台连接|撤销设置/ })).toBeNull();
+  cleanup();
+  api.getNativeStatus.mockResolvedValue(status({ appInstalled: true, appVersion: '1.2.3' }));
+  render(<RuntimesView {...props} />);
+  const list = within(await checklist());
+  expect(step('Codex App 已安装')).toBe('done');
+  expect(list.getByText('1.2.3')).toBeTruthy();
+  expect(step('App 已连接')).toBe('next');
+  expect(nextStep().textContent).toBe('下一步打开 Codex App；打开后回到这里，会自动重新检测。');
+  expect(screen.queryByRole('button', { name: /启用后台连接|撤销设置/ })).toBeNull();
+});
+
+test('preview installation status stays unknown and shows the preview explanation', async () => {
+  const { props, api } = runtimeProps();
+  const previewStatus = await previewAPI().getNativeStatus();
+  api.getNativeStatus.mockResolvedValue(previewStatus);
+  render(<RuntimesView {...props} />);
+  await checklist();
+  expect(step('Codex App 安装状态未知')).toBe('next');
+  expect(nextStep().textContent).toContain(previewStatus.detail);
+  // The detail already ends in 「。」; it must not be glued to the next sentence as 「。；」.
+  expect(nextStep().textContent).not.toContain('。；');
+  expect(nextStep().textContent).toContain('装好后回到这里，会自动重新检测。');
+  expect(screen.queryByText('安装并登录 Codex App')).toBeNull();
+});
+
+test('missing installation metadata does not hide a confirmed App connection', async () => {
+  const { props, api } = runtimeProps();
+  api.getNativeStatus.mockResolvedValue(status({ connected: true, appInstalled: undefined }));
+  render(<RuntimesView {...props} />);
+  await checklist();
+  expect(step('Codex App 已安装')).toBe('done');
+  expect(step('任务已关联')).toBe('next');
+  expect(screen.getByRole('button', { name: '去关联任务' })).toBeTruthy();
+});
+
+test('a connected App guides task association without enabling a launcher', async () => {
+  const { props, api } = runtimeProps();
+  api.getNativeStatus.mockResolvedValue(
+    status({ connected: true, connectionMode: 'app-follower', boundThreadCount: 0, readyThreadCount: 0 })
+  );
+  render(<RuntimesView {...props} />);
+  await checklist();
+  expect(step('任务已关联')).toBe('next');
+  expect(screen.queryByRole('button', { name: '启用后台连接' })).toBeNull();
+  await userEvent.setup().click(screen.getByRole('button', { name: '去关联任务' }));
+  expect(props.onNavigate).toHaveBeenCalledWith({
+    kind: 'channel',
+    id: props.snapshot.channels.find((c) => c.runtime === 'codex')!.id,
+  });
+  expect(api.openNativeApp).not.toHaveBeenCalled();
+});
+test('a CLI-direct Codex channel is never a task target and brings back the CLI login line', async () => {
+  const { props, api } = runtimeProps();
+  for (const channel of props.snapshot.channels) if (channel.runtime === 'codex') channel.transport = 'cli';
+  api.getNativeStatus.mockResolvedValue(
+    status({ connected: true, connectionMode: 'app-follower', boundThreadCount: 0, readyThreadCount: 0 })
+  );
+  render(<RuntimesView {...props} />);
+  await checklist();
+  // There is no task to link, so the page offers no shortcut into one — and it says which kind of
+  // channel is missing, rather than implying this project has no Codex channel at all.
+  expect(step('任务已关联')).toBe('next');
+  expect(screen.queryByRole('button', { name: '去关联任务' })).toBeNull();
+  expect(screen.getByText('还没有走 App 任务的 Codex 频道；直连 Codex CLI 的频道不需要关联任务。')).toBeTruthy();
+  expect(screen.getByText('新建频道时把「执行方式」选为「Codex App 任务」，才需要在这里关联。')).toBeTruthy();
+  // What a CLI-direct channel needs is on this Mac, so the row says where the binary is and how to
+  // log in — the half the App normally answers for.
+  await userEvent.setup().click(screen.getByRole('button', { name: 'Codex，App 已连接，查看详情' }));
+  const details = within(screen.getByRole('region', { name: 'Codex 详情' }));
+  expect(details.getByText(/codex login/)).toBeTruthy();
+  expect(details.getByText(installed.path)).toBeTruthy();
+});
+test('associated tasks must actually be available before the checklist says ready', async () => {
+  const { props, api } = runtimeProps();
+  props.snapshot.channels[0].sessionId = 'bound-task';
+  api.getNativeStatus.mockResolvedValue(status({ connected: true, boundThreadCount: 1, readyThreadCount: 0 }));
+  const view = render(<RuntimesView {...props} />);
+  await checklist();
+  expect(step('任务已关联')).toBe('done');
+  expect(step('任务未在 Codex App 中打开')).toBe('next');
+  expect(nextStep().textContent).toContain('在 Codex App 打开已关联任务');
+  await userEvent.setup().click(screen.getByRole('button', { name: '在 Codex App 中打开' }));
+  expect(api.openNativeApp).toHaveBeenCalledWith('channel-system');
+  view.unmount();
+  api.getNativeStatus.mockResolvedValue(status({ connected: true, boundThreadCount: 1, readyThreadCount: 1 }));
+  render(<RuntimesView {...props} />);
+  await checklist();
+  expect(step('关联任务可用')).toBe('done');
+  expect(nextStep().textContent).toContain('已就绪');
+  expect(screen.queryByRole('button', { name: '在 Codex App 中打开' })).toBeNull();
+});
+test('legacy cleanup rereads status, while SSH only explains the host-side task setup', async () => {
+  const { props, api } = runtimeProps();
+  props.api.restoreNativeBackground = vi.fn(async () => ({ restartRequired: false, detail: '已清理旧转接' }));
+  api.getNativeStatus
+    .mockResolvedValueOnce(status({ connected: true, backgroundConfigured: true }))
+    .mockResolvedValue(status({ connected: true }));
+  render(<RuntimesView {...props} />);
+  await checklist();
+  await userEvent.setup().click(screen.getByRole('button', { name: '清理旧转接设置' }));
+  await waitFor(() => expect(props.api.restoreNativeBackground).toHaveBeenCalledTimes(1));
+  expect(api.getNativeStatus).toHaveBeenCalledTimes(2);
+  cleanup();
+  api.getNativeStatus.mockResolvedValue(status({ connected: true, backgroundConfigured: true }));
+  render(<RuntimesView {...props} connection={remote} />);
+  await checklist();
+  expect(screen.getByText('请在执行主机的 Codex App 中创建并打开任务。')).toBeTruthy();
+  expect(screen.queryByRole('button', { name: '清理旧转接设置' })).toBeNull();
+});
+
+test('an unreachable service shows no checklist instead of a guessed next step', async () => {
+  const { props, api } = runtimeProps();
+  api.getNativeStatus.mockRejectedValue(new Error('service down'));
+  render(<RuntimesView {...props} />);
+  const row = await screen.findByRole('button', { name: 'Codex，App 未连接，查看详情' });
+  expect(screen.queryByRole('list', { name: 'Codex App 连接清单' })).toBeNull();
+  expect(screen.queryByText('下一步')).toBeNull();
+  await userEvent.setup().click(row);
+  expect(within(screen.getByRole('region', { name: 'Codex 详情' })).getByText('暂时无法连接 Codex App。')).toBeTruthy();
+});
+
+test('an installed but incompatible CLI differs from a CLI missing from PATH, and every runtime gets its own row', () => {
+  const { props, api } = runtimeProps([
+    { ...installed, available: false, detail: '当前 CLI 版本缺少必要的安全或结构化输出选项，请升级。' },
+    {
+      ...installed,
+      id: 'claude',
+      name: 'Claude Code',
+      available: false,
+      canWrite: false,
+      path: '',
+      version: '',
+      detail: '未找到 Claude Code 命令行运行时。',
+    },
+    {
+      ...installed,
+      id: 'trae',
+      name: 'Trae CLI',
+      available: false,
+      canWrite: false,
+      path: '',
+      version: '',
+      detail: '未找到 Trae CLI 命令行运行时。',
+    },
+  ]);
+  // A Claude channel is counted against the Claude row, not against Codex.
+  props.snapshot.channels[1].runtime = 'claude';
+  api.getNativeStatus.mockImplementation(() => new Promise(() => {}));
+  const view = render(<RuntimesView {...props} />);
   expect(screen.getByRole('button', { name: 'Codex，需检查，查看详情' })).toBeTruthy();
   expect(screen.getByRole('button', { name: 'Claude Code，未检测到，查看详情' })).toBeTruthy();
+  expect(screen.getByRole('button', { name: 'Trae CLI，未检测到，查看详情' })).toBeTruthy();
+  expect(screen.getAllByRole('button', { name: /查看详情/ })).toHaveLength(3);
+  expect(screen.getByText('2 个频道')).toBeTruthy();
+  expect(screen.getByText('1 个频道')).toBeTruthy();
+  expect(screen.getByText('未使用')).toBeTruthy();
+  view.rerender(
+    <RuntimesView
+      {...props}
+      snapshot={{
+        ...props.snapshot,
+        runtimes: [{ ...installed, available: false, path: '', version: '', canWrite: false }],
+      }}
+    />
+  );
+  expect(screen.getByRole('button', { name: 'Codex，未检测到，查看详情' })).toBeTruthy();
   expect(screen.queryByText('已检测到')).toBeNull();
 });
 
@@ -90,8 +342,196 @@ test('an empty snapshot remains an empty detection state without invented runtim
 
 test('host overview uses the real connection label and does not infer remote availability from CLI detection', () => {
   const { props } = runtimeProps();
-  render(<RuntimesView {...props} connection={{ name: '远程 · dev-box', connected: false, config: { mode: 'ssh', host: 'dev-box', port: 43821, directory: '~/.local/share/morrow' } }} />);
+  render(<RuntimesView {...props} connection={{ ...remote, connected: false }} />);
   expect(screen.getByRole('heading', { name: '远程 · dev-box' })).toBeTruthy();
   expect(screen.getByText('未连接')).toBeTruthy();
   expect(screen.getByText('1 个运行时 · 1 个已检测到')).toBeTruthy();
+});
+
+test('the checklist ends with the account usage per window, or a red unknown with the reason', async () => {
+  const resetsAt = new Date(Date.now() + 3600_000).toISOString();
+  const reading = {
+    at: new Date().toISOString(),
+    source: 'protocol' as const,
+    windows: [
+      { name: '5h' as const, usedPercent: 42, resetsAt },
+      { name: 'weekly' as const, usedPercent: 10 },
+    ],
+  };
+  const cases: Array<[Partial<NativeConnectionStatus>, string[]]> = [
+    [
+      { connected: true, backgroundConfigured: true, backgroundReady: true, usage: { reading, stale: false } },
+      [`5 小时 已用 42%，重置 ${formatResetTime(resetsAt)}`, '每周 已用 10%，重置时间未知'],
+    ],
+    [{ connected: false }, ['额度未知', '后台未连接']],
+    // Never attempted, attempted and empty, and stale each read differently; a service too old to
+    // report `attempted` keeps the previous reason rather than claiming nothing was tried.
+    [{ connected: true, usage: { stale: true, attempted: false } }, ['额度未知', '尚未读取账户用量']],
+    [
+      { connected: true, usage: { stale: true, attempted: true, lastError: '原生后台不支持读取额度' } },
+      ['额度未知', '读取失败：原生后台不支持读取额度'],
+    ],
+    [{ connected: true, usage: { stale: true } }, ['额度未知', '协议未返回账户用量']],
+    [{ connected: true, usage: { reading, stale: true, attempted: true } }, ['额度未知', '读数已过期']],
+  ];
+  for (const [patch, expected] of cases) {
+    const { props, api } = runtimeProps();
+    api.getNativeStatus.mockResolvedValue(status(patch));
+    const view = render(<RuntimesView {...props} />);
+    await checklist();
+    const line = screen.getByLabelText('账户用量');
+    for (const text of expected) expect(line.textContent).toContain(text);
+    expect(!!line.querySelector('.usage-unknown')).toBe(expected.includes('额度未知'));
+    view.unmount();
+  }
+});
+
+test('entering the page and manual detection request fresh usage and display later readings or refresh failure', async () => {
+  const { props, api } = runtimeProps();
+  const reading = (usedPercent: number) => ({
+    at: new Date().toISOString(),
+    source: 'protocol' as const,
+    windows: [{ name: 'weekly' as const, usedPercent }],
+  });
+  api.getNativeStatus
+    .mockResolvedValueOnce(status({ connected: true, usage: { reading: reading(37), stale: false, attempted: true } }))
+    .mockResolvedValueOnce(status({ connected: true, usage: { reading: reading(41), stale: false, attempted: true } }))
+    .mockResolvedValue(
+      status({
+        connected: true,
+        usage: { reading: reading(41), stale: false, attempted: true, lastError: 'fixture unavailable' },
+      })
+    );
+  render(<RuntimesView {...props} />);
+  await screen.findByText(sentence('每周 已用 37%，重置时间未知'));
+  expect(screen.getByText('37%').className).toContain('mono');
+  expect(api.getNativeStatus).toHaveBeenNthCalledWith(1, true);
+  await userEvent.setup().click(screen.getByRole('button', { name: '重新检测' }));
+  await screen.findByText(sentence('每周 已用 41%，重置时间未知'));
+  expect(api.refreshRuntimes).toHaveBeenCalledOnce();
+  expect(api.getNativeStatus).toHaveBeenNthCalledWith(2, true);
+  await userEvent.setup().click(screen.getByRole('button', { name: '重新检测' }));
+  await screen.findByText('刷新失败，显示最近读数');
+  expect(screen.getByLabelText('账户用量').textContent).toContain('41%');
+  expect(api.channelAction).not.toHaveBeenCalled();
+});
+
+test('a delayed usage response from a previous host cannot overwrite the current host', async () => {
+  const { props, api } = runtimeProps();
+  let resolveOld!: (value: NativeConnectionStatus) => void;
+  api.getNativeStatus
+    .mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          resolveOld = resolve;
+        })
+    )
+    .mockResolvedValue(
+      status({
+        connected: true,
+        usage: {
+          reading: { at: new Date().toISOString(), source: 'protocol', windows: [{ name: 'weekly', usedPercent: 22 }] },
+          stale: false,
+        },
+      })
+    );
+  const view = render(<RuntimesView {...props} />);
+  await waitFor(() => expect(api.getNativeStatus).toHaveBeenCalledOnce());
+  view.rerender(<RuntimesView {...props} connection={remote} />);
+  await screen.findByText(sentence('每周 已用 22%，重置时间未知'));
+  await act(async () => {
+    resolveOld(
+      status({
+        connected: true,
+        usage: {
+          reading: { at: new Date().toISOString(), source: 'protocol', windows: [{ name: 'weekly', usedPercent: 99 }] },
+          stale: false,
+        },
+      })
+    );
+  });
+  await waitFor(() => expect(screen.getByLabelText('账户用量').textContent).toContain('22%'));
+  expect(screen.queryByText(sentence('每周 已用 99%，重置时间未知'))).toBeNull();
+});
+
+test('keeps the next step visible and highlights one action while diagnostics remain optional', async () => {
+  const { props, api } = runtimeProps();
+  props.snapshot.channels[0].sessionId = 'bound-task';
+  api.getNativeStatus.mockResolvedValue(status({ connected: true, boundThreadCount: 1, readyThreadCount: 0 }));
+  const view = render(<RuntimesView {...props} />);
+  const open = await screen.findByRole('button', { name: '在 Codex App 中打开' });
+  expect(open.classList.contains('button-primary')).toBe(true);
+  expect(screen.getByRole('button', { name: '重新检测' }).classList.contains('button-primary')).toBe(false);
+  expect(nextStep().closest('details')).toBeNull();
+  expect(nextStep().textContent).toContain('任务未在 Codex App 中打开');
+  const toggle = screen.getByText('连接清单与账户用量', { selector: 'summary' });
+  expect(toggle.closest('details')?.open).toBe(false);
+  expect(screen.getByText('运行与复核说明', { selector: 'summary' }).closest('details')?.open).toBe(false);
+  await userEvent.setup().click(toggle);
+  expect(screen.getByLabelText('账户用量').closest('details')?.open).toBe(true);
+  expect(api.openNativeApp).not.toHaveBeenCalled();
+  expect(api.channelAction).not.toHaveBeenCalled();
+  view.unmount();
+  api.getNativeStatus.mockResolvedValue(status({ connected: true, boundThreadCount: 1, readyThreadCount: 1 }));
+  render(<RuntimesView {...props} />);
+  await screen.findByText(/已就绪；/);
+  expect(screen.getByRole('button', { name: '重新检测' }).classList.contains('button-primary')).toBe(true);
+  expect(screen.queryByRole('button', { name: '在 Codex App 中打开' })).toBeNull();
+});
+
+test('the page rereads App status on its own, without re-reading the account usage every time', async () => {
+  vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
+  try {
+    const { props, api } = runtimeProps();
+    api.getNativeStatus.mockResolvedValue(status({ appInstalled: false }));
+    render(<RuntimesView {...props} />);
+    await act(async () => {});
+    expect(api.getNativeStatus).toHaveBeenCalledTimes(1);
+    expect(api.getNativeStatus).toHaveBeenLastCalledWith(true);
+    // Installing or opening the App happens elsewhere; the copy promises this page notices it.
+    expect(nextStep().textContent).toContain('会自动重新检测');
+    api.getNativeStatus.mockResolvedValue(status({ connected: true, boundThreadCount: 1, readyThreadCount: 1 }));
+    await act(async () => void vi.advanceTimersByTime(8000));
+    expect(api.getNativeStatus).toHaveBeenCalledTimes(2);
+    expect(api.getNativeStatus).toHaveBeenLastCalledWith(false);
+    expect(screen.getByText(/已就绪；/)).toBeTruthy();
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+test('task actions stay in the project the user came from, and otherwise ask which channel', async () => {
+  const user = userEvent.setup();
+  const { props, api } = runtimeProps();
+  api.getNativeStatus.mockResolvedValue(status({ connected: true, boundThreadCount: 0, readyThreadCount: 0 }));
+  const view = render(<RuntimesView {...props} projectId="project-other" />);
+  await user.click(await screen.findByRole('button', { name: '去关联任务' }));
+  // channel-system is the first Codex channel overall; only channel-other belongs to this project.
+  expect(screen.queryByRole('combobox', { name: '选择频道' })).toBeNull();
+  expect(props.onNavigate).toHaveBeenCalledWith({ kind: 'channel', id: 'channel-other' });
+  view.unmount();
+  render(<RuntimesView {...props} />);
+  const select = (await screen.findByRole('combobox', { name: '选择频道' })) as HTMLSelectElement;
+  expect([...select.options].map((option) => option.textContent)).toEqual([
+    'Atlas 示例项目 / 系统完善',
+    'Atlas 示例项目 / 运营洞察',
+    'Other / 系统完善',
+  ]);
+  await user.selectOptions(select, 'channel-growth');
+  await user.click(screen.getByRole('button', { name: '去关联任务' }));
+  expect(props.onNavigate).toHaveBeenLastCalledWith({ kind: 'channel', id: 'channel-growth' });
+});
+
+test('opening the associated task offers nothing rather than another project task', async () => {
+  const { props, api } = runtimeProps();
+  props.snapshot.channels[2].sessionId = 'other-project-task';
+  api.getNativeStatus.mockResolvedValue(status({ connected: true, boundThreadCount: 1, readyThreadCount: 0 }));
+  render(<RuntimesView {...props} projectId="project-atlas" />);
+  await screen.findByText(/请在 Codex App 打开已关联任务/);
+  expect(screen.queryByRole('button', { name: '在 Codex App 中打开' })).toBeNull();
+  cleanup();
+  props.snapshot.channels[0].sessionId = 'atlas-task';
+  render(<RuntimesView {...props} projectId="project-atlas" />);
+  await userEvent.setup().click(await screen.findByRole('button', { name: '在 Codex App 中打开' }));
+  expect(api.openNativeApp).toHaveBeenCalledWith('channel-system');
 });

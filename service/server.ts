@@ -1,6 +1,9 @@
-import { createServer } from "node:http";
-import type { IncomingMessage, ServerResponse } from "node:http";
-import { randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
+import { CodexCliReviewRunner, type ReviewRunner } from './codex-cli-review.ts';
+import { ClaudeCliReviewRunner } from './claude-cli-review.ts';
+import { createServer } from 'node:http';
+import type { IncomingMessage, ServerResponse } from 'node:http';
+import type { AddressInfo } from 'node:net';
+import { randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
 import {
   mkdirSync,
   readFileSync,
@@ -10,12 +13,13 @@ import {
   realpathSync,
   statSync,
   unlinkSync,
-} from "node:fs";
-import { join } from "node:path";
-import { homedir } from "node:os";
-import { pathToFileURL } from "node:url";
+} from 'node:fs';
+import { join } from 'node:path';
+import { homedir } from 'node:os';
+import { pathToFileURL } from 'node:url';
 import {
   APIError,
+  channelTransports,
   choice,
   engines,
   integer,
@@ -23,51 +27,92 @@ import {
   itemKinds,
   keys,
   object,
+  projectBriefLimit,
   string,
-} from "./protocol.ts";
-import type { Channel, Project, Run, WorkItem } from "./protocol.ts";
-import { now, Store } from "./store.ts";
-import { Engine } from "./engine.ts";
-import { eventHistory, runHistory, runOutput } from "./event-history.ts";
-import { discoverRuntimes } from "./runtimes.ts";
+  usesApp,
+} from './protocol.ts';
+import type { Channel, ChannelTransport, Project, ProjectBriefRevision, Run, RuntimeID, WorkItem } from './protocol.ts';
+import { now, Store } from './store.ts';
+import { log, logError, setLogRedactor } from './log.ts';
+import { Engine } from './engine.ts';
+import { buildIdentity } from './build-identity.ts';
+import type { BuildIdentity } from './build-identity.ts';
+import { upgradeExitCode } from './upgrade.ts';
+import type { UpgradeRecord } from './upgrade.ts';
+import { eventHistory, runHistory, runOutput, queryID } from './event-history.ts';
+import { runLog } from './run-log.ts';
+import { discoverRuntimes } from './runtimes.ts';
+import { pruneHelpers } from './runtime-helpers.ts';
 import { NativeConversations } from './native-conversations.ts';
-import type { NativeTransport } from './native-conversations.ts';
-import { importNativeImages, readNativeImage } from './native-media.ts';
+import { NativeDesktopError } from './codex-desktop-transport.ts';
+import type { BridgeRestore, NativeTransport } from './native-conversations.ts';
+import { usageBudgetInput, usageReserveInput, usageWindowLabels } from './usage.ts';
+import type { Verification } from './verification-types.ts';
 function model(value: unknown) {
-  const text = string(value, "model", 120, true);
-  if (text && !/^[A-Za-z0-9][A-Za-z0-9._:/-]*$/.test(text))
-    throw new APIError(400, "model 格式无效");
+  const text = string(value, 'model', 120, true);
+  if (text && !/^[A-Za-z0-9][A-Za-z0-9._:/-]*$/.test(text)) throw new APIError(400, 'model 格式无效');
   return text;
 }
+/**
+ * A Codex channel that runs inside an App task inherits that task's own permission and approval
+ * settings; every other channel — the CLI runtimes, and a Codex channel that goes straight to the
+ * CLI — has no such task and starts in Morrow's own workspace-write sandbox.
+ */
+const defaultPermission = (runtime: RuntimeID, transport?: ChannelTransport): Channel['permission'] =>
+  usesApp({ runtime, transport }) ? 'native' : 'workspace-write';
 function defaultChannel(
   projectId: string,
   name: string,
   goal: string,
+  runtime: RuntimeID = 'codex',
+  transport?: ChannelTransport
 ): Channel {
   return {
     id: randomUUID(),
     projectId,
     name,
     goal,
-    runtime: "codex",
-    model: "",
-    status: "paused",
+    runtime,
+    // Left off unless it was asked for, so an unchosen channel row reads exactly as it always did.
+    ...(transport ? { transport } : {}),
+    model: '',
+    status: 'paused',
     intervalMinutes: 60,
     maxRunsPerDay: 8,
-    permission: "workspace-write",
-    nextRunAt: "",
-    lastRunAt: "",
-    sessionId: "",
+    permission: defaultPermission(runtime, transport),
+    nextRunAt: '',
+    lastRunAt: '',
+    sessionId: '',
+  };
+}
+/** Audit rows describe the brief by revision and length; the text itself lives in the project and its revision rows. */
+function projectAudit(project: Project) {
+  const { brief, ...row } = project;
+  return { ...row, briefRevision: project.briefRevision || 0, briefLength: (brief || '').length };
+}
+function briefRevisionRow(project: Project, revision: number): ProjectBriefRevision {
+  return {
+    id: `${project.id}:${revision}`,
+    projectId: project.id,
+    revision,
+    goal: project.goal,
+    brief: project.brief || '',
+    updatedAt: now(),
+    actor: 'human',
   };
 }
 function itemFields(data: Record<string, any>, old?: WorkItem) {
-  if (data.evidence !== undefined && (!Array.isArray(data.evidence) || data.evidence.length > 50)) throw new APIError(400, 'evidence 必须为数组，最多 50 项');
+  if (data.evidence !== undefined && (!Array.isArray(data.evidence) || data.evidence.length > 50))
+    throw new APIError(400, 'evidence 必须为数组，最多 50 项');
   return {
     title: data.title === undefined && old ? old.title : string(data.title, 'title', 300),
     summary: data.summary === undefined ? old?.summary || '' : string(data.summary, 'summary', 10000, true),
     kind: data.kind === undefined ? old?.kind || 'feature' : choice(data.kind, 'kind', itemKinds),
     status: data.status === undefined ? old?.status || 'open' : choice(data.status, 'status', itemStatuses),
-    evidence: data.evidence === undefined ? old?.evidence || [] : data.evidence.map((entry: unknown) => string(entry, 'evidence', 5000)),
+    evidence:
+      data.evidence === undefined
+        ? old?.evidence || []
+        : data.evidence.map((entry: unknown) => string(entry, 'evidence', 5000)),
     nextStep: data.nextStep === undefined ? old?.nextStep || '' : string(data.nextStep, 'nextStep', 5000, true),
   };
 }
@@ -76,399 +121,840 @@ async function body(req: IncomingMessage) {
   let length = 0;
   for await (const chunk of req) {
     length += chunk.length;
-    if (length > 1024 * 1024) throw new APIError(413, "请求正文超过 1 MB");
+    if (length > 1024 * 1024) throw new APIError(413, '请求正文超过 1 MB');
     chunks.push(chunk);
   }
   if (!length) return {};
-  if (!req.headers["content-type"]?.includes("application/json"))
-    throw new APIError(415, "请使用 application/json");
+  if (!req.headers['content-type']?.includes('application/json')) throw new APIError(415, '请使用 application/json');
   try {
-    return object(JSON.parse(Buffer.concat(chunks).toString("utf8")));
+    return object(JSON.parse(Buffer.concat(chunks).toString('utf8')));
   } catch (e) {
     if (e instanceof APIError) throw e;
-    throw new APIError(400, "JSON 格式无效");
+    throw new APIError(400, 'JSON 格式无效');
   }
 }
 export async function startServer(
-  options: { home?: string; port?: number; nativeTransport?: NativeTransport } = {},
+  options: {
+    home?: string;
+    port?: number;
+    nativeTransport?: NativeTransport;
+    reviewTransport?: NativeTransport;
+    reviewRunner?: ReviewRunner;
+    /**
+     * How `POST /api/native/background/restore` undoes the retired bridge. The real one runs
+     * `launchctl` against the user's login session, so a test supplies its own instead.
+     */
+    restoreBridge?: BridgeRestore;
+    /** The build this process runs; read from its own bundle when omitted. */
+    identity?: BuildIdentity;
+    /** Called after the close path finished for an automatic version switch; the daemon exits here. */
+    onUpgradeExit?: (code: number, record: UpgradeRecord) => void;
+  } = {}
 ) {
-  const currentHome = join(homedir(), "Library/Application Support/Morrow");
-  const legacyHome = join(homedir(), "Library/Application Support/NoHuman");
-  const home = options.home || process.env.MORROW_HOME || process.env.NOHUMAN_HOME ||
+  if (
+    !options.home &&
+    !process.env.MORROW_HOME &&
+    Object.keys(process.env).some((key) => key.startsWith('CODEX_SANDBOX'))
+  )
+    throw new Error('检测到 CODEX_SANDBOX 环境；请显式设置 MORROW_HOME 使用隔离数据目录，拒绝默认数据目录和端口。');
+  const currentHome = join(homedir(), 'Library/Application Support/Morrow');
+  const legacyHome = join(homedir(), 'Library/Application Support/NoHuman');
+  const home =
+    options.home ||
+    process.env.MORROW_HOME ||
+    process.env.NOHUMAN_HOME ||
     (existsSync(currentHome) || !existsSync(legacyHome) ? currentHome : legacyHome);
   const port = options.port ?? Number(process.env.MORROW_PORT || process.env.NOHUMAN_PORT || 43821);
-  if (!Number.isInteger(port) || port < 0 || port > 65535)
-    throw new Error("MORROW_PORT 无效");
+  if (!Number.isInteger(port) || port < 0 || port > 65535) throw new Error('MORROW_PORT 无效');
   mkdirSync(home, { recursive: true, mode: 0o700 });
   chmodSync(home, 0o700);
-  const lockPath = join(home, "daemon.lock");
+  const lockPath = join(home, 'daemon.lock');
   const lockText = JSON.stringify({ pid: process.pid, nonce: randomUUID() });
-  const acquire = () =>
-    writeFileSync(lockPath, lockText, { flag: "wx", mode: 0o600 });
+  const acquire = () => writeFileSync(lockPath, lockText, { flag: 'wx', mode: 0o600 });
   try {
     acquire();
-  } catch (e: any) {
-    if (e.code !== "EEXIST") throw e;
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code !== 'EEXIST') throw e;
     let live = true;
     try {
-      const lock = JSON.parse(readFileSync(lockPath, "utf8"));
-      if (!Number.isInteger(lock.pid) || lock.pid <= 0)
-        throw new Error("Invalid lock");
+      const lock = JSON.parse(readFileSync(lockPath, 'utf8'));
+      if (!Number.isInteger(lock.pid) || lock.pid <= 0) throw new Error('Invalid lock');
       try {
         process.kill(lock.pid, 0);
-      } catch (error: any) {
-        if (error.code === "ESRCH") live = false;
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === 'ESRCH') live = false;
         else throw error;
       }
     } catch {
-      throw new Error("服务锁无效，请检查 daemon.lock");
+      throw new Error('服务锁无效，请检查 daemon.lock');
     }
-    if (live) throw new Error("同一数据目录的服务已在运行");
+    if (live) throw new Error('同一数据目录的服务已在运行');
     unlinkSync(lockPath);
     acquire();
   }
   const release = () => {
     try {
-      if (readFileSync(lockPath, "utf8") === lockText) unlinkSync(lockPath);
+      if (readFileSync(lockPath, 'utf8') === lockText) unlinkSync(lockPath);
     } catch {}
   };
-  let token = "";
+  let token = '';
   try {
-    token = readFileSync(join(home, "token"), "utf8").trim();
-    if (!/^[a-f0-9]{64}$/.test(token)) throw new Error("令牌文件无效");
-  } catch (e: any) {
-    if (e.code !== "ENOENT") {
+    token = readFileSync(join(home, 'token'), 'utf8').trim();
+    if (!/^[a-f0-9]{64}$/.test(token)) throw new Error('令牌文件无效');
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code !== 'ENOENT') {
       release();
       throw e;
     }
-    token = randomBytes(32).toString("hex");
-    writeFileSync(join(home, "token"), token, { flag: "wx", mode: 0o600 });
+    token = randomBytes(32).toString('hex');
+    writeFileSync(join(home, 'token'), token, { flag: 'wx', mode: 0o600 });
   }
-  chmodSync(join(home, "token"), 0o600);
-  const store = new Store(join(home, "workspace.sqlite"));
-  const engine = new Engine(store, home, token);
-  const native = new NativeConversations(store,engine,options.nativeTransport);
+  chmodSync(join(home, 'token'), 0o600);
+  const openedAt = Date.now();
+  const store = new Store(join(home, 'workspace.sqlite'));
+  const storeMs = Date.now() - openedAt;
+  const engine = new Engine(store, home, token, options.identity ?? buildIdentity(import.meta.url));
+  // Every log line from here on passes through this daemon's own redactor, so no field can carry
+  // the service token. One daemon runs per process; the last service started owns the redactor.
+  setLogRedactor((value) => engine.redact(value));
+  const native = new NativeConversations(store, engine, options.nativeTransport, options.restoreBridge);
   engine.native = native;
-  engine.loop.verification.connect(native.transport,value=>engine.redact(value));
+  engine.loop.verification.connect(options.reviewTransport ?? native.transport, (value) => engine.redact(value));
+  if (!options.reviewTransport) {
+    // Both review CLIs are wired; `WorkVerification.reviewRunner` picks the one that is not the
+    // runtime under review, so a review is independent of the work and of the account that paid
+    // for it. A supplied runner is a test's own and stays the only one.
+    const worker = () => engine.loop.helpers['codex-cli-worker.ts'];
+    engine.loop.verification.connectRunner(options.reviewRunner ?? new CodexCliReviewRunner({ worker }), 'codex-cli');
+    if (!options.reviewRunner)
+      engine.loop.verification.connectRunner(new ClaudeCliReviewRunner({ worker }), 'claude-cli');
+  }
+  engine.usage.connect(native.transport);
+  // Counted before recovery runs, since recovery is what turns these rows into `interrupted`.
+  const interruptedRuns = Number(
+    (
+      store.db
+        .prepare(
+          "SELECT count(*) AS n FROM runs WHERE json_extract(data,'$.status')='running' AND (json_extract(data,'$.executionOwner') IS NULL OR json_extract(data,'$.executionOwner')<>'codex-app')"
+        )
+        .get() as { n: number }
+    ).n
+  );
   engine.recover();
-  engine.runtimes = await discoverRuntimes();
-  const respond = (res: ServerResponse, status: number, data: any) => {
-    res.writeHead(status, {
-      "Content-Type": "application/json; charset=utf-8",
-      "Cache-Control": "no-store",
-      "X-Content-Type-Options": "nosniff",
-    });
-    res.end(JSON.stringify(data).replaceAll(token, "[REDACTED]"));
+  /** A raised or cleared limit lets waiting channels and held reviews re-check the gate on the next tick. */
+  const releaseUsageWaits = (projectIds?: string[]) => {
+    const soon = new Date(Date.now() + 5000).toISOString();
+    for (const c of store.all<Channel>('channels'))
+      if (c.usageWait && (!projectIds || projectIds.includes(c.projectId)) && engine.control(c.id).enabled)
+        store.put('channels', { ...c, nextRunAt: soon });
+    for (const row of store.all<Verification>('loop_verifications'))
+      if (row.status === 'queued' && row.retryAt && (!projectIds || projectIds.includes(row.projectId)))
+        store.put('loop_verifications', { ...row, retryAt: undefined });
   };
+  engine.runtimes = await discoverRuntimes();
+  const respond = (res: ServerResponse, status: number, data: unknown) => {
+    res.writeHead(status, {
+      'Content-Type': 'application/json; charset=utf-8',
+      'Cache-Control': 'no-store',
+      'X-Content-Type-Options': 'nosniff',
+    });
+    res.end(JSON.stringify(data).replaceAll(token, '[REDACTED]'));
+  };
+  /** Set once this daemon is stepping aside for a new build: no request is accepted after that. */
+  let stopping = false;
   const server = createServer(async (req, res) => {
     try {
-      const url = new URL(req.url || "/", `http://127.0.0.1:${port}`);
+      const url = new URL(req.url || '/', `http://127.0.0.1:${port}`);
       const path = url.pathname;
-      if (req.method === "GET" && path === "/health") {
-        respond(res, 200, { ok: true, service: "morrow" });
+      // Unchanged and unauthenticated: it still says only that a Morrow service is listening here.
+      // A switch in progress is visible through the authenticated lifecycle state instead.
+      if (req.method === 'GET' && path === '/health') {
+        respond(res, 200, { ok: true, service: 'morrow' });
         return;
       }
-      if (!path.startsWith("/api/")) throw new APIError(404, "接口不存在");
-      if (req.headers.origin) throw new APIError(403, "不接受浏览器跨域请求");
-      if(req.method==='POST'&&path==='/api/agent') {
-        const scope=engine.loop.authenticate(req.headers.authorization||'');
-        respond(res,200,await engine.loop.call(scope,await body(req)));return;
+      if (!path.startsWith('/api/')) throw new APIError(404, '接口不存在');
+      // A recognisable answer while the switch completes, so the interface shows the handover rather
+      // than an unexplained server failure.
+      if (stopping) {
+        respond(res, 503, { error: '正在切换到新版本，请稍候重新连接。', code: 'upgrade_exiting' });
+        return;
       }
-      const supplied = Buffer.from(req.headers.authorization || "");
+      if (req.headers.origin) throw new APIError(403, '不接受浏览器跨域请求');
+      if (req.method === 'POST' && path === '/api/agent') {
+        const scope = engine.loop.authenticate(req.headers.authorization || '');
+        respond(res, 200, await engine.loop.call(scope, await body(req)));
+        return;
+      }
+      const supplied = Buffer.from(req.headers.authorization || '');
       const expected = Buffer.from(`Bearer ${token}`);
-      if (
-        supplied.length !== expected.length ||
-        !timingSafeEqual(supplied, expected)
-      )
-        throw new APIError(401, "需要本机访问令牌");
-      if (req.method === "GET" && path === "/api/state") {
-        respond(res, 200, store.snapshot(engine.runtimes));
+      if (supplied.length !== expected.length || !timingSafeEqual(supplied, expected))
+        throw new APIError(401, '需要本机访问令牌');
+      if (req.method === 'GET' && path === '/api/state') {
+        respond(res, 200, {
+          ...store.snapshot(engine.runtimes),
+          settings: engine.usage.settings(),
+          usage: engine.usage.status(),
+          upgrade: engine.upgrade.state(),
+        });
         return;
       }
-      if (req.method === 'GET' && path === '/api/native/status') {respond(res,200,await native.status());return;}
-      const loopMatch=path.match(/^\/api\/projects\/([^/]+)\/work$/);
-      if(req.method==='GET'&&loopMatch){if(!store.get<Project>('projects',loopMatch[1]))throw new APIError(404,'项目不存在');const itemId=url.searchParams.get('itemId')||undefined;if(itemId&&store.get<WorkItem>('items',itemId)?.projectId!==loopMatch[1])throw new APIError(404,'feature 不属于该项目');respond(res,200,engine.loop.view(loopMatch[1],itemId));return;}
-      if (req.method === "GET" && path === "/api/events") {
+      // The installed build, the build actually running, and whether any work still holds the switch.
+      if (req.method === 'GET' && path === '/api/upgrade') {
+        respond(res, 200, engine.upgrade.state());
+        return;
+      }
+      if (req.method === 'GET' && path === '/api/native/status') {
+        const [state] = await Promise.all([
+          native.status(),
+          url.searchParams.get('refreshUsage') === '1' ? engine.usage.refresh() : undefined,
+        ]);
+        respond(res, 200, { ...state, usage: engine.usage.status() });
+        return;
+      }
+      if (req.method === 'GET' && path === '/api/settings') {
+        respond(res, 200, engine.usage.ensureSettings());
+        return;
+      }
+      const usageMatch = path.match(/^\/api\/projects\/([^/]+)\/usage$/);
+      if (req.method === 'GET' && usageMatch) {
+        const project = store.get<Project>('projects', usageMatch[1]);
+        if (!project) throw new APIError(404, '项目不存在');
+        const status = engine.usage.status();
+        const budget = project.usageBudget;
+        respond(res, 200, {
+          reading: status.reading,
+          stale: status.stale,
+          attempted: status.attempted,
+          lastError: status.lastError,
+          budget,
+          reserve: engine.usage.settings().usageReserve,
+          project: budget ? engine.usage.projectUsage(project.id, budget.window, status.reading) : undefined,
+          gate: engine.usage.gate(project),
+        });
+        return;
+      }
+      const loopMatch = path.match(/^\/api\/projects\/([^/]+)\/work$/);
+      if (req.method === 'GET' && loopMatch) {
+        if (!store.get<Project>('projects', loopMatch[1])) throw new APIError(404, '项目不存在');
+        const itemId = url.searchParams.get('itemId') || undefined;
+        if (itemId && store.get<WorkItem>('items', itemId)?.projectId !== loopMatch[1])
+          throw new APIError(404, 'feature 不属于该项目');
+        if (url.searchParams.getAll('verificationBefore').length > 1) throw new APIError(400, '复核游标重复');
+        const before = queryID(url.searchParams, 'verificationBefore');
+        respond(res, 200, engine.loop.view(loopMatch[1], itemId, { before, includeLatest: true }));
+        return;
+      }
+      const briefMatch = path.match(/^\/api\/projects\/([^/]+)\/brief$/);
+      if (req.method === 'GET' && briefMatch) {
+        const project = store.get<Project>('projects', briefMatch[1]);
+        if (!project) throw new APIError(404, '项目不存在');
+        respond(res, 200, {
+          goal: project.goal,
+          brief: project.brief || '',
+          briefRevision: project.briefRevision || 0,
+        });
+        return;
+      }
+      if (req.method === 'GET' && path === '/api/events') {
         respond(res, 200, eventHistory(store, url.searchParams));
         return;
       }
-      if (req.method === 'GET' && path === '/api/runs') { respond(res, 200, runHistory(store, url.searchParams)); return; }
+      if (req.method === 'GET' && path === '/api/runs') {
+        respond(res, 200, runHistory(store, url.searchParams));
+        return;
+      }
       const runMatch = path.match(/^\/api\/runs\/([^/]+)(?:\/(output))?$/);
       if (req.method === 'GET' && runMatch) {
         const run = store.get<Run>('runs', runMatch[1]);
         if (!run) throw new APIError(404, '运行记录不存在');
         if (runMatch[2]) respond(res, 200, runOutput(store, run.id, url.searchParams));
-        else { const result = store.get('results', run.id); respond(res, 200, {run, prompt:store.runText(run.id, 'prompt'), finalOutput:store.runText(run.id, 'final'), ...(result ? {report:result.result} : {})}); }
+        else {
+          const result = store.get('results', run.id);
+          respond(res, 200, {
+            run: { ...run, log: runLog(store, run, true) },
+            prompt: store.runText(run.id, 'prompt'),
+            finalOutput: store.runText(run.id, 'final'),
+            ...(result ? { report: result.result } : {}),
+          });
+        }
         return;
       }
       const data = await body(req);
-      const reviewMatch=path.match(/^\/api\/releases\/([^/]+)\/(review|reconcile)$/);
-      if(req.method==='POST'&&reviewMatch){if(reviewMatch[2]==='reconcile'){keys(data,[]);respond(res,200,await engine.loop.reconcile(reviewMatch[1]));}else{keys(data,['reviewHash','decision','feedback']);respond(res,200,engine.loop.review(reviewMatch[1],string(data.reviewHash,'reviewHash',64),choice(data.decision,'decision',['approve','reject'] as const),data.feedback===undefined?'':string(data.feedback,'feedback',10000,true)));}return;}
-      if(req.method==='POST'&&path==='/api/native/background/setup'){keys(data,[]);respond(res,200,native.configureBackground());return;}
-      if(req.method==='POST'&&path==='/api/native/background/restore'){keys(data,[]);respond(res,200,native.restoreBackground());return;}
-      const nativeImageMatch=path.match(/^\/api\/channels\/([^/]+)\/native\/images(?:\/([^/]+)\/([0-9]+))?$/);
-      if(nativeImageMatch){const [,id,itemId,index]=nativeImageMatch;if(req.method==='POST'&&!itemId){keys(data,['paths']);respond(res,200,importNativeImages(store,home,id,data.paths));return;}if(req.method==='GET'&&itemId){respond(res,200,readNativeImage(store,id,itemId,Number(index)));return;}throw new APIError(405,'图片操作不支持此请求方法');}
-      const nativeMatch=path.match(/^\/api\/channels\/([^/]+)\/native\/(threads|conversation|bind|create|messages|interrupt|respond|open)$/);
-      if(nativeMatch) {
-        const id=nativeMatch[1], action=nativeMatch[2];
-        if(req.method==='GET' && action==='threads'){respond(res,200,await native.list(id));return;}
-        if(req.method==='GET' && action==='conversation'){
-          for(const key of url.searchParams.keys())if(!['before','limit'].includes(key)||url.searchParams.getAll(key).length!==1)throw new APIError(400,'原生历史查询参数无效');
-          const before=url.searchParams.get('before')||undefined;if(before&&!/^[a-f0-9]{64}$/.test(before))throw new APIError(400,'原生消息游标无效');
-          const rawLimit=url.searchParams.get('limit');if(rawLimit!==null&&!/^[1-9][0-9]{0,2}$/.test(rawLimit))throw new APIError(400,'原生历史 limit 无效');const limit=rawLimit===null?80:integer(Number(rawLimit),'limit',1,200);
-          respond(res,200,await native.conversation(id,{before,limit}));return;
-        }
-        if(req.method==='GET' && action==='open'){const {project}=native.channel(id);const binding=native.binding(id);respond(res,200,{projectPath:project.path,...(binding?{threadId:binding.threadId}:{})});return;}
-        if(req.method==='POST' && action==='bind'){keys(data,['threadId']);respond(res,200,await native.bind(id,string(data.threadId,'threadId',200)));return;}
-        if(req.method==='POST' && action==='create'){keys(data,[]);respond(res,200,await native.create(id));return;}
-        if(req.method==='POST' && action==='messages'){
-          keys(data,['text','requestId','attachments']);if(typeof data.text!=='string'||(!data.text.trim()&&(!Array.isArray(data.attachments)||!data.attachments.length))||data.text.length>200000||data.text.includes('\0'))throw new APIError(400,'消息正文无效');
-          const requestId=string(data.requestId,'requestId',200);if(!/^[a-zA-Z0-9_-]+$/.test(requestId))throw new APIError(400,'消息请求 ID 无效');respond(res,200,await native.send(id,data.text,requestId,'chat',undefined,data.attachments||[]));return;
-        }
-        if(req.method==='POST' && action==='interrupt'){keys(data,['turnId']);respond(res,200,await native.interrupt(id,string(data.turnId,'turnId',200)));return;}
-        if(req.method==='POST' && action==='respond'){keys(data,['requestId','response']);if(!Object.hasOwn(data,'response'))throw new APIError(400,'缺少原生请求答复');respond(res,200,await native.respond(id,string(data.requestId,'requestId',200),data.response));return;}
-        throw new APIError(405,'原生对话操作不支持此请求方法');
+      if (req.method === 'PATCH' && path === '/api/settings') {
+        keys(data, ['usageReserve', 'stopWhenUsageUnknown']);
+        if (data.usageReserve === undefined && data.stopWhenUsageUnknown === undefined)
+          throw new APIError(400, '请提供 usageReserve 或 stopWhenUsageUnknown');
+        if (data.stopWhenUsageUnknown !== undefined && typeof data.stopWhenUsageUnknown !== 'boolean')
+          throw new APIError(400, 'stopWhenUsageUnknown 必须为布尔值');
+        const usageReserve = data.usageReserve === undefined ? undefined : usageReserveInput(data.usageReserve);
+        const before = engine.usage.ensureSettings();
+        const updated = store.transaction(() => {
+          const next = engine.usage.saveSettings({ usageReserve, stopWhenUsageUnknown: data.stopWhenUsageUnknown });
+          engine.audit({
+            projectId: '',
+            actor: 'human',
+            action: 'settings.updated',
+            text: next.usageReserve
+              ? `已设置保留给自己的额度：${usageWindowLabels[next.usageReserve.window]}窗口保留 ${next.usageReserve.keepPercent}%${next.stopWhenUsageUnknown ? '；额度未知时也停止自动工作' : ''}。`
+              : `已清除保留额度${next.stopWhenUsageUnknown ? '；额度未知时停止自动工作' : ''}。`,
+            before,
+            after: next,
+          });
+          releaseUsageWaits();
+          return next;
+        });
+        respond(res, 200, updated);
+        return;
       }
-      if (req.method === "POST" && path === "/api/projects") {
-        keys(data, ["name", "path", "goal", "runtime"]);
-        const name = string(data.name, "name", 100);
-        const goal = string(data.goal, "goal", 20000);
-        let projectPath = "";
+      const usageBudgetMatch = path.match(/^\/api\/projects\/([^/]+)\/usage-budget$/);
+      if (req.method === 'PATCH' && usageBudgetMatch) {
+        keys(data, ['usageBudget']);
+        if (!Object.hasOwn(data, 'usageBudget')) throw new APIError(400, '请提供 usageBudget');
+        const project = store.get<Project>('projects', usageBudgetMatch[1]);
+        if (!project) throw new APIError(404, '项目不存在');
+        if (project.isDemo) throw new APIError(409, '示例项目不能设置额度上限');
+        const usageBudget = usageBudgetInput(data.usageBudget);
+        const { usageBudget: previous, ...rest } = project;
+        const updated: Project = { ...rest, ...(usageBudget ? { usageBudget } : {}) };
+        store.transaction(() => {
+          store.put('projects', updated);
+          engine.audit({
+            projectId: project.id,
+            actor: 'human',
+            action: 'project.updated',
+            text: usageBudget
+              ? `已设置项目「${project.name}」的额度上限：${usageWindowLabels[usageBudget.window]}窗口 ${usageBudget.limitPercent}%（归因估算）。`
+              : `已清除项目「${project.name}」的额度上限。`,
+            before: { usageBudget: previous ?? null },
+            after: { usageBudget },
+          });
+          releaseUsageWaits([project.id]);
+        });
+        respond(res, 200, updated);
+        return;
+      }
+      // Only the desktop credential reaches this: the agent proposes a script path, a human reads what will run.
+      const scriptMatch = path.match(/^\/api\/releases\/([^/]+)\/script$/);
+      if (req.method === 'GET' && scriptMatch) {
+        respond(res, 200, engine.loop.scriptText(scriptMatch[1]));
+        return;
+      }
+      // The handshake: only the desktop credential reaches it, it carries the boot it was issued for
+      // and the version it means, and it is idempotent. The work grant can never trigger a restart.
+      const upgradeMatch = path.match(/^\/api\/upgrade\/(acknowledge|restart|blocked)$/);
+      if (req.method === 'POST' && upgradeMatch) {
+        respond(
+          res,
+          200,
+          upgradeMatch[1] === 'acknowledge'
+            ? engine.upgrade.acknowledge(data)
+            : upgradeMatch[1] === 'restart'
+              ? engine.upgrade.restart(data)
+              : engine.upgrade.blocked(data)
+        );
+        return;
+      }
+      const reviewMatch = path.match(/^\/api\/releases\/([^/]+)\/(review|reconcile)$/);
+      if (req.method === 'POST' && reviewMatch) {
+        if (reviewMatch[2] === 'reconcile') {
+          keys(data, []);
+          engine.upgrade.require('切换完成后再核对发布结果，记录保持不变');
+          respond(res, 200, await engine.loop.reconcile(reviewMatch[1]));
+        } else {
+          keys(data, ['reviewHash', 'decision', 'feedback']);
+          respond(
+            res,
+            200,
+            engine.loop.review(
+              reviewMatch[1],
+              string(data.reviewHash, 'reviewHash', 64),
+              choice(data.decision, 'decision', ['approve', 'reject'] as const),
+              data.feedback === undefined ? '' : string(data.feedback, 'feedback', 10000, true)
+            )
+          );
+        }
+        return;
+      }
+      if (req.method === 'POST' && path === '/api/native/background/setup') {
+        keys(data, []);
+        respond(res, 200, native.configureBackground());
+        return;
+      }
+      if (req.method === 'POST' && path === '/api/native/background/restore') {
+        keys(data, []);
+        respond(res, 200, native.restoreBackground());
+        return;
+      }
+      const nativeMatch = path.match(
+        /^\/api\/channels\/([^/]+)\/native\/(threads|conversation|bind|messages|interrupt|open)$/
+      );
+      if (nativeMatch) {
+        const id = nativeMatch[1],
+          action = nativeMatch[2];
+        // Every route in here acts on an App task. A CLI-direct Codex channel has none, so it hears
+        // that instead of being walked through linking one. A channel that does not exist at all
+        // keeps falling through to the 404 each handler already raises.
+        const target = store.get<Channel>('channels', id);
+        if (target && !usesApp(target)) throw new APIError(409, '该频道直连 Codex CLI，不使用 Codex App 任务');
+        if (req.method === 'GET' && action === 'threads') {
+          respond(res, 200, await native.list(id));
+          return;
+        }
+        if (req.method === 'GET' && action === 'conversation') {
+          for (const key of url.searchParams.keys())
+            if (!['before', 'limit'].includes(key) || url.searchParams.getAll(key).length !== 1)
+              throw new APIError(400, '原生历史查询参数无效');
+          const before = url.searchParams.get('before') || undefined;
+          if (before && !/^[a-f0-9]{64}$/.test(before)) throw new APIError(400, '原生消息游标无效');
+          const rawLimit = url.searchParams.get('limit');
+          if (rawLimit !== null && !/^[1-9][0-9]{0,2}$/.test(rawLimit)) throw new APIError(400, '原生历史 limit 无效');
+          const limit = rawLimit === null ? 80 : integer(Number(rawLimit), 'limit', 1, 200);
+          respond(res, 200, await native.conversation(id, { before, limit }));
+          return;
+        }
+        if (req.method === 'GET' && action === 'open') {
+          const { project } = native.channel(id);
+          const binding = native.binding(id);
+          respond(res, 200, { projectPath: project.path, ...(binding ? { threadId: binding.threadId } : {}) });
+          return;
+        }
+        if (req.method === 'POST' && action === 'bind') {
+          keys(data, ['threadId']);
+          respond(res, 200, await native.bind(id, string(data.threadId, 'threadId', 200)));
+          return;
+        }
+        if (req.method === 'POST' && action === 'messages') {
+          // A chat message starts a native turn. Answers to the task's own questions, interrupts and
+          // reads stay available while a switch waits.
+          engine.upgrade.require('切换完成后再发送消息；当前的提问答复与中断仍可使用');
+          keys(data, ['text', 'requestId', 'attachments']);
+          if (
+            typeof data.text !== 'string' ||
+            (!data.text.trim() && (!Array.isArray(data.attachments) || !data.attachments.length)) ||
+            data.text.length > 200000 ||
+            data.text.includes('\0')
+          )
+            throw new APIError(400, '消息正文无效');
+          const requestId = string(data.requestId, 'requestId', 200);
+          if (!/^[a-zA-Z0-9_-]+$/.test(requestId)) throw new APIError(400, '消息请求 ID 无效');
+          respond(res, 200, await native.send(id, data.text, requestId, 'chat', undefined, data.attachments || []));
+          return;
+        }
+        if (req.method === 'POST' && action === 'interrupt') {
+          keys(data, ['turnId']);
+          respond(res, 200, await native.interrupt(id, string(data.turnId, 'turnId', 200)));
+          return;
+        }
+        throw new APIError(405, '原生对话操作不支持此请求方法');
+      }
+      if (req.method === 'POST' && path === '/api/projects') {
+        keys(data, ['name', 'path', 'goal', 'runtime', 'brief']);
+        const name = string(data.name, 'name', 100);
+        const goal = string(data.goal, 'goal', 20000);
+        const brief = data.brief === undefined ? '' : string(data.brief, 'brief', projectBriefLimit, true);
+        let projectPath = '';
         try {
-          projectPath = realpathSync(string(data.path, "path", 4096));
+          projectPath = realpathSync(string(data.path, 'path', 4096));
           if (!statSync(projectPath).isDirectory()) throw new Error();
         } catch {
-          throw new APIError(400, "请选择存在的项目文件夹");
+          throw new APIError(400, '请选择存在的项目文件夹');
         }
-        if (
-          store
-            .all<Project>("projects")
-            .some((p) => !p.isDemo && p.path === projectPath)
-        )
-          throw new APIError(409, "该文件夹已添加为项目");
+        if (store.all<Project>('projects').some((p) => !p.isDemo && p.path === projectPath))
+          throw new APIError(409, '该文件夹已添加为项目');
         const project: Project = {
           id: randomUUID(),
           name,
           path: projectPath,
           goal,
+          ...(brief ? { brief } : {}),
+          briefRevision: brief ? 1 : 0,
           createdAt: now(),
           isDemo: false,
           runtime: data.runtime === undefined ? 'codex' : choice(data.runtime, 'runtime', engines),
         };
         store.transaction(() => {
-          store.put("projects", project);
-          engine.audit({projectId:project.id,actor:'human',action:'project.created',text:`已添加项目「${project.name}」。`,after:project});
+          store.put('projects', project);
+          if (brief) store.put('project_brief_revisions', briefRevisionRow(project, 1));
+          engine.audit({
+            projectId: project.id,
+            actor: 'human',
+            action: 'project.created',
+            text: `已添加项目「${project.name}」${brief ? '，并写下项目说明' : ''}。`,
+            after: projectAudit(project),
+          });
           for (const c of [
             defaultChannel(
               project.id,
-              "自主推进",
-              "围绕项目目标理解现状与关键未知，自主选择有价值的行动，获取真实反馈并调整策略；按需要补齐工作能力，合理使用资源。",
+              '自主推进',
+              '围绕项目目标理解现状与关键未知，自主选择有价值的行动，获取真实反馈并调整策略；按需要补齐工作能力，合理使用资源。',
+              project.runtime
             ),
           ]) {
-            c.runtime = project.runtime;
             c.maxRunsPerDay = 32;
-            store.put("channels", c);
+            store.put('channels', c);
             engine.event(
               c.id,
-              "",
-              "system",
-              "已准备自主推进频道。开始工作后，Codex 会先理解项目并选择下一步；当前保持暂停。",
+              '',
+              'system',
+              '已准备自主推进频道。开始工作后，Codex 会先理解项目并选择下一步；当前保持暂停。',
               undefined,
-              {projectId:project.id,actor:'human',action:'channel.created',changes:{after:c}},
+              { projectId: project.id, actor: 'human', action: 'channel.created', changes: { after: c } }
             );
           }
         });
         respond(res, 201, project);
         return;
       }
-      const createItemMatch = path.match(/^\/api\/projects\/([^/]+)\/items$/);
-      if (req.method === 'POST' && createItemMatch) {
-        keys(data, ['title','summary','kind','status','evidence','nextStep','channelId']);
-        const project = store.get<Project>('projects', createItemMatch[1]);
+      const projectMatch = path.match(/^\/api\/projects\/([^/]+)$/);
+      if (req.method === 'PATCH' && projectMatch) {
+        keys(data, ['goal', 'brief', 'revision']);
+        const project = store.get<Project>('projects', projectMatch[1]);
         if (!project) throw new APIError(404, '项目不存在');
-        const channelId = data.channelId === undefined ? '' : string(data.channelId, 'channelId', 100, true);
-        if (channelId && store.get<Channel>('channels', channelId)?.projectId !== project.id) throw new APIError(404, '来源频道不属于该项目');
-        const time = now();
-        const item: WorkItem = {id:randomUUID(),projectId:project.id,number:store.nextItemNumber(project.id),channelId,sourceChannelIds:channelId ? [channelId] : [],lastRunId:'',revision:1,...itemFields(data),createdAt:time,updatedAt:time};
-        store.transaction(() => {store.put('items',item); engine.audit({projectId:project.id,channelId,itemId:item.id,actor:'human',action:'item.created',text:`创建功能事项 #${item.number}「${item.title}」。`,after:item});});
-        respond(res,201,item); return;
-      }
-      if (req.method === "POST" && path === "/api/channels") {
-        keys(data, [
-          "projectId",
-          "name",
-          "goal",
-          "runtime",
-          "model",
-          "intervalMinutes",
-          "maxRunsPerDay",
-          "permission",
-        ]);
-        const projectId = string(data.projectId, "projectId", 100);
-        const project = store.get<Project>("projects", projectId);
-        if (!project) throw new APIError(404, "项目不存在");
-        const c = {
-          ...defaultChannel(
-            projectId,
-            string(data.name, "name", 100),
-            string(data.goal, "goal", 20000),
-          ),
-          runtime: choice(data.runtime, "runtime", engines),
-          model: data.model === undefined ? "" : model(data.model),
-          intervalMinutes:
-            data.intervalMinutes === undefined
-              ? 60
-              : integer(data.intervalMinutes, "intervalMinutes"),
-          maxRunsPerDay:
-            data.maxRunsPerDay === undefined
-              ? 8
-              : integer(data.maxRunsPerDay, "maxRunsPerDay", 1, 100),
-          permission:
-            data.permission === undefined
-              ? ("read-only" as const)
-              : choice(data.permission, "permission", [
-                  "read-only",
-                  "workspace-write", "native",
-                ] as const),
-        };
-        if(c.permission==='native'&&c.runtime!=='codex')throw new APIError(400,'仅 Codex CLI 支持沿用原生权限');
-        store.transaction(() => {store.put("channels", c); engine.audit({projectId,channelId:c.id,actor:'human',action:'channel.created',text:'频道已创建，等待手动运行。',after:c});});
-        respond(res, 201, c);
-        return;
-      }
-      const channelMatch = path.match(
-        /^\/api\/channels\/([^/]+)(?:\/(action|messages|native-handoff))?$/,
-      );
-      if (channelMatch) {
-        const id = channelMatch[1];
-        const c = store.get<Channel>("channels", id);
-        if (!c) throw new APIError(404, "频道不存在");
-        if (req.method === "PATCH" && !channelMatch[2]) {
-          keys(data, [
-            "name",
-            "goal",
-            "runtime",
-            "model",
-            "intervalMinutes",
-            "maxRunsPerDay",
-            "permission",
-          ]);
-          if (
-            (engine.active.has(id) || native.isBusy(id)) &&
-            ["runtime", "model", "permission"].some(
-              (k) => data[k] !== undefined,
-            )
-          )
-            throw new APIError(409, "请先暂停执行再更改运行时、模型或权限");
-          const updated = { ...c };
-          if(native.binding(id)&&data.runtime!==undefined&&data.runtime!==c.runtime)throw new APIError(409,'频道已绑定 Codex CLI 原生任务；请新建频道使用其他运行时，避免丢失会话关联');
-          if (data.name !== undefined)
-            updated.name = string(data.name, "name", 100);
-          if (data.goal !== undefined)
-            updated.goal = string(data.goal, "goal", 20000);
-          if (data.runtime !== undefined)
-            updated.runtime = choice(data.runtime, "runtime", engines);
-          if (data.model !== undefined) updated.model = model(data.model);
-          if (data.permission !== undefined)
-            updated.permission = choice(data.permission, "permission", [
-              "read-only",
-              "workspace-write", "native",
-            ] as const);
-          if (data.intervalMinutes !== undefined)
-            updated.intervalMinutes = integer(
-              data.intervalMinutes,
-              "intervalMinutes",
-            );
-          if (data.maxRunsPerDay !== undefined)
-            updated.maxRunsPerDay = integer(
-              data.maxRunsPerDay,
-              "maxRunsPerDay",
-              1,
-              100,
-            );
-          if(updated.permission==='native'&&updated.runtime!=='codex')throw new APIError(400,'仅 Codex CLI 支持沿用原生权限');
-          if (updated.runtime !== c.runtime) {
-            updated.sessionId = "";
-            if (data.model === undefined) updated.model = "";
-            engine.event(
-              id,
-              "",
-              "system",
-              `运行时已切换为 ${updated.runtime}。保留事项、证据和消息，下次使用完整上下文开始新会话。`,
-            );
-          } else if (
-            !native.binding(id) && (updated.model !== c.model ||
-            updated.permission !== c.permission)
-          )
-            updated.sessionId = "";
-          store.transaction(() => {store.put("channels", updated); engine.audit({projectId:c.projectId,channelId:id,actor:'human',action:'channel.updated',text:`已更新持续职责「${updated.name}」设置。`,before:c,after:updated});});
-          respond(res, 200, updated);
+        if (project.isDemo) throw new APIError(409, '示例项目不能修改目标或项目说明');
+        if (data.goal === undefined && data.brief === undefined) throw new APIError(400, '请提供 goal 或 brief');
+        const current = project.briefRevision || 0;
+        if (integer(data.revision, 'revision', 0, Number.MAX_SAFE_INTEGER) !== current)
+          throw new APIError(409, '项目说明已被更新，请刷新后再保存');
+        const goal = data.goal === undefined ? project.goal : string(data.goal, 'goal', 20000);
+        const brief =
+          data.brief === undefined ? project.brief || '' : string(data.brief, 'brief', projectBriefLimit, true);
+        const changed = [goal !== project.goal ? '项目目标' : '', brief !== (project.brief || '') ? '项目说明' : '']
+          .filter(Boolean)
+          .join('与');
+        // Saving identical content creates no version and does not send channels back to reassess.
+        if (!changed) {
+          respond(res, 200, project);
           return;
         }
-        if (req.method === "POST" && channelMatch[2] === "action") {
-          keys(data, ["action"]);
-          await engine.action(
-            id,
-            choice(data.action, "action", ["run", "pause", "resume"]),
-          );
-          engine.audit({projectId:c.projectId,channelId:id,actor:'human',action:'channel.action',text:`频道操作：${({run:'运行一次',pause:'暂停',resume:'持续运行'} as Record<string,string>)[data.action]}。`,before:c,after:store.get('channels',id)});
-          respond(res, 200, { ok: true });
-          return;
-        }
-        if (req.method === "POST" && channelMatch[2] === "messages") {
-          if(native.binding(id))throw new APIError(409,'已绑定原生任务，请使用原生对话发送消息');
-          keys(data, ["text"]);
-          respond(
-            res,
-            201,
-            engine.event(id, "", "message", string(data.text, "text", 10000), undefined, {projectId:c.projectId,actor:'human',action:'message.created'}),
-          );
-          return;
-        }
-        if (req.method === 'POST' && channelMatch[2] === 'native-handoff') {
-          keys(data, []);
-          const project = store.get<Project>('projects',c.projectId)!;
-          if (project.isDemo) throw new APIError(409,'示例项目不能打开原生会话');
-          if (store.all<Channel>('channels').some(other => other.projectId === project.id && (engine.active.has(other.id) || engine.control(other.id).enabled || !['paused','blocked','idle'].includes(other.status)))) throw new APIError(409,'请先暂停项目全部频道，等待运行结束后再打开原生会话');
-          const runtime = engine.runtimes.find(runtime => runtime.id === c.runtime);
-          if (!runtime?.available) throw new APIError(409,'原生 CLI 不可用，请检查安装');
-          engine.audit({projectId:project.id,channelId:id,actor:'human',action:'native-session-opened',text:`已请求打开 ${runtime.name} 原生${c.sessionId ? '会话' : '终端'}；项目持续执行保持暂停。`,after:{runtime:c.runtime,sessionId:c.sessionId}});
-          respond(res,200,{projectPath:project.path,runtime:c.runtime,executable:runtime.path,sessionId:c.sessionId});return;
-        }
-      }
-      const itemMatch = path.match(/^\/api\/items\/([^/]+)$/);
-      if (req.method === "PATCH" && itemMatch) {
-        keys(data, ["status", "title", "summary", "kind", "evidence", "nextStep", "revision"]);
-        const item = store.get<WorkItem>("items", itemMatch[1]);
-        if (!item) throw new APIError(404, "事项不存在");
-        if (data.revision !== undefined && integer(data.revision, 'revision', 1, Number.MAX_SAFE_INTEGER) !== item.revision) throw new APIError(409,'事项已被更新，请刷新后再保存');
-        const updated = {
-          ...item,
-          ...itemFields(data, item),
-          revision: item.revision + 1,
-          updatedAt: now(),
-        };
-        store.transaction(() => {store.put("items", updated); engine.audit({projectId:item.projectId,channelId:item.channelId,itemId:item.id,actor:'human',action:'item.updated',text:`更新功能事项 #${item.number}「${updated.title}」。`,before:item,after:updated});});
+        const revision = current + 1;
+        const updated: Project = { ...project, goal, brief, briefRevision: revision };
+        const reason = `${changed}已更新（版本 ${revision}）`;
+        store.transaction(() => {
+          store.put('projects', updated);
+          store.put('project_brief_revisions', briefRevisionRow(updated, revision));
+          engine.audit({
+            projectId: project.id,
+            actor: 'human',
+            action: 'project.updated',
+            text: `已更新项目「${project.name}」的${changed}（版本 ${revision}）。`,
+            before: projectAudit(project),
+            after: projectAudit(updated),
+          });
+          // Active decisions must be reviewed against the new requirements; only enabled channels
+          // are scheduled, so a manually paused channel stays paused.
+          engine.loop.strategy.notify(project.id, reason);
+          for (const c of store.all<Channel>('channels'))
+            if (c.projectId === project.id) {
+              // New requirements are a new intent: an App continuation inferred under the old ones
+              // no longer justifies restoring automatic work.
+              engine.appResume.advance(c.id, 'project-brief', reason);
+              engine.loop.wake(c.id, reason);
+            }
+        });
         respond(res, 200, updated);
         return;
       }
-      if (req.method === "POST" && path === "/api/runtimes/refresh") {
+      const createItemMatch = path.match(/^\/api\/projects\/([^/]+)\/items$/);
+      if (req.method === 'POST' && createItemMatch) {
+        keys(data, ['title', 'summary', 'kind', 'status', 'evidence', 'nextStep', 'channelId']);
+        const project = store.get<Project>('projects', createItemMatch[1]);
+        if (!project) throw new APIError(404, '项目不存在');
+        const channelId = data.channelId === undefined ? '' : string(data.channelId, 'channelId', 100, true);
+        if (channelId && store.get<Channel>('channels', channelId)?.projectId !== project.id)
+          throw new APIError(404, '来源频道不属于该项目');
+        const time = now();
+        const item: WorkItem = {
+          id: randomUUID(),
+          projectId: project.id,
+          origin: 'human',
+          number: store.nextItemNumber(project.id),
+          channelId,
+          sourceChannelIds: channelId ? [channelId] : [],
+          lastRunId: '',
+          revision: 1,
+          ...itemFields(data),
+          createdAt: time,
+          updatedAt: time,
+        };
+        store.transaction(() => {
+          store.put('items', item);
+          engine.audit({
+            projectId: project.id,
+            channelId,
+            itemId: item.id,
+            actor: 'human',
+            action: 'item.created',
+            text: `创建事项 #${item.number}`,
+            after: item,
+          });
+        });
+        respond(res, 201, item);
+        return;
+      }
+      if (req.method === 'POST' && path === '/api/channels') {
+        keys(data, [
+          'projectId',
+          'name',
+          'goal',
+          'runtime',
+          'transport',
+          'model',
+          'intervalMinutes',
+          'maxRunsPerDay',
+          'permission',
+        ]);
+        const projectId = string(data.projectId, 'projectId', 100);
+        const project = store.get<Project>('projects', projectId);
+        if (!project) throw new APIError(404, '项目不存在');
+        const runtime = choice(data.runtime, 'runtime', engines);
+        const transport =
+          data.transport === undefined ? undefined : choice(data.transport, 'transport', channelTransports);
+        // Only Codex has two ways in. The other runtimes have exactly one, so naming a transport on
+        // them is a mistake worth reporting rather than a value to store and ignore.
+        if (transport && runtime !== 'codex') throw new APIError(400, '仅 Codex 频道可以选择传输方式');
+        const c = {
+          ...defaultChannel(
+            projectId,
+            string(data.name, 'name', 100),
+            string(data.goal, 'goal', 20000),
+            runtime,
+            transport
+          ),
+          model: data.model === undefined ? '' : model(data.model),
+          intervalMinutes: data.intervalMinutes === undefined ? 60 : integer(data.intervalMinutes, 'intervalMinutes'),
+          maxRunsPerDay: data.maxRunsPerDay === undefined ? 8 : integer(data.maxRunsPerDay, 'maxRunsPerDay', 1, 100),
+          permission:
+            data.permission === undefined
+              ? defaultPermission(runtime, transport)
+              : choice(data.permission, 'permission', ['read-only', 'workspace-write', 'native'] as const),
+        };
+        if (c.permission === 'native' && !usesApp(c))
+          throw new APIError(400, '仅走 Codex App 的频道支持沿用原生任务权限');
+        store.transaction(() => {
+          store.put('channels', c);
+          engine.audit({
+            projectId,
+            channelId: c.id,
+            actor: 'human',
+            action: 'channel.created',
+            text: '频道已创建，等待手动运行。',
+            after: c,
+          });
+        });
+        respond(res, 201, c);
+        return;
+      }
+      const channelMatch = path.match(/^\/api\/channels\/([^/]+)(?:\/(action|messages))?$/);
+      if (channelMatch) {
+        const id = channelMatch[1];
+        const c = store.get<Channel>('channels', id);
+        if (!c) throw new APIError(404, '频道不存在');
+        if (req.method === 'PATCH' && !channelMatch[2]) {
+          keys(data, [
+            'name',
+            'goal',
+            'runtime',
+            'transport',
+            'model',
+            'intervalMinutes',
+            'maxRunsPerDay',
+            'permission',
+          ]);
+          if (
+            (engine.active.has(id) || native.isBusy(id)) &&
+            ['runtime', 'model', 'permission', 'transport'].some((k) => data[k] !== undefined)
+          )
+            throw new APIError(409, '请先暂停执行再更改运行时、模型、权限或传输方式');
+          const updated = { ...c };
+          if (native.binding(id) && data.runtime !== undefined && data.runtime !== c.runtime)
+            throw new APIError(409, '频道已绑定 Codex App 原生任务；请新建频道使用其他运行时，避免丢失会话关联');
+          // Same reason as the runtime rule above: the bound task would be left behind with nothing
+          // pointing at it, and the CLI session id lives in the field the binding uses.
+          if (native.binding(id) && data.transport !== undefined && data.transport !== (c.transport || 'app'))
+            throw new APIError(409, '频道已绑定 Codex App 原生任务；请新建频道使用 CLI 直连，避免丢失会话关联');
+          if (data.name !== undefined) updated.name = string(data.name, 'name', 100);
+          if (data.goal !== undefined) updated.goal = string(data.goal, 'goal', 20000);
+          if (data.runtime !== undefined) updated.runtime = choice(data.runtime, 'runtime', engines);
+          if (data.transport !== undefined) updated.transport = choice(data.transport, 'transport', channelTransports);
+          if (data.model !== undefined) updated.model = model(data.model);
+          if (data.permission !== undefined)
+            updated.permission = choice(data.permission, 'permission', [
+              'read-only',
+              'workspace-write',
+              'native',
+            ] as const);
+          if (data.intervalMinutes !== undefined)
+            updated.intervalMinutes = integer(data.intervalMinutes, 'intervalMinutes');
+          if (data.maxRunsPerDay !== undefined)
+            updated.maxRunsPerDay = integer(data.maxRunsPerDay, 'maxRunsPerDay', 1, 100);
+          if (data.transport !== undefined && updated.runtime !== 'codex')
+            throw new APIError(400, '仅 Codex 频道可以选择传输方式');
+          // A runtime that is no longer Codex leaves no transport to keep, so it drops with it and
+          // the runtime change below is the only thing the channel is told about.
+          if (updated.runtime !== 'codex') updated.transport = undefined;
+          if (updated.permission === 'native' && !usesApp(updated))
+            throw new APIError(400, '仅走 Codex App 的频道支持沿用原生任务权限');
+          // Switching transport starts a different kind of session — an App thread on one side, a
+          // `codex exec` session on the other — and the two share one field, so the old id cannot
+          // carry over. The turn after the switch starts from the full context, as a runtime change
+          // already does.
+          const switchedTransport =
+            updated.runtime === c.runtime && (updated.transport || 'app') !== (c.transport || 'app');
+          if (switchedTransport) {
+            updated.sessionId = '';
+            engine.event(
+              id,
+              '',
+              'system',
+              `执行方式已切换为${usesApp(updated) ? ' Codex App 任务' : ' Codex CLI 直连'}。保留事项、证据和消息，下次使用完整上下文开始新会话。`
+            );
+          }
+          if (updated.runtime !== c.runtime) {
+            updated.sessionId = '';
+            if (data.model === undefined) updated.model = '';
+            engine.event(
+              id,
+              '',
+              'system',
+              `运行时已切换为 ${updated.runtime}。保留事项、证据和消息，下次使用完整上下文开始新会话。`
+            );
+          } else if (!native.binding(id) && (updated.model !== c.model || updated.permission !== c.permission))
+            updated.sessionId = '';
+          store.transaction(() => {
+            store.put('channels', updated);
+            // A changed direction or permission is the user's own new intent for this channel.
+            if (updated.goal !== c.goal) engine.appResume.advance(id, 'direction');
+            if (updated.permission !== c.permission) engine.appResume.advance(id, 'permission');
+            engine.audit({
+              projectId: c.projectId,
+              channelId: id,
+              actor: 'human',
+              action: 'channel.updated',
+              text: `已更新持续职责「${updated.name}」设置。`,
+              before: c,
+              after: updated,
+            });
+          });
+          respond(res, 200, updated);
+          return;
+        }
+        if (req.method === 'POST' && channelMatch[2] === 'action') {
+          keys(data, ['action']);
+          await engine.action(id, choice(data.action, 'action', ['run', 'pause', 'resume']));
+          engine.audit({
+            projectId: c.projectId,
+            channelId: id,
+            actor: 'human',
+            action: 'channel.action',
+            text: `频道操作：${({ run: '运行一次', pause: '暂停', resume: '持续运行' } as Record<string, string>)[data.action]}。`,
+            before: c,
+            after: store.get('channels', id),
+          });
+          respond(res, 200, { ok: true });
+          return;
+        }
+        if (req.method === 'GET' && channelMatch[2] === 'messages') {
+          // Reading what people left is never refused: a channel bound to an App task still keeps
+          // its earlier notes, and the page shows them even though it may no longer post new ones.
+          respond(res, 200, { messages: store.messages(id) });
+          return;
+        }
+        if (req.method === 'POST' && channelMatch[2] === 'messages') {
+          if (native.binding(id)) throw new APIError(409, '已绑定原生任务，请使用原生对话发送消息');
+          keys(data, ['text']);
+          respond(
+            res,
+            201,
+            engine.event(id, '', 'message', string(data.text, 'text', 10000), undefined, {
+              projectId: c.projectId,
+              actor: 'human',
+              action: 'message.created',
+            })
+          );
+          return;
+        }
+      }
+      const itemMatch = path.match(/^\/api\/items\/([^/]+)$/);
+      if (req.method === 'PATCH' && itemMatch) {
+        keys(data, ['status', 'title', 'summary', 'kind', 'evidence', 'nextStep', 'revision', 'ownerChannelId']);
+        const item = store.get<WorkItem>('items', itemMatch[1]);
+        if (!item) throw new APIError(404, '事项不存在');
+        if (
+          data.revision !== undefined &&
+          integer(data.revision, 'revision', 1, Number.MAX_SAFE_INTEGER) !== item.revision
+        )
+          throw new APIError(409, '事项已被更新，请刷新后再保存');
+        // The human decides responsibility: `null` releases it, and reassigning an item a channel
+        // currently owns is allowed. `undefined` leaves the current owner untouched.
+        const assigning = Object.hasOwn(data, 'ownerChannelId');
+        const ownerChannelId =
+          !assigning || data.ownerChannelId === null ? undefined : string(data.ownerChannelId, 'ownerChannelId', 100);
+        if (ownerChannelId && store.get<Channel>('channels', ownerChannelId)?.projectId !== item.projectId)
+          throw new APIError(404, '负责频道不属于该项目');
+        const updated = {
+          ...item,
+          ...itemFields(data, item),
+          ...(assigning ? { ownerChannelId } : {}),
+          revision: item.revision + 1,
+          updatedAt: now(),
+        };
+        store.transaction(() => {
+          store.put('items', updated);
+          engine.audit({
+            projectId: item.projectId,
+            channelId: item.channelId,
+            itemId: item.id,
+            actor: 'human',
+            action: 'item.updated',
+            text: `更新事项 #${item.number}`,
+            before: item,
+            after: updated,
+          });
+          if (assigning && ownerChannelId !== item.ownerChannelId)
+            engine.audit({
+              projectId: item.projectId,
+              channelId: ownerChannelId || item.channelId,
+              itemId: item.id,
+              actor: 'human',
+              action: 'item.assigned',
+              text: ownerChannelId
+                ? `事项 #${item.number}「${updated.title}」分派给频道「${engine.loop.channelName(ownerChannelId)}」。`
+                : `事项 #${item.number}「${updated.title}」已改为无人负责。`,
+              before: { ownerChannelId: item.ownerChannelId ?? null },
+              after: { ownerChannelId: ownerChannelId ?? null },
+            });
+        });
+        respond(res, 200, updated);
+        return;
+      }
+      if (req.method === 'POST' && path === '/api/runtimes/refresh') {
         keys(data, []);
         engine.runtimes = await discoverRuntimes();
         respond(res, 200, engine.runtimes);
         return;
       }
-      if (req.method === "POST" && path === "/api/demo") {
+      if (req.method === 'POST' && path === '/api/demo') {
         keys(data, []);
         createDemo(store, engine);
         respond(res, 200, { ok: true });
         return;
       }
-      throw new APIError(404, "接口不存在");
+      throw new APIError(404, '接口不存在');
     } catch (e) {
-      respond(res, e instanceof APIError ? e.status : 500, {
+      if (!(e instanceof APIError)) {
+        // Do not log request bodies, headers or query strings. Known service credentials are redacted.
+        console.error(
+          engine.redact(
+            `${req.method} ${(req.url || '').split('?')[0]}\n${e instanceof Error ? e.stack || e.message : String(e)}`
+          )
+        );
+      }
+      const unavailable =
+        e instanceof NativeDesktopError && ['desktop_unavailable', 'no-client-found'].includes(e.code);
+      respond(res, e instanceof APIError ? e.status : unavailable ? (e.code === 'no-client-found' ? 409 : 503) : 500, {
         error:
-          e instanceof APIError ? e.message : "服务内部错误，请查看本机日志",
+          e instanceof APIError ? e.message : unavailable ? engine.redact(e.message) : '服务内部错误，请查看本机日志',
+        ...(unavailable ? { code: e.code, outcomeUnknown: e.outcomeUnknown } : {}),
       });
     }
   });
@@ -476,9 +962,9 @@ export async function startServer(
   server.headersTimeout = 10000;
   try {
     await new Promise<void>((resolve, reject) => {
-      server.once("error", reject);
-      server.listen(port, "127.0.0.1", () => {
-        server.off("error", reject);
+      server.once('error', reject);
+      server.listen(port, '127.0.0.1', () => {
+        server.off('error', reject);
         resolve();
       });
     });
@@ -487,9 +973,24 @@ export async function startServer(
     release();
     throw e;
   }
-  engine.loop.baseURL=`http://127.0.0.1:${(server.address() as any).port}`;
+  engine.loop.baseURL = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
   engine.startScheduler();
-  void native.start();
+  // This boot is up and holds its own helper copies, so the copies of every other build can go.
+  pruneHelpers(home, engine.upgrade.identity.fingerprint);
+  log('boot', {
+    version: engine.upgrade.identity.version,
+    commit: engine.upgrade.identity.commit.slice(0, 12),
+    fingerprint: engine.upgrade.identity.fingerprint.slice(0, 12),
+    bootId: engine.upgrade.identity.bootId,
+    home,
+    port: (server.address() as AddressInfo).port,
+    storeMs,
+    interruptedRuns,
+  });
+  // A rejected background start left the daemon half-alive and said nothing; now it is recorded and
+  // the native side reports its own state through the interface.
+  void native.start().catch((error) => logError('native.start.failed', error));
+  engine.usage.start();
   let closing = false;
   const close = async () => {
     if (closing) return;
@@ -501,45 +1002,55 @@ export async function startServer(
     store.close();
     release();
   };
+  /**
+   * Stepping aside for a build already installed over this bundle: stop accepting requests, let the
+   * ones in flight finish (bounded, then dropped), run the normal close path so persisted work,
+   * receipts and the lock are all released, and only then leave with the dedicated exit code. The
+   * record is already `exiting` before this runs, so a new daemon knows what happened either way.
+   */
+  engine.upgrade.beginExit = (record) => {
+    stopping = true;
+    void (async () => {
+      const drained = new Promise<void>((resolve) => server.close(() => resolve()));
+      server.closeIdleConnections();
+      await Promise.race([drained, new Promise<void>((resolve) => setTimeout(resolve, 5000).unref())]);
+      server.closeAllConnections();
+      await close();
+      options.onUpgradeExit?.(upgradeExitCode, record);
+    })().catch((error) => {
+      console.error(engine.redact(`upgrade exit failed: ${error instanceof Error ? error.message : String(error)}`));
+    });
+  };
   return {
     server,
     store,
     engine,
     native,
     home,
-    port: (server.address() as any).port,
+    port: (server.address() as AddressInfo).port,
     close,
   };
 }
 function createDemo(store: Store, engine: Engine) {
-  if (store.all<Project>("projects").some((p) => p.isDemo)) return;
+  if (store.all<Project>('projects').some((p) => p.isDemo)) return;
   const createdAt = now();
   const p: Project = {
     id: randomUUID(),
-    name: "Atlas 示例项目",
-    path: "",
-    goal: "让每个产品团队都能把客户反馈转化为清晰、可验证的产品改进。",
+    name: 'Atlas 示例项目',
+    path: '',
+    goal: '让每个产品团队都能把客户反馈转化为清晰、可验证的产品改进。',
+    briefRevision: 0,
     createdAt,
     isDemo: true,
     runtime: 'codex',
   };
-  const system = defaultChannel(
-    p.id,
-    "系统完善",
-    "持续提升 Atlas 的可靠性与产品体验。",
-  );
-  const operations = {
-    ...defaultChannel(
-      p.id,
-      "运营洞察",
-      "从用户反馈中发现增长机会，记录证据并验证假设。",
-    ),
-    runtime: "claude" as const,
-  };
+  const system = defaultChannel(p.id, '系统完善', '持续提升 Atlas 的可靠性与产品体验。');
+  // The preview deliberately shows both execution paths: a Codex App channel and a CLI one.
+  const operations = defaultChannel(p.id, '运营洞察', '从用户反馈中发现增长机会，记录证据并验证假设。', 'claude');
   store.transaction(() => {
-    store.put("projects", p);
-    store.put("channels", system);
-    store.put("channels", operations);
+    store.put('projects', p);
+    store.put('channels', system);
+    store.put('channels', operations);
     const add = (
       c: Channel,
       title: string,
@@ -547,11 +1058,12 @@ function createDemo(store: Store, engine: Engine) {
       status: string,
       kind: string,
       evidence: string[],
-      nextStep: string,
+      nextStep: string
     ) =>
-      store.put("items", {
+      store.put('items', {
         id: randomUUID(),
         projectId: p.id,
+        origin: 'agent',
         channelId: c.id,
         number: store.nextItemNumber(p.id),
         sourceChannelIds: [c.id],
@@ -568,87 +1080,87 @@ function createDemo(store: Store, engine: Engine) {
       });
     add(
       system,
-      "空状态缺少下一步指引",
-      "示例分析：首次进入反馈看板时，没有数据的团队难以找到导入入口。",
-      "verified",
-      "issue",
+      '空状态缺少下一步指引',
+      '示例分析：首次进入反馈看板时，没有数据的团队难以找到导入入口。',
+      'verified',
+      'issue',
       [
-        "[示例证据] onboarding/review.md：5 位试用者中 3 位未找到导入入口。",
-        "[示例证据] 截图核对：空状态仅显示“暂无反馈”。",
+        '[示例证据] onboarding/review.md：5 位试用者中 3 位未找到导入入口。',
+        '[示例证据] 截图核对：空状态仅显示“暂无反馈”。',
       ],
-      "设计带导入入口的空状态，并进行一次可用性验证。",
+      '设计带导入入口的空状态，并进行一次可用性验证。'
     );
     add(
       system,
-      "导入失败需要可恢复的错误提示",
-      "示例分析：CSV 字段不匹配时，当前提示没有指出具体列名。",
-      "investigating",
-      "issue",
-      ["[示例证据] fixtures/import-invalid.csv：第 4 列字段不匹配。"],
-      "补充错误定位，并验证重复导入是否安全。",
+      '导入失败需要可恢复的错误提示',
+      '示例分析：CSV 字段不匹配时，当前提示没有指出具体列名。',
+      'investigating',
+      'issue',
+      ['[示例证据] fixtures/import-invalid.csv：第 4 列字段不匹配。'],
+      '补充错误定位，并验证重复导入是否安全。'
     );
     add(
       system,
-      "反馈列表加载状态已统一",
-      "示例结论：统一了列表首次加载与筛选切换时的反馈。",
-      "resolved",
-      "issue",
-      ["[示例证据] UI 回归记录：加载、空列表和错误三种状态均已人工核对。"],
-      "观察真实用户反馈，确认是否存在遗漏状态。",
+      '反馈列表加载状态已统一',
+      '示例结论：统一了列表首次加载与筛选切换时的反馈。',
+      'resolved',
+      'issue',
+      ['[示例证据] UI 回归记录：加载、空列表和错误三种状态均已人工核对。'],
+      '观察真实用户反馈，确认是否存在遗漏状态。'
     );
     add(
       operations,
-      "把首条反馈变成激活时刻",
-      "示例假设：缩短从创建空间到导入首条反馈的路径，可能提高激活率。",
-      "open",
-      "hypothesis",
-      ["[示例证据] 访谈摘要：团队希望尽快看到自己的客户反馈。"],
-      "先定义激活指标，再设计小范围实验；尚无真实转化率数据。",
+      '把首条反馈变成激活时刻',
+      '示例假设：缩短从创建空间到导入首条反馈的路径，可能提高激活率。',
+      'open',
+      'hypothesis',
+      ['[示例证据] 访谈摘要：团队希望尽快看到自己的客户反馈。'],
+      '先定义激活指标，再设计小范围实验；尚无真实转化率数据。'
     );
     add(
       operations,
-      "为高频反馈生成每周摘要",
-      "示例机会：团队反复手动整理相似反馈，值得探索自动摘要。",
-      "investigating",
-      "opportunity",
-      ["[示例证据] 3 条访谈笔记均提及每周整理反馈耗时。"],
-      "验证摘要质量和可追溯性，确认团队是否愿意采用。",
+      '为高频反馈生成每周摘要',
+      '示例机会：团队反复手动整理相似反馈，值得探索自动摘要。',
+      'investigating',
+      'opportunity',
+      ['[示例证据] 3 条访谈笔记均提及每周整理反馈耗时。'],
+      '验证摘要质量和可追溯性，确认团队是否愿意采用。'
     );
     for (const c of [system, operations]) {
+      engine.event(c.id, '', 'system', '这是明确标注的示例数据，不来自真实运行。示例频道不会执行或自动调度。');
       engine.event(
         c.id,
-        "",
-        "system",
-        "这是明确标注的示例数据，不来自真实运行。示例频道不会执行或自动调度。",
-      );
-      engine.event(
-        c.id,
-        "",
-        "assistant",
+        '',
+        'assistant',
         c.id === system.id
-          ? "已整理 3 个系统完善事项，分别保留调查证据、状态和下一步。"
-          : "先保留机会与假设的区别，等真实数据支持后再更新结论。",
+          ? '已整理 3 个系统完善事项，分别保留调查证据、状态和下一步。'
+          : '先保留机会与假设的区别，等真实数据支持后再更新结论。'
       );
     }
   });
 }
-if (
-  process.argv[1] &&
-  import.meta.url === pathToFileURL(process.argv[1]).href
-) {
-  startServer()
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  // A rejected promise nobody awaited used to end the daemon on Node's default behaviour, taking
+  // every scheduled channel and native binding with it. It is recorded here instead; the exit
+  // behaviour of an uncaught *exception* is deliberately left alone.
+  process.on('unhandledRejection', (reason) => logError('unhandled.rejection', reason));
+  // The one place a Morrow process leaves for a newly installed build: after the close path above,
+  // with a dedicated exit code, so the Electron main can tell a switch from a crash.
+  startServer({ onUpgradeExit: (code) => process.exit(code) })
     .then((service) => {
       console.log(`Morrow listening on http://127.0.0.1:${service.port}`);
       let closing = false;
-      for (const signal of ["SIGINT", "SIGTERM"] as const)
+      for (const signal of ['SIGINT', 'SIGTERM'] as const)
         process.on(signal, () => {
           if (closing) return;
           closing = true;
+          log('shutdown', { signal, port: service.port });
           service.close().then(() => process.exit(0));
         });
     })
     .catch((e) => {
-      console.error(`Morrow: ${e instanceof Error ? e.message : "启动失败"}`);
+      logError('boot.failed', e, { home: process.env.MORROW_HOME || process.env.NOHUMAN_HOME });
+      console.error(`Morrow: ${e instanceof Error ? e.message : '启动失败'}`);
       process.exit(1);
     });
 }

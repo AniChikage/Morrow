@@ -1,7 +1,7 @@
 {
   "name": "morrow",
   "productName": "Morrow",
-  "version": "0.10.0",
+  "version": "0.16.1",
   "private": true,
   "type": "module",
   "description": "A local-first Mac app that lets Codex take continuing responsibility for project goals.",
@@ -12,12 +12,16 @@
   "scripts": {
     "start": "node service/server.ts",
     "test": "node --test tests/*.test.ts",
+    "acceptance": "node scripts/acceptance/run.ts",
+    "acceptance:fixture": "node scripts/acceptance/run.ts run all --policy careful,naive",
     "dev": "electron-vite dev",
     "dev:ui": "vite --config vite.renderer.config.ts --host 127.0.0.1",
     "typecheck": "tsc --noEmit",
     "build": "electron-vite build",
     "build:app": "bash scripts/build-electron.sh",
-    "test:ui": "vitest run"
+    "test:ui": "vitest run",
+    "format": "prettier --write \"service/**/*.ts\" \"desktop/**/*.{ts,tsx,css}\" \"tests/**/*.{ts,mjs}\" \"scripts/**/*.ts\" \"*.ts\"",
+    "format:check": "prettier --check \"service/**/*.ts\" \"desktop/**/*.{ts,tsx,css}\" \"tests/**/*.{ts,mjs}\" \"scripts/**/*.ts\" \"*.ts\""
   },
   "dependencies": {
     "@fontsource-variable/geist-mono": "^5.3.0",
@@ -44,6 +48,7 @@
     "electron-builder": "^26.15.3",
     "electron-vite": "^5.0.0",
     "jsdom": "^30.0.1",
+    "prettier": "^3.9.6",
     "typescript": "^7.0.2",
     "vite": "^7.3.6",
     "vitest": "^5.0.0"

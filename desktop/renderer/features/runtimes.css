@@ -1,48 +1,386 @@
-.runtime-settings{background:var(--canvas)}
-.runtime-settings .feature-toolbar-title>span{display:inline-flex;align-items:center;justify-content:center;min-width:18px;height:18px;border-radius:4px;background:var(--hover);font-size:11px}
-.runtime-settings-body{width:100%;max-width:1440px;margin:0 auto;padding:25px 26px 32px}
-.runtime-settings-heading{display:flex;align-items:center;gap:12px;margin-bottom:22px;padding:2px 0}
-.runtime-settings-host-icon{display:flex;align-items:center;justify-content:center;width:40px;height:40px;flex-shrink:0;border:1px solid var(--line);border-radius:8px;background:var(--surface);color:var(--muted)}
-.runtime-settings-host-title{flex:1;min-width:0}
-.runtime-settings-heading h1{font-size:14px;font-weight:500;line-height:20px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.runtime-settings-heading p{margin-top:3px;color:var(--muted);font-size:12px;line-height:18px}
-.runtime-settings-host-state{display:flex;align-items:center;gap:24px;padding-right:5px;font-size:12px;color:var(--muted)}
-.runtime-settings-table{border:1px solid var(--line);border-radius:8px;background:var(--surface);overflow:hidden}
-.runtime-settings-columns,.runtime-settings-row{display:grid;grid-template-columns:minmax(146px,1fr) 100px 82px 90px 130px 16px;gap:12px;align-items:center;padding:0 14px}
-.runtime-settings-columns{min-height:35px;background:#fafafa;border-bottom:1px solid var(--line);color:var(--muted);font-size:11px;line-height:16px}
-.runtime-settings-group+.runtime-settings-group{border-top:1px solid var(--line-soft)}
-.runtime-settings-row{width:100%;min-height:60px;text-align:left;transition:background-color .12s ease}
-.runtime-settings-row:hover{background:#f7f7f8}
-.runtime-settings-row:focus-visible{outline-offset:-2px}
-.runtime-settings-row[aria-expanded=true]{background:#f8f8fa}
-.runtime-settings-name{display:flex;align-items:center;gap:10px;min-width:0;font-size:13px;font-weight:500;line-height:18px}
-.runtime-settings-name>span:last-child{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.runtime-settings-mark{display:flex;align-items:center;justify-content:center;flex-shrink:0;width:28px;height:28px;border-radius:7px;font:600 10px/1 var(--font-mono);letter-spacing:-.4px;user-select:none}
-.runtime-settings-mark.codex{background:#eeeef0;color:#33333a}
-.runtime-settings-mark.claude{background:#f5ece6;color:#986044}
-.runtime-settings-mark.trae{background:#e8f0ec;color:#44735c}
-.runtime-settings-mark.other{background:var(--hover);color:var(--muted)}
-.runtime-settings-detection{display:flex;align-items:center;gap:6px;white-space:nowrap;font-size:12px;color:var(--muted)}
-.runtime-settings-dot{width:6px;height:6px;flex-shrink:0;border-radius:50%;background:#b7b7bf}
-.runtime-settings-detection.detected .runtime-settings-dot{background:#6b9477}
-.runtime-settings-detection.attention .runtime-settings-dot{background:#b79250}
-.runtime-settings-auth{font-size:12px;color:var(--muted);white-space:nowrap}
-.runtime-settings-usage{display:flex;align-items:center;gap:5px;font-size:12px;color:var(--muted);white-space:nowrap}
-.runtime-settings-usage .runtime-settings-dot{background:#6b9477}
-.runtime-settings-version{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font:11px/18px var(--font-mono);color:var(--muted)}
-.runtime-settings-chevron{color:var(--faint);transition:transform .12s ease}
-.runtime-settings-row[aria-expanded=true] .runtime-settings-chevron{transform:rotate(90deg)}
-.runtime-settings-details{padding:16px 18px 18px 52px;border-top:1px solid var(--line-soft);background:#fdfdfd}
-.runtime-settings-details dl{display:grid;grid-template-columns:76px minmax(0,1fr);gap:12px 16px;margin:0;font-size:12px;line-height:19px}
-.runtime-settings-details dt{color:var(--muted)}
-.runtime-settings-details dd{margin:0;min-width:0;color:#50505a;overflow-wrap:anywhere}
-.runtime-settings-details code{font:11px/19px var(--font-mono);color:#63636d;overflow-wrap:anywhere}
-.runtime-settings-channel-links{display:flex;flex-wrap:wrap;gap:6px 14px}
-.runtime-settings-channel-link{display:inline-flex;align-items:center;gap:5px;max-width:100%;font-size:12px;color:#575761;text-align:left}
-.runtime-settings-channel-link span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:230px}
-.runtime-settings-channel-link:hover{color:var(--text);text-decoration:underline;text-underline-offset:3px}
-.runtime-settings-note{display:flex;align-items:flex-start;gap:7px;margin:14px 2px 0;max-width:720px;color:var(--muted);font-size:11px;line-height:19px}
-.runtime-settings-note>svg{margin-top:3px;color:var(--faint)}
-.runtime-settings-empty{padding:30px 0;border:1px dashed var(--line);border-radius:8px;background:var(--surface)}
-@container(max-width:760px){.runtime-settings-body{padding:22px 20px}.runtime-settings-columns,.runtime-settings-row{grid-template-columns:minmax(130px,1fr) 86px 68px 72px 100px 14px;gap:8px;padding:0 12px}.runtime-settings-name{gap:8px}.runtime-settings-details{padding-left:48px}}
-@container(max-width:620px){.runtime-settings-columns,.runtime-settings-row{grid-template-columns:minmax(120px,1fr) 86px 65px 86px 14px}.runtime-settings-columns>.runtime-settings-auth,.runtime-settings-row>.runtime-settings-auth{display:none}.runtime-settings-body{padding:18px 16px}.runtime-settings-host-state{flex-direction:column;align-items:flex-end;gap:4px}.runtime-settings-details{padding:14px 16px}.runtime-settings-details dl{grid-template-columns:66px minmax(0,1fr);gap:10px}}
+.runtime-settings {
+  background: var(--canvas);
+}
+.runtime-settings .feature-toolbar-title > span {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 18px;
+  height: 18px;
+  border-radius: var(--radius-sm);
+  background: var(--hover);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+}
+.runtime-settings-body {
+  width: 100%;
+  max-width: 1440px;
+  margin: 0 auto;
+  padding: var(--space-5) var(--space-5) var(--space-6);
+}
+.runtime-settings-heading {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  margin-bottom: var(--space-5);
+  padding: 2px 0;
+}
+.runtime-settings-host-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  height: 40px;
+  flex-shrink: 0;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  background: var(--surface);
+  color: var(--muted);
+}
+.runtime-settings-host-title {
+  flex: 1;
+  min-width: 0;
+}
+.runtime-settings-heading h1 {
+  font-size: var(--text-md);
+  font-weight: 600;
+  line-height: var(--text-md-lh);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.runtime-settings-heading p {
+  margin-top: var(--space-1);
+  color: var(--muted);
+  font-size: var(--text-sm);
+  line-height: var(--text-sm-lh);
+}
+.runtime-settings-host-state {
+  display: flex;
+  align-items: center;
+  gap: var(--space-5);
+  padding-right: 5px;
+  font-size: var(--text-sm);
+  color: var(--muted);
+}
+.runtime-settings-table {
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  background: var(--surface);
+  overflow: hidden;
+}
+.runtime-settings-columns,
+.runtime-settings-row {
+  display: grid;
+  grid-template-columns: minmax(146px, 1fr) 100px 82px 90px 130px 16px;
+  gap: var(--space-3);
+  align-items: center;
+  padding: 0 var(--space-3);
+}
+.runtime-settings-columns {
+  min-height: 36px;
+  border-bottom: 1px solid var(--line);
+  color: var(--muted);
+  font-size: var(--text-xs);
+  font-weight: 500;
+  line-height: var(--text-xs-lh);
+}
+.runtime-settings-group + .runtime-settings-group {
+  border-top: 1px solid var(--line-soft);
+}
+.runtime-settings-row {
+  width: 100%;
+  min-height: 60px;
+  text-align: left;
+  transition: background-color 0.12s;
+}
+.runtime-settings-row:hover {
+  background: var(--hover);
+}
+.runtime-settings-row:focus-visible {
+  outline-offset: -2px;
+}
+.runtime-settings-row[aria-expanded='true'] {
+  background: var(--hover);
+}
+.runtime-settings-name {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+  font-size: var(--text-md);
+  font-weight: 500;
+  line-height: var(--text-sm-lh);
+}
+.runtime-settings-name > span:last-child {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.runtime-settings-mark {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 28px;
+  height: 28px;
+  border-radius: var(--radius);
+  font: 600 var(--text-xs) / 1 var(--font-mono);
+  letter-spacing: -0.02em;
+  user-select: none;
+}
+.runtime-settings-mark.codex {
+  background: var(--selected);
+  color: var(--text);
+}
+.runtime-settings-mark.claude,
+.runtime-settings-mark.trae {
+  background: var(--hover);
+  color: var(--text);
+}
+.runtime-settings-mark.other {
+  background: var(--hover);
+  color: var(--muted);
+}
+.runtime-settings-detection {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  white-space: nowrap;
+  font-size: var(--text-sm);
+  color: var(--muted);
+}
+.runtime-settings-dot {
+  width: 6px;
+  height: 6px;
+  flex-shrink: 0;
+  border-radius: 50%;
+  background: var(--faint);
+}
+.runtime-settings-detection.detected .runtime-settings-dot {
+  background: var(--success);
+}
+.runtime-settings-detection.attention .runtime-settings-dot {
+  background: var(--warning);
+}
+.runtime-settings-auth {
+  font-size: var(--text-sm);
+  color: var(--muted);
+  white-space: nowrap;
+}
+.runtime-settings-usage {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: var(--text-sm);
+  color: var(--muted);
+  white-space: nowrap;
+}
+.runtime-settings-usage .runtime-settings-dot {
+  background: var(--success);
+}
+.runtime-settings-version {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font: var(--text-xs) / var(--text-sm-lh) var(--font-mono);
+  color: var(--muted);
+}
+.runtime-settings-chevron {
+  color: var(--faint);
+  transition: transform 0.12s ease;
+}
+.runtime-settings-row[aria-expanded='true'] .runtime-settings-chevron {
+  transform: rotate(90deg);
+}
+.runtime-settings-details {
+  padding: var(--space-4) var(--space-4) var(--space-4) 52px;
+  border-top: 1px solid var(--line-soft);
+}
+.runtime-settings-details dl {
+  display: grid;
+  grid-template-columns: 76px minmax(0, 1fr);
+  gap: var(--space-3) var(--space-4);
+  margin: 0;
+  font-size: var(--text-sm);
+  line-height: 19px;
+}
+.runtime-settings-details dt {
+  color: var(--muted);
+}
+.runtime-settings-details dd {
+  margin: 0;
+  min-width: 0;
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+.runtime-settings-details code {
+  font: var(--text-xs) / 19px var(--font-mono);
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+.runtime-settings-channel-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2) var(--space-3);
+}
+.runtime-settings-channel-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  max-width: 100%;
+  font-size: var(--text-sm);
+  color: var(--muted);
+  text-align: left;
+}
+.runtime-settings-channel-link span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 230px;
+}
+.runtime-settings-channel-link:hover {
+  color: var(--text);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+.runtime-settings-checklist {
+  padding: var(--space-2) var(--space-4) var(--space-3) 52px;
+  border-top: 1px solid var(--line-soft);
+  font-size: var(--text-sm);
+  line-height: 19px;
+}
+.runtime-settings-checklist ol {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.runtime-settings-checklist li {
+  flex-wrap: wrap;
+  white-space: normal;
+}
+.runtime-settings-checklist code {
+  font: var(--text-xs) / 19px var(--font-mono);
+  color: var(--muted);
+}
+.runtime-settings-next {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  margin: var(--space-2) 0 0;
+  color: var(--text);
+}
+.runtime-settings-next > b {
+  font-weight: 500;
+  color: var(--muted);
+}
+.runtime-settings-next .button {
+  height: 26px;
+  font-size: var(--text-xs);
+}
+.runtime-settings-receipt {
+  margin: var(--space-1) 0 0;
+  color: var(--muted);
+}
+.runtime-settings-raw-detail {
+  margin-top: var(--space-1);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font: var(--text-xs) / var(--text-sm-lh) var(--font-mono);
+}
+/* The account's rate-limit windows under the checklist; `.runtime-settings-usage` is the table's channel column. */
+.runtime-settings-account-usage {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1) var(--space-3);
+  margin: var(--space-2) 0 0;
+  color: var(--text);
+}
+.runtime-settings-account-usage > b {
+  font-weight: 500;
+  color: var(--muted);
+}
+.runtime-settings-note {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-2);
+  margin: var(--space-3) 2px 0;
+  max-width: 720px;
+  color: var(--muted);
+  font-size: var(--text-xs);
+  line-height: 19px;
+}
+.runtime-settings-note > svg {
+  margin-top: 3px;
+  color: var(--faint);
+}
+.runtime-settings-empty {
+  padding: var(--space-6) 0;
+  border: 1px dashed var(--line);
+  border-radius: var(--radius-lg);
+  background: var(--surface);
+}
+@container (max-width:760px) {
+  .runtime-settings-body {
+    padding: var(--space-5) var(--space-4);
+  }
+  .runtime-settings-columns,
+  .runtime-settings-row {
+    grid-template-columns: minmax(130px, 1fr) 86px 68px 72px 100px 14px;
+    gap: var(--space-2);
+    padding: 0 var(--space-3);
+  }
+  .runtime-settings-name {
+    gap: var(--space-2);
+  }
+  .runtime-settings-details,
+  .runtime-settings-checklist {
+    padding-left: 48px;
+  }
+}
+@container (max-width:620px) {
+  .runtime-settings-columns,
+  .runtime-settings-row {
+    grid-template-columns: minmax(120px, 1fr) 86px 65px 86px 14px;
+  }
+  .runtime-settings-columns > .runtime-settings-auth,
+  .runtime-settings-row > .runtime-settings-auth {
+    display: none;
+  }
+  .runtime-settings-body {
+    padding: var(--space-4);
+  }
+  .runtime-settings-host-state {
+    flex-direction: column;
+    align-items: flex-end;
+    gap: var(--space-1);
+  }
+  .runtime-settings-details {
+    padding: var(--space-3) var(--space-4);
+  }
+  .runtime-settings-checklist {
+    padding: var(--space-2) var(--space-4) var(--space-3);
+  }
+  .runtime-settings-details dl {
+    grid-template-columns: 66px minmax(0, 1fr);
+    gap: var(--space-2);
+  }
+}
+
+.runtime-settings-diagnostics {
+  margin-top: var(--space-3);
+  font-size: var(--text-sm);
+  color: var(--muted);
+}
+.runtime-settings-diagnostics > summary {
+  cursor: pointer;
+  width: fit-content;
+}
+.runtime-settings-diagnostics > ol {
+  margin-top: var(--space-2);
+}

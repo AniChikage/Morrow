@@ -10,8 +10,10 @@ Electron / React 界面
 
 执行服务
   ├─ 项目工作接口、调度、反馈、证据核对与发布确认
-  ├─ Codex App 共享原生后台
-  └─ Claude / Trae CLI 子进程
+  ├─ App 本地 IPC follower → App 已创建并加载的任务（Codex 频道）
+  ├─ 有界 CLI 子进程 → Claude Code / Trae 频道
+  ├─ 官方只读 CLI → 独立复核
+  └─ 短暂官方协议客户端 → 额度读取（无模型轮次）
 ```
 
 服务默认监听 `127.0.0.1:43821`，使用私有随机 token。Renderer 不持有该 token，`localStorage` 只保存视图偏好。退出界面后独立服务可以继续工作；机器休眠时不执行。
@@ -22,11 +24,13 @@ Electron / React 界面
 | `runs/` | 有界 CLI 输入输出及工作上下文的私有文件副本。 |
 | `native-images/` | 原生对话图片的私有副本。 |
 | `releases/` | 与人工审阅版本关联的封存发布产物。 |
-| `codex-bridge/` | 启动器、配置回执与共享后台连接清单。 |
+| `codex-bridge/` | 旧转接安装回执；只用于撤销和历史诊断，不用于生产连接。 |
 | `token`、`service.log`、`desktop-connection.json` | 服务认证、诊断日志与桌面连接偏好。 |
 
-远程模式通过已有 SSH 配置连接远端服务，代码执行和数据保留在远端。Codex App 同步目前要求同一台 Mac、同一用户会话；SSH 模式适用于其他 CLI 适配器。远端安装依赖、启动和接口说明见 [执行服务文档](../service/README.md)。
+远程模式通过已有 SSH 配置连接远端服务，代码执行和数据保留在远端。Codex App 同步要求服务与 App 在同一台机器、同一用户会话；远端服务不会回连本机的 Codex App，远端的自动工作依赖该主机自己的 Codex App 和已加载的关联任务。远端安装依赖、启动和接口说明见 [执行服务文档](../service/README.md)。
 
-原生任务的权威历史由 Codex 管理。SQLite 保存已绑定任务的同步镜像和 Morrow 编排记录；不会导入未关联任务的私有历史。
+原生任务的权威历史由 Codex 管理。SQLite 保存已绑定任务的同步镜像和 Morrow 编排记录；不会导入未关联任务的私有历史。Claude Code 与 Trae 频道没有 App 任务，会话历史由各自的 CLI 管理，Morrow 只保存自己发起的轮次记录。
+
+同一套服务、调度器和工作接口还支撑仓库内的可重复验收 harness（[`scripts/acceptance/`](../scripts/acceptance/README.md)）。fixture 模式下 `startServer({nativeTransport})` 收到的是一个脚本化的原生后台替身，外部世界是本机接收端，时钟是虚拟的：`npm run acceptance -- run <场景>` 会在临时数据目录上把一个场景从建立观察、冻结预期、独立复核、人工上线确认一直跑到重启后的记录一致性，并写出 `timeline.jsonl`、`calls.jsonl` 与 `summary.md`。同一条命令还从这份 SQLite 算出一套指标（`metrics.json`）：轮次与复核用量、预期核对、护栏与抓到的违反、发布与人工介入、重复失败、过期经验的沿用、调整延迟、重启一致性；算不出来的一律是 `unknown` 而不是 0。`npm run acceptance:fixture` 用 `careful` 和故意用错协议的 `naive` 两种确定性策略跑全部场景，并检查指标确实把两者分开；`compare --ignore-volatile` 用于确认同一份源码下两次运行零差异；`metrics <数据目录>` 可以只读地对任意 Morrow 数据目录算同一套指标。fixture 结果验证框架机制，不验证模型自主性。
 
 进一步阅读：[项目工作协议](PROJECT-WORK-CONTRACT.md)、[执行服务与恢复](../service/README.md)、[升级与数据迁移](UPGRADING.md)。

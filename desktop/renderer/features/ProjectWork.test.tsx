@@ -1,120 +1,1393 @@
 // @vitest-environment jsdom
-import { cleanup, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ProjectLoop, Release, DecisionView } from '../../shared/types';
 import { ProjectReleases, FeatureWork, ProjectThinking } from './ProjectWork';
 import { ProjectView } from './ProjectView';
+import { previewAPI } from '../state/preview';
 import { featureProps, TestProviders, timestamp } from './testFixtures';
-beforeEach(()=>{localStorage.clear();HTMLElement.prototype.hasPointerCapture=()=>false;HTMLElement.prototype.setPointerCapture=()=>{};HTMLElement.prototype.releasePointerCapture=()=>{};});
-afterEach(()=>{cleanup();vi.restoreAllMocks();});
-function fixture(){
-  const {props,api}=featureProps();
-  const release:Release={id:'release-one',projectId:'project-atlas',channelId:'channel-system',runId:'run-one',itemIds:['finding-import'],title:'导入失败恢复',changes:'保持同一请求标识，避免重复写入。',rationale:'重试会造成重复记录。',expectedBenefit:'预期减少重复导入，线上收益尚待验证。',checks:[{name:'超时恢复测试',result:'passed',evidenceIds:['evidence-one']}],risks:'影响导入重试路径。',rollback:'恢复上一版本。',observationPlan:'观察重试后的重复记录率。',artifact:{name:'release.zip',sha256:'sealed-sha256',bytes:512},target:{url:'https://deploy.example.test/releases',statusUrl:'https://deploy.example.test/status',label:'测试发布环境'},reviewHash:'reviewed-content',status:'awaiting_approval',createdAt:timestamp,updatedAt:timestamp};
-  const data:ProjectLoop={releases:[release],watches:[],learning:[],evidence:[{id:'evidence-one',projectId:release.projectId,channelId:release.channelId,runId:release.runId,itemId:'finding-import',summary:'测试日志',source:'/project/checks.log',observedAt:timestamp,createdAt:timestamp,origin:'file',data:'2 tests passed'}]};
-  const getProjectWork=vi.fn(async()=>data),reviewRelease=vi.fn(async()=>release),reconcileRelease=vi.fn(async()=>release);
-  Object.assign(api,{getProjectWork,reviewRelease,reconcileRelease});props.snapshot.releases=[release];return {props,api,release,data,getProjectWork,reviewRelease,reconcileRelease};
+beforeEach(() => {
+  localStorage.clear();
+  HTMLElement.prototype.hasPointerCapture = () => false;
+  HTMLElement.prototype.setPointerCapture = () => {};
+  HTMLElement.prototype.releasePointerCapture = () => {};
+});
+afterEach(() => {
+  cleanup();
+  vi.restoreAllMocks();
+});
+function fixture() {
+  const { props, api } = featureProps();
+  const release: Release = {
+    id: 'release-one',
+    projectId: 'project-atlas',
+    channelId: 'channel-system',
+    runId: 'run-one',
+    itemIds: ['finding-import'],
+    title: '导入失败恢复',
+    changes: '保持同一请求标识，避免重复写入。',
+    rationale: '重试会造成重复记录。',
+    expectedBenefit: '预期减少重复导入，线上收益尚待验证。',
+    checks: [{ name: '超时恢复测试', result: 'passed', evidenceIds: ['evidence-one'] }],
+    risks: '影响导入重试路径。',
+    rollback: '恢复上一版本。',
+    observationPlan: '观察重试后的重复记录率。',
+    artifact: { name: 'release.zip', sha256: 'sealed-sha256', bytes: 512 },
+    target: {
+      url: 'https://deploy.example.test/releases',
+      statusUrl: 'https://deploy.example.test/status',
+      label: '测试发布环境',
+    },
+    reviewHash: 'reviewed-content',
+    status: 'awaiting_approval',
+    createdAt: timestamp,
+    updatedAt: timestamp,
+  };
+  const data: ProjectLoop = {
+    releases: [release],
+    watches: [],
+    learning: [],
+    evidence: [
+      {
+        id: 'evidence-one',
+        projectId: release.projectId,
+        channelId: release.channelId,
+        runId: release.runId,
+        itemId: 'finding-import',
+        summary: '测试日志',
+        source: '/project/checks.log',
+        observedAt: timestamp,
+        createdAt: timestamp,
+        origin: 'file',
+        data: '2 tests passed',
+      },
+    ],
+  };
+  const getProjectWork = vi.fn(async () => data),
+    reviewRelease = vi.fn(async () => release),
+    reconcileRelease = vi.fn(async () => release);
+  Object.assign(api, { getProjectWork, reviewRelease, reconcileRelease });
+  props.snapshot.releases = [release];
+  return { props, api, release, data, getProjectWork, reviewRelease, reconcileRelease };
 }
-function evaluatedDecision():DecisionView {
-  return {id:'evaluated',projectId:'project-atlas',channelId:'channel-system',runId:'run-one',itemId:'finding-import',objective:{goal:'提高交付成功率并保留完整内容',direction:'自主推进',version:'goal-one'},options:[{title:'验证交付效果',kind:'investigate',benefit:'减少盲目投入',cost:'一次验证',uncertainty:'真实用户效果未知'}],selected:0,rationale:'检查约束是否同时满足',nextStep:'读取交付样例',expectedOutcome:'完成率提高且没有内容缺失',evaluation:'核对实际字段',stopWhen:'约束恶化后重新判断',understandingRefs:[],evidenceIds:[],watchIds:[],reviewAt:timestamp,maxRuns:2,signalCursor:0,status:'reviewed',revision:2,createdAt:timestamp,updatedAt:timestamp,runsUsed:1,reviewReasons:[],evaluationVersion:1,
-    expectations:[{id:'integrity',kind:'guardrail',claim:'不丢失交付内容',scope:'同一隔离样本和版本',source:{kind:'file',path:'/project/result.json'},verification:'逐项核对输出',disconfirm:'出现任何内容缺失',notBefore:timestamp,deadline:timestamp,rule:{pointer:'/missing',operator:'equals',expected:0}}],
-    review:{outcome:'not_improved',conclusion:'完成率提高，但实际丢失两项内容',evidenceIds:['evidence-one'],nextDirection:'重新检查交付方法',runId:'run-one',channelId:'channel-system',createdAt:timestamp,assessment:{results:[{expectationId:'integrity',verdict:'not_met',reason:'实际字段为 2，与事先约定不符',evidenceIds:['evidence-one'],checkedBy:'rule',observedValue:2}],conditions:'matched',conditionReason:'仍为原样本，统计方式没有改变',diagnosis:'execution',explanation:'完成率不能替代内容完整性',adjustment:'method',understandingRefs:[]}}
+it('routes the project primary action to its pending release without approving it', async () => {
+  const f = fixture();
+  const view = render(<ProjectView {...f.props} id="project-atlas" />, { wrapper: TestProviders });
+  await userEvent.setup().click(screen.getByRole('button', { name: '查看待审版本' }));
+  expect(screen.getByRole('tab', { name: /上线确认/ }).getAttribute('aria-selected')).toBe('true');
+  expect(f.reviewRelease).not.toHaveBeenCalled();
+  expect(screen.queryByRole('button', { name: '新建事项' })).toBeNull();
+  f.props.snapshot.releases = [{ ...f.release, projectId: 'project-other' }];
+  f.props.snapshot.items[0].status = 'blocked';
+  view.rerender(<ProjectView {...f.props} id="project-atlas" />);
+  await userEvent.setup().click(screen.getByRole('tab', { name: /看板/ }));
+  await userEvent.setup().click(screen.getByRole('button', { name: '查看阻塞事项' }));
+  expect(f.props.onNavigate).toHaveBeenCalledWith({ kind: 'finding', id: 'finding-import' });
+  expect(screen.queryByRole('button', { name: '查看待审版本' })).toBeNull();
+});
+
+function historyRow(id: string, itemId = 'finding-import'): NonNullable<ProjectLoop['verifications']>[number] {
+  return {
+    id,
+    projectId: 'project-atlas',
+    channelId: 'channel-system',
+    runId: 'run',
+    itemId,
+    evidenceIds: ['evidence-one'],
+    subjectHash: id,
+    version: { digest: 'source', head: 'commit', files: 1, bytes: 1, coverage: 'folder' },
+    status: 'failed',
+    summary: id,
+    findings: [],
+    checks: [],
+    limitations: [],
+    createdAt: timestamp,
+    current: false,
+    bytes: 0,
+    commandCount: 1,
+    timeoutSeconds: 300,
   };
 }
-describe('AI work and release review',()=>{
-  it('shows actionable measurement gaps, frozen baseline and scope inside the existing expectation document',async()=>{
-    const f=fixture(),d=evaluatedDecision();d.status='active';d.review=undefined;
-    d.expectations![0].measurement={metric:'完成交付用户 / 全部开始用户',goalRelation:'衡量实际完成交付的比例',limitation:'该代理指标尚不能证明付费或因果收益',comparison:'delta',baseline:{evidenceId:'evidence-one'},freshness:{pointer:'/generatedAt',maxAgeSeconds:300},checks:[{label:'足够样本',pointer:'/sampleSize',operator:'gte',expected:100}]};
-    d.observations=[{expectationId:'integrity',status:'needs_repair',verdict:'unknown',baselineEvidenceId:'evidence-one',baselineValue:0.5,observedValue:0.875,comparedValue:0.375,issues:['足够样本：不符合原约定'],checks:[{label:'足够样本',status:'failed',observedValue:2}]}];
-    f.data.strategy={understanding:[],decisions:[d],counts:{understanding:0,decisions:1}};
-    render(<TestProviders><ProjectThinking api={f.api} projectId="project-atlas" onNavigate={f.props.onNavigate}/></TestProviders>);
+function evaluatedDecision(): DecisionView {
+  return {
+    id: 'evaluated',
+    projectId: 'project-atlas',
+    channelId: 'channel-system',
+    runId: 'run-one',
+    itemId: 'finding-import',
+    objective: { goal: '提高交付成功率并保留完整内容', direction: '自主推进', version: 'goal-one' },
+    options: [
+      {
+        title: '验证交付效果',
+        kind: 'investigate',
+        benefit: '减少盲目投入',
+        cost: '一次验证',
+        uncertainty: '真实用户效果未知',
+      },
+    ],
+    selected: 0,
+    rationale: '检查约束是否同时满足',
+    nextStep: '读取交付样例',
+    expectedOutcome: '完成率提高且没有内容缺失',
+    evaluation: '核对实际字段',
+    stopWhen: '约束恶化后重新判断',
+    understandingRefs: [],
+    evidenceIds: [],
+    watchIds: [],
+    reviewAt: timestamp,
+    maxRuns: 2,
+    signalCursor: 0,
+    status: 'reviewed',
+    revision: 2,
+    createdAt: timestamp,
+    updatedAt: timestamp,
+    runsUsed: 1,
+    reviewReasons: [],
+    evaluationVersion: 1,
+    expectations: [
+      {
+        id: 'integrity',
+        kind: 'guardrail',
+        claim: '不丢失交付内容',
+        scope: '同一隔离样本和版本',
+        source: { kind: 'file', path: '/project/result.json' },
+        verification: '逐项核对输出',
+        disconfirm: '出现任何内容缺失',
+        notBefore: timestamp,
+        deadline: timestamp,
+        rule: { pointer: '/missing', operator: 'equals', expected: 0 },
+      },
+    ],
+    review: {
+      outcome: 'not_improved',
+      conclusion: '完成率提高，但实际丢失两项内容',
+      evidenceIds: ['evidence-one'],
+      nextDirection: '重新检查交付方法',
+      runId: 'run-one',
+      channelId: 'channel-system',
+      createdAt: timestamp,
+      assessment: {
+        results: [
+          {
+            expectationId: 'integrity',
+            verdict: 'not_met',
+            reason: '实际字段为 2，与事先约定不符',
+            evidenceIds: ['evidence-one'],
+            checkedBy: 'rule',
+            observedValue: 2,
+          },
+        ],
+        conditions: 'matched',
+        conditionReason: '仍为原样本，统计方式没有改变',
+        diagnosis: 'execution',
+        explanation: '完成率不能替代内容完整性',
+        adjustment: 'method',
+        understandingRefs: [],
+      },
+    },
+  };
+}
+describe('AI work and release review', () => {
+  it('shows actionable measurement gaps, frozen baseline and scope inside the existing expectation document', async () => {
+    const f = fixture(),
+      d = evaluatedDecision();
+    d.status = 'active';
+    d.review = undefined;
+    d.expectations![0].measurement = {
+      metric: '完成交付用户 / 全部开始用户',
+      goalRelation: '衡量实际完成交付的比例',
+      limitation: '该代理指标尚不能证明付费或因果收益',
+      comparison: 'delta',
+      baseline: { evidenceId: 'evidence-one' },
+      freshness: { pointer: '/generatedAt', maxAgeSeconds: 300 },
+      checks: [{ label: '足够样本', pointer: '/sampleSize', operator: 'gte', expected: 100 }],
+    };
+    d.observations = [
+      {
+        expectationId: 'integrity',
+        status: 'needs_repair',
+        verdict: 'unknown',
+        baselineEvidenceId: 'evidence-one',
+        baselineValue: 0.5,
+        observedValue: 0.875,
+        comparedValue: 0.375,
+        issues: ['足够样本：不符合原约定'],
+        checks: [{ label: '足够样本', status: 'failed', observedValue: 2 }],
+      },
+    ];
+    f.data.strategy = { understanding: [], decisions: [d], counts: { understanding: 0, decisions: 1 } };
+    render(
+      <TestProviders>
+        <ProjectThinking api={f.api} projectId="project-atlas" onNavigate={f.props.onNavigate} />
+      </TestProviders>
+    );
     expect(await screen.findByText(/观测待修复/)).not.toBeNull();
-    const user=userEvent.setup();await user.click(screen.getByText('预期与实际'));
-    expect(screen.getByText(/最新值：0.875 · 差值：0.375/)).not.toBeNull();expect(screen.getByText('足够样本：不符合原约定')).not.toBeNull();
-    expect(screen.getByText(/不能证明付费或因果收益/)).not.toBeNull();expect(screen.queryByText('已满足原观测条件')).toBeNull();
-    expect(screen.queryByRole('button',{name:/保存|配置观测|确认/})).toBeNull();
-    await user.click(screen.getByText('测试日志'));expect(screen.getByText(/文件采集证明当时保存的内容/)).not.toBeNull();
+    const user = userEvent.setup();
+    await user.click(screen.getByText('预期与实际'));
+    expect(screen.getByText(/最新值：0.875 · 差值：0.375/)).not.toBeNull();
+    expect(screen.getByText('足够样本：不符合原约定')).not.toBeNull();
+    expect(screen.getByText(/不能证明付费或因果收益/)).not.toBeNull();
+    expect(screen.queryByText('已满足原观测条件')).toBeNull();
+    expect(screen.queryByRole('button', { name: /保存|配置观测|确认/ })).toBeNull();
+    await user.click(screen.getByText('测试日志'));
+    expect(screen.getByText(/文件采集证明当时保存的内容/)).not.toBeNull();
   });
-  it('shows a missing baseline without inventing a value or retroactively changing a historical assessment',async()=>{
-    const f=fixture(),d=evaluatedDecision();
-    d.expectations![0].measurement={metric:'交付成功率',goalRelation:'观察交付效果',limitation:'仅限本次样本',comparison:'delta',baseline:{unavailable:'采集链路尚未建立'},freshness:{pointer:'/generatedAt',maxAgeSeconds:300},checks:[{label:'采集完整',pointer:'/complete',operator:'equals',expected:true}]};
-    d.review!.assessment!.results[0].observation={expectationId:'integrity',status:'needs_repair',verdict:'unknown',issues:['缺少比较基线'],checks:[]};
-    f.data.strategy={understanding:[],decisions:[d],counts:{understanding:0,decisions:1}};
-    render(<TestProviders><FeatureWork api={f.api} projectId="project-atlas" itemId="finding-import"/></TestProviders>);
+  it('shows a missing baseline without inventing a value or retroactively changing a historical assessment', async () => {
+    const f = fixture(),
+      d = evaluatedDecision();
+    d.expectations![0].measurement = {
+      metric: '交付成功率',
+      goalRelation: '观察交付效果',
+      limitation: '仅限本次样本',
+      comparison: 'delta',
+      baseline: { unavailable: '采集链路尚未建立' },
+      freshness: { pointer: '/generatedAt', maxAgeSeconds: 300 },
+      checks: [{ label: '采集完整', pointer: '/complete', operator: 'equals', expected: true }],
+    };
+    d.review!.assessment!.results[0].observation = {
+      expectationId: 'integrity',
+      status: 'needs_repair',
+      verdict: 'unknown',
+      issues: ['缺少比较基线'],
+      checks: [],
+    };
+    f.data.strategy = { understanding: [], decisions: [d], counts: { understanding: 0, decisions: 1 } };
+    render(
+      <TestProviders>
+        <FeatureWork api={f.api} projectId="project-atlas" itemId="finding-import" />
+      </TestProviders>
+    );
     await userEvent.setup().click(await screen.findByText('预期与实际'));
-    expect(screen.getByText(/尚未取得 · 采集链路尚未建立/)).not.toBeNull();expect(screen.queryByText(/原基线：0/)).toBeNull();expect(screen.getByText('缺少比较基线')).not.toBeNull();
+    expect(screen.getByText(/尚未取得 · 采集链路尚未建立/)).not.toBeNull();
+    expect(screen.queryByText(/原基线：0/)).toBeNull();
+    expect(screen.getByText('缺少比较基线')).not.toBeNull();
   });
-  it('keeps independent findings and stale source status visible without certifying business impact',async()=>{
-    const f=fixture();f.data.verifications=[{id:'verify-one',projectId:'project-atlas',channelId:'channel-system',runId:'run-one',itemId:'finding-import',evidenceIds:['evidence-one'],subjectHash:'subject',version:{digest:'frozen-source-hash',head:'commit',files:6,bytes:1000,coverage:'git-tracked-and-unignored'},status:'failed',summary:'发现真实输入格式的边界问题',findings:[{severity:'blocking',message:'169 小时的数据被错误计入 7 天'}],checks:[{expectationId:'feature',verdict:'not_met',reason:'原始时间格式的反例没有通过'}],limitations:['尚未验证业务收益'],createdAt:timestamp,finishedAt:timestamp,threadId:'independent-native-task',bytes:1200,commandCount:2,timeoutSeconds:300,current:true}];
-    const view=render(<TestProviders><FeatureWork api={f.api} projectId="project-atlas" itemId="finding-import"/></TestProviders>);
-    expect(await screen.findByText('复核发现问题')).not.toBeNull();expect(screen.getByText('169 小时的数据被错误计入 7 天',{exact:false})).not.toBeNull();expect(screen.queryByRole('button',{name:/确认/})).toBeNull();
-    f.data.verifications[0]={...f.data.verifications[0],status:'passed',current:false};view.rerender(<TestProviders><FeatureWork api={f.api} projectId="project-atlas" itemId="other-item"/></TestProviders>);
-    expect(await screen.findByText('源码或核验材料已变化，需要重新复核')).not.toBeNull();expect(screen.queryByText('独立复核通过')).toBeNull();
-    await userEvent.setup().click(screen.getByText('源码或核验材料已变化，需要重新复核'));expect(screen.getByText('尚未验证业务收益')).not.toBeNull();expect(screen.getByText(/原生任务：independent-native-task/)).not.toBeNull();
+  it('keeps independent findings and stale source status visible without certifying business impact', async () => {
+    const f = fixture();
+    f.data.verifications = [
+      {
+        id: 'verify-one',
+        projectId: 'project-atlas',
+        channelId: 'channel-system',
+        runId: 'run-one',
+        itemId: 'finding-import',
+        evidenceIds: ['evidence-one'],
+        subjectHash: 'subject',
+        version: {
+          digest: 'frozen-source-hash',
+          head: 'commit',
+          files: 6,
+          bytes: 1000,
+          coverage: 'git-tracked-and-unignored',
+        },
+        status: 'failed',
+        summary: '发现真实输入格式的边界问题',
+        findings: [{ severity: 'blocking', message: '169 小时的数据被错误计入 7 天' }],
+        checks: [{ expectationId: 'feature', verdict: 'not_met', reason: '原始时间格式的反例没有通过' }],
+        limitations: ['尚未验证业务收益'],
+        createdAt: timestamp,
+        finishedAt: timestamp,
+        threadId: 'independent-native-task',
+        bytes: 1200,
+        commandCount: 2,
+        timeoutSeconds: 300,
+        current: true,
+      },
+    ];
+    const view = render(
+      <TestProviders>
+        <FeatureWork api={f.api} projectId="project-atlas" itemId="finding-import" />
+      </TestProviders>
+    );
+    expect(await screen.findByText('复核未通过')).not.toBeNull();
+    expect(screen.getByText('169 小时的数据被错误计入 7 天', { exact: false })).not.toBeNull();
+    expect(screen.queryByRole('button', { name: /确认/ })).toBeNull();
+    f.data.verifications[0] = { ...f.data.verifications[0], status: 'passed', current: false };
+    view.rerender(
+      <TestProviders>
+        <FeatureWork api={f.api} projectId="project-atlas" itemId="other-item" />
+      </TestProviders>
+    );
+    expect(await screen.findByTitle('源码或核验材料已变化，需要重新复核')).not.toBeNull();
+    expect(screen.queryByText('独立复核通过')).toBeNull();
+    await userEvent.setup().click(screen.getByTitle('源码或核验材料已变化，需要重新复核'));
+    expect(screen.getByText('尚未验证业务收益')).not.toBeNull();
+    expect(screen.getByText(/原生任务：independent-native-task/)).not.toBeNull();
+    // A review never runs on the runtime that did the work, so the record says which one it used.
+    f.data.verifications[0] = { ...f.data.verifications[0], executionOwner: 'claude-cli' };
+    view.rerender(
+      <TestProviders>
+        <FeatureWork api={f.api} projectId="project-atlas" itemId="reviewed-by-claude" />
+      </TestProviders>
+    );
+    expect(await screen.findByText(/Claude Code 复核会话：independent-native-task/)).not.toBeNull();
   });
-  it('shows the saved next direction after review and labels original native execution evidence',async()=>{
-    const f=fixture(),d=evaluatedDecision();d.expectations![0].source={kind:'execution',command:'node --test'};f.data.evidence[0]={...f.data.evidence[0],origin:'execution',data:{exitCode:0,output:'1 test passed',boundVersion:true}};f.data.strategy={understanding:[],decisions:[d],counts:{understanding:0,decisions:1}};
-    render(<TestProviders><ProjectThinking api={f.api} projectId="project-atlas" onNavigate={f.props.onNavigate}/></TestProviders>);
-    expect(await screen.findByRole('heading',{name:'已保存的下一步'})).not.toBeNull();expect(screen.queryByText('等待形成下一步判断')).toBeNull();
-    const user=userEvent.setup();await user.click(screen.getByText('此前尝试与复盘'));await user.click(screen.getByText('预期与实际'));expect(screen.getByText('约定来源：node --test')).not.toBeNull();expect(screen.getAllByText('原生执行记录').length).toBeGreaterThan(0);
+  it('puts active work before latest reviews and preserves superseded failures in collapsed history', async () => {
+    const f = fixture();
+    const decision = { ...evaluatedDecision(), status: 'active' as const, review: undefined };
+    f.data.strategy = { understanding: [], decisions: [decision], counts: { understanding: 0, decisions: 1 } };
+    const review = (id: string, patch: Partial<NonNullable<ProjectLoop['verifications']>[number]> = {}) => ({
+      id,
+      projectId: 'project-atlas',
+      channelId: 'channel-system',
+      runId: 'run-one',
+      itemId: 'finding-import',
+      decisionId: 'evaluated',
+      evidenceIds: ['evidence-one'],
+      subjectHash: id,
+      version: {
+        digest: 'original-digest',
+        head: 'commit',
+        files: 1,
+        bytes: 1,
+        coverage: 'git-tracked-and-unignored' as const,
+      },
+      status: 'failed' as const,
+      summary: id,
+      findings: [{ severity: 'blocking' as const, message: '原反例保留' }],
+      checks: [],
+      limitations: ['未部署'],
+      createdAt: '2026-09-07T00:00:00Z',
+      current: true,
+      bytes: 0,
+      commandCount: 1,
+      timeoutSeconds: 300,
+      ...patch,
+    });
+    // Completion order and array order must not let an older attempt replace a newer one.
+    f.data.verifications = [
+      review('older failure', { finishedAt: '2026-09-10T00:00:00Z', decisionId: 'previous-decision' }),
+      review('new pass', { createdAt: '2026-09-09T00:00:00Z', status: 'passed', findings: [] }),
+      review('other item failure', {
+        itemId: 'finding-other',
+        decisionId: 'other-decision',
+        createdAt: '2026-09-08T00:00:00Z',
+      }),
+    ];
+    const original = structuredClone(f.data.verifications);
+    render(<ProjectThinking api={f.api} projectId="project-atlas" onNavigate={f.props.onNavigate} />, {
+      wrapper: TestProviders,
+    });
+    const current = await screen.findByRole('heading', { name: '验证交付效果' });
+    const recent = screen.getByRole('region', { name: '最近复核' });
+    expect(current.compareDocumentPosition(recent) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    const historical = within(recent).getByText('历史复核').closest('details')!;
+    expect(historical.open).toBe(false);
+    const old = within(historical).getAllByText('older failure')[0].closest('details')!;
+    expect(old.open).toBe(false);
+    const latest = within(recent).getAllByText('new pass')[0].closest('details')!;
+    const other = within(recent).getAllByText('other item failure')[0].closest('details')!;
+    expect(historical.contains(latest)).toBe(false);
+    expect(historical.contains(other)).toBe(false);
+    expect(other.open).toBe(false);
+    await userEvent.setup().click(within(recent).getByText('历史复核'));
+    await userEvent.setup().click(old.querySelector('summary')!);
+    expect(old.open).toBe(true);
+    expect(within(old).getByText(/原反例保留/)).toBeTruthy();
+    await userEvent.setup().click(within(old).getByText('测试日志'));
+    expect(within(old).getByText('2 tests passed')).toBeTruthy();
+    expect(f.data.verifications).toEqual(original);
   });
-  it('keeps the original threshold and shows a violated guardrail with real evidence and a concrete adjustment',async()=>{
-    const f=fixture(),d=evaluatedDecision();f.data.strategy={understanding:[],decisions:[d],counts:{understanding:0,decisions:1}};
-    render(<TestProviders><ProjectThinking api={f.props.api} projectId="project-atlas" onNavigate={f.props.onNavigate}/></TestProviders>);const user=userEvent.setup();
-    await user.click(await screen.findByText('此前尝试与复盘'));await user.click(screen.getByText('预期与实际'));
-    expect(screen.getByText('不能牺牲的条件 · 不丢失交付内容')).not.toBeNull();expect(screen.getByText('与预期不符 · 规则核对')).not.toBeNull();expect(screen.getByText(/\/missing = 0 · 采集值：2/)).not.toBeNull();
-    expect(screen.getByText('完成率不能替代内容完整性')).not.toBeNull();expect(screen.getByText('调整方法',{exact:false})).not.toBeNull();expect(screen.queryByText('本次预期已达成')).toBeNull();expect(screen.queryByRole('textbox')).toBeNull();expect(f.reviewRelease).not.toHaveBeenCalled();
+  it('keeps unscoped decisions and channels distinct and expands only current actionable review details', async () => {
+    const f = fixture();
+    const decision = { ...evaluatedDecision(), itemId: undefined, status: 'active' as const, review: undefined };
+    f.data.strategy = { understanding: [], decisions: [decision], counts: { understanding: 0, decisions: 1 } };
+    const review = (id: string, patch: Record<string, unknown> = {}) => ({
+      id,
+      projectId: 'project-atlas',
+      channelId: 'channel-system',
+      runId: 'run',
+      evidenceIds: [],
+      subjectHash: id,
+      version: { digest: 'source', head: 'commit', files: 1, bytes: 1, coverage: 'git-tracked-and-unignored' },
+      status: 'failed',
+      summary: id,
+      findings: [],
+      checks: [],
+      limitations: [],
+      createdAt: '2026-09-08T00:00:00Z',
+      current: true,
+      bytes: 0,
+      commandCount: 1,
+      timeoutSeconds: 300,
+      ...patch,
+    });
+    f.data.verifications = [
+      review('current failure', { decisionId: decision.id }),
+      review('other decision', { decisionId: 'other' }),
+      review('channel-only'),
+      review('other channel', { channelId: 'other-channel' }),
+      review('running review', { itemId: 'running-item', status: 'running' }),
+    ] as NonNullable<ProjectLoop['verifications']>;
+    render(<ProjectThinking api={f.api} projectId="project-atlas" onNavigate={f.props.onNavigate} />, {
+      wrapper: TestProviders,
+    });
+    const recent = await screen.findByRole('region', { name: '最近复核' });
+    expect(within(recent).queryByText('历史复核')).toBeNull();
+    for (const title of ['current failure', 'other decision', 'channel-only', 'other channel', 'running review']) {
+      const row = within(recent).getAllByText(title)[0].closest('details')!;
+      expect(row.open).toBe(['current failure', 'running review'].includes(title));
+    }
   });
-  it('shows the same evaluation on its feature and distinguishes qualitative interpretation from numeric checking',async()=>{
-    const f=fixture(),d=evaluatedDecision();d.expectations![0].rule=undefined;d.review!.assessment!.results[0]={expectationId:'integrity',verdict:'unknown',reason:'样本还不足以判断',evidenceIds:['evidence-one'],checkedBy:'agent'};d.review!.outcome='inconclusive';f.data.strategy={understanding:[],decisions:[d],counts:{understanding:0,decisions:1}};
-    render(<TestProviders><FeatureWork api={f.props.api} projectId="project-atlas" itemId="finding-import"/></TestProviders>);await userEvent.setup().click(await screen.findByText('预期与实际'));
-    expect(screen.getByText('仍待核对 · Codex 根据证据解读')).not.toBeNull();expect(screen.queryByText(/采集值/)).toBeNull();expect(f.getProjectWork).toHaveBeenCalledWith('project-atlas','finding-import');
+  it('names review subjects, limits the recent list, and resets expansion when changing projects', async () => {
+    const f = fixture();
+    const items = Array.from({ length: 7 }, (_, index) => ({
+      ...f.props.snapshot.items[0],
+      id: `item-${index}`,
+      number: index + 1,
+      title: `事项标题 ${index + 1}`,
+    }));
+    f.data.strategy = { understanding: [], decisions: [], counts: { understanding: 0, decisions: 0 } };
+    f.data.verifications = items.map((item, index) => ({
+      ...historyRow(`review-${index}`, item.id),
+      createdAt: `2026-09-0${index + 1}T00:00:00Z`,
+      status: 'passed',
+      current: false,
+    }));
+    f.release.releaseVerificationId = 'release-review';
+    f.data.verifications.push({
+      ...historyRow('release-review'),
+      kind: 'release',
+      itemId: undefined,
+      createdAt: '2026-09-08T00:00:00Z',
+    });
+    const original = structuredClone(f.data.verifications);
+    const view = render(
+      <ProjectThinking api={f.api} projectId="project-atlas" items={items} onNavigate={f.props.onNavigate} />,
+      { wrapper: TestProviders }
+    );
+    const recent = await screen.findByRole('region', { name: '最近复核' });
+    const titles = () =>
+      [...recent.querySelectorAll('.verification-title')].map((node) => node.childNodes[0].textContent);
+    expect(titles()).toEqual([
+      '上线级 · 导入失败恢复',
+      '#7 事项标题 7',
+      '#6 事项标题 6',
+      '#5 事项标题 5',
+      '#4 事项标题 4',
+    ]);
+    expect(
+      within(recent).getAllByTitle('源码或核验材料已变化，需要重新复核')[0].classList.contains('status-waiting')
+    ).toBe(true);
+    const user = userEvent.setup();
+    await user.click(screen.getByRole('button', { name: '显示全部 8 条' }));
+    expect(titles()).toHaveLength(8);
+    await user.click(screen.getByRole('button', { name: '只显示最新 5 条' }));
+    expect(titles()).toHaveLength(5);
+    await user.click(screen.getByRole('button', { name: '显示全部 8 条' }));
+    view.rerender(
+      <ProjectThinking api={f.api} projectId="other-project" items={items} onNavigate={f.props.onNavigate} />
+    );
+    await screen.findByRole('button', { name: '显示全部 8 条' });
+    expect(screen.getByRole('region', { name: '最近复核' }).querySelectorAll('.verification-title')).toHaveLength(5);
+    expect(f.data.verifications).toEqual(original);
   });
-  it('labels legacy textual conclusions without inventing an observation contract',async()=>{
-    const f=fixture(),d=evaluatedDecision();delete d.evaluationVersion;delete d.expectations;delete d.review!.assessment;f.data.strategy={understanding:[],decisions:[d],counts:{understanding:0,decisions:1}};
-    render(<TestProviders><ProjectThinking api={f.props.api} projectId="project-atlas" onNavigate={f.props.onNavigate}/></TestProviders>);await userEvent.setup().click(await screen.findByText('此前尝试与复盘'));
-    expect(screen.getByText('历史文字复盘，未进行逐项预期核对。')).not.toBeNull();expect(screen.queryByText('预期与实际')).toBeNull();
+  it('does not infer a missing release title from matching item IDs', async () => {
+    const f = fixture();
+    f.data.strategy = { understanding: [], decisions: [], counts: { understanding: 0, decisions: 0 } };
+    f.data.verifications = [
+      { ...historyRow('unlinked-release'), kind: 'release', itemIds: ['finding-import'] },
+      historyRow('missing-item'),
+    ];
+    render(<ProjectThinking api={f.api} projectId="project-atlas" onNavigate={f.props.onNavigate} />, {
+      wrapper: TestProviders,
+    });
+    expect(await screen.findByText('上线级 · 尚未关联上线记录')).toBeTruthy();
+    expect(screen.getByText('事项信息未载入')).toBeTruthy();
+    expect(screen.queryByText('上线级 · 导入失败恢复')).toBeNull();
   });
-  it('shows the current decision, conflicting feedback and original expectation without requesting user planning',async()=>{
-    const f=fixture();f.data.strategy={understanding:[],counts:{understanding:0,decisions:1},decisions:[{id:'choice',projectId:'project-atlas',channelId:'channel-system',runId:'run-one',objective:{goal:'改善首次使用',direction:'自主推进',version:'goal-one'},options:[{title:'先定位用户放弃的步骤',kind:'investigate',benefit:'减少盲目修改',cost:'一次调查',uncertainty:'尚缺路径数据'},{title:'直接简化注册',kind:'act',benefit:'可能减少步骤',cost:'发布成本',uncertainty:'尚未证明注册有问题'}],selected:0,rationale:'先减少关键未知',nextStep:'读取路径数据',expectedOutcome:'区分技术故障与需求不足',evaluation:'比较路径记录',stopWhen:'证据足够或不再获得新信息',understandingRefs:[],evidenceIds:['evidence-one'],watchIds:[],reviewAt:timestamp,maxRuns:2,signalCursor:0,status:'active',revision:1,createdAt:timestamp,updatedAt:timestamp,runsUsed:2,reviewReasons:['新反馈与原判断不一致']} ]};
-    render(<TestProviders><ProjectView {...f.props} id="project-atlas"/></TestProviders>);const user=userEvent.setup();await user.click(screen.getByRole('tab',{name:'当前判断'}));
-    expect(await screen.findByRole('heading',{name:'先定位用户放弃的步骤'})).not.toBeNull();expect(screen.getByRole('status').textContent).toContain('新反馈与原判断不一致');expect(screen.getByText('区分技术故障与需求不足',{exact:false})).not.toBeNull();
-    await user.click(screen.getByText('选择依据与投入边界'));expect(screen.getByText('直接简化注册')).not.toBeNull();await user.click(screen.getByRole('button',{name:'进入对话'}));expect(f.props.onNavigate).toHaveBeenCalledWith({kind:'channel',id:'channel-system'});expect(f.reviewRelease).not.toHaveBeenCalled();
+  it('loads older review pages and their evidence, retains current rows on error and retries the same cursor', async () => {
+    const f = fixture();
+    f.data.strategy = { understanding: [], decisions: [], counts: { understanding: 0, decisions: 0 } };
+    f.data.verifications = [historyRow('recent')];
+    f.data.verificationHistory = { hasMore: true, cursor: 'recent', revision: 'v1' };
+    vi.mocked(f.props.api.getProjectWork!)
+      .mockResolvedValueOnce(f.data)
+      .mockRejectedValueOnce(new Error('分页读取失败'))
+      .mockResolvedValueOnce({
+        ...f.data,
+        verifications: [historyRow('older'), historyRow('other item', 'other')],
+        verificationHistory: { hasMore: false, cursor: 'older', revision: 'v1' },
+      });
+    render(<ProjectThinking api={f.props.api} projectId="project-atlas" onNavigate={f.props.onNavigate} />, {
+      wrapper: TestProviders,
+    });
+    await userEvent.setup().click(await screen.findByText('历史复核'));
+    await userEvent.setup().click(screen.getByRole('button', { name: '加载更早复核' }));
+    expect((await screen.findByRole('alert')).textContent).toContain('分页读取失败');
+    expect(screen.getAllByText('recent').length).toBeGreaterThan(0);
+    await userEvent.setup().click(screen.getByRole('button', { name: '重试历史复核' }));
+    await waitFor(() => expect(screen.getAllByText('other item').length).toBeGreaterThan(0));
+    expect(f.getProjectWork).toHaveBeenLastCalledWith('project-atlas', undefined, 'recent');
+    expect(screen.queryByRole('button', { name: '加载更早复核' })).toBeNull();
+    expect(screen.getAllByText('older').length).toBeGreaterThan(0);
+    expect(screen.queryByRole('alert')).toBeNull();
   });
-  it('keeps an empty project honest and shows retrieval errors instead of made-up thinking',async()=>{
-    const f=fixture();f.data.strategy={understanding:[],decisions:[],counts:{understanding:0,decisions:0}};const view=render(<TestProviders><ProjectThinking api={f.props.api} projectId="project-atlas" onNavigate={f.props.onNavigate}/></TestProviders>);expect(await screen.findByRole('heading',{name:'等待形成下一步判断'})).not.toBeNull();
-    f.getProjectWork.mockRejectedValue(new Error('读取失败'));view.rerender(<TestProviders><ProjectThinking api={f.props.api} projectId="project-other" onNavigate={f.props.onNavigate}/></TestProviders>);expect((await screen.findByRole('alert')).textContent).toBe('读取失败');expect(screen.queryByRole('heading',{name:'等待形成下一步判断'})).toBeNull();
+  it('rejects delayed history from the previous project', async () => {
+    const f = fixture();
+    f.data.strategy = { understanding: [], decisions: [], counts: { understanding: 0, decisions: 0 } };
+    f.data.verifications = [historyRow('first')];
+    f.data.verificationHistory = { hasMore: true, cursor: 'first', revision: 'v1' };
+    let resolve!: (page: ProjectLoop) => void;
+    vi.mocked(f.props.api.getProjectWork!)
+      .mockResolvedValueOnce(f.data)
+      .mockImplementationOnce(
+        () =>
+          new Promise((r) => {
+            resolve = r;
+          })
+      )
+      .mockResolvedValue({
+        ...f.data,
+        verifications: [{ ...historyRow('new project'), projectId: 'project-other' }],
+        verificationHistory: { hasMore: false, revision: 'v2' },
+      });
+    const view = render(
+      <ProjectThinking api={f.props.api} projectId="project-atlas" onNavigate={f.props.onNavigate} />,
+      { wrapper: TestProviders }
+    );
+    await userEvent.setup().click(await screen.findByText('历史复核'));
+    await userEvent.setup().click(screen.getByRole('button', { name: '加载更早复核' }));
+    view.rerender(<ProjectThinking api={f.props.api} projectId="project-other" onNavigate={f.props.onNavigate} />);
+    await waitFor(() => expect(screen.getAllByText('new project').length).toBeGreaterThan(0));
+    await act(async () =>
+      resolve({
+        ...f.data,
+        verifications: [historyRow('late old project')],
+        verificationHistory: { hasMore: false, cursor: 'late', revision: 'v1' },
+      })
+    );
+    expect(screen.queryByText('late old project')).toBeNull();
   });
-  it('shows the historical lesson and why the agent adapted it without presenting a failed attempt as a success',async()=>{
-    const f=fixture();f.data.strategy={understanding:[],counts:{understanding:0,decisions:1},decisions:[{id:'choice',projectId:'project-atlas',channelId:'channel-system',runId:'run-one',objective:{goal:'改善材料交付',direction:'自主推进',version:'goal-one'},options:[{title:'补上原始引用核验',kind:'build_capability',benefit:'降低核验成本',cost:'一次实现',uncertainty:'需要真实用户验证'}],selected:0,rationale:'上次只能生成文本，仍缺原始引用',nextStep:'验证每条引用',expectedOutcome:'原始材料可以逐条核验',evaluation:'检查交付文件与源材料',stopWhen:'测试不支持方向时复查',understandingRefs:[],evidenceIds:[],watchIds:[],reviewAt:timestamp,maxRuns:2,signalCursor:0,status:'active',revision:1,createdAt:timestamp,updatedAt:timestamp,runsUsed:1,reviewReasons:[],memoryRefs:[{kind:'decision',id:'old-choice',revision:2,use:'adapt',reason:'保留材料检查，新增引用核验，重新验证交付效果',snapshot:{kind:'decision',id:'old-choice',revision:2,title:'只生成材料摘要',status:'reviewed',excerpt:'未解决原始引用缺失',truncated:false,evidenceIds:['evidence-one'],updatedAt:timestamp,outcome:'not_improved',caution:'这是当时条件下的复盘，需重新判断适用性'}}]}]};
-    render(<TestProviders><ProjectThinking api={f.props.api} projectId="project-atlas" onNavigate={f.props.onNavigate}/></TestProviders>);
+  it('shares one work-page request and one poll between every consumer of the same page', async () => {
+    vi.useFakeTimers();
+    try {
+      const f = fixture();
+      f.data.strategy = { understanding: [], decisions: [], counts: { understanding: 0, decisions: 0 } };
+      const view = render(
+        <TestProviders>
+          <ProjectThinking api={f.props.api} projectId="project-atlas" onNavigate={f.props.onNavigate} />
+          <ProjectReleases {...f.props} projectId="project-atlas" />
+          <FeatureWork api={f.props.api} projectId="project-atlas" itemId="finding-import" compact />
+        </TestProviders>
+      );
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(0);
+      });
+      // 当前判断 and 上线确认 read the same page, so they ask for it once; the item page is its own.
+      expect(f.getProjectWork.mock.calls).toEqual([
+        ['project-atlas', undefined],
+        ['project-atlas', 'finding-import'],
+      ]);
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(5000);
+      });
+      expect(f.getProjectWork).toHaveBeenCalledTimes(4);
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(5000);
+      });
+      expect(f.getProjectWork).toHaveBeenCalledTimes(6);
+      view.unmount();
+      const settled = f.getProjectWork.mock.calls.length;
+      // The last consumer to leave takes the page and its poll with it.
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(20000);
+      });
+      expect(f.getProjectWork).toHaveBeenCalledTimes(settled);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+  it('invalidates an in-flight history page when the project revision changes', async () => {
+    vi.useFakeTimers();
+    try {
+      const f = fixture();
+      f.data.strategy = { understanding: [], decisions: [], counts: { understanding: 0, decisions: 0 } };
+      f.data.verifications = [historyRow('first')];
+      f.data.verificationHistory = { hasMore: true, cursor: 'first', revision: 'v1' };
+      let resolve!: (page: ProjectLoop) => void;
+      vi.mocked(f.props.api.getProjectWork!)
+        .mockResolvedValueOnce(f.data)
+        .mockImplementationOnce(
+          () =>
+            new Promise((r) => {
+              resolve = r;
+            })
+        )
+        .mockResolvedValue({
+          ...f.data,
+          verifications: [historyRow('new revision')],
+          verificationHistory: { hasMore: true, cursor: 'new', revision: 'v2' },
+        });
+      render(<ProjectThinking api={f.props.api} projectId="project-atlas" onNavigate={f.props.onNavigate} />, {
+        wrapper: TestProviders,
+      });
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(0);
+      });
+      fireEvent.click(screen.getByText('历史复核'));
+      fireEvent.click(screen.getByRole('button', { name: '加载更早复核' }));
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(5000);
+      });
+      await act(async () =>
+        resolve({
+          ...f.data,
+          verifications: [historyRow('stale page')],
+          verificationHistory: { hasMore: false, cursor: 'stale', revision: 'v1' },
+        })
+      );
+      expect(screen.queryByText('stale page')).toBeNull();
+      expect(screen.getAllByText('new revision').length).toBeGreaterThan(0);
+      expect((screen.getByRole('button', { name: '加载更早复核' }) as HTMLButtonElement).disabled).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+  it('shows the saved next direction after review and labels original native execution evidence', async () => {
+    const f = fixture(),
+      d = evaluatedDecision();
+    d.expectations![0].source = { kind: 'execution', command: 'node --test' };
+    f.data.evidence[0] = {
+      ...f.data.evidence[0],
+      origin: 'execution',
+      data: { exitCode: 0, output: '1 test passed', boundVersion: true },
+    };
+    f.data.strategy = { understanding: [], decisions: [d], counts: { understanding: 0, decisions: 1 } };
+    render(
+      <TestProviders>
+        <ProjectThinking api={f.api} projectId="project-atlas" onNavigate={f.props.onNavigate} />
+      </TestProviders>
+    );
+    expect(await screen.findByRole('heading', { name: '已保存的下一步' })).not.toBeNull();
+    expect(screen.queryByText('等待形成下一步判断')).toBeNull();
+    const user = userEvent.setup();
+    await user.click(screen.getByText('此前尝试与复盘'));
+    await user.click(screen.getByText('预期与实际'));
+    expect(screen.getByText('约定来源：node --test')).not.toBeNull();
+    expect(screen.getAllByText('原生执行记录').length).toBeGreaterThan(0);
+  });
+  it('keeps the original threshold and shows a violated guardrail with real evidence and a concrete adjustment', async () => {
+    const f = fixture(),
+      d = evaluatedDecision();
+    f.data.strategy = { understanding: [], decisions: [d], counts: { understanding: 0, decisions: 1 } };
+    render(
+      <TestProviders>
+        <ProjectThinking api={f.props.api} projectId="project-atlas" onNavigate={f.props.onNavigate} />
+      </TestProviders>
+    );
+    const user = userEvent.setup();
+    await user.click(await screen.findByText('此前尝试与复盘'));
+    await user.click(screen.getByText('预期与实际'));
+    expect(screen.getByText('不能牺牲的条件 · 不丢失交付内容')).not.toBeNull();
+    expect(screen.getByText('与预期不符 · 规则核对')).not.toBeNull();
+    expect(screen.getByText(/\/missing = 0 · 采集值：2/)).not.toBeNull();
+    expect(screen.getByText('完成率不能替代内容完整性')).not.toBeNull();
+    expect(screen.getByText('调整方法', { exact: false })).not.toBeNull();
+    expect(screen.queryByText('本次预期已达成')).toBeNull();
+    expect(screen.queryByRole('textbox')).toBeNull();
+    expect(f.reviewRelease).not.toHaveBeenCalled();
+  });
+  it('shows the same evaluation on its feature and distinguishes qualitative interpretation from numeric checking', async () => {
+    const f = fixture(),
+      d = evaluatedDecision();
+    d.expectations![0].rule = undefined;
+    d.review!.assessment!.results[0] = {
+      expectationId: 'integrity',
+      verdict: 'unknown',
+      reason: '样本还不足以判断',
+      evidenceIds: ['evidence-one'],
+      checkedBy: 'agent',
+    };
+    d.review!.outcome = 'inconclusive';
+    f.data.strategy = { understanding: [], decisions: [d], counts: { understanding: 0, decisions: 1 } };
+    render(
+      <TestProviders>
+        <FeatureWork api={f.props.api} projectId="project-atlas" itemId="finding-import" />
+      </TestProviders>
+    );
+    await userEvent.setup().click(await screen.findByText('预期与实际'));
+    expect(screen.getByText('仍待核对 · Codex 根据证据解读')).not.toBeNull();
+    expect(screen.queryByText(/采集值/)).toBeNull();
+    expect(f.getProjectWork).toHaveBeenCalledWith('project-atlas', 'finding-import');
+  });
+  it('labels legacy textual conclusions without inventing an observation contract', async () => {
+    const f = fixture(),
+      d = evaluatedDecision();
+    delete d.evaluationVersion;
+    delete d.expectations;
+    delete d.review!.assessment;
+    f.data.strategy = { understanding: [], decisions: [d], counts: { understanding: 0, decisions: 1 } };
+    render(
+      <TestProviders>
+        <ProjectThinking api={f.props.api} projectId="project-atlas" onNavigate={f.props.onNavigate} />
+      </TestProviders>
+    );
+    await userEvent.setup().click(await screen.findByText('此前尝试与复盘'));
+    expect(screen.getByText('历史文字复盘，未进行逐项预期核对。')).not.toBeNull();
+    expect(screen.queryByText('预期与实际')).toBeNull();
+  });
+  it('shows the current decision, conflicting feedback and original expectation without requesting user planning', async () => {
+    const f = fixture();
+    f.data.strategy = {
+      understanding: [],
+      counts: { understanding: 0, decisions: 1 },
+      decisions: [
+        {
+          id: 'choice',
+          projectId: 'project-atlas',
+          channelId: 'channel-system',
+          runId: 'run-one',
+          objective: { goal: '改善首次使用', direction: '自主推进', version: 'goal-one' },
+          options: [
+            {
+              title: '先定位用户放弃的步骤',
+              kind: 'investigate',
+              benefit: '减少盲目修改',
+              cost: '一次调查',
+              uncertainty: '尚缺路径数据',
+            },
+            {
+              title: '直接简化注册',
+              kind: 'act',
+              benefit: '可能减少步骤',
+              cost: '发布成本',
+              uncertainty: '尚未证明注册有问题',
+            },
+          ],
+          selected: 0,
+          rationale: '先减少关键未知',
+          nextStep: '读取路径数据',
+          expectedOutcome: '区分技术故障与需求不足',
+          evaluation: '比较路径记录',
+          stopWhen: '证据足够或不再获得新信息',
+          understandingRefs: [],
+          evidenceIds: ['evidence-one'],
+          watchIds: [],
+          reviewAt: timestamp,
+          maxRuns: 2,
+          signalCursor: 0,
+          status: 'active',
+          revision: 1,
+          createdAt: timestamp,
+          updatedAt: timestamp,
+          runsUsed: 2,
+          reviewReasons: ['新反馈与原判断不一致'],
+        },
+      ],
+    };
+    render(
+      <TestProviders>
+        <ProjectView {...f.props} id="project-atlas" />
+      </TestProviders>
+    );
+    const user = userEvent.setup();
+    await user.click(screen.getByRole('tab', { name: '当前判断' }));
+    expect(await screen.findByRole('heading', { name: '先定位用户放弃的步骤' })).not.toBeNull();
+    expect(screen.getByRole('status').textContent).toContain('新反馈与原判断不一致');
+    expect(screen.getByText('区分技术故障与需求不足', { exact: false })).not.toBeNull();
+    const next = screen.getByText('读取路径数据', { exact: false });
+    expect(next.closest('details')).toBeNull();
+    expect(screen.getByRole('status').closest('details')).toBeNull();
+    const rationale = screen.getByText('先减少关键未知').closest('details')!;
+    expect(rationale.open).toBe(false);
+    expect(rationale.contains(screen.getByText('区分技术故障与需求不足', { exact: false }))).toBe(true);
+    await user.click(screen.getByText('选择依据与投入边界'));
+    expect(rationale.open).toBe(true);
+    expect(screen.getByText('直接简化注册')).not.toBeNull();
+    await user.click(screen.getByRole('button', { name: '查看最新工作日志' }));
+    expect(f.props.onNavigate).toHaveBeenCalledWith({ kind: 'channel', id: 'channel-system' });
+    expect(f.reviewRelease).not.toHaveBeenCalled();
+  });
+  it('prioritizes the newest active log without losing other channels or project understanding', async () => {
+    const f = fixture();
+    const old = {
+      ...evaluatedDecision(),
+      status: 'active' as const,
+      review: undefined,
+      createdAt: '2026-09-01T00:00:00Z',
+    };
+    const recent = { ...old, id: 'new', channelId: 'other-channel', createdAt: '2026-09-02T00:00:00Z' };
+    f.data.strategy = {
+      understanding: [
+        {
+          id: 'known',
+          projectId: 'project-atlas',
+          channelId: 'channel-system',
+          runId: 'run-one',
+          kind: 'fact',
+          title: '已有观测',
+          statement: '保留完整认识',
+          relevance: '解释当前选择',
+          verification: '再次采样',
+          status: 'invalidated',
+          evidenceIds: ['evidence-one'],
+          reviewAt: timestamp,
+          revision: 2,
+          createdAt: timestamp,
+          updatedAt: timestamp,
+        },
+      ],
+      decisions: [
+        old,
+        recent,
+        {
+          ...evaluatedDecision(),
+          id: 'past',
+          expectations: [],
+          review: { ...evaluatedDecision().review!, evidenceIds: [] },
+        },
+      ],
+      counts: { understanding: 1, decisions: 3 },
+    };
+    f.data.verifications = [{ ...historyRow('older-review'), evidenceIds: [] }];
+    const original = structuredClone(f.data.strategy);
+    const view = render(<ProjectThinking api={f.api} projectId="project-atlas" onNavigate={f.props.onNavigate} />, {
+      wrapper: TestProviders,
+    });
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole('button', { name: '查看最新工作日志' }));
+    expect(f.props.onNavigate).toHaveBeenLastCalledWith({ kind: 'channel', id: 'other-channel' });
+    await user.click(
+      screen.getAllByRole('button', { name: /^查看工作日志$/ }).find((button) => !button.closest('.strategy-history'))!
+    );
+    expect(f.props.onNavigate).toHaveBeenLastCalledWith({ kind: 'channel', id: 'channel-system' });
+    const toggle = screen.getByText('对项目的认识', { selector: 'summary' });
+    expect(toggle.closest('details')?.open).toBe(true);
+    const past = screen.getByText('此前尝试与复盘', { selector: 'summary' });
+    const reviews = screen.getByRole('region', { name: '最近复核' });
+    expect(toggle.compareDocumentPosition(past) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(past.compareDocumentPosition(reviews) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    await user.click(toggle);
+    expect(toggle.closest('details')?.open).toBe(false);
+    await user.click(toggle);
+    await user.click(screen.getByText('已有观测'));
+    expect(screen.getByText('保留完整认识').closest('details')?.open).toBe(true);
+    expect(screen.getByText('已推翻')).toBeTruthy();
+    await user.click(screen.getByText('测试日志'));
+    expect(screen.getByText('2 tests passed')).toBeTruthy();
+    expect(f.data.strategy).toEqual(original);
+    view.rerender(<ProjectThinking api={f.api} projectId="other-project" onNavigate={f.props.onNavigate} />);
+    await screen.findByRole('button', { name: '查看最新工作日志' });
+    expect(screen.getByText('对项目的认识', { selector: 'summary' }).closest('details')?.open).toBe(true);
+  });
+  it('shows an accurate empty state through the actual preview adapter and project tab', async () => {
+    const api = previewAPI();
+    const snapshot = await api.getState();
+    const { props } = featureProps({ snapshot });
+    expect(api.getProjectWork).toBeUndefined();
+    render(<ProjectView {...props} api={api} id="demo-atlas" />, { wrapper: TestProviders });
+    await userEvent.setup().click(screen.getByRole('tab', { name: '当前判断' }));
+    expect(await screen.findByRole('heading', { name: '此示例暂未提供项目判断数据' })).toBeTruthy();
+    expect(screen.getByText(/可先查看「看板」/)).toBeTruthy();
+    expect(screen.queryByText(/连接新版 Morrow 服务/)).toBeNull();
+  });
+  it('keeps real old-service hints while distinguishing demo data that lacks strategy', async () => {
+    const { props } = featureProps();
+    const view = render(<ProjectThinking api={props.api} projectId="real" onNavigate={props.onNavigate} />, {
+      wrapper: TestProviders,
+    });
+    expect(screen.getByRole('heading', { name: '当前连接暂不支持项目判断' })).toBeTruthy();
+    const f = fixture();
+    view.rerender(<ProjectThinking api={f.api} projectId="demo" isDemo onNavigate={f.props.onNavigate} />);
+    expect(await screen.findByRole('heading', { name: '此示例暂未提供项目判断数据' })).toBeTruthy();
+    view.rerender(<ProjectThinking api={f.api} projectId="demo" onNavigate={f.props.onNavigate} />);
+    expect(screen.getByRole('heading', { name: '当前服务尚未支持项目判断' })).toBeTruthy();
+  });
+  it('does not mask demo read errors or replace available strategy data with the demo placeholder', async () => {
+    const f = fixture();
+    f.data.strategy = { understanding: [], decisions: [], counts: { understanding: 0, decisions: 0 } };
+    f.getProjectWork.mockRejectedValueOnce(new Error('读取判断失败'));
+    const view = render(<ProjectThinking api={f.api} projectId="demo-error" isDemo onNavigate={f.props.onNavigate} />, {
+      wrapper: TestProviders,
+    });
+    expect((await screen.findByRole('alert')).textContent).toContain('读取判断失败');
+    expect(screen.queryByText('此示例暂未提供项目判断数据')).toBeNull();
+    view.rerender(<ProjectThinking api={f.api} projectId="demo-data" isDemo onNavigate={f.props.onNavigate} />);
+    expect(await screen.findByRole('heading', { name: '等待形成下一步判断' })).toBeTruthy();
+    expect(screen.queryByText('此示例暂未提供项目判断数据')).toBeNull();
+  });
+  it('keeps an empty project honest and shows retrieval errors instead of made-up thinking', async () => {
+    const f = fixture();
+    f.data.strategy = { understanding: [], decisions: [], counts: { understanding: 0, decisions: 0 } };
+    const view = render(
+      <TestProviders>
+        <ProjectThinking api={f.props.api} projectId="project-atlas" onNavigate={f.props.onNavigate} />
+      </TestProviders>
+    );
+    expect(await screen.findByRole('heading', { name: '等待形成下一步判断' })).not.toBeNull();
+    f.getProjectWork.mockRejectedValue(new Error('读取失败'));
+    view.rerender(
+      <TestProviders>
+        <ProjectThinking api={f.props.api} projectId="project-other" onNavigate={f.props.onNavigate} />
+      </TestProviders>
+    );
+    expect((await screen.findByRole('alert')).textContent).toBe('读取失败');
+    expect(screen.queryByRole('heading', { name: '等待形成下一步判断' })).toBeNull();
+  });
+  it('shows the historical lesson and why the agent adapted it without presenting a failed attempt as a success', async () => {
+    const f = fixture();
+    f.data.strategy = {
+      understanding: [],
+      counts: { understanding: 0, decisions: 1 },
+      decisions: [
+        {
+          id: 'choice',
+          projectId: 'project-atlas',
+          channelId: 'channel-system',
+          runId: 'run-one',
+          objective: { goal: '改善材料交付', direction: '自主推进', version: 'goal-one' },
+          options: [
+            {
+              title: '补上原始引用核验',
+              kind: 'build_capability',
+              benefit: '降低核验成本',
+              cost: '一次实现',
+              uncertainty: '需要真实用户验证',
+            },
+          ],
+          selected: 0,
+          rationale: '上次只能生成文本，仍缺原始引用',
+          nextStep: '验证每条引用',
+          expectedOutcome: '原始材料可以逐条核验',
+          evaluation: '检查交付文件与源材料',
+          stopWhen: '测试不支持方向时复查',
+          understandingRefs: [],
+          evidenceIds: [],
+          watchIds: [],
+          reviewAt: timestamp,
+          maxRuns: 2,
+          signalCursor: 0,
+          status: 'active',
+          revision: 1,
+          createdAt: timestamp,
+          updatedAt: timestamp,
+          runsUsed: 1,
+          reviewReasons: [],
+          memoryRefs: [
+            {
+              kind: 'decision',
+              id: 'old-choice',
+              revision: 2,
+              use: 'adapt',
+              reason: '保留材料检查，新增引用核验，重新验证交付效果',
+              snapshot: {
+                kind: 'decision',
+                id: 'old-choice',
+                revision: 2,
+                title: '只生成材料摘要',
+                status: 'reviewed',
+                excerpt: '未解决原始引用缺失',
+                truncated: false,
+                evidenceIds: ['evidence-one'],
+                updatedAt: timestamp,
+                outcome: 'not_improved',
+                caution: '这是当时条件下的复盘，需重新判断适用性',
+              },
+            },
+          ],
+        },
+      ],
+    };
+    render(
+      <TestProviders>
+        <ProjectThinking api={f.props.api} projectId="project-atlas" onNavigate={f.props.onNavigate} />
+      </TestProviders>
+    );
     await userEvent.setup().click(await screen.findByText('这次参考了哪些经验'));
-    expect(screen.getByText('调整后采用 · 只生成材料摘要')).not.toBeNull();expect(screen.getByText('保留材料检查，新增引用核验，重新验证交付效果')).not.toBeNull();expect(screen.getByText(/当时版本 2 · 未达到本次预期/)).not.toBeNull();expect(screen.getByText('未解决原始引用缺失')).not.toBeNull();expect(screen.getByText('测试日志',{exact:false})).not.toBeNull();
-    expect(screen.queryByText('本次预期已达成')).toBeNull();expect(f.reviewRelease).not.toHaveBeenCalled();
+    expect(screen.getByText('调整后采用 · 只生成材料摘要')).not.toBeNull();
+    expect(screen.getByText('保留材料检查，新增引用核验，重新验证交付效果')).not.toBeNull();
+    expect(screen.getByText(/当时版本 2 · 未达到本次预期/)).not.toBeNull();
+    expect(screen.getByText('未解决原始引用缺失')).not.toBeNull();
+    expect(screen.getByText('测试日志', { exact: false })).not.toBeNull();
+    expect(screen.queryByText('本次预期已达成')).toBeNull();
+    expect(f.reviewRelease).not.toHaveBeenCalled();
   });
-  it('identifies an older service instead of pretending that it has no project knowledge',async()=>{
-    const f=fixture();render(<TestProviders><ProjectThinking api={f.props.api} projectId="project-atlas" onNavigate={f.props.onNavigate}/></TestProviders>);
-    expect(await screen.findByRole('heading',{name:'当前服务尚未支持项目判断'})).not.toBeNull();expect(screen.queryByText('等待形成下一步判断')).toBeNull();
+  it('identifies an older service instead of pretending that it has no project knowledge', async () => {
+    const f = fixture();
+    render(
+      <TestProviders>
+        <ProjectThinking api={f.props.api} projectId="project-atlas" onNavigate={f.props.onNavigate} />
+      </TestProviders>
+    );
+    expect(await screen.findByRole('heading', { name: '当前服务尚未支持项目判断' })).not.toBeNull();
+    expect(screen.queryByText('等待形成下一步判断')).toBeNull();
   });
-  it('opens a concrete release from the shared project board and approves exactly its displayed hash',async()=>{
-    const f=fixture();render(<TestProviders><ProjectView {...f.props} id="project-atlas"/></TestProviders>);const user=userEvent.setup();
-    await user.click(screen.getByRole('tab',{name:/上线确认/}));await user.click(screen.getByRole('button',{name:/导入失败恢复/}));
-    expect(await screen.findByText('sealed-sha256',{exact:false})).not.toBeNull();expect(screen.getByRole('heading',{name:'预期收益'})).not.toBeNull();expect(screen.getByRole('heading',{name:'上线后如何判断效果'})).not.toBeNull();expect(f.reviewRelease).not.toHaveBeenCalled();
-    await user.type(screen.getByRole('textbox',{name:'上线指导意见'}),'关注重复提交');await user.click(screen.getByRole('button',{name:'确认这个版本上线'}));await waitFor(()=>expect(f.reviewRelease).toHaveBeenCalledWith('release-one','reviewed-content','approve','关注重复提交'));
+  it('opens a concrete release from the shared project board and approves exactly its displayed hash', async () => {
+    const f = fixture();
+    render(
+      <TestProviders>
+        <ProjectView {...f.props} id="project-atlas" />
+      </TestProviders>
+    );
+    const user = userEvent.setup();
+    await user.click(screen.getByRole('tab', { name: /上线确认/ }));
+    await user.click(screen.getByRole('button', { name: /导入失败恢复/ }));
+    expect(await screen.findByText('sealed-sha256', { exact: false })).not.toBeNull();
+    for (const text of ['sealed-sha256', 'reviewed-content', '影响导入重试路径。', '恢复上一版本。']) {
+      expect(screen.getByText(text, { exact: false }).closest('details')).toBeNull();
+    }
+    const background = screen.getByText('背景与预期收益', { selector: 'summary' });
+    expect(background.closest('details')?.open).toBe(false);
+    await user.click(background);
+    expect(screen.getByRole('heading', { name: '预期收益' })).not.toBeNull();
+    expect(screen.getByRole('heading', { name: '上线后如何判断效果' })).not.toBeNull();
+    expect(f.reviewRelease).not.toHaveBeenCalled();
+    await user.type(screen.getByRole('textbox', { name: '上线指导意见' }), '关注重复提交');
+    await user.click(screen.getByRole('button', { name: '确认这个版本上线' }));
+    await waitFor(() =>
+      expect(f.reviewRelease).toHaveBeenCalledWith('release-one', 'reviewed-content', 'approve', '关注重复提交')
+    );
   });
-  it('returns a concrete revision to the agent with feedback without approving it',async()=>{
-    const f=fixture();render(<TestProviders><ProjectReleases {...f.props} projectId="project-atlas"/></TestProviders>);const user=userEvent.setup();await user.click(screen.getByRole('button',{name:/导入失败恢复/}));await user.type(screen.getByRole('textbox',{name:'上线指导意见'}),'还需要断网恢复验证');await user.click(screen.getByRole('button',{name:'暂不上线，继续调整'}));expect(f.reviewRelease).toHaveBeenCalledWith('release-one','reviewed-content','reject','还需要断网恢复验证');
+  it('prioritizes pending releases while retaining every historical outcome and progress state', async () => {
+    const f = fixture();
+    const statuses = ['published', 'failed', 'rejected', 'unknown', 'publishing', 'approved'] as const;
+    f.props.snapshot.releases = [
+      f.release,
+      ...statuses.map((status, i) => ({
+        ...f.release,
+        id: status,
+        title: status,
+        status,
+        createdAt: `2026-09-${20 + i}T00:00:00Z`,
+      })),
+    ];
+    const original = structuredClone(f.props.snapshot.releases);
+    const view = render(<ProjectReleases {...f.props} projectId="project-atlas" />, { wrapper: TestProviders });
+    const current = screen.getByRole('region', { name: '待确认与上线进度' });
+    expect(within(current).getAllByRole('button')[0].textContent).toContain(f.release.title);
+    expect(within(current).getAllByRole('button')).toHaveLength(4);
+    expect(screen.getByRole('button', { name: /published/ }).closest('details')?.open).toBe(false);
+    const user = userEvent.setup();
+    await user.click(screen.getByText('历史上线', { selector: 'summary' }));
+    await user.click(screen.getByRole('button', { name: /failed/ }));
+    expect(screen.getByRole('heading', { name: 'failed' })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: '确认这个版本上线' })).toBeNull();
+    expect(f.reviewRelease).not.toHaveBeenCalled();
+    expect(f.props.snapshot.releases).toEqual(original);
+    await user.click(screen.getByRole('button', { name: '所有上线' }));
+    f.props.snapshot.releases = f.props.snapshot.releases!.filter((r) =>
+      ['published', 'failed', 'rejected'].includes(r.status)
+    );
+    view.rerender(<ProjectReleases {...f.props} projectId="project-atlas" />);
+    expect(within(screen.getByRole('region', { name: '最近上线结果' })).getAllByRole('button')).toHaveLength(1);
+    expect(screen.getByRole('button', { name: /rejected/ })).toBeTruthy();
+    expect(screen.getByText('历史上线', { selector: 'summary' }).closest('details')?.open).toBe(false);
   });
-  it('keeps unknown delivery visibly unresolved and offers only receipt reconciliation',async()=>{
-    const f=fixture();f.release.status='unknown';f.release.error='发布结果待核对，不会重复发送';render(<TestProviders><ProjectReleases {...f.props} projectId="project-atlas"/></TestProviders>);const user=userEvent.setup();await user.click(screen.getByRole('button',{name:/导入失败恢复/}));expect(screen.queryByRole('button',{name:'确认这个版本上线'})).toBeNull();await user.click(screen.getByRole('button',{name:'核对发布结果'}));expect(f.reconcileRelease).toHaveBeenCalledWith('release-one');expect(f.reviewRelease).not.toHaveBeenCalled();
+  it('resets release feedback and disclosures when selecting another version', async () => {
+    const f = fixture();
+    f.props.snapshot.releases!.push({ ...f.release, id: 'second', title: '第二个候选' });
+    render(<ProjectReleases {...f.props} projectId="project-atlas" />, { wrapper: TestProviders });
+    const user = userEvent.setup();
+    await user.click(screen.getByRole('button', { name: /导入失败恢复/ }));
+    await user.type(screen.getByRole('textbox', { name: '上线指导意见' }), '只针对第一个版本');
+    await user.click(screen.getByText('背景与预期收益', { selector: 'summary' }));
+    await user.click(screen.getByText('关联事项', { selector: 'summary' }));
+    await user.click(screen.getByRole('button', { name: /CSV 重试会重复提交/ }));
+    expect(f.props.onNavigate).toHaveBeenCalledWith({ kind: 'finding', id: 'finding-import' });
+    await user.click(screen.getByRole('button', { name: '所有上线' }));
+    await user.click(screen.getByRole('button', { name: /第二个候选/ }));
+    expect((screen.getByRole('textbox', { name: '上线指导意见' }) as HTMLTextAreaElement).value).toBe('');
+    expect(screen.getByText('背景与预期收益', { selector: 'summary' }).closest('details')?.open).toBe(false);
+    expect(f.reviewRelease).not.toHaveBeenCalled();
   });
-  it('shows a refuted hypothesis and the actual evidence on its feature',async()=>{
-    const f=fixture();f.data.learning=[{id:'belief',projectId:f.release.projectId,channelId:f.release.channelId,runId:f.release.runId,itemId:'finding-import',kind:'hypothesis',title:'超时导致重复',rationale:'初始解释',expectedResult:'降低重复率',evaluation:'观察实际记录',conclusion:'新证据推翻了初始解释',status:'refuted',evidenceIds:['evidence-one'],revision:2,createdAt:timestamp,updatedAt:timestamp}];render(<TestProviders><FeatureWork api={f.props.api} projectId="project-atlas" itemId="finding-import"/></TestProviders>);expect(await screen.findByText('已被推翻')).not.toBeNull();expect(screen.getByText('新证据推翻了初始解释')).not.toBeNull();expect(f.getProjectWork).toHaveBeenCalledWith('project-atlas','finding-import');
+  it('names a review that could not conclude an unknown result rather than an unfinished one', async () => {
+    const f = fixture();
+    f.data.strategy = { understanding: [], decisions: [], counts: { understanding: 0, decisions: 0 } };
+    f.data.verifications = [{ ...historyRow('inconclusive'), status: 'unknown', current: true }];
+    render(<ProjectThinking api={f.api} projectId="project-atlas" onNavigate={f.props.onNavigate} />, {
+      wrapper: TestProviders,
+    });
+    expect(await screen.findByText('复核结果未知')).not.toBeNull();
+    expect(screen.queryByText('复核尚不能判断')).toBeNull();
   });
-  it('disables approval if evidence cannot be loaded and excludes other projects',async()=>{
-    const f=fixture();f.props.snapshot.releases!.push({...f.release,id:'private',projectId:'project-other',title:'其他项目发布'});f.getProjectWork.mockRejectedValue(new Error('证据服务不可用'));render(<TestProviders><ProjectReleases {...f.props} projectId="project-atlas"/></TestProviders>);const user=userEvent.setup();expect(screen.queryByText('其他项目发布')).toBeNull();await user.click(screen.getByRole('button',{name:/导入失败恢复/}));expect((await screen.findByRole('alert')).textContent).toContain('证据服务不可用');expect((screen.getByRole('button',{name:'确认这个版本上线'}) as HTMLButtonElement).disabled).toBe(true);
+  it('names an approved release as waiting rather than as already out', async () => {
+    const f = fixture();
+    f.release.status = 'approved';
+    render(
+      <TestProviders>
+        <ProjectReleases {...f.props} projectId="project-atlas" />
+      </TestProviders>
+    );
+    expect(screen.getAllByText('已确认，等待上线').length).toBeGreaterThan(0);
+    expect(screen.queryByText('已上线')).toBeNull();
   });
-  it('requires every cited check to remain reviewable before approval',async()=>{
-    const f=fixture();f.data.evidence=[];render(<TestProviders><ProjectReleases {...f.props} projectId="project-atlas"/></TestProviders>);await userEvent.setup().click(screen.getByRole('button',{name:/导入失败恢复/}));expect((await screen.findByRole('alert')).textContent).toContain('部分验证证据尚未读取');expect((screen.getByRole('button',{name:'确认这个版本上线'}) as HTMLButtonElement).disabled).toBe(true);expect(f.reviewRelease).not.toHaveBeenCalled();
+  it('returns a concrete revision to the agent with feedback without approving it', async () => {
+    const f = fixture();
+    render(
+      <TestProviders>
+        <ProjectReleases {...f.props} projectId="project-atlas" />
+      </TestProviders>
+    );
+    const user = userEvent.setup();
+    await user.click(screen.getByRole('button', { name: /导入失败恢复/ }));
+    await user.type(screen.getByRole('textbox', { name: '上线指导意见' }), '还需要断网恢复验证');
+    await user.click(screen.getByRole('button', { name: '暂不上线，继续调整' }));
+    expect(f.reviewRelease).toHaveBeenCalledWith('release-one', 'reviewed-content', 'reject', '还需要断网恢复验证');
   });
+  it('keeps unknown delivery visibly unresolved and offers only receipt reconciliation', async () => {
+    const f = fixture();
+    f.release.status = 'unknown';
+    f.release.error = '发布结果待核对，不会重复发送';
+    render(
+      <TestProviders>
+        <ProjectReleases {...f.props} projectId="project-atlas" />
+      </TestProviders>
+    );
+    const user = userEvent.setup();
+    // 结局未知 read as a verdict; the label says the receipt still has to be checked.
+    expect(screen.getAllByText('上线结果待核对').length).toBeGreaterThan(0);
+    await user.click(screen.getByRole('button', { name: /导入失败恢复/ }));
+    expect(screen.queryByRole('button', { name: '确认这个版本上线' })).toBeNull();
+    await user.click(screen.getByRole('button', { name: '核对上线结果' }));
+    expect(f.reconcileRelease).toHaveBeenCalledWith('release-one');
+    expect(f.reviewRelease).not.toHaveBeenCalled();
+  });
+  it('shows a refuted hypothesis and the actual evidence on its feature', async () => {
+    const f = fixture();
+    f.data.learning = [
+      {
+        id: 'belief',
+        projectId: f.release.projectId,
+        channelId: f.release.channelId,
+        runId: f.release.runId,
+        itemId: 'finding-import',
+        kind: 'hypothesis',
+        title: '超时导致重复',
+        rationale: '初始解释',
+        expectedResult: '降低重复率',
+        evaluation: '观察实际记录',
+        conclusion: '新证据推翻了初始解释',
+        status: 'refuted',
+        evidenceIds: ['evidence-one'],
+        revision: 2,
+        createdAt: timestamp,
+        updatedAt: timestamp,
+      },
+    ];
+    render(
+      <TestProviders>
+        <FeatureWork api={f.props.api} projectId="project-atlas" itemId="finding-import" />
+      </TestProviders>
+    );
+    expect(await screen.findByText('已被推翻')).not.toBeNull();
+    expect(screen.getByText('新证据推翻了初始解释')).not.toBeNull();
+    expect(f.getProjectWork).toHaveBeenCalledWith('project-atlas', 'finding-import');
+  });
+  it('disables approval if evidence cannot be loaded and excludes other projects', async () => {
+    const f = fixture();
+    f.props.snapshot.releases!.push({ ...f.release, id: 'private', projectId: 'project-other', title: '其他项目发布' });
+    f.getProjectWork.mockRejectedValue(new Error('证据服务不可用'));
+    render(
+      <TestProviders>
+        <ProjectReleases {...f.props} projectId="project-atlas" />
+      </TestProviders>
+    );
+    const user = userEvent.setup();
+    expect(screen.queryByText('其他项目发布')).toBeNull();
+    await user.click(screen.getByRole('button', { name: /导入失败恢复/ }));
+    expect((await screen.findByRole('alert')).textContent).toContain('证据服务不可用');
+    expect((screen.getByRole('button', { name: '确认这个版本上线' }) as HTMLButtonElement).disabled).toBe(true);
+  });
+  it('shows an http release target by its endpoint and offers no sealed script to read', async () => {
+    const f = fixture();
+    render(
+      <TestProviders>
+        <ProjectReleases {...f.props} projectId="project-atlas" />
+      </TestProviders>
+    );
+    await userEvent.setup().click(screen.getByRole('button', { name: /导入失败恢复/ }));
+    expect(screen.getByText('测试发布环境')).not.toBeNull();
+    expect(screen.getByText('https://deploy.example.test/releases')).not.toBeNull();
+    expect(screen.queryByRole('button', { name: '查看将要执行的脚本' })).toBeNull();
+    expect(screen.queryByText(/上线脚本输出/)).toBeNull();
+  });
+  it('shows a local-script target by kind, reads the sealed script on request and keeps the publish log', async () => {
+    const f = fixture();
+    const sha = 'abcdef0123456789'.repeat(4);
+    f.release.target = {
+      kind: 'local-script',
+      label: '本机安装',
+      script: 'scripts/release-local.sh',
+      scriptSha256: sha,
+      args: ['--install'],
+      timeoutSeconds: 1800,
+      statusScript: 'scripts/release-status.sh',
+      statusScriptSha256: 'f'.repeat(64),
+    };
+    f.release.status = 'published';
+    f.release.log = 'npm test 通过\n已安装 ~/Applications/Morrow.app\n';
+    const getReleaseScript = vi.fn(async () => ({
+      releaseId: 'release-one',
+      label: '本机安装',
+      args: ['--install'],
+      timeoutSeconds: 1800,
+      script: { path: 'scripts/release-local.sh', sha256: sha, bytes: 28, text: '#!/usr/bin/env bash\nexit 0\n' },
+    }));
+    Object.assign(f.api, { getReleaseScript });
+    render(
+      <TestProviders>
+        <ProjectReleases {...f.props} projectId="project-atlas" />
+      </TestProviders>
+    );
+    const user = userEvent.setup();
+    await user.click(screen.getByRole('button', { name: /导入失败恢复/ }));
+    expect(screen.getByText('脚本 scripts/release-local.sh')).not.toBeNull();
+    expect(screen.getByText(/参数 --install · 超时 1800 秒/)).not.toBeNull();
+    expect(screen.getByText(`脚本 SHA256 ${sha.slice(0, 12)}…`)).not.toBeNull();
+    expect(screen.getByText('状态脚本 scripts/release-status.sh')).not.toBeNull();
+    expect(screen.queryByText('https://deploy.example.test/releases')).toBeNull();
+    expect(screen.getByText(/上线脚本输出/)).not.toBeNull();
+    expect(screen.getByText(/已安装 ~\/Applications\/Morrow\.app/)).not.toBeNull();
+    expect(screen.queryByRole('button', { name: '确认这个版本上线' })).toBeNull();
+    await user.click(screen.getByRole('button', { name: '查看将要执行的脚本' }));
+    await waitFor(() => expect(getReleaseScript).toHaveBeenCalledWith('release-one'));
+    expect(await screen.findByText(/#!\/usr\/bin\/env bash/)).not.toBeNull();
+    expect(screen.queryByRole('button', { name: '查看将要执行的脚本' })).toBeNull();
+  });
+  it('shows the release-level review on its own line and labels release-kind records', async () => {
+    const f = fixture();
+    f.release.releaseVerificationId = 'verify-release';
+    f.release.verificationIds = ['verify-item'];
+    f.data.verifications = [
+      {
+        ...historyRow('verify-item'),
+        status: 'passed',
+        summary: '事项自身的复核在当时的源版本通过',
+        current: false,
+      },
+      {
+        ...historyRow('verify-release'),
+        itemId: undefined,
+        kind: 'release',
+        itemIds: ['finding-import'],
+        status: 'passed',
+        summary: '候选版本的检查与各事项改动一致',
+        current: true,
+      },
+    ];
+    render(
+      <TestProviders>
+        <ProjectReleases {...f.props} projectId="project-atlas" />
+      </TestProviders>
+    );
+    await userEvent.setup().click(screen.getByRole('button', { name: /导入失败恢复/ }));
+    expect(
+      await screen.findByText('上线级复核：独立复核通过 · 候选版本的检查与各事项改动一致', { exact: false })
+    ).not.toBeNull();
+    // The item's own review is listed as it stands: passed at an earlier source version.
+    expect(screen.getByTitle('源码或核验材料已变化，需要重新复核')).not.toBeNull();
+    cleanup();
+    // The review list itself marks which record covered the whole release candidate.
+    render(
+      <TestProviders>
+        <FeatureWork api={f.api} projectId="project-atlas" itemId="finding-import" />
+      </TestProviders>
+    );
+    expect(await screen.findByText('上线级 · 导入失败恢复')).not.toBeNull();
+    expect(screen.getByText('候选版本的检查与各事项改动一致', { exact: false })).not.toBeNull();
+  });
+  it('says why review status reads as unknown while the source version cannot be read', async () => {
+    const f = fixture();
+    f.data.strategy = { understanding: [], decisions: [], counts: { understanding: 0, decisions: 0 } };
+    f.data.verifications = [historyRow('recent')];
+    const notice = '源码版本暂时读不到：工作目录暂时不可读，复核状态按未知显示。';
+    render(<ProjectThinking api={f.api} projectId="project-atlas" onNavigate={f.props.onNavigate} />, {
+      wrapper: TestProviders,
+    });
+    // Nothing is said while the source version reads normally.
+    expect(await screen.findByRole('region', { name: '最近复核' })).not.toBeNull();
+    expect(screen.queryByText(notice)).toBeNull();
+    cleanup();
+    f.data.sourceStale = true;
+    f.data.sourceReason = '工作目录暂时不可读';
+    render(<ProjectThinking api={f.api} projectId="project-atlas" onNavigate={f.props.onNavigate} />, {
+      wrapper: TestProviders,
+    });
+    expect(await screen.findByText(notice)).not.toBeNull();
+    cleanup();
+    render(
+      <TestProviders>
+        <ProjectReleases {...f.props} projectId="project-atlas" />
+      </TestProviders>
+    );
+    await userEvent.setup().click(screen.getByRole('button', { name: /导入失败恢复/ }));
+    expect(await screen.findByText(notice)).not.toBeNull();
+  });
+  it('requires every cited check to remain reviewable before approval', async () => {
+    const f = fixture();
+    f.data.evidence = [];
+    render(
+      <TestProviders>
+        <ProjectReleases {...f.props} projectId="project-atlas" />
+      </TestProviders>
+    );
+    await userEvent.setup().click(screen.getByRole('button', { name: /导入失败恢复/ }));
+    expect((await screen.findByRole('alert')).textContent).toContain('部分复核证据尚未读取');
+    expect((screen.getByRole('button', { name: '确认这个版本上线' }) as HTMLButtonElement).disabled).toBe(true);
+    expect(f.reviewRelease).not.toHaveBeenCalled();
+  });
+});
+
+it('the compact item summary shows the latest item review with stale conditions and preserves full history', async () => {
+  const f = fixture();
+  f.data.verifications = [
+    historyRow('previous', 'finding-import'),
+    { ...historyRow('latest', 'finding-import'), summary: '本事项最近失败', current: false },
+    { ...historyRow('foreign', 'another-item'), summary: '别的事项最新结果', createdAt: '2099-01-01T00:00:00Z' },
+  ];
+  const original = JSON.stringify(f.data.verifications);
+  render(<FeatureWork api={f.api} projectId="project-atlas" itemId="finding-import" compact />, {
+    wrapper: TestProviders,
+  });
+  const heading = await screen.findByRole('heading', { name: '最近事项复核' });
+  const summary = within(heading.parentElement!);
+  expect(summary.getByText('本事项最近失败')).toBeTruthy();
+  expect(summary.getByText(/版本或条件已变化/)).toBeTruthy();
+  expect(summary.queryByText('别的事项最新结果')).toBeNull();
+  const disclosure = screen.getByText('判断、尝试与反馈', { selector: 'summary' }).closest('details')!;
+  expect(disclosure.open).toBe(false);
+  await userEvent.setup().click(screen.getByText('判断、尝试与反馈', { selector: 'summary' }));
+  expect(disclosure.open).toBe(true);
+  expect(JSON.stringify(f.data.verifications)).toBe(original);
+});
+
+it('labels preserved native tool receipts separately from execution evidence', async () => {
+  const f = fixture();
+  f.data.releases = [];
+  f.data.evidence[0] = {
+    ...f.data.evidence[0],
+    origin: 'native',
+    data: { items: [{ tool: 'browser/screenshot', output: { text: 'fixture receipt' } }] },
+  };
+  f.data.learning = [
+    {
+      id: 'learning-native',
+      projectId: 'project-atlas',
+      channelId: 'channel-system',
+      runId: 'run',
+      kind: 'hypothesis',
+      title: '核对原生记录',
+      rationale: '读取记录',
+      expectedResult: '仍待核对',
+      evaluation: '检查实际来源',
+      conclusion: '',
+      status: 'active',
+      evidenceIds: ['evidence-one'],
+      revision: 1,
+      createdAt: timestamp,
+      updatedAt: timestamp,
+    },
+  ];
+  render(
+    <TestProviders>
+      <FeatureWork api={f.api} projectId="project-atlas" itemId="finding-import" />
+    </TestProviders>
+  );
+  const record = within((await screen.findByText('核对原生记录')).closest('details')!);
+  await userEvent.setup().click(record.getByText('原生工具记录'));
+  expect(record.getByText('原生工具历史快照，不等同于执行检查或验收通过。')).toBeTruthy();
+  expect(record.getByText(/fixture receipt/)).toBeTruthy();
+  expect(screen.queryByText('Agent 记录')).toBeNull();
 });
