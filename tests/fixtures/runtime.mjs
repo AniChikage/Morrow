@@ -13,7 +13,7 @@ if (args.includes('--help')) {
   console.log(
     '--json --sandbox --output-last-message --skip-git-repo-check --model --ignore-user-config ' +
       '--print --output-format --verbose --permission-mode --tools --allowedTools --strict-mcp-config ' +
-      '--mcp-config --safe-mode --name --resume'
+      '--mcp-config --safe-mode --setting-sources --name --resume'
   );
   process.exit(0);
 }

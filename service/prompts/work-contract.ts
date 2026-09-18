@@ -68,7 +68,8 @@ status:open|investigating|verified|resolved|blocked, evidenceIds:[], nextStep}�
 引用真实证据。只推进 ownerChannelId 为本频道或为空的事项；别的频道负责的事项不要改动，可以在正文提出建议。\
 写入无人负责的事项即接手（ownerChannelId 记为本频道），resolved 后自动交回无人负责，blocked 保留负责频道。`,
     'evidence.native': `\
-{before?,limit?:1..20}；只读列出本频道当前任务的原生工具条目ID，其他频道/任务不可见。`,
+{before?,limit?:1..20}；只读列出本频道当前绑定 App 任务的原生工具条目ID，其他频道/任务不可见。没有绑定的 App \
+任务时返回 409。`,
     'evidence.link': `\
 {itemId?,summary,nativeItemIds:[1..20]}；读取原生记录并保存有界快照，跨频道/任务404；沿用写操作request-id。\
 内联图片最多384KiB，外部引用不下载，不代表执行或验收通过。`,
@@ -82,7 +83,7 @@ status:open|investigating|verified|resolved|blocked, evidenceIds:[], nextStep}�
     'execution.prepare': `\
 {command:实际原生命令的完整字符串}；测试/构建前调用，框架封存当前源版本。随后在同一原生轮次、\
 项目根目录执行完全相同命令。Morrow 直接从原生事件保存命令、输出、退出码、任务/轮次和执行前后源版本；execution.\
-read 读取。不要用自行生成的 JSON 或 package.json 证明执行成功。`,
+read 读取。不要用自行生成的 JSON 或 package.json 证明执行成功。没有当前 App 任务与轮次时返回 409。`,
     'execution.read': `\
 {id}；读取准备记录及自动采集的原生执行证据。未收到开始事件、输出不完整、版本变化或没有退出码时不能证明成功。`,
     'verification.request': `\

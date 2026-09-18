@@ -87,9 +87,9 @@ export type PromptCharter = { threadId: string; hash: string; sentAt: string; tu
 /**
  * How a Codex channel's turns reach Codex. `app` hands each turn to the shared Codex App task it is
  * bound to; `cli` starts `codex exec` as a bounded subprocess, exactly as a Claude Code or Trae
- * channel does. Only `app` has the in-app browser, Computer Use, the App's dynamic tools, App
- * approvals and the Morrow work interface, which is why it stays the default; `cli` buys not
- * depending on a running App. Both spend the same Codex account quota.
+ * channel does. Only `app` has the in-app browser, Computer Use, the App's dynamic tools and App
+ * approvals, which is why it stays the default; `cli` buys not depending on a running App. CLI turns
+ * with a grant reach the work interface through host MCP. Both spend the same Codex account quota.
  */
 export const channelTransports = ['app', 'cli'] as const;
 export type ChannelTransport = (typeof channelTransports)[number];
@@ -98,8 +98,11 @@ export type ChannelTransport = (typeof channelTransports)[number];
  * means `app`, so every channel written before the field existed keeps the behaviour it had and
  * nothing has to be migrated. Ask this — not `runtime === 'codex'` — wherever the question is
  * really "does this channel have an App task behind it": App binding, native conversation, notes,
- * App-only affordances. Ask `runtime` instead wherever the question is "does this channel spend the
- * Codex account", because a CLI-direct Codex channel spends it just like an App one.
+ * in-app browser, Computer Use, App dynamic tools and App approvals. CLI turns with a minted grant
+ * reach the Morrow work interface through the host MCP (not App HTTP); they still cannot approve a
+ * release, and `evidence.native` / `execution.prepare` stay 409 without an App thread. Ask `runtime`
+ * instead wherever the question is "does this channel spend the Codex account", because a CLI-direct
+ * Codex channel spends it just like an App one.
  */
 export const usesApp = (channel: Pick<Channel, 'runtime' | 'transport'>) =>
   channel.runtime === 'codex' && (channel.transport || 'app') === 'app';

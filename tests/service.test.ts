@@ -260,14 +260,17 @@ test('a Claude Code channel runs a bounded CLI turn, resumes its session and sti
     await finished(1);
     const first = capture();
     const tools = 'Read,Grep,Glob,Edit,Write,MultiEdit,NotebookEdit,Bash';
-    // Workspace write opens edits and commands, accepts its own edits, and loads no project MCP.
+    // Workspace write opens edits and commands. `--safe-mode` would drop `--mcp-config`, so work
+    // turns use `--setting-sources user` plus Morrow-only MCP, and put the MCP tool on `--allowedTools`.
     assert.equal(first.args[first.args.indexOf('--tools') + 1], tools);
-    assert.equal(first.args[first.args.indexOf('--allowedTools') + 1], tools);
+    assert.equal(first.args[first.args.indexOf('--allowedTools') + 1], `${tools},mcp__morrow__call`);
     assert.equal(first.args[first.args.indexOf('--permission-mode') + 1], 'acceptEdits');
     assert.equal(first.args[first.args.indexOf('--output-format') + 1], 'stream-json');
-    assert.equal(first.args[first.args.indexOf('--mcp-config') + 1], '{"mcpServers":{}}');
-    for (const flag of ['--print', '--verbose', '--safe-mode', '--strict-mcp-config'])
-      assert(first.args.includes(flag));
+    assert.equal(first.args[first.args.indexOf('--setting-sources') + 1], 'user');
+    const mcp = JSON.parse(first.args[first.args.indexOf('--mcp-config') + 1]);
+    assert.deepEqual(Object.keys(mcp.mcpServers), ['morrow']);
+    for (const flag of ['--print', '--verbose', '--strict-mcp-config']) assert(first.args.includes(flag));
+    assert(!first.args.includes('--safe-mode'));
     assert(!first.args.some((a: string) => a.includes('dangerously')));
     // The first turn has no session to continue, and the turn carries its own run id as a name.
     assert(!first.args.includes('--resume'));
@@ -316,6 +319,7 @@ test('a Claude Code channel runs a bounded CLI turn, resumes its session and sti
     await finished(3);
     const readOnly = capture();
     assert.equal(readOnly.args[readOnly.args.indexOf('--tools') + 1], 'Read,Grep,Glob');
+    assert.equal(readOnly.args[readOnly.args.indexOf('--allowedTools') + 1], 'Read,Grep,Glob,mcp__morrow__call');
     assert.equal(readOnly.args[readOnly.args.indexOf('--permission-mode') + 1], 'dontAsk');
     assert(!readOnly.args.some((a: string) => a.includes('Bash')));
     assert.deepEqual(humanNotes(readOnly.input), [
@@ -613,6 +617,7 @@ test('a Trae channel runs the sandboxed exec shape and every runtime is listed b
     assert(args.includes('sandbox_mode="workspace-write"'));
     assert(args.includes('approval_policy="never"'));
     assert(args.includes('sandbox_workspace_write.network_access=false'));
+    assert(args.includes('mcp_servers.morrow.default_tools_approval_mode="approve"'));
     assert(args.includes('--output-last-message'));
     assert(!args.some((a: string) => a.includes('dangerously')));
     const runtimes = await discoverRuntimes();
@@ -1472,7 +1477,7 @@ test('optional invalid reports do not fail native work and terminal success over
     assert.equal(s.store.all('items').length, 0);
     const detail = await s.api('GET', `/api/runs/${run.id}`);
     assert(detail.finalOutput.includes('Native work finished.'));
-    assert(detail.prompt.includes('可选'));
+    assert(detail.prompt.includes('Morrow MCP'));
     assert.equal(detail.report, undefined);
     await s.api('POST', `/api/channels/${c.id}/action`, { action: 'pause' });
     const args = invocation({ ...c, permission: 'workspace-write', sessionId: 'exact-session' }, 'output');

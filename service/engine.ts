@@ -19,7 +19,7 @@ import { UsageMonitor, nextUtcDay, usageDelta } from './usage.ts';
 import type { UsageGate } from './usage.ts';
 import { spawn, execFileSync } from 'node:child_process';
 import type { ChildProcessWithoutNullStreams } from 'node:child_process';
-import { appendFileSync, mkdirSync, readFileSync, writeFileSync, statSync } from 'node:fs';
+import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { APIError, resultSchema, usesApp } from './protocol.ts';
@@ -30,6 +30,7 @@ import type { EventDetail } from './protocol.ts';
 import { Store, now } from './store.ts';
 import { logError } from './log.ts';
 import { cliTurnMinutes, decodeLine, diagnoseFailure, invocation, runtimeTitles } from './runtimes.ts';
+import { workMcpLaunch } from './agent-mcp.ts';
 import { projectTreeState, sourceVersion } from './source-version.ts';
 import type { Evidence } from './autonomy-types.ts';
 import { pinHelpers } from './runtime-helpers.ts';
@@ -614,8 +615,8 @@ export class Engine {
       return this.native.startScheduled(id, scheduled);
     }
     // The bounded CLI subprocess below is how Claude Code and Trae channels work, and how a Codex
-    // channel whose transport is `cli` works: one `codex exec` turn per run, with no App task, no
-    // work interface and no App-managed approvals.
+    // channel whose transport is `cli` works: one `codex exec` turn per run, with no App task and no
+    // App-managed approvals. The work interface is the host Morrow MCP wrapping this run's grant.
     const runtime = this.runtimes.find((r) => r.id === channel.runtime);
     if (!runtime?.available)
       throw new APIError(409, `${runtimeTitles[channel.runtime]} CLI 不可用，请在运行环境页刷新并检查安装`);
@@ -639,10 +640,10 @@ export class Engine {
     const runDir = join(this.home, 'runs', run.id);
     mkdirSync(runDir, { recursive: true, mode: 0o700 });
     const outputPath = join(runDir, 'last-message.json');
-    const prompt = this.prompt(project, channel);
+    this.store.put('runs', run);
+    const prompt = this.prompt(project, channel, run);
     if (Buffer.byteLength(prompt) > 1024 * 1024)
       throw new APIError(400, '项目看板与备注上下文超过 1 MiB，无法安全启动本轮；请整理过长的事项内容后重试');
-    this.store.put('runs', run);
     this.trackUsageBefore(run);
     this.persistIO(run.id, 'prompt', prompt, join(runDir, 'prompt.txt'));
     const itemRevisions = new Map(this.store.projectItems(project.id).map((item) => [item.id, item.revision]));
@@ -664,12 +665,22 @@ export class Engine {
       'system',
       `${runtime.name} 开始执行 · ${channel.permission === 'read-only' ? '只读分析' : channel.permission === 'native' ? '完整访问' : '工作区编辑'} · ${channel.sessionId ? '恢复原生会话' : '完整上下文启动'}。`
     );
-    const child = spawn(runtime.path, invocation(channel, run.id, outputPath), {
-      cwd: project.path,
-      env: { ...process.env, NO_COLOR: '1' },
-      detached: true,
-      stdio: ['pipe', 'pipe', 'pipe'],
-    });
+    const launcher = join(runDir, 'tool.sh');
+    const child = spawn(
+      runtime.path,
+      invocation(
+        channel,
+        run.id,
+        outputPath,
+        existsSync(launcher) ? workMcpLaunch(process.execPath, this.loop.helpers['agent-mcp.ts'], launcher) : undefined
+      ),
+      {
+        cwd: project.path,
+        env: { ...process.env, NO_COLOR: '1' },
+        detached: true,
+        stdio: ['pipe', 'pipe', 'pipe'],
+      }
+    );
     let resolveDone: () => void = () => {};
     const done = new Promise<void>((r) => (resolveDone = r));
     const limit = cliTurnMinutes * 60000;
@@ -950,12 +961,13 @@ export class Engine {
     }
     const notes = this.store.messages(channel.id);
     const knowledge = this.store.contextKnowledge(project.id, channel.id);
-    const prior = this.store.channelRuns(channel.id);
+    const prior = this.store.channelRuns(channel.id).filter((row) => row.id !== run?.id);
+    const tools = run ? this.loop.prepare(run) : '';
     // The same working-tree reading the native charter carries: what is uncommitted right now, and
     // whether this channel's own last turn left it that way. An interrupted CLI turn resumes with
     // its files still uncommitted, which the resumed session cannot see on its own.
     const cliTree = projectTreeState(project.path);
-    const cliPrevious = this.previousScheduledRun(channel.id);
+    const cliPrevious = this.previousScheduledRun(channel.id, run?.id);
     // Which notes this turn is the first to see: anything left after the previous scheduled turn
     // started. Without a previous turn every note is new, so a first turn answers all of them.
     const since = cliPrevious?.startedAt || '';
@@ -982,7 +994,7 @@ export class Engine {
         previousRuns: prior.map((r) => ({ summary: r.summary, status: r.status, startedAt: r.startedAt })),
       }),
       intervalMinutes: channel.intervalMinutes,
-      schema: JSON.stringify(resultSchema),
+      ...(tools ? { tools } : { schema: JSON.stringify(resultSchema) }),
     });
   }
   completeAutonomousWork(run: Run, text: string, wasEnabled: boolean) {

@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { autonomousCharter, type PromptContext } from '../service/channel-work.ts';
 import type { Scope } from '../service/project-loop.ts';
-import type { Channel, Project } from '../service/protocol.ts';
+import type { Channel, Project, Run } from '../service/protocol.ts';
 import type { Verification } from '../service/verification-types.ts';
 import { isolatedReviewText } from '../service/prompts/verification.ts';
 import { startIsolated } from './harness/service.ts';
@@ -83,21 +83,33 @@ test('the non-native CLI turn prompt text is unchanged', async () => {
     assert(prompt.includes('测试、构建等命令结果只作为证据附上，不作为 verified 的依据'));
     assert.equal(
       digest(prompt),
-      // The review sentence no longer names Codex. Since 0.15.0 a review is given to a runtime that
-      // did not do the work — Claude Code reviews a Codex or Trae turn, Codex reviews a Claude Code
-      // turn — so the prompt names no runtime and says another one, absent from this turn, runs it.
-      // Changed deliberately for #45: verified/resolved claims must be independently reproducible
-      // read-only facts. Test/build results remain supporting material, not grounds for verified;
-      // the prompt no longer asks a read-only reviewer to rerun commands that write files.
-      // 0.14.0 introduced the automatic independent read-only review before claims take effect.
-      // (0.13.0 changed the sentence that introduces the JSON context: it now
-      // names `humanNotes` as notes people left for the channel rather than live input, and says the
-      // ones marked `new` arrived after the previous turn started and must be answered this turn.
-      // 0.12.1 changed the two edits after the permission line: the 45-minute limit the turn now
-      // states, and the working-tree line the native charter already had. `fixedProject.path` is not
-      // a repository, so the tree line stays empty here.)
+      // Grant-bearing CLI turns omit this schema path; this digest is the no-run fallback that still
+      // describes the optional board report. The grant prompt is pinned in the following test.
       'f176f3442a36d14d99c4d327a676e497361eb3e82acef3cddf9d994e671e0dc2'
     );
+    const run: Run = {
+      id: 'prompt-text-run',
+      projectId: fixedProject.id,
+      channelId: fixedChannel.id,
+      runtime: 'codex',
+      model: '',
+      permission: 'workspace-write',
+      trigger: 'manual',
+      resumedFromSessionId: '',
+      reportStatus: 'pending',
+      reportError: '',
+      status: 'running',
+      startedAt: '2026-01-02T03:04:05.000Z',
+      finishedAt: '',
+      summary: '',
+      sessionId: '',
+    };
+    s.store.put('runs', run);
+    const granted = s.engine.prompt(fixedProject, { ...fixedChannel, transport: 'cli' }, run);
+    assert(granted.includes('Morrow MCP'));
+    assert(granted.includes('--operation context'));
+    assert(!granted.includes('nextCheckMinutes'));
+    assert.equal(digest(granted.replaceAll(s.home, '<home>')), '8cae5dd443e1c8c0c249c96ba620ac4eae78855c8183a5a8d3b05a7dd672bb7f');
   } finally {
     await s.cleanup();
   }
@@ -120,8 +132,8 @@ test('the work contract and strategy guidance served to a turn are unchanged', a
     assert.match(principles, /探索或效果实验/);
     assert.equal(
       digest(JSON.stringify({ operations, releaseAdapter, principles })),
-      // Atomic completion plus a lighter path for clear fixes; evidence and release gates remain.
-      '0d482d130a7eb91890ad389cb1957ef0f8a8bab074aac1758fdb782f33388c90'
+      // CLI contract: evidence.native / execution.prepare name the 409 without an App thread.
+      '3763d7b74020ac6d765c1cb4377f1bfab04ce1fd33a6ef583723e7c9b0ee5731'
     );
     const strategy = s.engine.loop.strategy.context(scope);
     assert.equal(

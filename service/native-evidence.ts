@@ -11,7 +11,8 @@ const cut = (value: unknown, limit: number) => String(value ?? '').slice(0, limi
 function task(loop: ProjectWorkLoop, scope: Scope) {
   const { run } = loop.scope(scope);
   const binding = loop.store.get<any>('native_bindings', scope.channelId);
-  if (!run.sessionId || binding?.threadId !== run.sessionId) throw new APIError(404, '本轮没有可引用的原生任务');
+  if (!run.sessionId || !binding || binding.threadId !== run.sessionId)
+    throw new APIError(409, 'evidence.native 需要已绑定的 App 任务');
   return run.sessionId;
 }
 function owned(loop: ProjectWorkLoop, scope: Scope, threadId: string, row: any) {

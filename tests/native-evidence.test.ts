@@ -124,7 +124,7 @@ test('native discovery and linking reject foreign turns, tasks, invalid ranges a
       await s.grant.call('evidence.link', { summary: 'invalid', nativeItemIds: ids }, 400);
     await s.grant.call('evidence.link', { summary: 'fake', nativeItemIds: [s.row.id], origin: 'execution' }, 400);
     s.store.put('native_bindings', { id: s.channel.id, threadId: 'changed-task' });
-    await s.grant.call('evidence.native', {}, 404);
+    await s.grant.call('evidence.native', {}, 409);
   } finally {
     await s.cleanup();
   }

@@ -5,6 +5,7 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { engines, usesApp } from './protocol.ts';
 import type { Channel, EventDetail, Runtime, RuntimeID } from './protocol.ts';
+import { claudeWorkMcpConfig, claudeWorkMcpTool, workMcpOverlays, type WorkMcpLaunch } from './agent-mcp.ts';
 import { providerEventDetails } from './event-details.ts';
 import { codexAppBinary } from './codex-bridge-setup.ts';
 const execute = promisify(execFile);
@@ -93,6 +94,7 @@ const requiredFlags: Record<RuntimeID, string[]> = {
     '--strict-mcp-config',
     '--mcp-config',
     '--safe-mode',
+    '--setting-sources',
     '--name',
     '--resume',
     '--model',
@@ -169,24 +171,28 @@ const claudeTools = {
  * Codex channel whose transport is `cli`; an `app` Codex channel reaches it only under
  * MORROW_TEST_MODE, because its production work happens inside the shared App task instead.
  */
-export function invocation(channel: Channel, runId: string, outputPath: string): string[] {
+export function invocation(channel: Channel, runId: string, outputPath: string, workMcp?: WorkMcpLaunch): string[] {
   if (channel.runtime === 'claude') {
-    // No project hooks, plugins or MCP servers are loaded, and the tool list is stated twice: `--tools`
-    // bounds what exists, `--allowedTools` what runs without asking. The prompt arrives on stdin.
+    // `--safe-mode` drops `--mcp-config` (live probe: mcp_servers: []). Work turns therefore keep
+    // `--strict-mcp-config` plus a Morrow-only `--mcp-config`, put the MCP tool on `--allowedTools`,
+    // and use `--setting-sources user` to skip project/local hooks and CLAUDE.md. That is weaker than
+    // `--safe-mode`: user-level plugins, skills and hooks can still load. Reviews keep `--safe-mode`
+    // and empty MCP. `--tools` is the built-in set; `--allowedTools` is what runs without asking.
     const tools = channel.permission === 'read-only' ? claudeTools['read-only'] : claudeTools['workspace-write'];
+    const allowed = workMcp ? `${tools},${claudeWorkMcpTool}` : tools;
     const args = [
       '--print',
       '--verbose',
       '--output-format',
       'stream-json',
-      '--safe-mode',
+      ...(workMcp ? ['--setting-sources', 'user'] : ['--safe-mode']),
       '--strict-mcp-config',
       '--mcp-config',
-      '{"mcpServers":{}}',
+      workMcp ? claudeWorkMcpConfig(workMcp) : '{"mcpServers":{}}',
       '--tools',
       tools,
       '--allowedTools',
-      tools,
+      allowed,
       '--permission-mode',
       channel.permission === 'read-only' ? 'dontAsk' : 'acceptEdits',
       '--name',
@@ -216,6 +222,7 @@ export function invocation(channel: Channel, runId: string, outputPath: string):
   if (channel.sessionId) args.push('resume');
   args.push('--json', '--skip-git-repo-check', '-c', `sandbox_mode="${sandbox}"`, '-c', 'approval_policy="never"');
   if (!native) args.push('-c', 'sandbox_workspace_write.network_access=false');
+  if (workMcp) args.push(...workMcpOverlays(workMcp));
   args.push('--output-last-message', outputPath);
   if (!channel.sessionId) args.push('--sandbox', sandbox);
   if (channel.model) args.push('--model', channel.model);
