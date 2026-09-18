@@ -115,7 +115,9 @@ Morrow 的职责是准备上下文、在合适时机唤醒 Codex、保存工作�
 
 2026-09-15 分支合并说明：远端 `main` 上 0.10.0 的「直接用 Codex CLI、去掉与桌面 App 的耦合」一线已作为历史接进本仓库，但那一线的实现未被采用——它把 App 整个去掉，而浏览器点击、Computer Use 和动态工具都依赖 App。该历史保留可查，不能作为本仓库接入方式的依据：要做 CLI 直连就自己实现，并且必须是与 App follower 并存的选项，不是替代。
 
-2026-09-17 补充：CLI 直连已作为**可选的第二传输方式**实现。每个 Codex 频道自己选走哪条：App follower 仍是默认，因为应用内浏览器、Computer Use、App 动态工具、App 内审批和 Morrow 工作接口（含提议上线）都依赖 App；CLI 直连每轮起一次本机 `codex exec`，换来的是不依赖 App 安装与常驻，代价是上述能力一概没有，看板只能靠轮次末尾的可选报告维护。CLI 直连的频道与 Claude Code / Trae 频道同级：不开放工作接口，权限只有只读或工作区写入沙箱，没有「沿用 App 原生权限」。两种传输方式花的是同一个 Codex 账号，因此额度门禁、账户保留线和用量归因对二者一视同仁；而「是否要等频道处于持续运行才开始独立复核」这类问题按传输方式判断，CLI 直连与 Claude Code 频道处境相同。已存在的频道没有这个字段，一律视为走 App，不需要迁移。
+2026-09-17 补充：CLI 直连已作为**可选的第二传输方式**实现。每个 Codex 频道自己选走哪条：App follower 仍是默认，因为应用内浏览器、Computer Use、App 动态工具和 App 内审批都依赖 App；CLI 直连每轮起一次本机 `codex exec`，换来的是不依赖 App 安装与常驻。权限只有只读或工作区写入沙箱，没有「沿用 App 原生权限」。两种传输方式花的是同一个 Codex 账号，因此额度门禁、账户保留线和用量归因对二者一视同仁；而「是否要等频道处于持续运行才开始独立复核」这类问题按传输方式判断，CLI 直连与 Claude Code 频道处境相同。已存在的频道没有这个字段，一律视为走 App，不需要迁移。
+
+2026-09-18 补充：有 grant 的 CLI 轮次（Codex `cli`、Claude Code、Trae）通过主机 stdio MCP 调用工作接口，可以 `release.propose`；人仍在桌面批准，grant 不能 `release.approve`。`evidence.native` / `execution.prepare` 没有 App 线程时 409。Codex/Trae 沙箱保持 `network_access=false`。Claude 工作轮次不用 `--safe-mode`（它会丢掉 `--mcp-config`），改用 `--strict-mcp-config` + Morrow-only MCP + `--setting-sources user`。复核仍是空 MCP、不带 grant。
 
 以下保留旧版本设计历史，不能作为重新启用转接程序的依据。
 
@@ -150,7 +152,7 @@ Morrow 发起或管理的项目、频道、功能、设置修改、调度动作�
 - **Claude Code 的「工作区写入」频道允许执行命令。** 该范围的工具表包含 `Bash`，所以这类轮次可以构建、跑测试并验证结果。这些命令不在 Morrow 的沙箱内运行——边界来自提示词、频道范围和项目目录，不是系统级隔离。只读范围仍只有 `Read,Grep,Glob`，并使用不会发起审批请求的权限模式。
 - **Claude / Trae 频道汇报的 verified/resolved 一律先经过 Codex 独立复核。** 执行者用哪种运行时不改变完成的门槛：`finishSuccess` 的复核要求没有放松，这两种运行时的完成同样要等当前源版本的 `codex exec` 只读复核通过。
 
-由此确定的边界：Morrow 的工作接口（`release.propose`、`evidence.native`、`memory.search` 等）需要轮次能访问本机 HTTP 接口，当前只有走 App 任务的 Codex 轮次具备，所以 Claude Code、Trae 以及 2026-09-17 起新增的 CLI 直连 Codex 频道都只能通过可选的 `morrow-report` 维护看板；额度门禁与用量归因读的是 Codex 账户读数，对 Claude Code 与 Trae 不生效，对 CLI 直连的 Codex 频道照常生效，而每日运行次数上限对所有运行时生效；沿用 App 任务权限（`native`）只有走 App 任务的 Codex 频道可选。这些是当前实现的范围说明，不是长期不变的产品承诺：把工作接口开放给沙箱内的 CLI 轮次是另一个议题。
+由此确定的边界：Morrow 的工作接口（`release.propose`、`memory.search` 等）在有 grant 的 App 轮次和 CLI 轮次上都可用；CLI 走主机 MCP，不把沙箱 `network_access` 打开。`evidence.native` / `execution.prepare` 仍要 App 任务。grant 不能批准上线。额度门禁与用量归因读的是 Codex 账户读数，对 Claude Code 与 Trae 不生效，对 CLI 直连的 Codex 频道照常生效，而每日运行次数上限对所有运行时生效；沿用 App 任务权限（`native`）只有走 App 任务的 Codex 频道可选。
 
 真机跑过一轮 Claude Code 工作区写入频道后，0.12.1 调整了三处。一轮 CLI 的上限从 15 分钟提到 45 分钟（`cliTurnMinutes`），并且写进轮次提示：那一轮先合并分支、跑完整套测试，才开始改代码，在 15 分钟被中断，没有汇报、看板也没更新——模型不知道自己有多少时间，就没法把工作切成能交付的一步。工作日志只保留人会读的部分：Claude Code 每秒一条的 thinking_tokens 计数、tool_progress、只含 thinking 块的消息，以及每轮都有、只说账户没问题的 `allowed` 速率限制通知，都不再入库（那一轮 754 行里 484 行是前者），`system/init` 收敛成一行摘要，原始行仍完整留在 `stdout.jsonl`。被跳过的行也不进入失败诊断：诊断的配额规则会命中 `rate_limit_event` 这个词本身，读它就会把所有因别的原因失败的 Claude 轮次都报成配额不足，真正的原因反而看不见。真的被限流（非 `allowed`）的通知不跳过，照常入库并参与诊断。CLI 轮次的提示也带上工作树里未提交的文件，和原生轮次一致——被中断的那轮留下六个未提交文件，下一轮 `--resume` 时对此一无所知。
 
