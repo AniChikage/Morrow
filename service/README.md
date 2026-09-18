@@ -109,7 +109,7 @@ Codex 频道有两种传输方式，记在频道行的 `transport` 上（`'app' 
 
 ### 运行时适配器
 
-Claude Code、Trae 以及 `transport: 'cli'` 的 Codex 频道走有界 CLI 子进程：一次 `spawn`，提示从 stdin 进入。`Engine.start` 在写入 `runs` 后 mint 与 App 相同的 grant，主机 stdio MCP（`service/agent-mcp.ts`）包装该轮 `tool.sh` / `POST /api/agent`。有 grant 时省略 `morrow-report` schema。grant 不能批准上线；`evidence.native` / `execution.prepare` 没有 App 任务时 409。额度门禁与用量归因按运行时判断：对 Claude Code 与 Trae 不生效（那些读数来自 Codex 账户），对 CLI 直连的 Codex 频道照常生效，它花的是同一个账号。每日运行次数上限照旧对所有运行时生效。verified/resolved 与走 App 的 Codex 频道一样，先进入一次不与执行者同运行时的独立复核。
+Claude Code、Trae 以及 `transport: 'cli'` 的 Codex 频道走有界 CLI 子进程：一次 `spawn`，提示从 stdin 进入。`Engine.start` 在写入 `runs` 后 mint 与 App 相同的 grant，主机 stdio MCP（`service/agent-mcp.ts`）包装该轮 `tool.sh` / `POST /api/agent`。有 grant 时省略 `morrow-report` schema。grant 不能批准上线；`evidence.native` / `execution.prepare` 没有 App 任务时 409。发布级复核对 CLI 频道接受 file/http 采集证据，由独立复核者在隔离检出里重跑检查。额度门禁与用量归因按运行时判断：对 Claude Code 与 Trae 不生效（那些读数来自 Codex 账户），对 CLI 直连的 Codex 频道照常生效，它花的是同一个账号。每日运行次数上限照旧对所有运行时生效。verified/resolved 与走 App 的 Codex 频道一样，先进入一次不与执行者同运行时的独立复核。
 
 CLI 直连的 Codex 频道用 `invocation()` 拼的 `codex exec` 命令行，与 Trae 同形：`resume`、`sandbox_mode`、`approval_policy="never"`、`sandbox_workspace_write.network_access=false`、Morrow MCP overlays（`default_tools_approval_mode="approve"`）、`--output-last-message`、可选 `--model`，提示从 stdin 进入。`native` 权限映射到 `danger-full-access` 的那一行按 `usesApp` 判断，所以这种频道拿不到完整访问；服务端本来也不允许它带 `native`。
 
@@ -151,7 +151,7 @@ Trae 使用 `traex exec --json` / `exec resume`，保留原生 provider、规则
 
 `release.propose` 要求关联事项、具体改动、预期收益、检查证据、影响、回退和观察计划，并封存项目内的产物文件及审阅摘要。当前产物上限为 8 MiB，大型发布可以提交不可变的部署清单。
 
-发布门禁分两半：每个关联事项至少有一次独立复核通过（可以是改动当时的源版本，ID 记入 `verificationIds`），并且有一次覆盖全部关联事项、绑定当前源版本的发布级复核通过（`verification.request kind:"release"`，ID 记入 `releaseVerificationId`）。发布级复核复用同一套排队、只读 CLI 会话、未知处理与重试机制，时间上限是自己的 8 分钟（事项级 5 分钟；提示词里写的分钟数就是该行记录的上限）；请求时要求至少一项绑定当前源版本的 execution 证据，任一事项从未复核通过则返回 409。事项自身完成（`feature.upsert` 到 verified/resolved 与报告路径）仍要求该事项当前源版本的复核。
+发布门禁分两半：每个关联事项至少有一次独立复核通过（可以是改动当时的源版本，ID 记入 `verificationIds`），并且有一次覆盖全部关联事项、绑定当前源版本的发布级复核通过（`verification.request kind:"release"`，ID 记入 `releaseVerificationId`）。发布级复核复用同一套排队、只读 CLI 会话、未知处理与重试机制，时间上限是自己的 8 分钟（事项级 5 分钟；提示词里写的分钟数就是该行记录的上限）；走 App 任务的频道请求时要求至少一项绑定当前源版本的 execution 证据，CLI 频道改为至少一项 file/http 采集证据并由复核者在隔离检出里重跑检查，任一事项从未复核通过则返回 409。事项自身完成（`feature.upsert` 到 verified/resolved 与报告路径）仍要求该事项当前源版本的复核。
 
 发布目标有两种形状：`target.kind` 为 `http`（省略时同）或 `local-script`。
 

@@ -117,7 +117,7 @@ Morrow 的职责是准备上下文、在合适时机唤醒 Codex、保存工作�
 
 2026-09-17 补充：CLI 直连已作为**可选的第二传输方式**实现。每个 Codex 频道自己选走哪条：App follower 仍是默认，因为应用内浏览器、Computer Use、App 动态工具和 App 内审批都依赖 App；CLI 直连每轮起一次本机 `codex exec`，换来的是不依赖 App 安装与常驻。权限只有只读或工作区写入沙箱，没有「沿用 App 原生权限」。两种传输方式花的是同一个 Codex 账号，因此额度门禁、账户保留线和用量归因对二者一视同仁；而「是否要等频道处于持续运行才开始独立复核」这类问题按传输方式判断，CLI 直连与 Claude Code 频道处境相同。已存在的频道没有这个字段，一律视为走 App，不需要迁移。
 
-2026-09-18 补充：有 grant 的 CLI 轮次（Codex `cli`、Claude Code、Trae）通过主机 stdio MCP 调用工作接口，可以 `release.propose`；人仍在桌面批准，grant 不能 `release.approve`。`evidence.native` / `execution.prepare` 没有 App 线程时 409。Codex/Trae 沙箱保持 `network_access=false`。Claude 工作轮次不用 `--safe-mode`（它会丢掉 `--mcp-config`），改用 `--strict-mcp-config` + Morrow-only MCP + `--setting-sources user`。复核仍是空 MCP、不带 grant。
+2026-09-18 补充：有 grant 的 CLI 轮次（Codex `cli`、Claude Code、Trae）通过主机 stdio MCP 调用工作接口，可以 `release.propose`；人仍在桌面批准，grant 不能 `release.approve`。`evidence.native` / `execution.prepare` 没有 App 线程时 409。Codex/Trae 沙箱保持 `network_access=false`。Claude 工作轮次不用 `--safe-mode`（它会丢掉 `--mcp-config`），改用 `--strict-mcp-config` + Morrow-only MCP + `--setting-sources user`。复核仍是空 MCP、不带 grant。发布级复核：走 App 的频道仍要当前源版本的 execution 证据；CLI 频道用独立复核 + file/http 采集证据，复核者在隔离检出里重跑项目检查，不能伪造 native execution。`release.propose` 成功后仍是 `awaiting_approval`。
 
 以下保留旧版本设计历史，不能作为重新启用转接程序的依据。
 

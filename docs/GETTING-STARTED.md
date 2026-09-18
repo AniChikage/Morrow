@@ -23,7 +23,7 @@ open "$HOME/Applications/Morrow.app"
 2. **新建频道，并为 Codex 选一种执行方式**（需要另一条工作方向时）。在侧栏的项目上点「新建频道」，填名称和工作方向。选 Codex 时，「工作设置」里的**执行方式**决定这条频道怎么找到 Codex，两条路后面的步骤不一样：
 
    - **Codex App 任务**（默认）：轮次进入 App 中一条 Morrow 准备好的任务。应用内浏览器、Computer Use、App 动态工具和 App 内审批只有这条路有，代价是 App 必须装好、登录并保持运行。工作接口在 App 轮次里走任务内 HTTP；CLI 轮次另有主机 MCP。模型、工具与任务权限都在 Codex App 中管理，频道默认沿用该任务的权限与审批设置。Morrow 不能在不把 App 拉到前台的情况下后台创建任务。
-   - **直连 Codex CLI**：每轮起一次本机 `codex exec`。准备工作只有一件——装好 Codex CLI，在终端 `codex login`；不需要装 App、不需要在 App 里建任务、不需要关联，也不需要让 App 一直开着。没有应用内浏览器、Computer Use、App 动态工具和 App 审批；沙箱内命令仍然不联网。有 grant 的一轮通过主机侧 Morrow MCP 调用工作接口（含 `release.propose`），凭证不进提示词；**不能批准上线**（批准仍在桌面），`evidence.native` / `execution.prepare` 在没有 App 任务时返回 409。权限与 Claude Code / Trae 同级，默认工作区写入，可收紧为只读，没有「沿用 App 原生权限」这一项。两条路花的是同一个 Codex 账号的额度。
+   - **直连 Codex CLI**：每轮起一次本机 `codex exec`。准备工作只有一件——装好 Codex CLI，在终端 `codex login`；不需要装 App、不需要在 App 里建任务、不需要关联，也不需要让 App 一直开着。没有应用内浏览器、Computer Use、App 动态工具和 App 审批；沙箱内命令仍然不联网。有 grant 的一轮通过主机侧 Morrow MCP 调用工作接口（含 `release.propose`），凭证不进提示词；**不能批准上线**（批准仍在桌面），`evidence.native` / `execution.prepare` 在没有 App 任务时返回 409。发布级复核对这条路接受 file/http 采集证据，由独立复核者在隔离检出里重跑检查，不伪造 native execution。权限与 Claude Code / Trae 同级，默认工作区写入，可收紧为只读，没有「沿用 App 原生权限」这一项。两条路花的是同一个 Codex 账号的额度。
 
    频道创建后保持暂停。执行方式之后还能在「调整方向」里改，但轮次进行中不能改，已经关联了 App 任务的频道也不能改（新建一条频道即可），因为两边的会话 ID 不通用。
 
