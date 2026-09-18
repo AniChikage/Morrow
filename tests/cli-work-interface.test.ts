@@ -21,6 +21,7 @@ import {
 import { startIsolated, stopScheduler } from './harness/service.ts';
 import { grantFor } from './harness/grant.ts';
 import { startReleaseFixture } from './harness/release.ts';
+import { FakeReviewer } from './harness/fake-reviewer.ts';
 import { until } from './harness/wait.ts';
 
 const helper = fileURLToPath(new URL('../service/agent-mcp.ts', import.meta.url));
@@ -201,6 +202,110 @@ test('a CLI channel grant can propose a release and cannot approve or read the s
       401,
       grant.token
     );
+  } finally {
+    await s.cleanup();
+  }
+});
+
+test('a CLI-only grant proposes a release after item and release reviews with file evidence', async () => {
+  const reviewer = new FakeReviewer();
+  reviewer.autoComplete = true;
+  const s = await startIsolated({
+    project: {
+      name: 'CLI 发布',
+      goal: '让 CLI 频道也能提议上线',
+      files: { 'checks.log': '3 tests passed\n', 'release.txt': 'artifact\n' },
+    },
+    scheduler: false,
+  });
+  try {
+    s.engine.loop.verification.connect(reviewer, (v) => v);
+    const cli = await s.api(
+      'POST',
+      '/api/channels',
+      {
+        projectId: s.project.id,
+        name: 'CLI 直连',
+        goal: '用文件证据提议上线',
+        runtime: 'codex',
+        transport: 'cli',
+      },
+      201
+    );
+    const grant = grantFor(s, {
+      projectId: s.project.id,
+      channelId: cli.id,
+      overrides: { sessionId: '', executionOwner: 'codex-cli' },
+    });
+    await grant.call('evidence.native', {}, 409);
+    await grant.call('execution.prepare', { command: 'true' }, 409);
+    const item = await grant.call('feature.upsert', {
+      title: 'CLI 可提议上线',
+      summary: '用采集证据走独立复核',
+      kind: 'feature',
+      status: 'investigating',
+      evidenceIds: [],
+      nextStep: '请求独立复核',
+    });
+    const evidence = await grant.call('evidence.capture', {
+      itemId: item.id,
+      summary: '检查日志',
+      path: 'checks.log',
+    });
+    const spoken = await grant.call('evidence.record', {
+      itemId: item.id,
+      summary: '自述检查通过',
+      source: 'agent-claim',
+      observedAt: new Date().toISOString(),
+      data: { passed: true },
+    });
+    const proposal = {
+      itemIds: [item.id],
+      title: 'CLI 候选',
+      changes: '用文件证据走发布门禁',
+      rationale: 'CLI 没有 App 任务',
+      expectedBenefit: '预期 CLI 也能提议上线；线上收益尚待验证',
+      checks: [{ name: '检查日志', result: 'passed', evidenceIds: [evidence.id] }],
+      risks: '影响发布路径',
+      rollback: '恢复上一个产物',
+      observationPlan: '发布后读取指标文件',
+      artifactPath: 'release.txt',
+      target: { url: 'http://127.0.0.1:9/deploy', statusUrl: 'http://127.0.0.1:9/status', label: '隔离发布端' },
+    };
+    const withoutReviews = await grant.call('release.propose', proposal, 409);
+    assert.match(withoutReviews.error, /至少需要一次独立复核通过/);
+    const itemReview = await grant.call('verification.request', { itemId: item.id, evidenceIds: [evidence.id] });
+    await s.engine.loop.verification.start(itemReview.id);
+    assert.equal(s.store.get<any>('loop_verifications', itemReview.id).status, 'passed');
+    const withoutRelease = await grant.call('release.propose', proposal, 409);
+    assert.match(withoutRelease.error, /发布级复核/);
+    const agentOnly = await grant.call(
+      'verification.request',
+      { kind: 'release', itemIds: [item.id], evidenceIds: [spoken.id] },
+      400
+    );
+    assert.match(agentOnly.error, /实际文件或 HTTP 采集证据/);
+    const releaseReview = await grant.call('verification.request', {
+      kind: 'release',
+      itemIds: [item.id],
+      evidenceIds: [evidence.id],
+    });
+    await s.engine.loop.verification.start(releaseReview.id);
+    const stored = s.store.get<any>('loop_verifications', releaseReview.id);
+    assert.equal(stored.status, 'passed');
+    assert.match(stored.prompt, /亲自重跑/);
+    const release = await grant.call('release.propose', proposal);
+    assert.equal(release.status, 'awaiting_approval');
+    assert.equal(release.releaseVerificationId, releaseReview.id);
+    await grant.call('release.approve', {}, 400);
+    await s.api(
+      'POST',
+      `/api/releases/${release.id}/review`,
+      { reviewHash: release.reviewHash, decision: 'approve' },
+      401,
+      grant.token
+    );
+    await grant.call('execution.prepare', { command: 'true' }, 409);
   } finally {
     await s.cleanup();
   }

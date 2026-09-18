@@ -74,7 +74,8 @@ ${
   p.tools
     ? `用 Morrow MCP 工具 call 调用工作接口（operation / input / 写操作 requestId），与下面同一入口：${p.tools}\
 上线只能 release.propose 封存，由人在桌面批准；不能 release.approve。evidence.native 与 execution.prepare \
-在没有绑定的 App 任务时返回 409。已通过工具维护的 feature 不要再附 morrow-report。\n`
+在没有绑定的 App 任务时返回 409。CLI 频道的发布级复核用 file/http 采集证据（verification.request kind:release），\
+复核者在隔离检出里重跑检查；没有独立复核通过时 release.propose 返回 409，不要用自述替代。已通过工具维护的 feature 不要再附 morrow-report。\n`
     : `请正常使用 Markdown 汇报实际工作、验证和下一步。若需要同步功能看板，可在回复末尾附加一个 标记为 morrow-report \
 的 Markdown 代码块，其中 JSON 符合下方 Schema；它是可选的看板报告，不是原生执行成功的条件。\
 没有报告时保留原生回复且不自动修改看板。新事项 id 为空字符串；更新已有事项必须使用其现有 id。knowledge.source \

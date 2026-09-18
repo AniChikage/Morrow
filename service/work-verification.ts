@@ -485,11 +485,13 @@ export class WorkVerification {
   /**
    * One review of a whole release candidate. Every item only needs a review from the version it was
    * changed at; this review looks at the candidate itself: whether the cited checks belong to the
-   * current source, and whether anything committed since each item's own review contradicts it.
+   * current source (App: sealed execution; CLI: file/HTTP capture plus a reviewer that re-runs
+   * checks in the disposable checkout), and whether anything committed since each item's own review
+   * contradicts it.
    */
   requestRelease(scope: Scope, input: Record<string, unknown>): Verification {
     keys(input, ['kind', 'itemIds', 'evidenceIds']);
-    const { project } = this.loop.scope(scope);
+    const { project, channel } = this.loop.scope(scope);
     const itemIds = itemList(input.itemIds);
     const items = itemIds.map((id) => this.loop.item(scope, id, false)!);
     const never = items.filter((item) => !this.passedEver(project.id, item.id));
@@ -504,7 +506,19 @@ export class WorkVerification {
     const version = sourceVersion(project.path);
     const evidence = evidenceIds.map((id) => this.loop.store.get<Evidence>('loop_evidence', id)!);
     const executions = evidence.filter((row) => currentExecution(row, version.digest));
-    if (!executions.length) throw new APIError(400, '至少一项当前源版本的执行证据');
+    const captured = evidence.filter((row) => row.origin === 'file' || row.origin === 'http');
+    // App channels can seal a native command; CLI channels cannot (`execution.prepare` is 409
+    // without an App thread). The substitute is captured file/HTTP evidence plus an independent
+    // reviewer that re-runs project checks in the disposable checkout — not a fake execution row.
+    const isolatedChecks = !executions.length;
+    if (isolatedChecks) {
+      if (usesApp(channel)) throw new APIError(400, '至少一项当前源版本的执行证据');
+      if (!captured.length)
+        throw new APIError(
+          400,
+          '至少一项实际文件或 HTTP 采集证据；CLI 频道没有 App 任务，不能用 execution.prepare，也不接受自述'
+        );
+    }
     const subject = this.releaseSubject(project.id, itemIds),
       subjectHash = hash(subject);
     // The same candidate and the same item set reuse their conclusion instead of paying for another
@@ -533,20 +547,29 @@ export class WorkVerification {
         },
       };
     });
-    const checks = executions.map((row) => {
-      const data = row.data as ExecutionData;
-      return {
-        evidenceId: row.id,
-        command: data.command,
-        cwd: data.cwd,
-        exitCode: data.exitCode,
-        boundVersion: data.boundVersion,
-        outputComplete: data.outputComplete,
-        sourceVersion: data.sourceVersion,
-        observedAt: row.observedAt,
-        outputTail: String(data.output ?? '').slice(-outputTail),
-      };
-    });
+    const checks = isolatedChecks
+      ? captured.map((row) => ({
+          evidenceId: row.id,
+          origin: row.origin,
+          source: row.source,
+          digest: row.digest,
+          observedAt: row.observedAt,
+          summary: row.summary,
+        }))
+      : executions.map((row) => {
+          const data = row.data as ExecutionData;
+          return {
+            evidenceId: row.id,
+            command: data.command,
+            cwd: data.cwd,
+            exitCode: data.exitCode,
+            boundVersion: data.boundVersion,
+            outputComplete: data.outputComplete,
+            sourceVersion: data.sourceVersion,
+            observedAt: row.observedAt,
+            outputTail: String(data.output ?? '').slice(-outputTail),
+          };
+        });
     const prompt = this.redact(
       releaseReviewText({
         version: JSON.stringify(version),
@@ -554,6 +577,7 @@ export class WorkVerification {
         checks: JSON.stringify(checks),
         subject: JSON.stringify(subject),
         minutes: Math.round(reviewTimeoutSeconds.release / 60),
+        ...(isolatedChecks ? { isolatedChecks: true } : {}),
       })
     );
     if (Buffer.byteLength(prompt) > 512 * 1024)

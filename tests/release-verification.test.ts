@@ -222,6 +222,30 @@ test('a release-level review needs an execution capture bound to the candidate s
     );
     assert.match(stale.error, /至少一项当前源版本的执行证据/);
     assert.equal(f.store.all<Verification>('loop_verifications').filter((row) => row.kind === 'release').length, 0);
+    const cli = await f.api(
+      'POST',
+      '/api/channels',
+      {
+        projectId: f.project.id,
+        name: 'CLI 直连',
+        goal: '用文件证据请求发布级复核',
+        runtime: 'codex',
+        transport: 'cli',
+      },
+      201
+    );
+    const cliGrant = grantFor(f, {
+      projectId: f.project.id,
+      channelId: cli.id,
+      overrides: { sessionId: '', executionOwner: 'codex-cli' },
+    });
+    const queued = await cliGrant.call('verification.request', {
+      kind: 'release',
+      itemIds: [only.item.id],
+      evidenceIds: [only.evidence.id],
+    });
+    assert.equal(queued.kind, 'release');
+    assert.match(f.store.get<Verification>('loop_verifications', queued.id)!.prompt, /亲自重跑/);
   } finally {
     await f.cleanup();
   }

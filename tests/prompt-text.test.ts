@@ -6,7 +6,7 @@ import { autonomousCharter, type PromptContext } from '../service/channel-work.t
 import type { Scope } from '../service/project-loop.ts';
 import type { Channel, Project, Run } from '../service/protocol.ts';
 import type { Verification } from '../service/verification-types.ts';
-import { isolatedReviewText } from '../service/prompts/verification.ts';
+import { isolatedReviewText, releaseReviewText } from '../service/prompts/verification.ts';
 import { startIsolated } from './harness/service.ts';
 import { grantFor } from './harness/grant.ts';
 import { startReleaseFixture } from './harness/release.ts';
@@ -109,7 +109,11 @@ test('the non-native CLI turn prompt text is unchanged', async () => {
     assert(granted.includes('Morrow MCP'));
     assert(granted.includes('--operation context'));
     assert(!granted.includes('nextCheckMinutes'));
-    assert.equal(digest(granted.replaceAll(s.home, '<home>')), '8cae5dd443e1c8c0c249c96ba620ac4eae78855c8183a5a8d3b05a7dd672bb7f');
+    assert.equal(
+      digest(granted.replaceAll(s.home, '<home>')),
+      // CLI grant prompt: release.propose needs independent reviews; file/http evidence, not execution.prepare.
+      '38394bcdf4f03b040adb4352f1b3c1d1c4f8afde62d6510fdd0baad22cdb5377'
+    );
   } finally {
     await s.cleanup();
   }
@@ -132,8 +136,8 @@ test('the work contract and strategy guidance served to a turn are unchanged', a
     assert.match(principles, /探索或效果实验/);
     assert.equal(
       digest(JSON.stringify({ operations, releaseAdapter, principles })),
-      // CLI contract: evidence.native / execution.prepare name the 409 without an App thread.
-      '3763d7b74020ac6d765c1cb4377f1bfab04ce1fd33a6ef583723e7c9b0ee5731'
+      // CLI contract: release-kind review accepts file/http evidence when there is no App thread.
+      'f51102fdd36ace2ce463c1558c4145f14c36f3917829b740e3e0ba425daf61c3'
     );
     const strategy = s.engine.loop.strategy.context(scope);
     assert.equal(
@@ -177,6 +181,21 @@ test('the isolated-checkout review paragraph is unchanged', () => {
   assert(text.includes('你可以在这个目录内自行运行格式检查、类型检查、测试与构建'));
   assert(text.includes('把你亲自运行得到的结果作为结论依据'));
   assert.equal(digest(text), '6b102c658cf49cbef52eb134f1b4f2135123b075ee52d6c3dad7f06b353962ad');
+});
+
+test('the CLI release-review prompt tells the reviewer to re-run checks', () => {
+  const text = releaseReviewText({
+    version: '{"digest":"0"}',
+    reviewed: '[]',
+    checks: '[]',
+    subject: '{}',
+    minutes: 8,
+    isolatedChecks: true,
+  });
+  assert(text.includes('亲自重跑'));
+  assert(text.includes('file/http'));
+  assert(!text.includes('绑定当前源版本的执行证据'));
+  assert.equal(digest(text), 'acc511143c2a3abfd7b9d01c421ee965a839cfd82ed52964d2479a5f1490cffd');
 });
 
 test('the release and item review prompt text is unchanged', async () => {
